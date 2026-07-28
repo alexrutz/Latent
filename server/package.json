@@ -1,0 +1,29 @@
+{
+  "name": "@latent/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "mock": "tsx src/mock/run.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.typecheck.json"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/multipart": "^9.0.3",
+    "@fastify/static": "^8.0.4",
+    "@fastify/websocket": "^11.0.2",
+    "@latent/shared": "*",
+    "better-sqlite3": "^11.8.1",
+    "fastify": "^5.2.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2"
+  }
+}

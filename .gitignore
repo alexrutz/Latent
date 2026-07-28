@@ -1,0 +1,31 @@
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Runtime data (SQLite db, cached previews)
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Test output
+coverage/
+test-results/
+playwright-report/
+blob-report/
+.playwright/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log
+npm-debug.log*

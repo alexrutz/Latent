@@ -1,0 +1,580 @@
+import { randomUUID } from 'node:crypto';
+import type { FastifyBaseLogger } from 'fastify';
+import type { WebSocket } from 'ws';
+
+import type {
+  ApiWorkflow,
+  ComfyExecutedMessage,
+  ComfyExecutingMessage,
+  ComfyExecutionCachedMessage,
+  ComfyExecutionErrorMessage,
+  ComfyExecutionStartMessage,
+  ComfyProgressMessage,
+  ComfyStatusMessage,
+  ComfyWsMessage,
+  GenerationImage,
+  LiveState,
+  ObjectInfo,
+  ParamValues,
+  QueueEntry,
+  QueueState,
+} from '@latent/shared';
+
+import { ComfyClient } from './comfy/client.js';
+import { ComfySocket } from './comfy/socket.js';
+import type { Store } from './db.js';
+import { Hub } from './hub.js';
+
+/** How often live state is pushed while a sampler is running. */
+const STATE_THROTTLE_MS = 100;
+/** How long a cached `/object_info` response stays fresh. */
+const OBJECT_INFO_TTL_MS = 60_000;
+
+interface TrackedPrompt {
+  generationId: string;
+  title: string;
+  workflowName: string;
+  /** Node ids in the submitted graph, for graph-level progress. */
+  nodeIds: Set<string>;
+  nodeTitles: Map<string, string>;
+  executed: Set<string>;
+  finished: boolean;
+}
+
+function emptyState(): LiveState {
+  return {
+    connected: true,
+    comfyOnline: false,
+    queueRemaining: 0,
+    job: null,
+    lastError: null,
+  };
+}
+
+/**
+ * Owns everything stateful: the upstream ComfyUI connection, the live job, and
+ * the write side of the generation history.
+ *
+ * Routes stay thin — they validate input and call in here.
+ */
+export class Orchestrator {
+  readonly client: ComfyClient;
+  readonly hub = new Hub();
+  private readonly socket: ComfySocket;
+  private readonly clientId = randomUUID();
+
+  private state: LiveState;
+  private readonly tracked = new Map<string, TrackedPrompt>();
+  private queueState: QueueState = { running: [], pending: [] };
+
+  private objectInfoCache: { value: ObjectInfo; fetchedAt: number } | null = null;
+  private objectInfoInFlight: Promise<ObjectInfo> | null = null;
+
+  /**
+   * Submits whose `/prompt` response hasn't come back yet.
+   *
+   * ComfyUI can start executing — and tell us about it — before it answers the
+   * HTTP request that queued the work, so `execution_start` regularly arrives
+   * for a prompt id we have never seen. These let the job be labelled correctly
+   * from its very first frame instead of flashing "Untitled".
+   */
+  private readonly inFlightSubmits: { title: string; workflowName: string }[] = [];
+
+  private stateDirty = false;
+  private stateTimer: NodeJS.Timeout | null = null;
+  private queueRefreshTimer: NodeJS.Timeout | null = null;
+
+  constructor(
+    private readonly store: Store,
+    comfyUrl: string,
+    wsUrl: string,
+    private readonly log: FastifyBaseLogger,
+  ) {
+    this.client = new ComfyClient(comfyUrl);
+    this.socket = new ComfySocket(wsUrl, this.clientId);
+    this.state = emptyState();
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Lifecycle                                                         */
+  /* ---------------------------------------------------------------- */
+
+  start(): void {
+    const stale = this.store.failStaleGenerations();
+    if (stale > 0) {
+      this.log.warn(`Marked ${stale} interrupted generation(s) as failed after restart`);
+    }
+
+    this.socket.on('open', () => {
+      this.log.info('Connected to ComfyUI');
+      this.client.resetPrefix();
+      this.state.comfyOnline = true;
+      this.state.lastError = null;
+      this.pushState(true);
+      void this.refreshQueue();
+    });
+
+    this.socket.on('close', () => {
+      this.log.warn('Lost connection to ComfyUI — retrying');
+      this.state.comfyOnline = false;
+      this.pushState(true);
+    });
+
+    this.socket.on('error', (error) => {
+      this.state.lastError = error.message;
+      this.log.debug({ err: error }, 'ComfyUI socket error');
+    });
+
+    this.socket.on('message', (message) => this.onComfyMessage(message));
+    this.socket.on('preview', (frame) => this.hub.broadcastBinary(frame.data));
+
+    this.socket.start();
+  }
+
+  async stop(): Promise<void> {
+    this.socket.stop();
+    this.hub.closeAll();
+    if (this.stateTimer) clearTimeout(this.stateTimer);
+    if (this.queueRefreshTimer) clearTimeout(this.queueRefreshTimer);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Client connections                                                */
+  /* ---------------------------------------------------------------- */
+
+  /** Bring a newly connected browser fully up to date in one message. */
+  attachClient(socket: WebSocket): void {
+    this.hub.add(socket);
+    this.hub.send(socket, { type: 'snapshot', data: this.state });
+    this.hub.send(socket, { type: 'queue', data: this.queueState });
+    // Someone is looking at the app — this is the moment to stop waiting out a
+    // backoff and find out whether ComfyUI came back.
+    this.ensureConnected();
+  }
+
+  /**
+   * Ask the upstream socket to retry now rather than on its backoff schedule.
+   * Safe to call often; it is a no-op when already connected or connecting.
+   */
+  ensureConnected(): void {
+    this.socket.reconnectNow();
+  }
+
+  getState(): LiveState {
+    return this.state;
+  }
+
+  getQueueState(): QueueState {
+    return this.queueState;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* object_info (cached — it is large and rarely changes)              */
+  /* ---------------------------------------------------------------- */
+
+  async objectInfo(force = false): Promise<ObjectInfo> {
+    const cached = this.objectInfoCache;
+    if (!force && cached && Date.now() - cached.fetchedAt < OBJECT_INFO_TTL_MS) {
+      return cached.value;
+    }
+    if (this.objectInfoInFlight) return this.objectInfoInFlight;
+
+    this.objectInfoInFlight = this.client
+      .objectInfo()
+      .then((value) => {
+        this.objectInfoCache = { value, fetchedAt: Date.now() };
+        return value;
+      })
+      .finally(() => {
+        this.objectInfoInFlight = null;
+      });
+
+    try {
+      return await this.objectInfoInFlight;
+    } catch (error) {
+      // Falling back to the last known definitions beats failing an import
+      // outright — the schema engine degrades gracefully without them.
+      if (cached) {
+        this.log.warn('Using cached /object_info — ComfyUI is unreachable');
+        return cached.value;
+      }
+      throw error;
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Submitting work                                                   */
+  /* ---------------------------------------------------------------- */
+
+  async submit(input: {
+    graph: ApiWorkflow;
+    workflowId: string | null;
+    workflowName: string;
+    title: string;
+    values: ParamValues;
+    seeds: Record<string, number>;
+  }): Promise<{ generationId: string; promptId: string }> {
+    const inFlight = { title: input.title, workflowName: input.workflowName };
+    this.inFlightSubmits.push(inFlight);
+
+    let response;
+    try {
+      response = await this.client.submit(input.graph, this.clientId, {
+        // Surfaces in ComfyUI's own UI so a job queued from a phone is identifiable.
+        extra_pnginfo: { latent: { workflow: input.workflowName } },
+      });
+    } finally {
+      const index = this.inFlightSubmits.indexOf(inFlight);
+      if (index >= 0) this.inFlightSubmits.splice(index, 1);
+    }
+
+    if (!response.prompt_id) {
+      throw new Error('ComfyUI accepted the prompt but returned no prompt_id');
+    }
+
+    const generationId = randomUUID();
+    this.store.insertGeneration({
+      id: generationId,
+      promptId: response.prompt_id,
+      workflowId: input.workflowId,
+      workflowName: input.workflowName,
+      title: input.title,
+      values: input.values,
+      seeds: input.seeds,
+    });
+
+    const nodeTitles = new Map<string, string>();
+    for (const [nodeId, node] of Object.entries(input.graph)) {
+      nodeTitles.set(nodeId, node._meta?.title ?? node.class_type);
+    }
+
+    this.tracked.set(response.prompt_id, {
+      generationId,
+      title: input.title,
+      workflowName: input.workflowName,
+      nodeIds: new Set(Object.keys(input.graph)),
+      nodeTitles,
+      executed: new Set(),
+      finished: false,
+    });
+
+    // ComfyUI often starts executing before this HTTP response lands, so
+    // `execution_start` can arrive while the prompt is still unknown here.
+    // When that happens the job was created without a title or a generation to
+    // attach to — fill it in now instead of showing "Untitled" for the run.
+    if (this.state.job?.promptId === response.prompt_id) {
+      this.state.job.generationId = generationId;
+      this.state.job.title = input.title;
+      this.state.job.nodeTitle =
+        (this.state.job.nodeId && nodeTitles.get(this.state.job.nodeId)) ?? this.state.job.nodeTitle;
+      this.store.setGenerationStatus(response.prompt_id, 'running');
+      this.pushState(true);
+    }
+
+    this.scheduleQueueRefresh();
+    this.emitGeneration(response.prompt_id);
+
+    return { generationId, promptId: response.prompt_id };
+  }
+
+  async interrupt(): Promise<void> {
+    await this.client.interrupt();
+    this.scheduleQueueRefresh();
+  }
+
+  async cancel(promptId: string): Promise<void> {
+    // A prompt that is already running can only be stopped with /interrupt;
+    // one still pending is removed from the queue.
+    const isRunning = this.queueState.running.some((entry) => entry.promptId === promptId);
+    if (isRunning) {
+      await this.client.interrupt();
+    } else {
+      await this.client.deleteQueued([promptId]);
+      this.markFinished(promptId, 'cancelled', null);
+    }
+    this.scheduleQueueRefresh();
+  }
+
+  async clearQueue(): Promise<void> {
+    const pending = [...this.queueState.pending];
+    await this.client.clearQueue();
+    for (const entry of pending) this.markFinished(entry.promptId, 'cancelled', null);
+    this.scheduleQueueRefresh();
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Upstream event handling                                           */
+  /* ---------------------------------------------------------------- */
+
+  private onComfyMessage(message: ComfyWsMessage): void {
+    switch (message.type) {
+      case 'status':
+        this.onStatus(message as ComfyStatusMessage);
+        break;
+      case 'execution_start':
+        this.onExecutionStart(message as ComfyExecutionStartMessage);
+        break;
+      case 'execution_cached':
+        this.onExecutionCached(message as ComfyExecutionCachedMessage);
+        break;
+      case 'executing':
+        this.onExecuting(message as ComfyExecutingMessage);
+        break;
+      case 'progress':
+        this.onProgress(message as ComfyProgressMessage);
+        break;
+      case 'executed':
+        this.onExecuted(message as ComfyExecutedMessage);
+        break;
+      case 'execution_success':
+        this.finishPrompt(
+          (message.data as { prompt_id?: string } | undefined)?.prompt_id,
+          'completed',
+          null,
+        );
+        break;
+      case 'execution_error':
+        this.onExecutionError(message as ComfyExecutionErrorMessage);
+        break;
+      case 'execution_interrupted':
+        this.finishPrompt(
+          (message.data as { prompt_id?: string } | undefined)?.prompt_id,
+          'cancelled',
+          null,
+        );
+        break;
+      default:
+        break;
+    }
+  }
+
+  private onStatus(message: ComfyStatusMessage): void {
+    const remaining = message.data?.status?.exec_info?.queue_remaining ?? 0;
+    if (remaining !== this.state.queueRemaining) {
+      this.state.queueRemaining = remaining;
+      this.scheduleQueueRefresh();
+      this.pushState(true);
+    }
+  }
+
+  private onExecutionStart(message: ComfyExecutionStartMessage): void {
+    const promptId = message.data.prompt_id;
+    const tracked = this.tracked.get(promptId);
+    // Unknown prompt + a submit in flight means this is almost certainly ours,
+    // just faster than its own HTTP response. Otherwise it was queued from
+    // ComfyUI's own UI and we genuinely have no name for it.
+    const inFlight = this.inFlightSubmits[0];
+
+    this.state.job = {
+      promptId,
+      generationId: tracked?.generationId ?? null,
+      title: tracked?.title ?? inFlight?.title ?? 'Queued in ComfyUI',
+      nodeId: null,
+      nodeTitle: null,
+      progress: 0,
+      progressMax: 0,
+      graphProgress: 0,
+      startedAt: Date.now(),
+    };
+
+    this.store.setGenerationStatus(promptId, 'running');
+    this.emitGeneration(promptId);
+    this.pushState(true);
+  }
+
+  private onExecutionCached(message: ComfyExecutionCachedMessage): void {
+    const tracked = this.tracked.get(message.data.prompt_id);
+    if (!tracked) return;
+    for (const nodeId of message.data.nodes ?? []) tracked.executed.add(nodeId);
+    this.updateGraphProgress(message.data.prompt_id);
+  }
+
+  private onExecuting(message: ComfyExecutingMessage): void {
+    const { node, prompt_id: promptId } = message.data;
+
+    // `node: null` is ComfyUI's end-of-prompt signal. Older builds send only
+    // this and never `execution_success`, so it must finish the job too.
+    if (node === null) {
+      this.finishPrompt(promptId ?? this.state.job?.promptId, 'completed', null);
+      return;
+    }
+
+    if (!this.state.job) return;
+    const tracked = promptId ? this.tracked.get(promptId) : undefined;
+    this.state.job.nodeId = node;
+    this.state.job.nodeTitle = tracked?.nodeTitles.get(node) ?? node;
+    this.state.job.progress = 0;
+    this.state.job.progressMax = 0;
+    this.pushState(true);
+  }
+
+  private onProgress(message: ComfyProgressMessage): void {
+    if (!this.state.job) return;
+    this.state.job.progress = message.data.value ?? 0;
+    this.state.job.progressMax = message.data.max ?? 0;
+    this.pushState();
+  }
+
+  private onExecuted(message: ComfyExecutedMessage): void {
+    const { prompt_id: promptId, node, output } = message.data;
+    const tracked = this.tracked.get(promptId);
+    if (tracked) {
+      tracked.executed.add(node);
+      this.updateGraphProgress(promptId);
+    }
+
+    const images = output?.images ?? [];
+    if (images.length === 0) return;
+
+    // `temp` images are ComfyUI's in-flight previews, not results.
+    const results: GenerationImage[] = images
+      .filter((image) => image.type !== 'temp')
+      .map((image) => ({
+        nodeId: node,
+        filename: image.filename,
+        subfolder: image.subfolder ?? '',
+        type: image.type ?? 'output',
+      }));
+    if (results.length === 0) return;
+
+    this.store.addImages(promptId, node, results);
+    this.emitGeneration(promptId);
+  }
+
+  private onExecutionError(message: ComfyExecutionErrorMessage): void {
+    const detail =
+      message.data.exception_message ??
+      message.data.exception_type ??
+      'ComfyUI reported an execution error';
+    const nodeType = message.data.node_type;
+    this.finishPrompt(
+      message.data.prompt_id,
+      'failed',
+      nodeType ? `${nodeType}: ${detail}` : detail,
+    );
+  }
+
+  private updateGraphProgress(promptId: string): void {
+    const tracked = this.tracked.get(promptId);
+    if (!tracked || !this.state.job || this.state.job.promptId !== promptId) return;
+    const total = tracked.nodeIds.size || 1;
+    this.state.job.graphProgress = Math.min(1, tracked.executed.size / total);
+  }
+
+  private finishPrompt(
+    promptId: string | undefined,
+    status: 'completed' | 'failed' | 'cancelled',
+    error: string | null,
+  ): void {
+    if (!promptId) return;
+    this.markFinished(promptId, status, error);
+
+    if (this.state.job?.promptId === promptId) {
+      this.state.job = null;
+    }
+    this.state.lastError = status === 'failed' ? error : null;
+    this.scheduleQueueRefresh();
+    this.pushState(true);
+  }
+
+  /** Idempotent: ComfyUI can send both `executing:null` and `execution_success`. */
+  private markFinished(
+    promptId: string,
+    status: 'completed' | 'failed' | 'cancelled',
+    error: string | null,
+  ): void {
+    const tracked = this.tracked.get(promptId);
+    if (tracked?.finished) return;
+    if (tracked) tracked.finished = true;
+
+    const existing = this.store.getGenerationByPromptId(promptId);
+    if (!existing) return; // Queued from ComfyUI's own UI — nothing to record.
+
+    this.store.setGenerationStatus(promptId, status, error);
+    this.emitGeneration(promptId);
+
+    // Keep the map from growing without bound over a long-running server.
+    setTimeout(() => this.tracked.delete(promptId), 60_000).unref?.();
+  }
+
+  private emitGeneration(promptId: string): void {
+    const record = this.store.getGenerationByPromptId(promptId);
+    if (record) this.hub.broadcast({ type: 'generation', data: record });
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Queue                                                             */
+  /* ---------------------------------------------------------------- */
+
+  private scheduleQueueRefresh(): void {
+    if (this.queueRefreshTimer) return;
+    this.queueRefreshTimer = setTimeout(() => {
+      this.queueRefreshTimer = null;
+      void this.refreshQueue();
+    }, 200);
+    this.queueRefreshTimer.unref?.();
+  }
+
+  async refreshQueue(): Promise<QueueState> {
+    try {
+      const queue = await this.client.queue();
+      this.queueState = {
+        running: (queue.queue_running ?? []).map((item) => this.toQueueEntry(item, true)),
+        pending: (queue.queue_pending ?? []).map((item) => this.toQueueEntry(item, false)),
+      };
+      this.hub.broadcast({ type: 'queue', data: this.queueState });
+    } catch (error) {
+      this.log.debug({ err: error }, 'Could not refresh the ComfyUI queue');
+    }
+    return this.queueState;
+  }
+
+  private toQueueEntry(item: unknown, running: boolean): QueueEntry {
+    const [number, promptId] = Array.isArray(item) ? item : [0, ''];
+    const id = String(promptId ?? '');
+    const tracked = this.tracked.get(id);
+    const record = tracked ? null : this.store.getGenerationByPromptId(id);
+
+    return {
+      promptId: id,
+      number: typeof number === 'number' ? number : 0,
+      running,
+      // Jobs queued from ComfyUI's own UI have no record here; label them so
+      // it's obvious they didn't come from this app.
+      title: tracked?.title ?? record?.title ?? 'Queued in ComfyUI',
+      workflowName: tracked?.workflowName ?? record?.workflowName ?? '—',
+      createdAt: record?.createdAt ?? null,
+    };
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* State broadcasting                                                */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Progress events arrive per sampler step — far faster than any phone needs
+   * to repaint. Coalesce them, but push transitions (node changed, job
+   * finished) immediately so the UI never feels laggy.
+   */
+  private pushState(immediate = false): void {
+    if (immediate) {
+      if (this.stateTimer) {
+        clearTimeout(this.stateTimer);
+        this.stateTimer = null;
+      }
+      this.stateDirty = false;
+      this.hub.broadcast({ type: 'state', data: this.state });
+      return;
+    }
+
+    this.stateDirty = true;
+    if (this.stateTimer) return;
+    this.stateTimer = setTimeout(() => {
+      this.stateTimer = null;
+      if (!this.stateDirty) return;
+      this.stateDirty = false;
+      this.hub.broadcast({ type: 'state', data: this.state });
+    }, STATE_THROTTLE_MS);
+    this.stateTimer.unref?.();
+  }
+}

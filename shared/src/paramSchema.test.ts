@@ -1,0 +1,351 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  applyOverrides,
+  applyParams,
+  assertApiWorkflow,
+  buildParamSchema,
+  defaultValues,
+  findFieldByRole,
+  isNodeLink,
+  WorkflowFormatError,
+} from './paramSchema.js';
+import { objectInfoFixture } from './fixtures/objectInfo.js';
+import {
+  combinedConditioning,
+  img2img,
+  sd15Txt2Img,
+  sdxlBaseRefiner,
+  uiFormatWorkflow,
+  unknownCustomNodes,
+  upscale,
+} from './fixtures/workflows.js';
+import type { ParamField, ParamRole } from './paramTypes.js';
+
+const build = (wf: Parameters<typeof buildParamSchema>[0]) =>
+  buildParamSchema(wf, objectInfoFixture);
+
+const byRole = (fields: ParamField[], role: ParamRole) => fields.filter((f) => f.role === role);
+const byId = (fields: ParamField[], id: string) => fields.find((f) => f.id === id);
+
+describe('isNodeLink', () => {
+  it('recognises link tuples and rejects look-alikes', () => {
+    expect(isNodeLink(['4', 0])).toBe(true);
+    expect(isNodeLink([4, 1])).toBe(true);
+    expect(isNodeLink(['a', 'b'])).toBe(false);
+    expect(isNodeLink([1, 2, 3])).toBe(false);
+    expect(isNodeLink('4,0')).toBe(false);
+    expect(isNodeLink(null)).toBe(false);
+  });
+});
+
+describe('assertApiWorkflow', () => {
+  it('accepts an API-format workflow', () => {
+    expect(Object.keys(assertApiWorkflow(sd15Txt2Img))).toContain('3');
+  });
+
+  it('tells the user exactly what to do when given a UI-format export', () => {
+    expect(() => assertApiWorkflow(uiFormatWorkflow)).toThrow(WorkflowFormatError);
+    expect(() => assertApiWorkflow(uiFormatWorkflow)).toThrow(/Export \(API\)/);
+  });
+
+  it('unwraps a graph nested under `prompt`', () => {
+    const unwrapped = assertApiWorkflow({ prompt: sd15Txt2Img });
+    expect(unwrapped['3']?.class_type).toBe('KSampler');
+  });
+
+  it('rejects non-objects, empty graphs and nodes without class_type', () => {
+    expect(() => assertApiWorkflow(null)).toThrow(WorkflowFormatError);
+    expect(() => assertApiWorkflow([1, 2])).toThrow(WorkflowFormatError);
+    expect(() => assertApiWorkflow({})).toThrow(/empty/);
+    expect(() => assertApiWorkflow({ '1': { inputs: {} } })).toThrow(/class_type/);
+  });
+});
+
+describe('buildParamSchema — SD1.5 txt2img', () => {
+  const schema = build(sd15Txt2Img);
+
+  it('never offers a linked input as an editable field', () => {
+    expect(byId(schema.fields, '3.model')).toBeUndefined();
+    expect(byId(schema.fields, '3.positive')).toBeUndefined();
+    expect(byId(schema.fields, '8.samples')).toBeUndefined();
+  });
+
+  it('separates the positive prompt from the negative by which sampler input it feeds', () => {
+    const positive = byRole(schema.fields, 'prompt');
+    const negative = byRole(schema.fields, 'negative_prompt');
+    expect(positive.map((f) => f.id)).toEqual(['6.text']);
+    expect(negative.map((f) => f.id)).toEqual(['7.text']);
+    expect(positive[0]?.defaultValue).toBe('beautiful scenery nature glass bottle landscape');
+    expect(negative[0]?.defaultValue).toBe('text, watermark');
+  });
+
+  it('renders multiline STRING inputs as textareas', () => {
+    expect(byId(schema.fields, '6.text')?.control).toBe('textarea');
+    expect(byId(schema.fields, '6.text')?.multiline).toBe(true);
+  });
+
+  it('types numbers from object_info, including min/max/step', () => {
+    const steps = byId(schema.fields, '3.steps');
+    expect(steps).toMatchObject({ control: 'int', min: 1, max: 10000, role: 'steps' });
+
+    const cfg = byId(schema.fields, '3.cfg');
+    expect(cfg).toMatchObject({ control: 'float', min: 0, max: 100, step: 0.1, role: 'cfg' });
+  });
+
+  it('turns combos into dropdowns and picks up the installed model list', () => {
+    const sampler = byId(schema.fields, '3.sampler_name');
+    expect(sampler?.control).toBe('combo');
+    expect(sampler?.options).toContain('dpmpp_2m');
+
+    const ckpt = byId(schema.fields, '4.ckpt_name');
+    expect(ckpt?.role).toBe('model');
+    expect(ckpt?.control).toBe('combo');
+    expect(ckpt?.options).toContain('sd_xl_base_1.0.safetensors');
+  });
+
+  it('clamps seed ranges that exceed JS safe integers', () => {
+    const seed = byId(schema.fields, '3.seed');
+    expect(seed?.role).toBe('seed');
+    expect(seed?.max).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  it('puts recognised roles on the main screen in a fixed order', () => {
+    const main = schema.fields.filter((f) => f.group === 'main').map((f) => f.role);
+    expect(main).toEqual([
+      'prompt',
+      'negative_prompt',
+      'model',
+      'width',
+      'height',
+      'batch_size',
+      'steps',
+      'cfg',
+      'sampler',
+      'scheduler',
+      'denoise',
+      'seed',
+    ]);
+  });
+
+  it('keeps unrecognised inputs rather than dropping them', () => {
+    const prefix = byId(schema.fields, '9.filename_prefix');
+    expect(prefix).toMatchObject({ group: 'advanced', role: 'other', control: 'text' });
+  });
+
+  it('finds the output node and reports capabilities', () => {
+    expect(schema.outputNodeIds).toEqual(['9']);
+    expect(schema.capabilities).toEqual({ img2img: false, seeded: true });
+    expect(schema.missingNodeTypes).toEqual([]);
+  });
+});
+
+describe('buildParamSchema — SDXL base + refiner', () => {
+  const schema = build(sdxlBaseRefiner);
+
+  it('disambiguates duplicate labels using the node title', () => {
+    const stepFields = schema.fields.filter((f) => f.inputName === 'steps');
+    expect(stepFields).toHaveLength(2);
+    expect(stepFields.map((f) => f.label).sort()).toEqual([
+      'Steps · Base sampler',
+      'Steps · Refiner sampler',
+    ]);
+  });
+
+  it('treats noise_seed as a seed', () => {
+    expect(byId(schema.fields, '10.noise_seed')?.role).toBe('seed');
+    expect(byId(schema.fields, '11.noise_seed')?.role).toBe('seed');
+  });
+
+  it('classifies both samplers\' prompts', () => {
+    expect(byRole(schema.fields, 'prompt').map((f) => f.id).sort()).toEqual(['15.text', '6.text']);
+    expect(byRole(schema.fields, 'negative_prompt').map((f) => f.id).sort()).toEqual([
+      '16.text',
+      '7.text',
+    ]);
+  });
+});
+
+describe('buildParamSchema — img2img and upscale', () => {
+  it('detects the image input and flags the workflow img2img-capable', () => {
+    const schema = build(img2img);
+    const image = findFieldByRole(schema, 'image_input');
+    expect(image).toMatchObject({ id: '1.image', control: 'image' });
+    expect(schema.capabilities.img2img).toBe(true);
+  });
+
+  it('handles a prompt-free, sampler-free upscale graph', () => {
+    const schema = build(upscale);
+    expect(byRole(schema.fields, 'prompt')).toHaveLength(0);
+    expect(schema.capabilities).toEqual({ img2img: true, seeded: false });
+    expect(byId(schema.fields, '2.model_name')?.role).toBe('model');
+    expect(schema.outputNodeIds).toEqual(['4']);
+  });
+});
+
+describe('buildParamSchema — prompts behind ConditioningCombine', () => {
+  it('walks backwards through conditioning nodes to find both prompt texts', () => {
+    const schema = build(combinedConditioning);
+    expect(byRole(schema.fields, 'prompt').map((f) => f.id).sort()).toEqual(['2.text', '3.text']);
+    expect(byRole(schema.fields, 'negative_prompt').map((f) => f.id)).toEqual(['5.text']);
+  });
+});
+
+describe('buildParamSchema — unknown custom nodes', () => {
+  const schema = build(unknownCustomNodes);
+
+  it('reports which node types it could not resolve', () => {
+    expect(schema.missingNodeTypes).toEqual(['SuperSecretSamplerXL']);
+  });
+
+  it('still exposes every input, typed from the literal value', () => {
+    expect(byId(schema.fields, '1.iterations')).toMatchObject({
+      control: 'int',
+      unknownNodeType: true,
+    });
+    expect(byId(schema.fields, '1.magic_strength')?.control).toBe('float');
+    expect(byId(schema.fields, '1.mode')?.control).toBe('text');
+    expect(byId(schema.fields, '1.enabled')?.control).toBe('boolean');
+  });
+
+  it('still recognises roles by input name', () => {
+    expect(byId(schema.fields, '1.seed')?.role).toBe('seed');
+    expect(schema.capabilities.seeded).toBe(true);
+  });
+
+  it('marks known nodes in the same graph as known', () => {
+    expect(byId(schema.fields, '2.ckpt_name')?.unknownNodeType).toBe(false);
+  });
+});
+
+describe('applyOverrides', () => {
+  const schema = build(sd15Txt2Img);
+
+  it('renames, regroups, hides and reorders without touching the source schema', () => {
+    const result = applyOverrides(schema, {
+      '9.filename_prefix': { label: 'File name', group: 'main', order: 0 },
+      '3.denoise': { hidden: true },
+    });
+
+    expect(byId(result.fields, '9.filename_prefix')).toMatchObject({
+      label: 'File name',
+      group: 'main',
+    });
+    expect(byId(result.fields, '3.denoise')?.hidden).toBe(true);
+    // Original untouched.
+    expect(byId(schema.fields, '9.filename_prefix')?.group).toBe('advanced');
+  });
+
+  it('recomputes capabilities when the only image field is hidden', () => {
+    const withImage = build(img2img);
+    expect(withImage.capabilities.img2img).toBe(true);
+    const hidden = applyOverrides(withImage, { '1.image': { hidden: true } });
+    expect(hidden.capabilities.img2img).toBe(false);
+  });
+
+  it('sorts main fields ahead of advanced ones', () => {
+    const result = applyOverrides(schema, {});
+    const firstAdvanced = result.fields.findIndex((f) => f.group === 'advanced');
+    const lastMain = result.fields.map((f) => f.group).lastIndexOf('main');
+    expect(lastMain).toBeLessThan(firstAdvanced);
+  });
+});
+
+describe('applyParams', () => {
+  const schema = build(sd15Txt2Img);
+
+  it('writes values into a copy, leaving the stored workflow untouched', () => {
+    const { workflow } = applyParams(sd15Txt2Img, schema, {
+      '6.text': 'a red fox in snow',
+      '3.steps': 30,
+    });
+
+    expect(workflow['6']?.inputs.text).toBe('a red fox in snow');
+    expect(workflow['3']?.inputs.steps).toBe(30);
+    expect(sd15Txt2Img['6']?.inputs.text).toBe('beautiful scenery nature glass bottle landscape');
+    expect(sd15Txt2Img['3']?.inputs.steps).toBe(20);
+  });
+
+  it('preserves links between nodes', () => {
+    const { workflow } = applyParams(sd15Txt2Img, schema, {});
+    expect(workflow['3']?.inputs.model).toEqual(['4', 0]);
+    expect(workflow['9']?.inputs.images).toEqual(['8', 0]);
+  });
+
+  it('coerces strings from form inputs to the numeric types the graph expects', () => {
+    const { workflow } = applyParams(sd15Txt2Img, schema, {
+      '3.steps': '35' as unknown as number,
+      '3.cfg': '6.5' as unknown as number,
+    });
+    expect(workflow['3']?.inputs.steps).toBe(35);
+    expect(workflow['3']?.inputs.cfg).toBe(6.5);
+  });
+
+  it('clamps out-of-range numbers instead of sending them to ComfyUI', () => {
+    const { workflow } = applyParams(sd15Txt2Img, schema, { '3.steps': 999999, '3.cfg': -5 });
+    expect(workflow['3']?.inputs.steps).toBe(10000);
+    expect(workflow['3']?.inputs.cfg).toBe(0);
+  });
+
+  it('falls back to the default when a value cannot be parsed', () => {
+    const { workflow } = applyParams(sd15Txt2Img, schema, {
+      '3.steps': 'not a number' as unknown as number,
+    });
+    expect(workflow['3']?.inputs.steps).toBe(20);
+  });
+
+  it('keeps the given seed when not randomising, and reports it', () => {
+    const { workflow, seeds } = applyParams(sd15Txt2Img, schema, { '3.seed': 12345 });
+    expect(workflow['3']?.inputs.seed).toBe(12345);
+    expect(seeds['3.seed']).toBe(12345);
+  });
+
+  it('rolls a new seed when randomising, within the field range', () => {
+    const { workflow, seeds } = applyParams(
+      sd15Txt2Img,
+      schema,
+      { '3.seed': 12345 },
+      { randomizeSeeds: true, random: () => 0.5 },
+    );
+    const seed = workflow['3']?.inputs.seed as number;
+    expect(seed).not.toBe(12345);
+    expect(Number.isInteger(seed)).toBe(true);
+    expect(seed).toBeGreaterThanOrEqual(0);
+    expect(seed).toBeLessThanOrEqual(Number.MAX_SAFE_INTEGER);
+    expect(seeds['3.seed']).toBe(seed);
+  });
+
+  it('honours a locked seed while randomising the others', () => {
+    const sdxl = build(sdxlBaseRefiner);
+    const { workflow } = applyParams(
+      sdxlBaseRefiner,
+      sdxl,
+      { '10.noise_seed': 111, '11.noise_seed': 222 },
+      { randomizeSeeds: true, lockedSeedFields: ['11.noise_seed'], random: () => 0.25 },
+    );
+    expect(workflow['11']?.inputs.noise_seed).toBe(222);
+    expect(workflow['10']?.inputs.noise_seed).not.toBe(111);
+  });
+
+  it('ignores values for fields that are not in the schema', () => {
+    const { workflow } = applyParams(sd15Txt2Img, schema, { '99.nope': 'x' });
+    expect(workflow['99']).toBeUndefined();
+  });
+
+  it('round-trips defaults back to the original graph', () => {
+    const { workflow } = applyParams(sd15Txt2Img, schema, defaultValues(schema));
+    expect(workflow).toEqual(sd15Txt2Img);
+  });
+});
+
+describe('buildParamSchema without object_info', () => {
+  it('degrades gracefully when the ComfyUI server is unreachable', () => {
+    const schema = buildParamSchema(sd15Txt2Img, {});
+    expect(schema.fields.length).toBeGreaterThan(0);
+    expect(byId(schema.fields, '6.text')?.role).toBe('prompt');
+    expect(byId(schema.fields, '3.steps')?.control).toBe('int');
+    // SaveImage is still found by class name even with no definitions.
+    expect(schema.outputNodeIds).toEqual(['9']);
+    expect(schema.missingNodeTypes.length).toBeGreaterThan(0);
+  });
+});

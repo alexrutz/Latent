@@ -1,0 +1,48 @@
+{
+  "name": "latent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mobile-optimised ComfyUI frontend",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "workspaces": [
+    "shared",
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "build": "npm run build:shared && npm run build -w @latent/web && npm run build -w @latent/server",
+    "build:shared": "npm run build -w @latent/shared",
+    "start": "npm run start -w @latent/server",
+    "dev": "npm run build:shared && concurrently -n shared,server,web -c gray,cyan,magenta \"npm:watch:shared\" \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:mock": "npm run build:shared && concurrently -n shared,mock,server,web -c gray,yellow,cyan,magenta \"npm:watch:shared\" \"npm:mock\" \"npm:dev:server\" \"npm:dev:web\"",
+    "watch:shared": "npm run watch -w @latent/shared",
+    "dev:server": "npm run dev -w @latent/server",
+    "dev:web": "npm run dev -w @latent/web",
+    "mock": "npm run mock -w @latent/server",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "typecheck": "npm run typecheck -w @latent/shared && npm run typecheck -w @latent/server && npm run typecheck -w @latent/web",
+    "lint": "eslint .",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@playwright/test": "^1.49.1",
+    "@types/node": "^22.10.5",
+    "concurrently": "^9.1.2",
+    "eslint": "^9.18.0",
+    "globals": "^17.8.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0",
+    "vitest": "^3.0.5"
+  },
+  "overrides": {
+    "vite": "^6.4.3"
+  }
+}

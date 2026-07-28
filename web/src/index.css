@@ -1,0 +1,119 @@
+@import 'tailwindcss';
+
+/*
+ * Latent's design tokens.
+ *
+ * Dark by default and not themeable: this app exists to judge images, and a
+ * bright chrome around a picture actively misleads you about its exposure and
+ * colour. The surfaces are near-black but never pure black, so elevation stays
+ * readable on OLED without smearing.
+ */
+@theme {
+  --color-ink: #0a0a0f;
+  --color-surface: #14141c;
+  --color-surface-2: #1d1d28;
+  --color-surface-3: #262633;
+  --color-line: #2c2c3b;
+  --color-body: #e9e9f2;
+  --color-muted: #8e8ea8;
+  --color-accent: #7c5cff;
+  --color-accent-hi: #9a80ff;
+  --color-danger: #ff5c7c;
+  --color-success: #4ade80;
+  --color-warn: #fbbf24;
+
+  --radius-sheet: 1.5rem;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+    /* Stop iOS bumping font sizes in landscape. */
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-ink);
+    color: var(--color-body);
+    font-family:
+      ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+    /* Prevent the whole page from rubber-banding; panes scroll individually. */
+    overscroll-behavior-y: none;
+  }
+
+  /*
+   * 16px minimum on anything focusable stops iOS Safari zooming the viewport
+   * when a field receives focus — the single most common way a mobile web app
+   * feels broken.
+   */
+  input,
+  textarea,
+  select,
+  button {
+    font-size: max(16px, 1rem);
+    font-family: inherit;
+  }
+
+  button {
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+
+  /* A slim scrollbar that doesn't steal layout width on desktop. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-surface-3) transparent;
+  }
+}
+
+@utility safe-b {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@utility safe-t {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+/* Hide the scrollbar on horizontal chip rows without disabling scrolling. */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@keyframes latent-rise {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes latent-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@utility animate-rise {
+  animation: latent-rise 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@utility animate-fade {
+  animation: latent-fade 0.15s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

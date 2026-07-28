@@ -1,0 +1,208 @@
+import type { ObjectInfo } from '../comfyTypes.js';
+
+/*
+ * A trimmed but faithful `/object_info` response.
+ *
+ * Shapes and option lists are copied from a real ComfyUI server so the schema
+ * engine and the mock server are exercised against genuine data, not a
+ * simplified idea of it.
+ */
+
+/**
+ * ComfyUI advertises seeds up to 2^64-1. `JSON.parse` cannot represent that
+ * exactly and rounds it to 2^64, so this is literally the number a client
+ * receives — and it is still far beyond `Number.MAX_SAFE_INTEGER`, which is
+ * what the schema engine has to clamp it to.
+ */
+export const SEED_MAX = 2 ** 64;
+
+export const SAMPLERS = [
+  'euler',
+  'euler_ancestral',
+  'heun',
+  'dpm_2',
+  'dpm_2_ancestral',
+  'lms',
+  'dpm_fast',
+  'dpm_adaptive',
+  'dpmpp_2s_ancestral',
+  'dpmpp_sde',
+  'dpmpp_2m',
+  'dpmpp_2m_sde',
+  'dpmpp_3m_sde',
+  'ddim',
+  'uni_pc',
+];
+
+export const SCHEDULERS = [
+  'normal',
+  'karras',
+  'exponential',
+  'sgm_uniform',
+  'simple',
+  'ddim_uniform',
+  'beta',
+];
+
+export const CHECKPOINTS = [
+  'sd_xl_base_1.0.safetensors',
+  'sd_xl_refiner_1.0.safetensors',
+  'v1-5-pruned-emaonly.safetensors',
+  'dreamshaperXL_v21.safetensors',
+];
+
+export const LORAS = ['detail_tweaker_xl.safetensors', 'pixel_art_xl.safetensors'];
+
+export const UPSCALE_MODELS = ['RealESRGAN_x4plus.pth', '4x-UltraSharp.pth'];
+
+export const INPUT_IMAGES = ['example.png', 'photo.jpg'];
+
+export const objectInfoFixture: ObjectInfo = {
+  KSampler: {
+    display_name: 'KSampler',
+    category: 'sampling',
+    output: ['LATENT'],
+    input: {
+      required: {
+        model: ['MODEL'],
+        seed: ['INT', { default: 0, min: 0, max: SEED_MAX, control_after_generate: true }],
+        steps: ['INT', { default: 20, min: 1, max: 10000, tooltip: 'Number of denoising steps.' }],
+        cfg: ['FLOAT', { default: 8.0, min: 0.0, max: 100.0, step: 0.1, round: 0.01 }],
+        sampler_name: [SAMPLERS, { default: 'euler' }],
+        scheduler: [SCHEDULERS, { default: 'normal' }],
+        positive: ['CONDITIONING'],
+        negative: ['CONDITIONING'],
+        latent_image: ['LATENT'],
+        denoise: ['FLOAT', { default: 1.0, min: 0.0, max: 1.0, step: 0.01 }],
+      },
+    },
+  },
+  KSamplerAdvanced: {
+    display_name: 'KSampler (Advanced)',
+    output: ['LATENT'],
+    input: {
+      required: {
+        model: ['MODEL'],
+        add_noise: [['enable', 'disable'], { default: 'enable' }],
+        noise_seed: ['INT', { default: 0, min: 0, max: SEED_MAX }],
+        steps: ['INT', { default: 20, min: 1, max: 10000 }],
+        cfg: ['FLOAT', { default: 8.0, min: 0.0, max: 100.0, step: 0.1 }],
+        sampler_name: [SAMPLERS, { default: 'euler' }],
+        scheduler: [SCHEDULERS, { default: 'normal' }],
+        positive: ['CONDITIONING'],
+        negative: ['CONDITIONING'],
+        latent_image: ['LATENT'],
+        start_at_step: ['INT', { default: 0, min: 0, max: 10000 }],
+        end_at_step: ['INT', { default: 10000, min: 0, max: 10000 }],
+        return_with_leftover_noise: [['disable', 'enable'], { default: 'disable' }],
+      },
+    },
+  },
+  CheckpointLoaderSimple: {
+    display_name: 'Load Checkpoint',
+    output: ['MODEL', 'CLIP', 'VAE'],
+    input: {
+      required: {
+        ckpt_name: [CHECKPOINTS, { tooltip: 'The diffusion model checkpoint to load.' }],
+      },
+    },
+  },
+  LoraLoader: {
+    display_name: 'Load LoRA',
+    output: ['MODEL', 'CLIP'],
+    input: {
+      required: {
+        model: ['MODEL'],
+        clip: ['CLIP'],
+        lora_name: [LORAS],
+        strength_model: ['FLOAT', { default: 1.0, min: -100.0, max: 100.0, step: 0.01 }],
+        strength_clip: ['FLOAT', { default: 1.0, min: -100.0, max: 100.0, step: 0.01 }],
+      },
+    },
+  },
+  CLIPTextEncode: {
+    display_name: 'CLIP Text Encode (Prompt)',
+    output: ['CONDITIONING'],
+    input: {
+      required: {
+        text: ['STRING', { multiline: true, dynamicPrompts: true }],
+        clip: ['CLIP'],
+      },
+    },
+  },
+  EmptyLatentImage: {
+    display_name: 'Empty Latent Image',
+    output: ['LATENT'],
+    input: {
+      required: {
+        width: ['INT', { default: 512, min: 16, max: 16384, step: 8 }],
+        height: ['INT', { default: 512, min: 16, max: 16384, step: 8 }],
+        batch_size: ['INT', { default: 1, min: 1, max: 4096 }],
+      },
+    },
+  },
+  VAEDecode: {
+    display_name: 'VAE Decode',
+    output: ['IMAGE'],
+    input: { required: { samples: ['LATENT'], vae: ['VAE'] } },
+  },
+  VAEEncode: {
+    display_name: 'VAE Encode',
+    output: ['LATENT'],
+    input: { required: { pixels: ['IMAGE'], vae: ['VAE'] } },
+  },
+  SaveImage: {
+    display_name: 'Save Image',
+    output: [],
+    output_node: true,
+    input: {
+      required: {
+        images: ['IMAGE'],
+        filename_prefix: ['STRING', { default: 'ComfyUI' }],
+      },
+    },
+  },
+  PreviewImage: {
+    display_name: 'Preview Image',
+    output: [],
+    output_node: true,
+    input: { required: { images: ['IMAGE'] } },
+  },
+  LoadImage: {
+    display_name: 'Load Image',
+    output: ['IMAGE', 'MASK'],
+    input: {
+      required: {
+        image: [INPUT_IMAGES, { image_upload: true }],
+      },
+    },
+  },
+  ImageScale: {
+    display_name: 'Upscale Image',
+    output: ['IMAGE'],
+    input: {
+      required: {
+        image: ['IMAGE'],
+        upscale_method: [['nearest-exact', 'bilinear', 'area', 'bicubic', 'lanczos']],
+        width: ['INT', { default: 512, min: 0, max: 16384, step: 1 }],
+        height: ['INT', { default: 512, min: 0, max: 16384, step: 1 }],
+        crop: [['disabled', 'center']],
+      },
+    },
+  },
+  UpscaleModelLoader: {
+    display_name: 'Load Upscale Model',
+    output: ['UPSCALE_MODEL'],
+    input: { required: { model_name: [UPSCALE_MODELS] } },
+  },
+  ImageUpscaleWithModel: {
+    display_name: 'Upscale Image (using Model)',
+    output: ['IMAGE'],
+    input: { required: { upscale_model: ['UPSCALE_MODEL'], image: ['IMAGE'] } },
+  },
+  ConditioningCombine: {
+    display_name: 'Conditioning (Combine)',
+    output: ['CONDITIONING'],
+    input: { required: { conditioning_1: ['CONDITIONING'], conditioning_2: ['CONDITIONING'] } },
+  },
+};

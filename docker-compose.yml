@@ -1,0 +1,21 @@
+services:
+  latent:
+    build: .
+    ports:
+      - '6173:6173'
+    environment:
+      # Assumes ComfyUI runs on the Docker host. Point this at wherever it
+      # actually listens — another container, another machine on the LAN.
+      COMFY_URL: http://host.docker.internal:8188
+      # Uncomment to require a password. Do this if the port is reachable from
+      # outside your own network.
+      # LATENT_PASSWORD: change-me
+    volumes:
+      - latent-data:/data
+    extra_hosts:
+      # Lets `host.docker.internal` resolve on Linux, where it isn't automatic.
+      - 'host.docker.internal:host-gateway'
+    restart: unless-stopped
+
+volumes:
+  latent-data:

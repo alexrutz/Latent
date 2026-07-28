@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#7c5cff" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#0a0a0f" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="spark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#b496ff"/>
+      <stop offset="100%" stop-color="#7c5cff"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" fill="#0a0a0f"/>
+  <rect width="64" height="64" fill="url(#glow)"/>
+  <path fill="url(#spark)" d="M32 4c1.6 12.6 6.8 18.4 20 24-13.2 5.6-18.4 11.4-20 24-1.6-12.6-6.8-18.4-20-24 13.2-5.6 18.4-11.4 20-24z"/>
+</svg>
