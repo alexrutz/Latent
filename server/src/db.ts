@@ -13,6 +13,7 @@ import type {
   ParamSchema,
   Favorite,
   FavoriteSort,
+  FormLayout,
   GenerationImage,
   ParamValues,
   PromptBlock,
@@ -161,6 +162,27 @@ CREATE TABLE prompt_blocks (
 CREATE INDEX idx_prompt_blocks_order ON prompt_blocks (category, position, created_at);
 `);
 
+/**
+ * v4: named form layouts per workflow.
+ *
+ * A workflow had exactly one set of field overrides, so tuning the form for one
+ * way of working meant destroying the arrangement you had for another. Layouts
+ * are named, switchable snapshots of that arrangement.
+ */
+MIGRATIONS.push(`
+CREATE TABLE layouts (
+  id             TEXT PRIMARY KEY,
+  workflow_id    TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+  name           TEXT NOT NULL,
+  overrides_json TEXT NOT NULL DEFAULT '{}',
+  is_active      INTEGER NOT NULL DEFAULT 0,
+  created_at     INTEGER NOT NULL,
+  UNIQUE (workflow_id, name)
+);
+
+CREATE INDEX idx_layouts_workflow ON layouts (workflow_id, created_at);
+`);
+
 interface WorkflowRow {
   id: string;
   name: string;
@@ -215,6 +237,15 @@ interface FavoriteRow {
   rating: number;
   values_json: string;
   image_json: string;
+  created_at: number;
+}
+
+interface LayoutRow {
+  id: string;
+  workflow_id: string;
+  name: string;
+  overrides_json: string;
+  is_active: number;
   created_at: number;
 }
 
@@ -313,6 +344,17 @@ function toFavorite(row: FavoriteRow, workflowAvailable: boolean): Favorite {
     values: parseJson<ParamValues>(row.values_json, {}),
     image,
     generationId: row.generation_id,
+    createdAt: row.created_at,
+  };
+}
+
+function toLayout(row: LayoutRow): FormLayout {
+  return {
+    id: row.id,
+    workflowId: row.workflow_id,
+    name: row.name,
+    overrides: parseJson<FieldOverrides>(row.overrides_json, {}),
+    isActive: row.is_active === 1,
     createdAt: row.created_at,
   };
 }
@@ -421,6 +463,8 @@ export class Store {
       }),
       overrides: parseJson<FieldOverrides>(row.overrides_json, {}),
       lastValues: parseJson<ParamValues>(row.last_values_json, {}),
+      layouts: this.listLayouts(row.id),
+      activeLayoutId: this.getActiveLayout(row.id)?.id ?? null,
     };
   }
 
@@ -864,6 +908,76 @@ export class Store {
 
   deleteFavorite(id: string): void {
     this.db.prepare('DELETE FROM favorites WHERE id = ?').run(id);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Form layouts                                                      */
+  /* ---------------------------------------------------------------- */
+
+  listLayouts(workflowId: string): FormLayout[] {
+    return this.db
+      .prepare<[string], LayoutRow>(
+        'SELECT * FROM layouts WHERE workflow_id = ? ORDER BY created_at ASC',
+      )
+      .all(workflowId)
+      .map(toLayout);
+  }
+
+  getLayout(id: string): FormLayout | null {
+    const row = this.db.prepare<[string], LayoutRow>('SELECT * FROM layouts WHERE id = ?').get(id);
+    return row ? toLayout(row) : null;
+  }
+
+  getActiveLayout(workflowId: string): FormLayout | null {
+    const row = this.db
+      .prepare<[string], LayoutRow>(
+        'SELECT * FROM layouts WHERE workflow_id = ? AND is_active = 1 LIMIT 1',
+      )
+      .get(workflowId);
+    return row ? toLayout(row) : null;
+  }
+
+  /** Saving over an existing name replaces it, as with parameter presets. */
+  upsertLayout(
+    id: string,
+    workflowId: string,
+    name: string,
+    overrides: FieldOverrides,
+  ): FormLayout {
+    this.db
+      .prepare(
+        `INSERT INTO layouts (id, workflow_id, name, overrides_json, is_active, created_at)
+         VALUES (?, ?, ?, ?, 0, ?)
+         ON CONFLICT (workflow_id, name)
+           DO UPDATE SET overrides_json = excluded.overrides_json`,
+      )
+      .run(id, workflowId, name.trim(), JSON.stringify(overrides), Date.now());
+
+    const row = this.db
+      .prepare<[string, string], LayoutRow>(
+        'SELECT * FROM layouts WHERE workflow_id = ? AND name = ?',
+      )
+      .get(workflowId, name.trim());
+    if (!row) throw new Error('Layout vanished immediately after being written');
+    return toLayout(row);
+  }
+
+  updateLayoutOverrides(id: string, overrides: FieldOverrides): void {
+    this.db
+      .prepare('UPDATE layouts SET overrides_json = ? WHERE id = ?')
+      .run(JSON.stringify(overrides), id);
+  }
+
+  activateLayout(workflowId: string, id: string | null): void {
+    const activate = this.db.transaction(() => {
+      this.db.prepare('UPDATE layouts SET is_active = 0 WHERE workflow_id = ?').run(workflowId);
+      if (id) this.db.prepare('UPDATE layouts SET is_active = 1 WHERE id = ?').run(id);
+    });
+    activate();
+  }
+
+  deleteLayout(id: string): void {
+    this.db.prepare('DELETE FROM layouts WHERE id = ?').run(id);
   }
 
   /* ---------------------------------------------------------------- */

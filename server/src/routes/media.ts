@@ -5,7 +5,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { ComfyImageRef, UploadImageResponse } from '@latent/shared';
 
 import { ComfyError } from '../comfy/client.js';
-import { VaultLockedError } from '../vault.js';
+import { ArchiveUnreadableError, VaultLockedError } from '../vault.js';
 import type { AppContext } from './context.js';
 
 /** Guard against a filename walking out of ComfyUI's media directories. */
@@ -13,7 +13,17 @@ function isSafePathPart(value: string): boolean {
   return !value.includes('..') && !value.startsWith('/') && !value.includes('\\');
 }
 
-const ALLOWED_TYPES = new Set(['output', 'input', 'temp']);
+/**
+ * Image "types" the proxy will serve.
+ *
+ * The first three are ComfyUI's own directories. `import` is ours: a file
+ * scanned in from a folder, which exists only in the local archive. It has to be
+ * listed here or every imported image 400s — which is exactly what happened
+ * before, showing the whole gallery as "missing".
+ */
+const ALLOWED_TYPES = new Set(['output', 'input', 'temp', 'import']);
+/** Types ComfyUI knows about, and which may therefore be fetched upstream. */
+const UPSTREAM_TYPES = new Set(['output', 'input', 'temp']);
 const MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
 
 export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void {
@@ -66,8 +76,30 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
         if (error instanceof VaultLockedError) {
           return reply.code(423).send({ error: error.message, locked: true });
         }
+        if (error instanceof ArchiveUnreadableError) {
+          // Not a server fault, and retrying will never help. Say so plainly
+          // rather than returning a 500 for a permanent condition.
+          return reply.code(409).send({ error: error.message });
+        }
         throw error;
       }
+    }
+
+    /*
+     * An imported file only ever lives in our archive. Asking ComfyUI for it
+     * would be meaningless — it has never heard of it — so fail honestly
+     * instead of proxying a request that cannot succeed.
+     */
+    if (type === 'import' || !UPSTREAM_TYPES.has(type)) {
+      if (known && !known.archived_path) {
+        return reply.code(404).send({
+          error: 'That imported image has no local copy. Import it again.',
+        });
+      }
+      if (!ctx.vault.isUnlocked) {
+        return reply.code(423).send({ error: new VaultLockedError().message, locked: true });
+      }
+      return reply.code(404).send({ error: 'That image is not in the local archive' });
     }
 
     let response: Response;
@@ -147,14 +179,39 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
     }
 
     try {
-      const response = await ctx.orchestrator.client.view({ filename, subfolder, type });
-      const buffer = Buffer.from(await response.arrayBuffer());
+      let buffer: Buffer;
+      let contentType = 'image/png';
+
+      /*
+       * Prefer the local archive. For an imported file it is the only source —
+       * ComfyUI has never seen it — and for a rated one it saves a round trip
+       * and still works when the instance that produced it is long gone.
+       */
+      const known = ctx.store.findImage({ filename, subfolder, type });
+      const local = known?.archived_path ? await ctx.archive.read(known.archived_path) : null;
+
+      if (local) {
+        buffer = local;
+        contentType = contentTypeFor(filename);
+      } else if (UPSTREAM_TYPES.has(type)) {
+        const response = await ctx.orchestrator.client.view({ filename, subfolder, type });
+        buffer = Buffer.from(await response.arrayBuffer());
+        contentType = response.headers.get('content-type') ?? 'image/png';
+      } else {
+        return reply.code(404).send({
+          error: 'That image has no local copy, and ComfyUI does not have it either.',
+        });
+      }
+
       const result = await ctx.orchestrator.client.uploadImage(buffer, uniqueName(filename), {
-        contentType: response.headers.get('content-type') ?? 'image/png',
+        contentType,
         type: 'input',
       });
       return result satisfies UploadImageResponse;
     } catch (error) {
+      if (error instanceof VaultLockedError) {
+        return reply.code(423).send({ error: error.message, locked: true });
+      }
       return reply.code(502).send({
         error: error instanceof Error ? error.message : 'Could not copy the image into ComfyUI',
       });

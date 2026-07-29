@@ -1,6 +1,11 @@
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { expect, request as apiRequest, test, type Page } from '@playwright/test';
 
-import { sd15Txt2Img, uiFormatWorkflow } from '../shared/src/fixtures/workflows.js';
+import { img2img, sd15Txt2Img, uiFormatWorkflow } from '../shared/src/fixtures/workflows.js';
+import { renderPlaceholder } from '../server/src/mock/png.js';
 
 /**
  * The full journey a phone user takes: import a workflow, generate, watch it
@@ -491,5 +496,185 @@ test.describe('gallery, favourites and the prompt builder', () => {
     await expect(page.getByPlaceholder('Describe the image…')).toHaveValue(
       /warm rim light, long shadows$/,
     );
+  });
+});
+
+test.describe('the phone ergonomics pass', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+  });
+
+  /** Save a prompt block through the API, so the test can get on with toggling. */
+  async function seedBlock(name: string, text: string) {
+    await withApi((ctx) =>
+      ctx.post('/api/prompt-blocks', { data: { name, text, group: 'Lighting' } }),
+    );
+  }
+
+  /**
+   * A block belongs in a prompt once or not at all, so the chip is a switch.
+   * Before this, a mis-tap could only be undone by editing the text by hand —
+   * exactly the typing the builder exists to avoid.
+   */
+  test('takes a prompt block back out when its chip is tapped again', async ({ page }) => {
+    await seedBlock('Golden hour', 'warm rim light, long shadows');
+    await open(page, '/');
+
+    await page.getByPlaceholder('Describe the image…').fill('a lighthouse');
+    await page.getByRole('button', { name: '+ Prompt blocks' }).click();
+
+    const chip = page.getByRole('button', { name: /Golden hour/ });
+    await expect(chip).toHaveAttribute('aria-pressed', 'false');
+
+    await chip.click();
+    await expect(chip).toHaveAttribute('aria-pressed', 'true');
+
+    // Tapping a second time must not append a duplicate — it must remove it.
+    await chip.click();
+    await expect(chip).toHaveAttribute('aria-pressed', 'false');
+
+    await page.getByRole('button', { name: 'Done' }).click();
+    await expect(page.getByPlaceholder('Describe the image…')).toHaveValue('a lighthouse');
+  });
+
+  /**
+   * The sampler settings used to live in a sideways-scrolling row, so CFG and
+   * the scheduler were off-screen and effectively undiscoverable.
+   */
+  test('shows every sampler value at once instead of a sideways row', async ({ page }) => {
+    await open(page, '/');
+
+    const chips = page.getByRole('button', { name: /^(Steps|CFG|Sampler|Scheduler|Denoise)/ });
+    const count = await chips.count();
+    expect(count).toBeGreaterThanOrEqual(3);
+
+    const rows = new Set<number>();
+    for (let index = 0; index < count; index += 1) {
+      const chip = chips.nth(index);
+      // Nothing may need a scroll — horizontal or vertical — to be seen.
+      await expect(chip).toBeInViewport();
+      const box = await chip.boundingBox();
+      expect(box).not.toBeNull();
+      rows.add(Math.round((box as { y: number }).y));
+    }
+
+    // Wrapped, not scrolled: more than one row means they were laid out to fit.
+    expect(rows.size).toBeGreaterThan(1);
+    await page.screenshot({ path: 'test-results/14-sampler-chips.png' });
+  });
+
+  /**
+   * Rearranging a form is fiddly on a phone, so having done it once you should
+   * be able to keep the arrangement and come back to it.
+   */
+  test('saves a settings layout and restores it in one tap', async ({ page }) => {
+    await open(page, '/settings');
+    await page.getByRole('button', { name: 'Edit form' }).click();
+
+    /** The editor row for a field, found by the `node · input · control` line. */
+    const row = (input: string) => page.locator('div', { hasText: `· ${input} · ` }).last();
+
+    // Push Steps out of the way, then keep that arrangement under a name.
+    await row('steps').getByRole('button', { name: 'To Advanced' }).click();
+    await expect(row('steps').getByRole('button', { name: 'To main' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Save current' }).click();
+    await page.getByPlaceholder('e.g. Quick draft').fill('Sparse');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByText('in use')).toBeVisible();
+
+    // Undo it by hand, so activating the layout has something to restore.
+    await row('steps').getByRole('button', { name: 'To main' }).click();
+    await expect(row('steps').getByRole('button', { name: 'To Advanced' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Sparse' }).click();
+    await expect(row('steps').getByRole('button', { name: 'To main' })).toBeVisible();
+    await page.screenshot({ path: 'test-results/15-layouts.png' });
+
+    // And the arrangement is what the Generate screen actually renders.
+    await page.getByRole('button', { name: 'Done' }).click();
+    await page.getByRole('link', { name: 'Generate' }).click();
+    await expect(page.getByRole('button', { name: /^Steps/ })).toHaveCount(0);
+  });
+
+  /**
+   * A camera-roll photo is the wrong shape, the wrong way up and far too big.
+   * Fixing that before the upload saves a round trip and a wasted render.
+   */
+  test('crops a photo before it is uploaded', async ({ page }) => {
+    // Only the img2img workflow, so it is the one the screen opens on.
+    await resetState();
+    await withApi((ctx) => ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } }));
+
+    await open(page, '/');
+    // The fixture already names an input image, so the button says "Replace".
+    await page.getByRole('button', { name: /Choose photo|Replace/ }).click();
+
+    await page.locator('input[type="file"]').setInputFiles({
+      name: 'holiday.png',
+      mimeType: 'image/png',
+      buffer: renderPlaceholder(600, 400, 'holiday'),
+    });
+
+    // The editor opens instead of uploading straight away.
+    await expect(page.getByRole('heading', { name: 'Adjust photo' })).toBeVisible();
+    await expect(page.getByTestId('editor-output-size')).toHaveText(/600×400/);
+
+    // A square crop of a 3:2 photo is 400×400, centred.
+    await page.getByRole('button', { name: '1:1', exact: true }).click();
+    await expect(page.getByTestId('editor-output-size')).toHaveText(/400×400/);
+    await page.screenshot({ path: 'test-results/16-image-editor.png' });
+
+    await page.getByRole('button', { name: 'Use' }).click();
+
+    // The edited file lands in ComfyUI's input directory under its own name.
+    await expect(page.getByText(/holiday_edited\.png/)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('heading', { name: 'Adjust photo' })).toBeHidden();
+  });
+
+  /**
+   * The bug the user hit: imported files carry `type: 'import'`, which
+   * `/api/view` rejected outright, so an imported folder rendered as a grid of
+   * broken tiles. Assert the bytes actually arrive and the browser decodes them.
+   */
+  test('renders images imported from a folder', async ({ page }) => {
+    const root = mkdtempSync(join(tmpdir(), 'latent-e2e-import-'));
+    mkdirSync(join(root, 'nested'), { recursive: true });
+    writeFileSync(join(root, 'seaside.png'), renderPlaceholder(800, 600, 'seaside'));
+    writeFileSync(join(root, 'nested', 'mountain.png'), renderPlaceholder(600, 800, 'mountain'));
+
+    await withApi(async (ctx) => {
+      await ctx.patch('/api/settings', { data: { importRoot: root } });
+      await ctx.post('/api/import', {
+        data: { paths: ['seaside.png', 'nested/mountain.png'], rating: 5 },
+      });
+    });
+
+    await open(page, '/gallery');
+
+    const thumb = page.locator('img[alt="seaside.png"]').first();
+    await expect(thumb).toBeVisible({ timeout: 20_000 });
+
+    // Visible is not enough: a broken image is still "visible" with a zero
+    // intrinsic width, which is precisely what the bug looked like.
+    await expect
+      .poll(() => thumb.evaluate((image: HTMLImageElement) => image.naturalWidth), {
+        timeout: 20_000,
+      })
+      .toBeGreaterThan(0);
+
+    await expect(page.locator('img[alt="nested/mountain.png"]').first()).toBeVisible();
+    await page.screenshot({ path: 'test-results/17-imported.png' });
+
+    // Full size works too, so the viewer is not a broken image either.
+    await thumb.click();
+    const full = page.locator('img[alt="seaside.png"]').last();
+    await expect
+      .poll(() => full.evaluate((image: HTMLImageElement) => image.naturalWidth), {
+        timeout: 20_000,
+      })
+      .toBe(800);
+    await expect(page.getByText('Stored on this device')).toBeVisible();
   });
 });

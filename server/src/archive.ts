@@ -7,7 +7,7 @@ import type { ComfyImageRef } from '@latent/shared';
 import type { ComfyClient } from './comfy/client.js';
 import type { ImageRow, Store } from './db.js';
 import { makeThumbnail, readImageSize } from './images/png.js';
-import { Vault, VaultLockedError } from './vault.js';
+import { ArchiveUnreadableError, Vault, VaultLockedError } from './vault.js';
 
 /**
  * A local, encrypted copy of images worth keeping.
@@ -88,7 +88,15 @@ export class Archive {
     }
 
     if (!Vault.isEncrypted(raw)) return raw;
-    return this.vault.decrypt(raw);
+
+    try {
+      return this.vault.decrypt(raw);
+    } catch (error) {
+      // A locked vault is a different problem from a file we will never be able
+      // to read, and the caller needs to tell the user which one it is.
+      if (error instanceof VaultLockedError) throw error;
+      throw new ArchiveUnreadableError();
+    }
   }
 
   private async writeEncrypted(relativePath: string, plaintext: Buffer): Promise<void> {

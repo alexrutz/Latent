@@ -4,6 +4,8 @@ import type {
   ComfyImageRef,
   Favorite,
   FavoriteSort,
+  FieldOverrides,
+  FormLayout,
   ImportResult,
   ImportScanResult,
   PromptBlock,
@@ -149,6 +151,27 @@ export const api = {
     }),
 
   deletePreset: (id: string) => request<void>(`/api/presets/${id}`, { method: 'DELETE' }),
+
+  /* ---------------------------------------------------------------- */
+  /* Form layouts                                                      */
+  /* ---------------------------------------------------------------- */
+
+  layouts: (workflowId: string) => request<FormLayout[]>(`/api/workflows/${workflowId}/layouts`),
+
+  /** Omitting `overrides` snapshots the form as it currently stands. */
+  saveLayout: (workflowId: string, name: string, overrides?: FieldOverrides) =>
+    request<FormLayout>(`/api/workflows/${workflowId}/layouts`, {
+      method: 'POST',
+      body: JSON.stringify({ name, overrides }),
+    }),
+
+  activateLayout: (workflowId: string, id: string) =>
+    request<FormLayout[]>(`/api/workflows/${workflowId}/layouts/${id}/activate`, {
+      method: 'POST',
+    }),
+
+  deleteLayout: (workflowId: string, id: string) =>
+    request<void>(`/api/workflows/${workflowId}/layouts/${id}`, { method: 'DELETE' }),
 
   /* ---------------------------------------------------------------- */
   /* Ratings and archive                                               */

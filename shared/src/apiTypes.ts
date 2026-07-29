@@ -18,6 +18,9 @@ export interface WorkflowDetail extends WorkflowSummary {
   graph: ApiWorkflow;
   schema: ParamSchema;
   overrides: FieldOverrides;
+  /** Saved arrangements of this form, and which one is in use. */
+  layouts: FormLayout[];
+  activeLayoutId: string | null;
   /** Last values the user submitted, so the form reopens where they left it. */
   lastValues: ParamValues;
 }
@@ -220,6 +223,33 @@ export interface WorkflowPreset {
 export interface CreatePresetRequest {
   name: string;
   values: ParamValues;
+}
+
+/* ------------------------------------------------------------------ */
+/* Form layouts                                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A named arrangement of a workflow's form.
+ *
+ * Which fields are visible, what they are called, whether they sit on the main
+ * screen or under Advanced, and in what order. Several can exist per workflow so
+ * that setting the form up one way does not destroy another arrangement — one
+ * layout for quick drafts, another with every knob exposed.
+ */
+export interface FormLayout {
+  id: string;
+  workflowId: string;
+  name: string;
+  overrides: FieldOverrides;
+  isActive: boolean;
+  createdAt: number;
+}
+
+export interface CreateLayoutRequest {
+  name: string;
+  /** Omit to snapshot the workflow's current overrides. */
+  overrides?: FieldOverrides;
 }
 
 /* ------------------------------------------------------------------ */

@@ -455,6 +455,9 @@ async function bootIsolated(overrides: Parameters<typeof buildApp>[0] = {}) {
     comfyUrl: 'http://127.0.0.1:1',
     dbPath: join(dir, 'iso.db'),
     dataDir: dir,
+    // Each isolated server gets its own archive. Sharing one would let two
+    // different master keys write to the same content-addressed path.
+    archiveDir: join(dir, 'archive'),
     webDir: join(dir, 'no-web'),
     password: null,
     logLevel: 'silent',
@@ -1232,13 +1235,18 @@ describe('folder import', () => {
     mkdirSync(join(outputs, 'nested'), { recursive: true });
 
     // Two real PNGs, one in a subfolder, plus a non-image that must be ignored.
-    writeFileSync(join(outputs, 'first.png'), renderPlaceholder(64, 48, 'first'));
-    writeFileSync(join(outputs, 'nested', 'second.png'), renderPlaceholder(32, 64, 'second'));
+    writeFileSync(join(outputs, 'first.png'), renderPlaceholder(800, 600, 'first'));
+    writeFileSync(join(outputs, 'nested', 'second.png'), renderPlaceholder(400, 800, 'second'));
     writeFileSync(join(outputs, 'notes.txt'), 'not an image');
     // And a secret outside the root, to prove traversal is blocked.
     writeFileSync(join(dir, 'outside.png'), renderPlaceholder(16, 16, 'outside'));
 
+    // A reachable ComfyUI, so "send to img2img" has somewhere to upload to.
+    const comfy = createMockComfy({ logLevel: 'silent' });
+    const comfyUrl = await comfy.listen(0);
+
     const server = await bootIsolated({
+      comfyUrl,
       dbPath: join(dir, 'import.db'),
       dataDir: dir,
       archiveDir: join(dir, 'archive'),
@@ -1276,7 +1284,7 @@ describe('folder import', () => {
       // Dimensions come from the file headers, so the grid can shape tiles
       // before anything is downloaded.
       const first = scan.files.find((file) => file.path === 'first.png');
-      expect(first).toMatchObject({ width: 64, height: 48, imported: false });
+      expect(first).toMatchObject({ width: 800, height: 600, imported: false });
 
       const result = (await (
         await server.call('/api/import', {
@@ -1323,6 +1331,48 @@ describe('folder import', () => {
       expect(rescan.files.every((file) => file.imported)).toBe(true);
 
       /*
+       * Regression: imported images carry `type=import`, which the image proxy
+       * used to reject outright — so an imported gallery was a grid of
+       * "missing" tiles and a broken viewer. They must serve from the archive.
+       */
+      const imported = page.items.find((item) => item.images[0]?.filename === 'first.png');
+      const importedImage = imported?.images[0];
+      expect(importedImage?.type).toBe('import');
+
+      const viewParams = new URLSearchParams({
+        filename: importedImage!.filename,
+        subfolder: importedImage!.subfolder,
+        type: importedImage!.type,
+      });
+
+      const full = await server.call(`/api/view?${viewParams}`, { cookie });
+      expect(full.status).toBe(200);
+      expect(full.headers.get('x-latent-source')).toBe('archive');
+      expect(Buffer.from(await full.arrayBuffer()).subarray(0, 4)).toEqual(
+        Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      );
+
+      // …and a preview request gets the small copy, not the original. The
+      // thumbnail is generated locally, since a scanned folder has no ComfyUI
+      // to ask for one.
+      expect(importedImage?.hasThumbnail).toBe(true);
+      const preview = await server.call(`/api/view?${viewParams}&preview=webp;70`, { cookie });
+      expect(preview.status).toBe(200);
+      expect(preview.headers.get('x-latent-source')).toBe('archive-thumb');
+      const thumbBytes = Buffer.from(await preview.arrayBuffer());
+      expect(thumbBytes.length).toBeLessThan(full.headers.get('content-length') ? Number(full.headers.get('content-length')) : 1e9);
+
+      // Sending an imported image to img2img must work too: ComfyUI has never
+      // seen the file, so the bytes have to come from the archive.
+      const toInput = await server.call('/api/images/to-input', {
+        method: 'POST',
+        cookie,
+        body: JSON.stringify(importedImage),
+      });
+      expect(toInput.status).toBe(200);
+      expect(((await toInput.json()) as { type: string }).type).toBe('input');
+
+      /*
        * The important one: an authenticated caller must not be able to read
        * files outside the configured folder by asking nicely.
        */
@@ -1338,7 +1388,139 @@ describe('folder import', () => {
       expect(escape.failed.every((entry) => /outside the import folder/.test(entry.reason))).toBe(true);
     } finally {
       await server.dispose();
+      await comfy.close();
       rmSync(dir, { recursive: true, force: true });
     }
   }, 40_000);
+});
+
+describe('form layouts', () => {
+  /**
+   * A workflow used to have exactly one set of field overrides, so arranging the
+   * form one way destroyed any other arrangement. Layouts are named snapshots.
+   */
+  it('saves, switches between and deletes named arrangements', async () => {
+    const server = await bootIsolated();
+    try {
+      const claim = await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'layout password' }),
+      });
+      const cookie = claim.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      const workflow = (await (
+        await server.call('/api/workflows', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ name: 'layouts', graph: sd15Txt2Img }),
+        })
+      ).json()) as WorkflowDetail;
+      expect(workflow.layouts).toEqual([]);
+      expect(workflow.activeLayoutId).toBeNull();
+
+      // Arrange the form one way, then keep it.
+      await server.call(`/api/workflows/${workflow.id}`, {
+        method: 'PATCH',
+        cookie,
+        body: JSON.stringify({ overrides: { '3.denoise': { hidden: true } } }),
+      });
+      const minimal = (await (
+        await server.call(`/api/workflows/${workflow.id}/layouts`, {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ name: 'Quick draft' }),
+        })
+      ).json()) as { id: string; overrides: Record<string, unknown>; isActive: boolean };
+
+      // Saving snapshots what was on screen, and makes it the active layout.
+      expect(minimal.overrides).toEqual({ '3.denoise': { hidden: true } });
+      expect(minimal.isActive).toBe(true);
+
+      // Arrange it a different way and keep that too.
+      await server.call(`/api/workflows/${workflow.id}`, {
+        method: 'PATCH',
+        cookie,
+        body: JSON.stringify({
+          overrides: { '9.filename_prefix': { group: 'main', label: 'File name' } },
+        }),
+      });
+      const full = (await (
+        await server.call(`/api/workflows/${workflow.id}/layouts`, {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ name: 'Everything' }),
+        })
+      ).json()) as { id: string };
+
+      // Both survive — that is the entire point.
+      const detail = (await (
+        await server.call(`/api/workflows/${workflow.id}`, { cookie })
+      ).json()) as WorkflowDetail;
+      expect(detail.layouts.map((layout) => layout.name).sort()).toEqual([
+        'Everything',
+        'Quick draft',
+      ]);
+      expect(detail.activeLayoutId).toBe(full.id);
+
+      // Switching back applies that arrangement to the live form.
+      await server.call(`/api/workflows/${workflow.id}/layouts/${minimal.id}/activate`, {
+        method: 'POST',
+        cookie,
+      });
+      const switched = (await (
+        await server.call(`/api/workflows/${workflow.id}`, { cookie })
+      ).json()) as WorkflowDetail;
+
+      expect(switched.activeLayoutId).toBe(minimal.id);
+      expect(switched.overrides).toEqual({ '3.denoise': { hidden: true } });
+      // And the schema handed to the client reflects it.
+      expect(switched.schema.fields.find((field) => field.id === '3.denoise')?.hidden).toBe(true);
+
+      // Saving under an existing name replaces it rather than duplicating.
+      await server.call(`/api/workflows/${workflow.id}/layouts`, {
+        method: 'POST',
+        cookie,
+        body: JSON.stringify({ name: 'Quick draft', overrides: {} }),
+      });
+      const afterOverwrite = (await (
+        await server.call(`/api/workflows/${workflow.id}/layouts`, { cookie })
+      ).json()) as { id: string; name: string }[];
+      expect(afterOverwrite).toHaveLength(2);
+
+      // Deleting a layout removes the saved arrangement but leaves the form
+      // exactly as it currently looks. Silently reverting the visible form would
+      // be a surprising amount of destruction for a delete button.
+      const beforeDelete = (await (
+        await server.call(`/api/workflows/${workflow.id}`, { cookie })
+      ).json()) as WorkflowDetail;
+
+      await server.call(`/api/workflows/${workflow.id}/layouts/${minimal.id}`, {
+        method: 'DELETE',
+        cookie,
+      });
+      const afterDelete = (await (
+        await server.call(`/api/workflows/${workflow.id}`, { cookie })
+      ).json()) as WorkflowDetail;
+
+      expect(afterDelete.layouts.map((layout) => layout.name)).toEqual(['Everything']);
+      expect(afterDelete.overrides).toEqual(beforeDelete.overrides);
+      expect(afterDelete.activeLayoutId).toBeNull();
+
+      // Layouts belong to their workflow and cannot be reached through another.
+      const other = (await (
+        await server.call('/api/workflows', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ name: 'other', graph: sd15Txt2Img }),
+        })
+      ).json()) as WorkflowDetail;
+      const crossWorkflow = await server.call(
+        `/api/workflows/${other.id}/layouts/${full.id}/activate`,
+        { method: 'POST', cookie },
+      );
+      expect(crossWorkflow.status).toBe(404);
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
 });

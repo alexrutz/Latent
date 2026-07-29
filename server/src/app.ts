@@ -22,6 +22,7 @@ import { registerGalleryRoutes } from './routes/gallery.js';
 import { registerFavoriteRoutes } from './routes/favorites.js';
 import { registerGenerateRoutes } from './routes/generate.js';
 import { registerImportRoutes } from './routes/import.js';
+import { registerLayoutRoutes } from './routes/layouts.js';
 import { registerMediaRoutes } from './routes/media.js';
 import { registerPromptBlockRoutes } from './routes/promptBlocks.js';
 import { registerPresetRoutes } from './routes/presets.js';
@@ -141,6 +142,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   registerConnectionRoutes(app, ctx);
   registerWorkflowRoutes(app, ctx);
   registerPresetRoutes(app, ctx);
+  registerLayoutRoutes(app, ctx);
   registerGenerateRoutes(app, ctx);
   registerQueueRoutes(app, ctx);
   registerGalleryRoutes(app, ctx);

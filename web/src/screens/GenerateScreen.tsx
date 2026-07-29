@@ -293,10 +293,13 @@ function GenerateForm({
         />
       ))}
 
-      {/* Horizontally scrollable so a workflow with many knobs never wraps into
-          a wall of controls. */}
+      {/*
+        Wraps rather than scrolling sideways. The sampler settings are what you
+        reach for most, and having to swipe a row to discover that CFG exists
+        made them feel hidden — every one of them should be on screen at once.
+      */}
       {chipFields.length > 0 && (
-        <div className="no-scrollbar -mx-4 flex gap-2 overflow-x-auto px-4">
+        <div className="flex flex-wrap gap-2">
           {chipFields.map((field) => (
             <FieldChip
               key={field.id}

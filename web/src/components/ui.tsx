@@ -87,6 +87,15 @@ interface SheetProps {
   children: ReactNode;
   /** Fill the screen instead of hugging its content. */
   full?: boolean;
+  /**
+   * Label for the header's dismiss button.
+   *
+   * "Done" is right when closing the sheet keeps what you changed, which is how
+   * nearly every sheet here works. A sheet that only commits on an explicit
+   * action must say "Cancel" instead — otherwise the header button looks like
+   * the way to accept the edit and silently throws it away.
+   */
+  closeLabel?: string;
 }
 
 /**
@@ -96,7 +105,14 @@ interface SheetProps {
  * desktop UI on a phone; raising a sheet puts the control under the thumb and
  * gives it room to be a real slider or a real list.
  */
-export function Sheet({ open, onClose, title, children, full = false }: SheetProps) {
+export function Sheet({
+  open,
+  onClose,
+  title,
+  children,
+  full = false,
+  closeLabel = 'Done',
+}: SheetProps) {
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -146,7 +162,7 @@ export function Sheet({ open, onClose, title, children, full = false }: SheetPro
               "Done" on screen — the mismatch WCAG's Label in Name forbids.
             */}
             <Button variant="ghost" size="sm" onClick={onClose}>
-              Done
+              {closeLabel}
             </Button>
           </div>
         )}

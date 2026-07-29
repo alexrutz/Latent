@@ -45,6 +45,23 @@ export class VaultLockedError extends Error {
   }
 }
 
+/**
+ * The file is encrypted, but not with the key we hold.
+ *
+ * Reachable in practice: an archive directory restored from a backup alongside a
+ * different database, or two installs pointed at one archive path. Distinct from
+ * "locked" because signing in will not help.
+ */
+export class ArchiveUnreadableError extends Error {
+  override name = 'ArchiveUnreadableError';
+  constructor() {
+    super(
+      'That archived image cannot be decrypted with this server\'s key. It was ' +
+        'encrypted under a different password or a different install.',
+    );
+  }
+}
+
 export class Vault {
   /** The master key, present only while unlocked. Never written to disk. */
   private masterKey: Buffer | null = null;

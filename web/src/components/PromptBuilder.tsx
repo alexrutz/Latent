@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 
+import { promptContainsFragment, toggleFragment } from '@latent/shared';
 import type { PromptBlock } from '@latent/shared';
 
 import {
@@ -35,11 +36,15 @@ export function PromptBuilder({
     return [...map.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [blocks.data]);
 
-  /** Append a fragment, keeping the comma-separated shape tidy. */
-  const append = (text: string) => {
-    const trimmed = value.trim().replace(/,\s*$/, '');
-    onChange(trimmed ? `${trimmed}, ${text}` : text);
-  };
+  /**
+   * Chips are toggles.
+   *
+   * A block only makes sense once in a prompt, so a second tap has to take it
+   * back out — otherwise the only way to undo a mis-tap is to find the phrase in
+   * the text and delete it by hand, which is exactly the typing this feature
+   * exists to avoid.
+   */
+  const toggle = (text: string) => onChange(toggleFragment(value, text));
 
   return (
     <>
@@ -72,17 +77,30 @@ export function PromptBuilder({
             <div key={category} className="space-y-2">
               <p className="text-xs font-medium tracking-wide text-muted uppercase">{category}</p>
               <div className="flex flex-wrap gap-2">
-                {items.map((block) => (
-                  <button
-                    key={block.id}
-                    type="button"
-                    onClick={() => append(block.text)}
-                    title={block.text}
-                    className="max-w-full truncate rounded-full border border-line bg-surface px-3 py-2 text-sm active:bg-surface-2"
-                  >
-                    {block.name}
-                  </button>
-                ))}
+                {items.map((block) => {
+                  const active = promptContainsFragment(value, block.text);
+                  return (
+                    <button
+                      key={block.id}
+                      type="button"
+                      onClick={() => toggle(block.text)}
+                      title={block.text}
+                      aria-pressed={active}
+                      className={cn(
+                        'flex max-w-full items-center gap-1.5 rounded-full border px-3 py-2 text-sm',
+                        active
+                          ? 'border-accent bg-accent/20 text-accent'
+                          : 'border-line bg-surface active:bg-surface-2',
+                      )}
+                    >
+                      <span className="truncate">{block.name}</span>
+                      {/* Says which way the next tap goes. */}
+                      <span aria-hidden className="shrink-0 text-xs opacity-70">
+                        {active ? '✓' : '+'}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           ))}

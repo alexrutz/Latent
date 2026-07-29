@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ParamField, WidgetValue } from '@latent/shared';
 
 import { api, imageUrl } from '../api/client';
+import { ImageEditor } from './ImageEditor';
 import { NumericInput } from './NumericInput';
 import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
 
@@ -111,6 +112,8 @@ export function ImageField({ field, value, onChange }: ControlProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Held back for editing rather than uploaded straight away. */
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
   const filename = typeof value === 'string' ? value : '';
 
   const upload = async (file: File) => {
@@ -175,10 +178,24 @@ export function ImageField({ field, value, onChange }: ControlProps) {
         className="hidden"
         onChange={(event) => {
           const file = event.target.files?.[0];
-          if (file) void upload(file);
+          // Straight into the editor rather than uploading immediately: a camera
+          // roll photo almost never has the shape or orientation the workflow
+          // wants, and fixing it here saves an upload and a wasted render.
+          if (file) setPendingFile(file);
           event.target.value = '';
         }}
       />
+
+      {pendingFile && (
+        <ImageEditor
+          file={pendingFile}
+          onCancel={() => setPendingFile(null)}
+          onDone={(edited) => {
+            setPendingFile(null);
+            void upload(edited);
+          }}
+        />
+      )}
 
       <ErrorNote>{error}</ErrorNote>
       {uploading && <Spinner className="size-4 text-muted" />}
@@ -215,11 +232,11 @@ export function FieldChip({ field, value, onChange }: ControlProps) {
         onClick={() => onChange(!value)}
         aria-pressed={Boolean(value)}
         className={cn(
-          'flex h-11 shrink-0 items-center gap-2 rounded-xl border px-3 whitespace-nowrap',
+          'flex h-10 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 whitespace-nowrap',
           value ? 'border-accent/50 bg-accent/15 text-accent' : 'border-line bg-surface text-muted',
         )}
       >
-        <span className="text-xs">{field.label}</span>
+        <span className="text-[11px]">{field.label}</span>
         <span className="text-sm font-medium">{value ? 'On' : 'Off'}</span>
       </button>
     );
@@ -230,10 +247,12 @@ export function FieldChip({ field, value, onChange }: ControlProps) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex h-11 shrink-0 items-center gap-2 rounded-xl border border-line bg-surface px-3 whitespace-nowrap active:bg-surface-2"
+        className="flex h-10 shrink-0 items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 whitespace-nowrap active:bg-surface-2"
       >
-        <span className="text-xs text-muted">{field.label}</span>
-        <span className="text-sm font-medium tabular-nums">{formatValue(field, value)}</span>
+        <span className="text-[11px] text-muted">{field.label}</span>
+        <span className="max-w-32 truncate text-sm font-medium tabular-nums">
+          {formatValue(field, value)}
+        </span>
       </button>
 
       <Sheet open={open} onClose={() => setOpen(false)} title={field.label}>

@@ -43,12 +43,19 @@ form. Nothing about your ComfyUI setup changes.
 - **Import an existing output folder.** Point Latent at a ComfyUI output
   directory and pull in whatever is worth keeping, through the same rating
   system.
-- **LoRA editor.** `<lora:name:0.8>` tags become rows with a strength slider and
-  a picker, instead of something you type by hand on a phone keyboard.
+- **LoRA editor.** `<lora:name:0.8>` tags become compact rows with a strength
+  slider and a picker, instead of something you type by hand on a phone keyboard.
 - **Parameter presets.** Save a whole set of settings per workflow and re-apply
   it in one tap.
+- **Saveable form layouts.** Arrange a workflow's form once — what shows, what
+  it's called, what goes under Advanced — save it under a name, and switch
+  between arrangements later.
 - **Prompt blocks.** Save the phrases you reuse and assemble a prompt by tapping
-  chips instead of typing paragraphs on a phone keyboard.
+  chips instead of typing paragraphs on a phone keyboard. Tapping a chip again
+  takes that phrase back out.
+- **Edit a photo before it uploads.** Crop to an aspect ratio, rotate, mirror
+  and downscale on the device, so an img2img input is the right shape before the
+  bytes are sent anywhere.
 - **Queue.** See what is waiting, remove single jobs, clear the lot.
 - **Installable.** Add it to your home screen and it runs full-screen like an app.
 - **Password protected.** The first person to open a new install chooses the
@@ -155,6 +162,13 @@ recognise goes to **Advanced** rather than being dropped. Use
 edits are stored separately from the derived form, so **Refresh models** (which
 re-reads node definitions after you install something new) never overwrites them.
 
+Rearranging a form on a phone is fiddly enough that you should only do it once.
+**Save current** at the top of that sheet stores the arrangement under a name,
+and tapping a saved layout puts it back — so one workflow can have a stripped
+"just the prompt" layout and a full one, and you switch rather than re-edit.
+Deleting a layout only forgets the arrangement; it never changes the form you
+are looking at.
+
 ## Keeping images when the instance goes away
 
 A gallery entry normally just points at a file in ComfyUI's output directory. If
@@ -203,7 +217,16 @@ archive as generated work and can be rated, favourited and browsed identically.
 
 The path is read from the machine running Latent. If ComfyUI is on a remote
 vast.ai instance, its outputs are not on this filesystem: point this at a local
-ComfyUI, a network mount, or a synced folder.
+ComfyUI, a network mount, or a synced folder. A Windows install talking to a
+ComfyUI inside WSL2 is the same situation in miniature — use the `\\wsl$\…` path
+(or a drive mapped to it) so the files really are reachable from where Latent
+runs.
+
+Imported files exist **only** in Latent's archive; ComfyUI has never heard of
+them. Everything that reads an image — the grid, the viewer, "send to img2img" —
+therefore serves them from the archive directly, and says so plainly if the
+archive is locked or was encrypted under a different password, rather than
+showing a broken tile.
 
 ## The terminal
 

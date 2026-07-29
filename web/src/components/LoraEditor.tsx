@@ -84,35 +84,20 @@ export function LoraEditor({
           No LoRAs — tap to add one
         </button>
       ) : (
-        <ul className="space-y-2">
+        <ul className="space-y-1.5">
+          {/*
+            One row per LoRA. These used to be tall cards with their own slider
+            underneath, which pushed the prompt and the sampler settings off
+            screen for something that is rarely the thing you came to adjust.
+          */}
           {parsed.tags.map((tag, index) => (
             <li
               key={`${tag.name}-${index}`}
-              className="space-y-2 rounded-xl border border-line bg-surface p-3"
+              className="flex items-center gap-2 rounded-lg border border-line bg-surface px-2.5 py-1.5"
             >
-              <div className="flex items-center gap-2">
-                <span className="min-w-0 flex-1 truncate text-sm" title={tag.name}>
-                  {prettyName(tag.name)}
-                </span>
-                <NumericInput
-                  value={tag.strength}
-                  onChange={(strength) => setTags(updateLoraTag(parsed.tags, index, { strength }))}
-                  min={-4}
-                  max={4}
-                  step={0.05}
-                  aria-label={`${tag.name} strength`}
-                  className="w-20 py-1.5 text-center text-sm"
-                />
-                <button
-                  type="button"
-                  onClick={() => setTags(removeLoraTag(parsed.tags, index))}
-                  aria-label={`Remove ${tag.name}`}
-                  className="grid size-9 shrink-0 place-items-center rounded-lg text-muted active:bg-surface-2"
-                >
-                  ✕
-                </button>
-              </div>
-
+              <span className="min-w-0 flex-1 truncate text-xs" title={tag.name}>
+                {prettyName(tag.name)}
+              </span>
               <input
                 type="range"
                 min={-1}
@@ -123,8 +108,25 @@ export function LoraEditor({
                   setTags(updateLoraTag(parsed.tags, index, { strength: Number(event.target.value) }))
                 }
                 aria-label={`${tag.name} strength slider`}
-                className="h-9 w-full accent-[var(--color-accent)]"
+                className="h-8 w-24 shrink-0 accent-[var(--color-accent)]"
               />
+              <NumericInput
+                value={tag.strength}
+                onChange={(strength) => setTags(updateLoraTag(parsed.tags, index, { strength }))}
+                min={-4}
+                max={4}
+                step={0.05}
+                aria-label={`${tag.name} strength`}
+                className="w-14 shrink-0 border-0 bg-transparent px-0 py-1 text-right text-sm"
+              />
+              <button
+                type="button"
+                onClick={() => setTags(removeLoraTag(parsed.tags, index))}
+                aria-label={`Remove ${tag.name}`}
+                className="grid size-8 shrink-0 place-items-center rounded-lg text-muted active:bg-surface-2"
+              >
+                ✕
+              </button>
             </li>
           ))}
         </ul>

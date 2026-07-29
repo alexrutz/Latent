@@ -11,6 +11,7 @@ import type {
   AppSettings,
   ComfyImageRef,
   FavoriteSort,
+  FieldOverrides,
   GenerateRequest,
   ParamValues,
   PromptBlockInput,
@@ -31,6 +32,7 @@ export const queryKeys = {
   promptBlocks: ['prompt-blocks'] as const,
   importScan: ['import-scan'] as const,
   presets: (workflowId: string) => ['presets', workflowId] as const,
+  layouts: (workflowId: string) => ['layouts', workflowId] as const,
   archiveStats: ['archive-stats'] as const,
 };
 
@@ -373,3 +375,41 @@ export function useImportFiles() {
     },
   });
 }
+
+/* ------------------------------------------------------------------ */
+/* Form layouts                                                        */
+/* ------------------------------------------------------------------ */
+
+export function useLayouts(workflowId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.layouts(workflowId ?? ''),
+    queryFn: () => api.layouts(workflowId as string),
+    enabled: Boolean(workflowId),
+  });
+}
+
+/**
+ * Any layout change rewrites the workflow's live overrides, so the form itself
+ * has to be refetched — not just the list of layouts.
+ */
+function useLayoutMutation<TArgs>(workflowId: string | null, fn: (args: TArgs) => Promise<unknown>) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.layouts(workflowId ?? '') });
+      void client.invalidateQueries({ queryKey: queryKeys.workflow(workflowId ?? '') });
+    },
+  });
+}
+
+export const useSaveLayout = (workflowId: string | null) =>
+  useLayoutMutation(workflowId, ({ name, overrides }: { name: string; overrides?: FieldOverrides }) =>
+    api.saveLayout(workflowId as string, name, overrides),
+  );
+
+export const useActivateLayout = (workflowId: string | null) =>
+  useLayoutMutation(workflowId, (id: string) => api.activateLayout(workflowId as string, id));
+
+export const useDeleteLayout = (workflowId: string | null) =>
+  useLayoutMutation(workflowId, (id: string) => api.deleteLayout(workflowId as string, id));

@@ -1,15 +1,18 @@
 import { useRef, useState } from 'react';
 
-import type { FieldOverrides, ParamField, WorkflowSummary } from '@latent/shared';
+import type { FieldOverrides, ParamField, WorkflowDetail, WorkflowSummary } from '@latent/shared';
 
 import { api } from '../api/client';
 import {
+  useActivateLayout,
   useArchiveStats,
+  useDeleteLayout,
   useDeleteWorkflow,
   useImportFiles,
   useImportScan,
   useImportWorkflow,
   useRescanWorkflow,
+  useSaveLayout,
   useSettings,
   useStatus,
   useUpdateSettings,
@@ -383,6 +386,8 @@ function FormEditorSheet({ workflowId, onClose }: { workflowId: string; onClose:
             workflow was exported with.
           </p>
 
+          <LayoutBar workflowId={workflowId} detail={detail} />
+
           {(['main', 'advanced'] as const).map((group) => {
             const fields = detail.schema.fields.filter((field) => field.group === group);
             if (fields.length === 0) return null;
@@ -624,6 +629,109 @@ function ImportSection() {
         {result && <p className="text-xs text-muted">{result}</p>}
       </Card>
     </section>
+  );
+}
+
+/**
+ * Named layouts for one workflow's form.
+ *
+ * Arranging the form is real work, and there is rarely one right arrangement —
+ * a stripped-down layout for quick drafts and a full one with every knob
+ * exposed both make sense. Without this, setting up the second destroyed the
+ * first.
+ */
+function LayoutBar({
+  workflowId,
+  detail,
+}: {
+  workflowId: string;
+  detail: WorkflowDetail;
+}) {
+  const save = useSaveLayout(workflowId);
+  const activate = useActivateLayout(workflowId);
+  const remove = useDeleteLayout(workflowId);
+
+  const [naming, setNaming] = useState(false);
+  const [name, setName] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const layouts = detail.layouts ?? [];
+  const activeId = detail.activeLayoutId;
+
+  return (
+    <div className="space-y-2 rounded-xl border border-line bg-surface p-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium tracking-wide text-muted uppercase">Layouts</span>
+        <Button variant="ghost" size="sm" onClick={() => setNaming((current) => !current)}>
+          {naming ? 'Cancel' : 'Save current'}
+        </Button>
+      </div>
+
+      {naming && (
+        <div className="flex gap-2">
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="e.g. Quick draft"
+            className="min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-3 py-2 text-sm focus:border-accent focus:outline-none"
+          />
+          <Button
+            variant="primary"
+            size="sm"
+            busy={save.isPending}
+            disabled={name.trim() === ''}
+            onClick={async () => {
+              setError(null);
+              try {
+                // No overrides passed: the server snapshots the form as it
+                // currently stands, which is what "save current" means.
+                await save.mutateAsync({ name: name.trim() });
+                setName('');
+                setNaming(false);
+              } catch (cause) {
+                setError(cause instanceof Error ? cause.message : 'Could not save that layout');
+              }
+            }}
+          >
+            Save
+          </Button>
+        </div>
+      )}
+
+      <ErrorNote>{error}</ErrorNote>
+
+      {layouts.length === 0 ? (
+        <p className="text-xs text-muted">
+          No saved layouts. Arrange the fields below, then save the arrangement under a name.
+        </p>
+      ) : (
+        <ul className="space-y-1">
+          {layouts.map((layout) => (
+            <li
+              key={layout.id}
+              className={cn(
+                'flex items-center justify-between gap-2 rounded-lg px-2 py-1.5',
+                layout.id === activeId && 'bg-accent/15',
+              )}
+            >
+              <button
+                type="button"
+                onClick={() => activate.mutate(layout.id)}
+                className="min-w-0 flex-1 truncate text-left text-sm"
+              >
+                <span className={layout.id === activeId ? 'text-accent' : undefined}>
+                  {layout.name}
+                </span>
+                {layout.id === activeId && <span className="ml-2 text-xs text-accent">in use</span>}
+              </button>
+              <Button variant="ghost" size="sm" onClick={() => remove.mutate(layout.id)}>
+                Delete
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
