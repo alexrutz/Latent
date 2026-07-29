@@ -13,6 +13,7 @@ import {
   useWorkflows,
 } from '../api/queries';
 import { LoraEditor } from '../components/LoraEditor';
+import { PromptBuilder } from '../components/PromptBuilder';
 import { FieldChip, ImageField, PromptField, SeedField } from '../components/ParamControl';
 import { Button, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { useLiveStore } from '../state/live';
@@ -248,11 +249,18 @@ function GenerateForm({
             value={values[field.id] ?? ''}
             onChange={(value) => setValue(field.id, value)}
           />
-          {/* LoRA tags live inside the prompt text; edit them structurally. */}
-          <LoraEditor
-            value={String(values[field.id] ?? '')}
-            onChange={(next) => setValue(field.id, next)}
-          />
+          <div className="flex flex-wrap items-center gap-4">
+            {/* Assemble the prompt from saved fragments rather than typing. */}
+            <PromptBuilder
+              value={String(values[field.id] ?? '')}
+              onChange={(next) => setValue(field.id, next)}
+            />
+            {/* LoRA tags live inside the prompt text; edit them structurally. */}
+            <LoraEditor
+              value={String(values[field.id] ?? '')}
+              onChange={(next) => setValue(field.id, next)}
+            />
+          </div>
         </div>
       ))}
 

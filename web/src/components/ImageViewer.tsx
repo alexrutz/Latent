@@ -186,26 +186,45 @@ export function ImageViewer({ record, index, onIndexChange, onClose, footer }: I
   );
 }
 
-/** Thumbnail with a graceful failure state — ComfyUI outputs can be deleted. */
+/**
+ * A grid thumbnail.
+ *
+ * Only ever requests the preview variant — never the full image. The server
+ * resolves that to a stored thumbnail, ComfyUI's own resizer, or (on an old
+ * build with neither) the original; from the client's side there is no
+ * fallback that could accidentally pull megabytes over mobile data.
+ */
 export function Thumb({
   image,
   alt,
   className,
+  style,
   onClick,
+  onLongPress,
+  onMeasured,
+  fit = 'cover',
 }: {
   image: GenerationImage;
   alt: string;
   className?: string;
+  style?: React.CSSProperties;
   onClick?: () => void;
+  onLongPress?: () => void;
+  /** Reports the real pixel size the first time we learn it. */
+  onMeasured?: (width: number, height: number) => void;
+  fit?: 'cover' | 'contain';
 }) {
   const [failed, setFailed] = useState(false);
+  const longPress = useLongPress(onLongPress);
 
   return (
     <button
       type="button"
       onClick={onClick}
+      style={style}
+      {...longPress}
       className={cn(
-        'relative aspect-square overflow-hidden rounded-xl bg-surface-2 active:opacity-80',
+        'relative overflow-hidden rounded-xl bg-surface-2 active:opacity-80',
         className,
       )}
     >
@@ -217,17 +236,58 @@ export function Thumb({
           alt={alt}
           loading="lazy"
           decoding="async"
-          onError={(event) => {
-            // The `preview` parameter is not supported by every ComfyUI build;
-            // retry once at full size before declaring the image gone.
+          onLoad={(event) => {
             const element = event.currentTarget;
-            const full = imageUrl(image);
-            if (element.src.includes('preview=')) element.src = full;
-            else setFailed(true);
+            // The thumbnail's own dimensions carry the original's aspect ratio,
+            // which is all the grid needs to shape the tile.
+            if (!image.width && element.naturalWidth > 0) {
+              onMeasured?.(element.naturalWidth, element.naturalHeight);
+            }
           }}
-          className="size-full object-cover"
+          onError={() => setFailed(true)}
+          className={cn('size-full', fit === 'cover' ? 'object-cover' : 'object-contain')}
         />
       )}
     </button>
   );
+}
+
+/**
+ * Long-press without swallowing taps or triggering on a scroll.
+ *
+ * Used for the per-tile size override — a phone has no right-click, and a
+ * dedicated button on every thumbnail would clutter the grid.
+ */
+function useLongPress(onLongPress?: () => void) {
+  const timer = useRef<number | null>(null);
+  const start = useRef<{ x: number; y: number } | null>(null);
+
+  if (!onLongPress) return {};
+
+  const cancel = () => {
+    if (timer.current !== null) {
+      window.clearTimeout(timer.current);
+      timer.current = null;
+    }
+  };
+
+  return {
+    onPointerDown: (event: React.PointerEvent) => {
+      start.current = { x: event.clientX, y: event.clientY };
+      cancel();
+      timer.current = window.setTimeout(() => {
+        timer.current = null;
+        onLongPress();
+      }, 500);
+    },
+    onPointerMove: (event: React.PointerEvent) => {
+      // Scrolling past a tile must not count as holding it.
+      const origin = start.current;
+      if (!origin) return;
+      if (Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 10) cancel();
+    },
+    onPointerUp: cancel,
+    onPointerCancel: cancel,
+    onContextMenu: (event: React.MouseEvent) => event.preventDefault(),
+  };
 }

@@ -4,7 +4,9 @@ import type { Archive } from '../archive.js';
 import type { Auth } from '../auth.js';
 import type { Config } from '../config.js';
 import type { Store } from '../db.js';
+import type { Importer } from '../importer.js';
 import type { Orchestrator } from '../orchestrator.js';
+import type { Vault } from '../vault.js';
 
 export interface AppContext {
   config: Config;
@@ -12,6 +14,8 @@ export interface AppContext {
   orchestrator: Orchestrator;
   auth: Auth;
   archive: Archive;
+  vault: Vault;
+  importer: Importer;
 }
 
 /**

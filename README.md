@@ -33,11 +33,22 @@ form. Nothing about your ComfyUI setup changes.
   zoom, swipe between a batch, save to your camera roll, re-run, or send a
   result straight to img2img or an upscale pass.
 - **Ratings that outlive the GPU.** Rating an image copies it onto the machine
-  running Latent, so it survives the rented instance being destroyed.
+  running Latent — **encrypted**, so it survives the rented instance being
+  destroyed without leaving your pictures readable on disk.
+- **Favourites.** Keep an image together with the settings that made it, rate
+  those separately, and generate more like it in one tap.
+- **A grid that fits the pictures.** Adjustable column count; each tile takes its
+  shape from the image's aspect ratio so nothing is cropped square, with a
+  per-image override. Only thumbnails are ever downloaded.
+- **Import an existing output folder.** Point Latent at a ComfyUI output
+  directory and pull in whatever is worth keeping, through the same rating
+  system.
 - **LoRA editor.** `<lora:name:0.8>` tags become rows with a strength slider and
   a picker, instead of something you type by hand on a phone keyboard.
 - **Parameter presets.** Save a whole set of settings per workflow and re-apply
   it in one tap.
+- **Prompt blocks.** Save the phrases you reuse and assemble a prompt by tapping
+  chips instead of typing paragraphs on a phone keyboard.
 - **Queue.** See what is waiting, remove single jobs, clear the lot.
 - **Installable.** Add it to your home screen and it runs full-screen like an app.
 - **Password protected.** The first person to open a new install chooses the
@@ -160,6 +171,40 @@ This is why it matters where Latent runs: put it on a machine that stays up (a
 PC, a NAS, a small always-on box), and point it at whatever GPU you are renting
 today.
 
+### The archive is encrypted
+
+Those copies then sit on a disk indefinitely, so they are encrypted:
+
+- A random 256-bit master key encrypts every file with AES-256-GCM.
+- That master key is itself wrapped with a key derived from your password
+  (scrypt). The password is never stored.
+- The master key only ever exists **in memory**, and only after somebody signs
+  in. Restart the server and the archive is sealed again until the next login.
+
+So a stolen disk, a backup, or someone sitting at the machine gets nothing but
+ciphertext. Changing your password re-wraps the master key, which takes
+milliseconds — no image is ever re-encrypted.
+
+**Metadata stays readable.** Prompts, seeds and settings remain in the database
+in the clear, which is what lets the server sort and filter by rating without
+decrypting everything first — and what means the settings behind an image are
+still there years later.
+
+> **If you forget the password, the images are gone.** There is no recovery key
+> and no back door; that is what makes the encryption worth anything. The
+> database, and the settings in it, survive — the pictures do not.
+
+## Importing an existing output folder
+
+**Settings → Import from a folder.** Give it a path, and Latent walks it
+recursively, lists every image, and marks the ones already in your library.
+Select what you want and import — the files are copied into the same encrypted
+archive as generated work and can be rated, favourited and browsed identically.
+
+The path is read from the machine running Latent. If ComfyUI is on a remote
+vast.ai instance, its outputs are not on this filesystem: point this at a local
+ComfyUI, a network mount, or a synced folder.
+
 ## The terminal
 
 Set `LATENT_TERMINAL=1` and Settings gains a shell on the machine running
@@ -218,6 +263,8 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 | --- | --- |
 | `shared/` | Types, the form-building engine (`paramSchema.ts`) and LoRA tag parsing — pure, no I/O |
 | `server/` | Fastify proxy, ComfyUI client, live event hub, SQLite store, archive, terminal |
+| `server/src/vault.ts` | Archive encryption: master key, wrapping, unlock on sign-in |
+| `server/src/images/` | A dependency-free PNG decoder/resizer for thumbnails and image sizes |
 | `server/src/mock/` | The mock ComfyUI used for development and tests |
 | `web/` | React + Vite PWA |
 | `e2e/` | Playwright tests |
@@ -239,6 +286,11 @@ editing one that has shipped.
 - **The terminal needs `node-pty`**, an optional native module. If it could not
   be built for your platform, the terminal reports that instead of opening;
   nothing else is affected.
+- **Thumbnails are generated for PNG only.** ComfyUI writes PNG by default, so
+  this covers nearly everything; a JPEG or WebP without a ComfyUI-side preview
+  is served at full size. This avoids a large native image library for what is
+  otherwise a small job.
+- **Lose the password, lose the archived images.** Deliberately — see above.
 
 ## Licence
 

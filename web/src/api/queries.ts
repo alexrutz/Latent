@@ -7,7 +7,15 @@ import {
 } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
-import type { AppSettings, ComfyImageRef, GenerateRequest, ParamValues } from '@latent/shared';
+import type {
+  AppSettings,
+  ComfyImageRef,
+  FavoriteSort,
+  GenerateRequest,
+  ParamValues,
+  PromptBlockInput,
+  TileSpan,
+} from '@latent/shared';
 
 import { useLiveStore } from '../state/live';
 import { api } from './client';
@@ -19,6 +27,9 @@ export const queryKeys = {
   gallery: (workflowId?: string | null) => ['gallery', workflowId ?? 'all'] as const,
   settings: ['settings'] as const,
   connections: ['connections'] as const,
+  favorites: ['favorites'] as const,
+  promptBlocks: ['prompt-blocks'] as const,
+  importScan: ['import-scan'] as const,
   presets: (workflowId: string) => ['presets', workflowId] as const,
   archiveStats: ['archive-stats'] as const,
 };
@@ -231,4 +242,134 @@ export function useLiveCacheSync(): void {
 /** Used after login so every screen refetches with the new session. */
 export function resetAllQueries(client: QueryClient): void {
   void client.invalidateQueries();
+}
+
+/* ------------------------------------------------------------------ */
+/* Grid metadata                                                       */
+/* ------------------------------------------------------------------ */
+
+export function useSetTileSpan() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      generationId,
+      image,
+      span,
+    }: {
+      generationId: string;
+      image: ComfyImageRef;
+      span: TileSpan | null;
+    }) => api.setTileSpan(generationId, image, span),
+    onSuccess: () => void client.invalidateQueries({ queryKey: ['gallery'] }),
+  });
+}
+
+/**
+ * Report a measured image size back to the server.
+ *
+ * Fire-and-forget on purpose: it is an optimisation for the *next* visit, and a
+ * failure should never surface as an error over a picture that loaded fine.
+ */
+export function useReportDimensions() {
+  return useMutation({
+    mutationFn: ({
+      image,
+      width,
+      height,
+    }: {
+      image: ComfyImageRef;
+      width: number;
+      height: number;
+    }) => api.reportDimensions(image, width, height),
+    onError: () => undefined,
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Favourites                                                          */
+/* ------------------------------------------------------------------ */
+
+export function useFavorites(sort: FavoriteSort = 'rating') {
+  return useQuery({
+    queryKey: [...queryKeys.favorites, sort],
+    queryFn: () => api.favorites(sort),
+  });
+}
+
+function useFavoriteMutation<TArgs>(fn: (args: TArgs) => Promise<unknown>) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.favorites });
+      // Favouriting archives the image, so its gallery row changed too.
+      void client.invalidateQueries({ queryKey: ['gallery'] });
+    },
+  });
+}
+
+export const useAddFavorite = () =>
+  useFavoriteMutation(({ generationId, image, note }: { generationId: string; image: ComfyImageRef; note?: string }) =>
+    api.addFavorite(generationId, image, note),
+  );
+
+export const useUpdateFavorite = () =>
+  useFavoriteMutation(({ id, patch }: { id: string; patch: { rating?: number; note?: string | null } }) =>
+    api.updateFavorite(id, patch),
+  );
+
+export const useDeleteFavorite = () => useFavoriteMutation((id: string) => api.deleteFavorite(id));
+
+/* ------------------------------------------------------------------ */
+/* Prompt building blocks                                              */
+/* ------------------------------------------------------------------ */
+
+export function usePromptBlocks() {
+  return useQuery({ queryKey: queryKeys.promptBlocks, queryFn: api.promptBlocks });
+}
+
+function usePromptBlockMutation<TArgs>(fn: (args: TArgs) => Promise<unknown>) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => void client.invalidateQueries({ queryKey: queryKeys.promptBlocks }),
+  });
+}
+
+export const useCreatePromptBlock = () =>
+  usePromptBlockMutation((input: PromptBlockInput) => api.createPromptBlock(input));
+
+export const useUpdatePromptBlock = () =>
+  usePromptBlockMutation(({ id, input }: { id: string; input: Partial<PromptBlockInput> }) =>
+    api.updatePromptBlock(id, input),
+  );
+
+export const useDeletePromptBlock = () =>
+  usePromptBlockMutation((id: string) => api.deletePromptBlock(id));
+
+/* ------------------------------------------------------------------ */
+/* Folder import                                                       */
+/* ------------------------------------------------------------------ */
+
+export function useImportScan(enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.importScan,
+    queryFn: api.scanImportFolder,
+    enabled,
+    // A folder of thousands of files is not something to re-walk casually.
+    staleTime: 60_000,
+  });
+}
+
+export function useImportFiles() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ paths, rating }: { paths: string[]; rating?: number }) =>
+      api.importFiles(paths, rating ?? 0),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.importScan });
+      void client.invalidateQueries({ queryKey: ['gallery'] });
+      void client.invalidateQueries({ queryKey: queryKeys.archiveStats });
+    },
+  });
 }

@@ -21,6 +21,7 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
       authenticated,
       setupRequired,
       terminalEnabled: ctx.config.terminalEnabled,
+      archiveLocked: !ctx.vault.isUnlocked,
       activeConnectionId: null,
       activeConnectionName: null,
       devices: [],
@@ -66,8 +67,12 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
    * permanently the moment anyone uses it.
    */
   app.post<{ Body: { password?: string } }>('/api/auth/setup', async (request, reply) => {
-    const result = ctx.auth.setup(request.body?.password);
+    const password = request.body?.password;
+    const result = ctx.auth.setup(password);
     if (!result.ok) return reply.code(409).send({ error: result.error });
+
+    // Create the archive key under the password that was just chosen.
+    if (typeof password === 'string') ctx.vault.unlock(password);
 
     app.log.info('Password set — this server is now claimed.');
     ctx.auth.setSession(reply);
@@ -91,6 +96,10 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
     }
 
     ctx.auth.clearLoginAttempts(clientKey);
+    // Signing in is what unseals the archive: the key is derived from the
+    // password and only ever held in memory, so a restarted server stays
+    // locked until somebody actually logs in.
+    if (typeof request.body?.password === 'string') ctx.vault.unlock(request.body.password);
     ctx.auth.setSession(reply);
     return { ok: true };
   });
@@ -103,11 +112,19 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
   app.post<{ Body: { currentPassword?: string; newPassword?: string } }>(
     '/api/auth/password',
     async (request, reply) => {
-      const result = ctx.auth.changePassword(
-        request.body?.currentPassword,
-        request.body?.newPassword,
-      );
+      const { currentPassword, newPassword } = request.body ?? {};
+      const result = ctx.auth.changePassword(currentPassword, newPassword);
       if (!result.ok) return reply.code(400).send({ error: result.error });
+
+      // Re-wrap the archive key rather than re-encrypting every file. If this
+      // ever failed the images would become unreadable, so it is not optional.
+      if (typeof currentPassword === 'string' && typeof newPassword === 'string') {
+        if (!ctx.vault.rewrap(currentPassword, newPassword)) {
+          return reply.code(500).send({
+            error: 'The password changed but the image archive could not be re-keyed.',
+          });
+        }
+      }
 
       // The session token is derived from the password hash, so the caller's
       // own cookie has just been invalidated too. Re-issue it.

@@ -11,7 +11,13 @@ import type {
   GenerationRecord,
   GenerationStatus,
   ParamSchema,
+  Favorite,
+  FavoriteSort,
+  GenerationImage,
   ParamValues,
+  PromptBlock,
+  PromptBlockInput,
+  TileSpan,
   WorkflowDetail,
   WorkflowPreset,
   WorkflowSummary,
@@ -110,6 +116,51 @@ ALTER TABLE images ADD COLUMN archived_bytes INTEGER;
 CREATE INDEX idx_images_rating ON images (rating);
 `);
 
+/**
+ * v3: encrypted archive with thumbnails, image dimensions for the aspect-ratio
+ * grid, favourites, prompt building blocks, and folder-imported images.
+ */
+MIGRATIONS.push(`
+ALTER TABLE images ADD COLUMN thumb_path TEXT;
+ALTER TABLE images ADD COLUMN thumb_bytes INTEGER;
+ALTER TABLE images ADD COLUMN width INTEGER;
+ALTER TABLE images ADD COLUMN height INTEGER;
+ALTER TABLE images ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0;
+-- Manual override of how many grid cells this image occupies, e.g. '2x2'.
+ALTER TABLE images ADD COLUMN tile_span TEXT;
+
+-- 'comfy' for something this app generated, 'import' for a scanned folder.
+ALTER TABLE generations ADD COLUMN source TEXT NOT NULL DEFAULT 'comfy';
+
+CREATE TABLE favorites (
+  id            TEXT PRIMARY KEY,
+  image_id      INTEGER REFERENCES images(id) ON DELETE SET NULL,
+  generation_id TEXT REFERENCES generations(id) ON DELETE SET NULL,
+  workflow_id   TEXT,
+  title         TEXT NOT NULL DEFAULT '',
+  note          TEXT,
+  rating        INTEGER NOT NULL DEFAULT 0,
+  -- Snapshot, not a reference: a favourite has to survive its workflow or
+  -- gallery entry being deleted, otherwise it is not a favourite.
+  values_json   TEXT NOT NULL DEFAULT '{}',
+  image_json    TEXT NOT NULL DEFAULT '{}',
+  created_at    INTEGER NOT NULL
+);
+
+CREATE INDEX idx_favorites_rating ON favorites (rating DESC, created_at DESC);
+
+CREATE TABLE prompt_blocks (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  category   TEXT NOT NULL DEFAULT '',
+  text       TEXT NOT NULL,
+  position   INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX idx_prompt_blocks_order ON prompt_blocks (category, position, created_at);
+`);
+
 interface WorkflowRow {
   id: string;
   name: string;
@@ -133,9 +184,10 @@ interface GenerationRow {
   title: string;
   created_at: number;
   completed_at: number | null;
+  source: string;
 }
 
-interface ImageRow {
+export interface ImageRow {
   id: number;
   generation_id: string;
   node_id: string;
@@ -145,6 +197,34 @@ interface ImageRow {
   rating: number;
   archived_path: string | null;
   archived_bytes: number | null;
+  thumb_path: string | null;
+  thumb_bytes: number | null;
+  width: number | null;
+  height: number | null;
+  encrypted: number;
+  tile_span: string | null;
+}
+
+interface FavoriteRow {
+  id: string;
+  image_id: number | null;
+  generation_id: string | null;
+  workflow_id: string | null;
+  title: string;
+  note: string | null;
+  rating: number;
+  values_json: string;
+  image_json: string;
+  created_at: number;
+}
+
+interface PromptBlockRow {
+  id: string;
+  name: string;
+  category: string;
+  text: string;
+  position: number;
+  created_at: number;
 }
 
 interface ConnectionRow {
@@ -195,6 +275,59 @@ function toConnectionSummary(row: ConnectionRow): ConnectionSummary {
   };
 }
 
+/** `'2x1'` -> `{ cols: 2, rows: 1 }`, ignoring anything malformed. */
+function parseTileSpan(raw: string | null): TileSpan | null {
+  if (!raw) return null;
+  const match = /^(\d)x(\d)$/.exec(raw);
+  if (!match) return null;
+  const cols = Number(match[1]);
+  const rows = Number(match[2]);
+  if (cols < 1 || cols > 4 || rows < 1 || rows > 4) return null;
+  return { cols, rows };
+}
+
+export function toGenerationImage(row: ImageRow): GenerationImage {
+  return {
+    nodeId: row.node_id,
+    filename: row.filename,
+    subfolder: row.subfolder,
+    type: row.type,
+    rating: row.rating ?? 0,
+    archived: Boolean(row.archived_path),
+    hasThumbnail: Boolean(row.thumb_path),
+    width: row.width,
+    height: row.height,
+    tileSpan: parseTileSpan(row.tile_span),
+  };
+}
+
+function toFavorite(row: FavoriteRow, workflowAvailable: boolean): Favorite {
+  const image = parseJson<GenerationImage | null>(row.image_json, null);
+  return {
+    id: row.id,
+    title: row.title,
+    note: row.note,
+    rating: row.rating,
+    workflowId: row.workflow_id,
+    workflowAvailable,
+    values: parseJson<ParamValues>(row.values_json, {}),
+    image,
+    generationId: row.generation_id,
+    createdAt: row.created_at,
+  };
+}
+
+function toPromptBlock(row: PromptBlockRow): PromptBlock {
+  return {
+    id: row.id,
+    name: row.name,
+    category: row.category,
+    text: row.text,
+    position: row.position,
+    createdAt: row.created_at,
+  };
+}
+
 function toPreset(row: PresetRow): WorkflowPreset {
   return {
     id: row.id,
@@ -209,6 +342,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   upscaleWorkflowId: null,
   img2imgWorkflowId: null,
   defaultWorkflowId: null,
+  importRoot: null,
 };
 
 export class Store {
@@ -541,16 +675,10 @@ export class Store {
       values: parseJson<ParamValues>(row.values_json, {}),
       seeds: parseJson<Record<string, number>>(row.seeds_json, {}),
       title: row.title,
-      images: images.map((image) => ({
-        nodeId: image.node_id,
-        filename: image.filename,
-        subfolder: image.subfolder,
-        type: image.type,
-        rating: image.rating ?? 0,
-        archived: Boolean(image.archived_path),
-      })),
+      images: images.map(toGenerationImage),
       createdAt: row.created_at,
       completedAt: row.completed_at,
+      source: (row.source as 'comfy' | 'import') ?? 'comfy',
     };
   }
 
@@ -578,25 +706,293 @@ export class Store {
     this.db.prepare('UPDATE images SET rating = ? WHERE id = ?').run(clamped, imageId);
   }
 
-  setImageArchive(imageId: number, path: string, bytes: number): void {
+  setImageArchive(
+    imageId: number,
+    archive: {
+      path: string;
+      bytes: number;
+      encrypted: boolean;
+      thumbPath?: string | null;
+      thumbBytes?: number | null;
+      width?: number | null;
+      height?: number | null;
+    },
+  ): void {
     this.db
-      .prepare('UPDATE images SET archived_path = ?, archived_bytes = ? WHERE id = ?')
-      .run(path, bytes, imageId);
+      .prepare(
+        `UPDATE images
+            SET archived_path = ?, archived_bytes = ?, encrypted = ?,
+                thumb_path = ?, thumb_bytes = ?,
+                width = COALESCE(?, width), height = COALESCE(?, height)
+          WHERE id = ?`,
+      )
+      .run(
+        archive.path,
+        archive.bytes,
+        archive.encrypted ? 1 : 0,
+        archive.thumbPath ?? null,
+        archive.thumbBytes ?? null,
+        archive.width ?? null,
+        archive.height ?? null,
+        imageId,
+      );
+  }
+
+  /** Remember an image's pixel size so the grid can shape its tile up front. */
+  setImageDimensions(imageId: number, width: number, height: number): void {
+    this.db
+      .prepare('UPDATE images SET width = ?, height = ? WHERE id = ?')
+      .run(width, height, imageId);
+  }
+
+  /** `null` clears a manual override and returns the tile to automatic sizing. */
+  setImageTileSpan(imageId: number, span: TileSpan | null): void {
+    this.db
+      .prepare('UPDATE images SET tile_span = ? WHERE id = ?')
+      .run(span ? `${span.cols}x${span.rows}` : null, imageId);
+  }
+
+  getImage(imageId: number): ImageRow | null {
+    return (
+      this.db.prepare<[number], ImageRow>('SELECT * FROM images WHERE id = ?').get(imageId) ?? null
+    );
   }
 
   clearImageArchive(imageId: number): void {
     this.db
-      .prepare('UPDATE images SET archived_path = NULL, archived_bytes = NULL WHERE id = ?')
+      .prepare(
+        `UPDATE images
+            SET archived_path = NULL, archived_bytes = NULL,
+                thumb_path = NULL, thumb_bytes = NULL, encrypted = 0
+          WHERE id = ?`,
+      )
       .run(imageId);
   }
 
-  /** True when some other row still points at this file — archive paths are shared. */
+  /* ---------------------------------------------------------------- */
+  /* Favourites                                                        */
+  /* ---------------------------------------------------------------- */
+
+  listFavorites(sort: FavoriteSort = 'rating'): Favorite[] {
+    const order =
+      sort === 'newest'
+        ? 'created_at DESC'
+        : sort === 'oldest'
+          ? 'created_at ASC'
+          : 'rating DESC, created_at DESC';
+
+    const rows = this.db
+      .prepare<[], FavoriteRow>(`SELECT * FROM favorites ORDER BY ${order}`)
+      .all();
+
+    // One lookup rather than one per row: the list can be long.
+    const available = new Set(
+      this.db
+        .prepare<[], { id: string }>('SELECT id FROM workflows')
+        .all()
+        .map((row) => row.id),
+    );
+
+    return rows.map((row) => toFavorite(row, row.workflow_id !== null && available.has(row.workflow_id)));
+  }
+
+  getFavorite(id: string): Favorite | null {
+    const row = this.db
+      .prepare<[string], FavoriteRow>('SELECT * FROM favorites WHERE id = ?')
+      .get(id);
+    if (!row) return null;
+    const available =
+      row.workflow_id !== null && this.getWorkflow(row.workflow_id) !== null;
+    return toFavorite(row, available);
+  }
+
+  /** True when this exact image is already a favourite, so the UI can toggle. */
+  findFavoriteByImage(imageId: number): Favorite | null {
+    const row = this.db
+      .prepare<[number], FavoriteRow>('SELECT * FROM favorites WHERE image_id = ? LIMIT 1')
+      .get(imageId);
+    if (!row) return null;
+    return toFavorite(row, row.workflow_id !== null && this.getWorkflow(row.workflow_id) !== null);
+  }
+
+  insertFavorite(favorite: {
+    id: string;
+    imageId: number | null;
+    generationId: string | null;
+    workflowId: string | null;
+    title: string;
+    note: string | null;
+    values: ParamValues;
+    image: GenerationImage | null;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO favorites
+           (id, image_id, generation_id, workflow_id, title, note, rating, values_json, image_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+      )
+      .run(
+        favorite.id,
+        favorite.imageId,
+        favorite.generationId,
+        favorite.workflowId,
+        favorite.title,
+        favorite.note,
+        JSON.stringify(favorite.values),
+        JSON.stringify(favorite.image),
+        Date.now(),
+      );
+  }
+
+  updateFavorite(id: string, patch: { rating?: number; note?: string | null }): void {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+
+    if (patch.rating !== undefined) {
+      sets.push('rating = ?');
+      params.push(Math.max(0, Math.min(5, Math.round(patch.rating))));
+    }
+    if (patch.note !== undefined) {
+      sets.push('note = ?');
+      params.push(patch.note);
+    }
+    if (sets.length === 0) return;
+
+    params.push(id);
+    this.db.prepare(`UPDATE favorites SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  deleteFavorite(id: string): void {
+    this.db.prepare('DELETE FROM favorites WHERE id = ?').run(id);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Prompt building blocks                                            */
+  /* ---------------------------------------------------------------- */
+
+  listPromptBlocks(): PromptBlock[] {
+    return this.db
+      .prepare<[], PromptBlockRow>(
+        'SELECT * FROM prompt_blocks ORDER BY category ASC, position ASC, created_at ASC',
+      )
+      .all()
+      .map(toPromptBlock);
+  }
+
+  getPromptBlock(id: string): PromptBlock | null {
+    const row = this.db
+      .prepare<[string], PromptBlockRow>('SELECT * FROM prompt_blocks WHERE id = ?')
+      .get(id);
+    return row ? toPromptBlock(row) : null;
+  }
+
+  insertPromptBlock(id: string, input: PromptBlockInput): PromptBlock {
+    this.db
+      .prepare(
+        `INSERT INTO prompt_blocks (id, name, category, text, position, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        input.name.trim(),
+        (input.category ?? '').trim(),
+        input.text,
+        input.position ?? 0,
+        Date.now(),
+      );
+    return this.getPromptBlock(id) as PromptBlock;
+  }
+
+  updatePromptBlock(id: string, input: Partial<PromptBlockInput>): void {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+
+    if (input.name !== undefined) {
+      sets.push('name = ?');
+      params.push(input.name.trim());
+    }
+    if (input.category !== undefined) {
+      sets.push('category = ?');
+      params.push(input.category.trim());
+    }
+    if (input.text !== undefined) {
+      sets.push('text = ?');
+      params.push(input.text);
+    }
+    if (input.position !== undefined) {
+      sets.push('position = ?');
+      params.push(input.position);
+    }
+    if (sets.length === 0) return;
+
+    params.push(id);
+    this.db.prepare(`UPDATE prompt_blocks SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  deletePromptBlock(id: string): void {
+    this.db.prepare('DELETE FROM prompt_blocks WHERE id = ?').run(id);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Imported images                                                   */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Record a file scanned from a folder as a gallery entry.
+   *
+   * Imports become ordinary generations with `source = 'import'`, so the whole
+   * rating, archiving and favouriting machinery applies to them unchanged.
+   */
+  insertImportedImage(input: {
+    generationId: string;
+    promptId: string;
+    title: string;
+    filename: string;
+    subfolder: string;
+    modifiedAt: number;
+  }): number {
+    this.db
+      .prepare(
+        `INSERT INTO generations
+           (id, prompt_id, workflow_id, workflow_name, status, error, values_json, seeds_json, title, created_at, completed_at, source)
+         VALUES (?, ?, NULL, 'Imported', 'completed', NULL, '{}', '{}', ?, ?, ?, 'import')`,
+      )
+      .run(input.generationId, input.promptId, input.title, input.modifiedAt, input.modifiedAt);
+
+    const result = this.db
+      .prepare(
+        `INSERT INTO images (generation_id, node_id, filename, subfolder, type)
+         VALUES (?, 'import', ?, ?, 'import')`,
+      )
+      .run(input.generationId, input.filename, input.subfolder);
+
+    return Number(result.lastInsertRowid);
+  }
+
+  /** Which of these relative paths have already been imported. */
+  importedPaths(): Set<string> {
+    const rows = this.db
+      .prepare<[], { filename: string; subfolder: string }>(
+        "SELECT filename, subfolder FROM images WHERE type = 'import'",
+      )
+      .all();
+    return new Set(rows.map((row) => (row.subfolder ? `${row.subfolder}/${row.filename}` : row.filename)));
+  }
+
+  /**
+   * True when some other row still points at this file.
+   *
+   * Archive paths are content-addressed and therefore shared between duplicate
+   * images; deleting one row's copy must not blank another's. Checks both the
+   * full image and thumbnail columns, since a path could be either.
+   */
   archivePathInUseElsewhere(path: string, exceptImageId: number): boolean {
     const row = this.db
-      .prepare<[string, number], { count: number }>(
-        'SELECT COUNT(*) AS count FROM images WHERE archived_path = ? AND id != ?',
+      .prepare<[string, string, number], { count: number }>(
+        `SELECT COUNT(*) AS count FROM images
+          WHERE (archived_path = ? OR thumb_path = ?) AND id != ?`,
       )
-      .get(path, exceptImageId);
+      .get(path, path, exceptImageId);
     return (row?.count ?? 0) > 0;
   }
 

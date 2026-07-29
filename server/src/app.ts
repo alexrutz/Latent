@@ -10,6 +10,8 @@ import Fastify, { type FastifyInstance } from 'fastify';
 
 import { Archive } from './archive.js';
 import { Auth } from './auth.js';
+import { Importer } from './importer.js';
+import { Vault } from './vault.js';
 import { plainConnection, type ConnectionConfig } from './comfy/connection.js';
 import { loadConfig, type Config } from './config.js';
 import { Store } from './db.js';
@@ -17,8 +19,11 @@ import { Orchestrator } from './orchestrator.js';
 import { registerConnectionRoutes, toConfig } from './routes/connections.js';
 import type { AppContext } from './routes/context.js';
 import { registerGalleryRoutes } from './routes/gallery.js';
+import { registerFavoriteRoutes } from './routes/favorites.js';
 import { registerGenerateRoutes } from './routes/generate.js';
+import { registerImportRoutes } from './routes/import.js';
 import { registerMediaRoutes } from './routes/media.js';
+import { registerPromptBlockRoutes } from './routes/promptBlocks.js';
 import { registerPresetRoutes } from './routes/presets.js';
 import { registerQueueRoutes } from './routes/queue.js';
 import { registerSystemRoutes } from './routes/system.js';
@@ -83,10 +88,17 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
 
   const store = new Store(config.dbPath);
   const auth = new Auth(store, config.password);
-  const archive = new Archive(config.archiveDir, store);
+  const vault = new Vault(store);
+  const archive = new Archive(config.archiveDir, store, vault);
+  const importer = new Importer(store, archive);
   const orchestrator = new Orchestrator(store, resolveConnection(store, config, app), app.log);
 
-  const ctx: AppContext = { config, store, orchestrator, auth, archive };
+  // With the password fixed in the environment there is nobody to wait for, so
+  // the archive can be unsealed at boot. Otherwise it stays locked until the
+  // first sign-in.
+  if (config.password) vault.unlock(config.password);
+
+  const ctx: AppContext = { config, store, orchestrator, auth, archive, vault, importer };
 
   /*
    * Treat an empty JSON body as `{}`.
@@ -132,6 +144,9 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   registerGenerateRoutes(app, ctx);
   registerQueueRoutes(app, ctx);
   registerGalleryRoutes(app, ctx);
+  registerFavoriteRoutes(app, ctx);
+  registerPromptBlockRoutes(app, ctx);
+  registerImportRoutes(app, ctx);
   registerMediaRoutes(app, ctx);
 
   /**
@@ -176,6 +191,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
 
   app.addHook('onClose', async () => {
     await orchestrator.stop();
+    vault.lock();
     store.close();
   });
 

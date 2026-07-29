@@ -12,6 +12,7 @@ interface Tab {
 const TABS: Tab[] = [
   { to: '/', label: 'Generate', icon: '✦' },
   { to: '/gallery', label: 'Gallery', icon: '▦' },
+  { to: '/favorites', label: 'Favourites', icon: '★' },
   { to: '/queue', label: 'Queue', icon: '≡' },
   { to: '/settings', label: 'Settings', icon: '⚙' },
 ];
@@ -42,10 +43,10 @@ export function BottomTabs() {
               <span className="text-lg leading-none" aria-hidden>
                 {tab.icon}
               </span>
-              <span className="text-[10px] font-medium">{tab.label}</span>
+              <span className="max-w-full truncate px-0.5 text-[9px] font-medium">{tab.label}</span>
 
               {tab.to === '/queue' && queueRemaining > 0 && (
-                <span className="absolute top-2 right-[calc(50%-1.5rem)] grid size-4 place-items-center rounded-full bg-accent text-[10px] font-semibold text-white">
+                <span className="absolute top-1.5 right-[calc(50%-1.1rem)] grid size-4 place-items-center rounded-full bg-accent text-[10px] font-semibold text-white">
                   {queueRemaining > 9 ? '9+' : queueRemaining}
                 </span>
               )}

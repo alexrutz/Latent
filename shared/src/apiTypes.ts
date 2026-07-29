@@ -54,6 +54,12 @@ export interface GenerateResponse {
 
 export type GenerationStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
+/** How many grid cells a thumbnail occupies. */
+export interface TileSpan {
+  cols: number;
+  rows: number;
+}
+
 export interface GenerationImage extends ComfyImageRef {
   nodeId: string;
   /** 0 = unrated, 1–5 stars. */
@@ -63,6 +69,13 @@ export interface GenerationImage extends ComfyImageRef {
    * what lets a rated image outlive the ComfyUI instance that produced it.
    */
   archived: boolean;
+  /** True when a small preview is stored, so the grid never fetches full size. */
+  hasThumbnail: boolean;
+  /** Pixel size, used to give the tile a shape that matches the image. */
+  width: number | null;
+  height: number | null;
+  /** A manual override of the automatic, aspect-derived tile size. */
+  tileSpan: TileSpan | null;
 }
 
 export interface GenerationRecord {
@@ -79,6 +92,8 @@ export interface GenerationRecord {
   images: GenerationImage[];
   createdAt: number;
   completedAt: number | null;
+  /** `comfy` for something generated here, `import` for a scanned folder. */
+  source: 'comfy' | 'import';
 }
 
 export interface GalleryPage {
@@ -208,6 +223,102 @@ export interface CreatePresetRequest {
 }
 
 /* ------------------------------------------------------------------ */
+/* Favourites                                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A kept image plus the settings that made it.
+ *
+ * The settings are a snapshot rather than a reference: the point of a favourite
+ * is "make more like this", and that has to keep working after the workflow or
+ * the gallery entry it came from has been deleted.
+ */
+export interface Favorite {
+  id: string;
+  title: string;
+  note: string | null;
+  /** Rated independently of the same image's gallery rating. */
+  rating: number;
+  workflowId: string | null;
+  /** True when that workflow still exists and can be re-run. */
+  workflowAvailable: boolean;
+  values: ParamValues;
+  image: GenerationImage | null;
+  generationId: string | null;
+  createdAt: number;
+}
+
+export interface CreateFavoriteRequest {
+  generationId: string;
+  image: ComfyImageRef;
+  note?: string;
+}
+
+export type FavoriteSort = 'rating' | 'newest' | 'oldest';
+
+/* ------------------------------------------------------------------ */
+/* Prompt building blocks                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A saved fragment of prompt text, to be chained together instead of typed.
+ * Phone keyboards make long prompts miserable; this turns them into taps.
+ */
+export interface PromptBlock {
+  id: string;
+  name: string;
+  category: string;
+  /** Usually a comma-separated run of instructions. */
+  text: string;
+  position: number;
+  createdAt: number;
+}
+
+export interface PromptBlockInput {
+  name: string;
+  text: string;
+  category?: string;
+  position?: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* Folder import                                                       */
+/* ------------------------------------------------------------------ */
+
+export interface ImportCandidate {
+  /** Path relative to the configured import root. */
+  path: string;
+  name: string;
+  bytes: number;
+  modifiedAt: number;
+  width: number | null;
+  height: number | null;
+  /** Already pulled into the archive by a previous scan. */
+  imported: boolean;
+}
+
+export interface ImportScanResult {
+  root: string;
+  /** False when the configured folder does not exist or cannot be read. */
+  ok: boolean;
+  message?: string;
+  files: ImportCandidate[];
+  truncated: boolean;
+}
+
+export interface ImportRequest {
+  paths: string[];
+  /** Rating applied to everything imported in this batch. */
+  rating?: number;
+}
+
+export interface ImportResult {
+  imported: number;
+  skipped: number;
+  failed: { path: string; reason: string }[];
+}
+
+/* ------------------------------------------------------------------ */
 /* Misc                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -221,6 +332,11 @@ export interface StatusResponse {
   setupRequired: boolean;
   /** The terminal route only exists when the server was started with it enabled. */
   terminalEnabled: boolean;
+  /**
+   * The encrypted image archive is sealed. Happens after a server restart,
+   * until somebody signs in — the key only ever lives in memory.
+   */
+  archiveLocked: boolean;
   activeConnectionId: string | null;
   activeConnectionName: string | null;
   devices: { name: string; vramTotal: number; vramFree: number }[];
@@ -249,4 +365,25 @@ export interface AppSettings {
   /** Workflow used by "Send to img2img". */
   img2imgWorkflowId: string | null;
   defaultWorkflowId: string | null;
+  /** Absolute path to a ComfyUI output folder to scan for import. */
+  importRoot: string | null;
 }
+
+/** Gallery layout, kept on the device rather than the server. */
+export interface GridSettings {
+  /** Base column count of the thumbnail grid. */
+  columns: number;
+  /**
+   * When false, a tile's height follows the image's aspect ratio so as much of
+   * the picture as possible is visible. When true, everything is square.
+   */
+  uniformTiles: boolean;
+  /** Favourites list shows thumbnails (the default) or is a compact list. */
+  favoriteThumbnails: boolean;
+}
+
+export const DEFAULT_GRID_SETTINGS: GridSettings = {
+  columns: 2,
+  uniformTiles: false,
+  favoriteThumbnails: true,
+};

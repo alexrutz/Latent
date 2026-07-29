@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify';
 
 import type { ComfyImageRef, GalleryPage } from '@latent/shared';
 
+import { VaultLockedError } from '../vault.js';
+
 import type { AppContext } from './context.js';
 
 export function registerGalleryRoutes(app: FastifyInstance, ctx: AppContext): void {
@@ -50,6 +52,9 @@ export function registerGalleryRoutes(app: FastifyInstance, ctx: AppContext): vo
       ctx.store.setImageRating(row.id, rating);
 
       if (rating > 0 && !row.archived_path) {
+        if (!ctx.vault.isUnlocked) {
+          return reply.code(423).send({ error: new VaultLockedError().message, locked: true });
+        }
         try {
           await ctx.archive.capture(ctx.orchestrator.client, row.id, image);
         } catch (error) {
@@ -68,6 +73,57 @@ export function registerGalleryRoutes(app: FastifyInstance, ctx: AppContext): vo
       // Rating back to zero deliberately keeps the file: a mis-tap should not
       // silently delete a picture. Settings has an explicit prune action.
       return ctx.store.getGeneration(request.params.id);
+    },
+  );
+
+  /**
+   * Manually override how many grid cells an image occupies.
+   *
+   * The automatic size follows the picture's aspect ratio, which is right most
+   * of the time; this is for the times it isn't — a favourite you want bigger,
+   * or a near-square image you would rather have small.
+   */
+  app.put<{
+    Params: { id: string };
+    Body: { image?: ComfyImageRef; span?: { cols: number; rows: number } | null };
+  }>('/api/gallery/:id/tile', async (request, reply) => {
+    const { image, span } = request.body ?? {};
+    if (!image?.filename) return reply.code(400).send({ error: 'Which image?' });
+
+    const row = ctx.store.findImage(image);
+    if (!row) return reply.code(404).send({ error: 'That image is not in the gallery' });
+
+    if (span && (span.cols < 1 || span.cols > 4 || span.rows < 1 || span.rows > 4)) {
+      return reply.code(400).send({ error: 'A tile can span 1 to 4 cells' });
+    }
+
+    ctx.store.setImageTileSpan(row.id, span ?? null);
+    return ctx.store.getGeneration(request.params.id);
+  });
+
+  /**
+   * Record an image's pixel size, measured by the browser when it first loads.
+   *
+   * The grid needs the aspect ratio to shape a tile *before* the image arrives,
+   * or the layout jumps as each thumbnail loads. ComfyUI never tells us the
+   * size, so the first client to see an image reports it back.
+   */
+  app.put<{ Body: { image?: ComfyImageRef; width?: number; height?: number } }>(
+    '/api/images/dimensions',
+    async (request, reply) => {
+      const { image, width, height } = request.body ?? {};
+      if (!image?.filename) return reply.code(400).send({ error: 'Which image?' });
+      if (!width || !height || width < 1 || height < 1 || width > 30000 || height > 30000) {
+        return reply.code(400).send({ error: 'Implausible dimensions' });
+      }
+
+      const row = ctx.store.findImage(image);
+      if (!row) return reply.code(404).send({ error: 'That image is not in the gallery' });
+      // Never overwrite what we measured ourselves while archiving.
+      if (row.width && row.height) return reply.code(204).send();
+
+      ctx.store.setImageDimensions(row.id, Math.round(width), Math.round(height));
+      return reply.code(204).send();
     },
   );
 

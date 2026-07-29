@@ -6,6 +6,8 @@ import { api } from '../api/client';
 import {
   useArchiveStats,
   useDeleteWorkflow,
+  useImportFiles,
+  useImportScan,
   useImportWorkflow,
   useRescanWorkflow,
   useSettings,
@@ -196,6 +198,9 @@ export function SettingsScreen() {
           {pruneResult && <p className="text-xs text-muted">{pruneResult}</p>}
         </Card>
       </section>
+
+      {/* Folder import ---------------------------------------------- */}
+      <ImportSection />
 
       {/* Maintenance ------------------------------------------------ */}
       {status.data?.terminalEnabled && (
@@ -439,6 +444,186 @@ function FieldEditorRow({
         </Button>
       </div>
     </div>
+  );
+}
+
+/**
+ * Bring images that already exist on disk into the library.
+ *
+ * A ComfyUI output folder is usually full of work that predates this app.
+ * Scanning it and rating what is worth keeping runs everything through the same
+ * encrypted archive as freshly generated images.
+ */
+function ImportSection() {
+  const settings = useSettings();
+  const updateSettings = useUpdateSettings();
+  const [expanded, setExpanded] = useState(false);
+  const scan = useImportScan(expanded);
+  const importFiles = useImportFiles();
+
+  const [path, setPath] = useState(settings.data?.importRoot ?? '');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+
+  const files = scan.data?.files ?? [];
+  const pending = files.filter((file) => !file.imported);
+
+  const toggle = (candidate: string) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(candidate)) next.delete(candidate);
+      else next.add(candidate);
+      return next;
+    });
+
+  const runImport = async (rating: number) => {
+    setError(null);
+    setResult(null);
+    try {
+      const outcome = await importFiles.mutateAsync({ paths: [...selected], rating });
+      setSelected(new Set());
+      setResult(
+        `Imported ${outcome.imported}` +
+          (outcome.skipped ? `, skipped ${outcome.skipped} already there` : '') +
+          (outcome.failed.length ? `, ${outcome.failed.length} failed` : ''),
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Import failed');
+    }
+  };
+
+  return (
+    <section className="space-y-2">
+      <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
+        Import from a folder
+      </h2>
+      <Card className="space-y-3">
+        <p className="text-xs text-muted">
+          A path on the machine running Latent. Subfolders are included. If ComfyUI runs on a
+          remote instance, its outputs are not on this filesystem — point this at a local folder,
+          a network mount, or something synced.
+        </p>
+
+        <div className="flex gap-2">
+          <input
+            value={path}
+            onChange={(event) => setPath(event.target.value)}
+            placeholder="/home/you/ComfyUI/output"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            className="min-w-0 flex-1 rounded-xl border border-line bg-surface px-4 py-3 text-sm focus:border-accent focus:outline-none"
+          />
+          <Button
+            variant="secondary"
+            busy={updateSettings.isPending}
+            onClick={() => {
+              updateSettings.mutate({ importRoot: path.trim() || null });
+              setExpanded(true);
+              void scan.refetch();
+            }}
+          >
+            Scan
+          </Button>
+        </div>
+
+        {expanded && scan.data && !scan.data.ok && (
+          <p className="text-xs text-warn">{scan.data.message}</p>
+        )}
+
+        {expanded && scan.isFetching && (
+          <div className="grid place-items-center py-3">
+            <Spinner className="size-5 text-muted" />
+          </div>
+        )}
+
+        {expanded && scan.data?.ok && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs text-muted">
+              <span>
+                {files.length} image{files.length === 1 ? '' : 's'} found
+                {scan.data.truncated && ' (showing the first 2000)'}
+              </span>
+              {pending.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSelected(
+                      selected.size === pending.length
+                        ? new Set()
+                        : new Set(pending.map((file) => file.path)),
+                    )
+                  }
+                  className="text-accent"
+                >
+                  {selected.size === pending.length ? 'Select none' : 'Select all new'}
+                </button>
+              )}
+            </div>
+
+            <ul className="max-h-72 space-y-1 overflow-y-auto">
+              {files.map((file) => (
+                <li key={file.path}>
+                  <button
+                    type="button"
+                    disabled={file.imported}
+                    onClick={() => toggle(file.path)}
+                    className={cn(
+                      'flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm',
+                      file.imported
+                        ? 'text-muted opacity-50'
+                        : selected.has(file.path)
+                          ? 'bg-accent/15 text-accent'
+                          : 'active:bg-surface-2',
+                    )}
+                  >
+                    <span className="min-w-0 truncate">{file.path}</span>
+                    <span className="shrink-0 text-xs">
+                      {file.imported
+                        ? 'in library'
+                        : file.width
+                          ? `${file.width}×${file.height}`
+                          : ''}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+
+            {selected.size > 0 && (
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  busy={importFiles.isPending}
+                  onClick={() => runImport(0)}
+                >
+                  Import {selected.size}
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  busy={importFiles.isPending}
+                  onClick={() => runImport(5)}
+                >
+                  Import as ★5
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {!expanded && settings.data?.importRoot && (
+          <Button variant="ghost" size="sm" onClick={() => setExpanded(true)}>
+            Show {settings.data.importRoot}
+          </Button>
+        )}
+
+        <ErrorNote>{error}</ErrorNote>
+        {result && <p className="text-xs text-muted">{result}</p>}
+      </Card>
+    </section>
   );
 }
 

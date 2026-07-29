@@ -5,6 +5,7 @@ import { BottomTabs } from './components/BottomTabs';
 import { LiveBar } from './components/LiveBar';
 import { Spinner } from './components/ui';
 import { GalleryScreen } from './screens/GalleryScreen';
+import { FavoritesScreen } from './screens/FavoritesScreen';
 import { GenerateScreen } from './screens/GenerateScreen';
 import { LoginScreen } from './screens/LoginScreen';
 import { QueueScreen } from './screens/QueueScreen';
@@ -46,6 +47,7 @@ export function App() {
         <Routes>
           <Route path="/" element={<GenerateScreen />} />
           <Route path="/gallery" element={<GalleryScreen />} />
+          <Route path="/favorites" element={<FavoritesScreen />} />
           <Route path="/queue" element={<QueueScreen />} />
           <Route path="/settings" element={<SettingsScreen />} />
           <Route path="*" element={<GenerateScreen />} />

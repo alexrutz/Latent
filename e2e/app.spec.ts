@@ -60,7 +60,11 @@ async function open(page: Page, path = '/') {
   await page.locator('nav').first().waitFor({ state: 'visible', timeout: 20_000 });
 }
 
-/** Remove every workflow and gallery entry, so a test starts from nothing. */
+/**
+ * Wipe everything a test could observe, so a run never depends on what a
+ * previous one left behind. The dev server is reused between runs, so this has
+ * to cover every user-visible collection — not just the obvious two.
+ */
 async function resetState() {
   await withApi(async (ctx) => {
     const workflows = (await (await ctx.get('/api/workflows')).json()) as { id: string }[];
@@ -70,6 +74,12 @@ async function resetState() {
       items: { id: string }[];
     };
     for (const item of gallery.items) await ctx.delete(`/api/gallery/${item.id}`);
+
+    const favorites = (await (await ctx.get('/api/favorites')).json()) as { id: string }[];
+    for (const favorite of favorites) await ctx.delete(`/api/favorites/${favorite.id}`);
+
+    const blocks = (await (await ctx.get('/api/prompt-blocks')).json()) as { id: string }[];
+    for (const block of blocks) await ctx.delete(`/api/prompt-blocks/${block.id}`);
   });
 }
 
@@ -326,5 +336,160 @@ test.describe('the phone-specific fixes', () => {
     await page.getByRole('button', { name: 'Token', exact: true }).click();
     await expect(page.getByText(/WEB_PASSWORD/)).toBeVisible();
     await page.screenshot({ path: 'test-results/10-connections.png' });
+  });
+});
+
+test.describe('gallery, favourites and the prompt builder', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+  });
+
+  /** Generate a batch and wait until at least `count` images exist. */
+  async function generate(page: Page, prompt: string, batch = 1) {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill(prompt);
+    if (batch > 1) await page.getByRole('button', { name: String(batch), exact: true }).click();
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await expect
+      .poll(
+        async () => {
+          const page2 = await withApi(async (ctx) => {
+            const response = await ctx.get('/api/gallery');
+            return (await response.json()) as { items: { images: unknown[] }[] };
+          });
+          return page2.items.reduce((total, item) => total + item.images.length, 0);
+        },
+        { timeout: 40_000 },
+      )
+      .toBeGreaterThanOrEqual(batch);
+  }
+
+  test('only ever loads thumbnails in the grid', async ({ page }) => {
+    await generate(page, 'thumbnail check');
+
+    const requested: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/api/view')) requested.push(request.url());
+    });
+
+    await open(page, '/gallery');
+    await expect(page.locator('img[alt*="thumbnail check"]').first()).toBeVisible({
+      timeout: 20_000,
+    });
+    await page.waitForTimeout(500);
+
+    // Every image the grid pulls must be a preview — that is the whole point of
+    // the data-saving requirement.
+    expect(requested.length).toBeGreaterThan(0);
+    expect(requested.every((url) => url.includes('preview='))).toBe(true);
+  });
+
+  test('lets the grid width be changed and remembers it', async ({ page }) => {
+    await generate(page, 'grid check');
+    await open(page, '/gallery');
+
+    await page.getByRole('button', { name: 'Grid layout' }).click();
+    await page.getByLabel('Columns').fill('4');
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    const grid = page.locator('div[style*="grid-template-columns"]').first();
+    await expect(grid).toHaveAttribute('style', /repeat\(4,/);
+
+    // The choice belongs to the device, so it must survive a reload.
+    await page.reload();
+    await signIn(page);
+    await expect(page.locator('div[style*="grid-template-columns"]').first()).toHaveAttribute(
+      'style',
+      /repeat\(4,/,
+    );
+  });
+
+  test('skips past queued placeholders to the newest finished image', async ({ page }) => {
+    // One finished image, then a queue of slow jobs stacked on top of it.
+    await generate(page, 'the one I want to see');
+
+    await open(page, '/');
+    await page.getByRole('button', { name: /Steps/ }).click();
+    await page.getByRole('textbox', { name: 'Steps' }).fill('60');
+    await page.getByRole('button', { name: 'Done' }).click();
+    await page.getByRole('button', { name: '8', exact: true }).click();
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await page.getByRole('link', { name: 'Gallery' }).click();
+
+    // The finished image must be on screen without scrolling, even though eight
+    // placeholders now sit above it in the list.
+    const thumb = page.locator('img[alt*="the one I want to see"]').first();
+    await expect(thumb).toBeInViewport({ timeout: 20_000 });
+    await page.screenshot({ path: 'test-results/11-gallery-autoscroll.png' });
+
+    await withApi((ctx) => ctx.delete('/api/queue'));
+    await withApi((ctx) => ctx.post('/api/queue/interrupt'));
+  });
+
+  test('favourites an image and offers to make more like it', async ({ page }) => {
+    await generate(page, 'a keeper');
+
+    await open(page, '/gallery');
+    await page.locator('img[alt*="a keeper"]').first().click();
+    await page.getByRole('button', { name: /Favourite/ }).click();
+
+    await page.getByRole('button', { name: 'Close' }).click();
+    await page.getByRole('link', { name: 'Favourites' }).click();
+
+    await expect(page.getByRole('heading', { name: 'Favourites' })).toBeVisible();
+    const favorite = page.locator('img[alt="a keeper"]').first();
+    await expect(favorite).toBeVisible({ timeout: 20_000 });
+
+    await favorite.click();
+    await expect(page.getByRole('button', { name: 'Make more like this' })).toBeVisible();
+
+    // Favourites carry their own rating, separate from the gallery's.
+    await page.getByRole('button', { name: '4 stars' }).click();
+    await page.screenshot({ path: 'test-results/12-favourites.png' });
+
+    await page.getByRole('button', { name: 'Done' }).click();
+    await expect(page.getByText('★★★★').first()).toBeVisible();
+  });
+
+  test('switches favourites between thumbnails and a compact list', async ({ page }) => {
+    await generate(page, 'list mode');
+    await open(page, '/gallery');
+    await page.locator('img[alt*="list mode"]').first().click();
+    await page.getByRole('button', { name: /Favourite/ }).click();
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    await page.getByRole('link', { name: 'Favourites' }).click();
+    await expect(page.locator('img[alt="list mode"]').first()).toBeVisible({ timeout: 20_000 });
+
+    // Thumbnails are the default; turning them off gives a text list.
+    await page.getByRole('switch').first().click();
+    await expect(page.locator('img[alt="list mode"]')).toHaveCount(0);
+    await expect(page.getByText('list mode').first()).toBeVisible();
+  });
+
+  test('builds a prompt from saved blocks instead of typing', async ({ page }) => {
+    await open(page, '/');
+
+    await page.getByRole('button', { name: '+ Prompt blocks' }).click();
+    await page.getByRole('button', { name: 'Show' }).click();
+
+    await page.getByPlaceholder('Name, e.g. Golden hour').fill('Golden hour');
+    await page.getByPlaceholder('Group (optional), e.g. Lighting').fill('Lighting');
+    await page.getByPlaceholder('warm rim light, long shadows, low sun').fill('warm rim light, long shadows');
+    await page.getByRole('button', { name: 'Save block' }).click();
+
+    await expect(page.getByRole('button', { name: 'Golden hour' })).toBeVisible();
+    await page.getByRole('button', { name: 'Golden hour' }).click();
+    await page.screenshot({ path: 'test-results/13-prompt-blocks.png' });
+
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    // Tapping the chip appended the fragment to the prompt.
+    await expect(page.getByPlaceholder('Describe the image…')).toHaveValue(
+      /warm rim light, long shadows$/,
+    );
   });
 });

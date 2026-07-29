@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { ComfyImageRef, UploadImageResponse } from '@latent/shared';
 
 import { ComfyError } from '../comfy/client.js';
+import { VaultLockedError } from '../vault.js';
 import type { AppContext } from './context.js';
 
 /** Guard against a filename walking out of ComfyUI's media directories. */
@@ -46,13 +47,26 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
      */
     const known = ctx.store.findImage(params);
     if (known?.archived_path) {
-      const bytes = await ctx.archive.read(known.archived_path);
-      if (bytes) {
-        return reply
-          .header('content-type', contentTypeFor(filename))
-          .header('cache-control', 'private, max-age=86400')
-          .header('x-latent-source', 'archive')
-          .send(bytes);
+      // A `preview` request must never fall back to the full-size file: the
+      // gallery grid asks for previews specifically to avoid pulling megabytes
+      // over mobile data.
+      const wantsThumbnail = Boolean(preview) && Boolean(known.thumb_path);
+      const path = wantsThumbnail ? (known.thumb_path as string) : known.archived_path;
+
+      try {
+        const bytes = await ctx.archive.read(path);
+        if (bytes) {
+          return reply
+            .header('content-type', wantsThumbnail ? thumbnailContentType(path) : contentTypeFor(filename))
+            .header('cache-control', 'private, max-age=86400')
+            .header('x-latent-source', wantsThumbnail ? 'archive-thumb' : 'archive')
+            .send(bytes);
+        }
+      } catch (error) {
+        if (error instanceof VaultLockedError) {
+          return reply.code(423).send({ error: error.message, locked: true });
+        }
+        throw error;
       }
     }
 
@@ -155,6 +169,11 @@ function sendImageError(reply: FastifyReply, error: unknown) {
   return reply.code(502).send({
     error: error instanceof Error ? error.message : 'Could not fetch the image from ComfyUI',
   });
+}
+
+/** Thumbnails come from ComfyUI as WebP, or from our own encoder as PNG. */
+function thumbnailContentType(path: string): string {
+  return path.endsWith('.webp') ? 'image/webp' : 'image/png';
 }
 
 function contentTypeFor(filename: string): string {

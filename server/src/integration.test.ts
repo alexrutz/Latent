@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -7,6 +7,8 @@ import WebSocket from 'ws';
 import type {
   GalleryPage,
   GenerationRecord,
+  ImportResult,
+  ImportScanResult,
   QueueState,
   ServerEvent,
   StatusResponse,
@@ -18,7 +20,9 @@ import Database from 'better-sqlite3';
 
 import { buildApp } from './app.js';
 import { Store } from './db.js';
+import { Vault } from './vault.js';
 import { createMockComfy } from './mock/comfy.js';
+import { renderPlaceholder } from './mock/png.js';
 
 /**
  * End-to-end coverage of the server against the mock ComfyUI: import a
@@ -1008,4 +1012,333 @@ describe('database migrations', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe('encrypted archive', () => {
+  /**
+   * The archive holds pictures on a disk indefinitely, so the bytes on that disk
+   * must be useless without the password — that is the whole point of the
+   * feature. These tests read the actual files, not the API.
+   */
+  it('writes ciphertext to disk and needs a sign-in to read it back', async () => {
+    const comfy = createMockComfy({ stepDelayMs: 2, logLevel: 'silent' });
+    const comfyUrl = await comfy.listen(0);
+    const dir = mkdtempSync(join(tmpdir(), 'latent-vault-'));
+
+    const built = await buildApp({
+      comfyUrl,
+      dbPath: join(dir, 'vault.db'),
+      dataDir: dir,
+      archiveDir: join(dir, 'archive'),
+      webDir: join(dir, 'no-web'),
+      password: null,
+      logLevel: 'silent',
+    });
+    await built.app.listen({ port: 0, host: '127.0.0.1' });
+    const address = built.app.server.address();
+    const url = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`;
+
+    const call = (path: string, init: RequestInit & { cookie?: string } = {}) => {
+      const { cookie: sessionCookie, ...rest } = init;
+      return fetch(`${url}${path}`, {
+        ...rest,
+        headers: {
+          ...(rest.body ? { 'content-type': 'application/json' } : {}),
+          ...(sessionCookie ? { cookie: sessionCookie } : {}),
+          ...(rest.headers ?? {}),
+        },
+      });
+    };
+
+    try {
+      const claim = await call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'vault password' }),
+      });
+      const cookie = claim.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      await waitFor(async () => {
+        const status = (await (await call('/api/status', { cookie })).json()) as StatusResponse;
+        return status.comfyOnline || null;
+      }, 10_000);
+
+      const workflow = (await (
+        await call('/api/workflows', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ name: 'vault', graph: sd15Txt2Img }),
+        })
+      ).json()) as WorkflowDetail;
+
+      await call('/api/generate', {
+        method: 'POST',
+        cookie,
+        body: JSON.stringify({
+          workflowId: workflow.id,
+          values: { '6.text': 'a secret', '3.steps': 4 },
+        }),
+      });
+
+      const finished = await waitFor(async () => {
+        const page = (await (await call('/api/gallery', { cookie })).json()) as GalleryPage;
+        const record = page.items[0];
+        return record && record.status === 'completed' && record.images.length > 0 ? record : null;
+      }, 20_000);
+
+      const image = finished.images[0] as GenerationRecord['images'][number];
+      const rated = (await (
+        await call(`/api/gallery/${finished.id}/rating`, {
+          method: 'PUT',
+          cookie,
+          body: JSON.stringify({ image, rating: 5 }),
+        })
+      ).json()) as GenerationRecord;
+
+      expect(rated.images[0]?.archived).toBe(true);
+      // A thumbnail is stored too, so the grid never pulls a full-size image.
+      expect(rated.images[0]?.hasThumbnail).toBe(true);
+      expect(rated.images[0]?.width).toBeGreaterThan(0);
+
+      // Every byte on disk must be ciphertext — no PNG headers anywhere.
+      const files = readdirSync(join(dir, 'archive'), { recursive: true }) as string[];
+      const stored = files
+        .map((name) => join(dir, 'archive', String(name)))
+        .filter((candidate) => statSync(candidate).isFile());
+      expect(stored.length).toBeGreaterThan(0);
+
+      for (const file of stored) {
+        const bytes = readFileSync(file);
+        expect(bytes.subarray(0, 6).toString()).toBe('LTNTv1');
+        // The PNG signature must not appear anywhere in the ciphertext.
+        expect(bytes.includes(Buffer.from([0x89, 0x50, 0x4e, 0x47]))).toBe(false);
+      }
+
+      // Through the API, with a session, it decrypts fine.
+      const params = new URLSearchParams({
+        filename: image.filename,
+        subfolder: image.subfolder,
+        type: image.type,
+      });
+      const view = await call(`/api/view?${params}`, { cookie });
+      expect(view.status).toBe(200);
+      expect(view.headers.get('x-latent-source')).toBe('archive');
+      expect(Buffer.from(await view.arrayBuffer()).subarray(0, 4)).toEqual(
+        Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      );
+
+      // Asking for a preview serves the small copy, not the full image.
+      const thumb = await call(`/api/view?${params}&preview=webp;70`, { cookie });
+      expect(thumb.headers.get('x-latent-source')).toBe('archive-thumb');
+      const thumbBytes = Buffer.from(await thumb.arrayBuffer());
+      expect(thumbBytes.length).toBeLessThan(Number(view.headers.get('content-length') ?? 1e9));
+
+      /*
+       * Now the part that matters: restart the server. The key was only ever in
+       * memory, so the archive comes back sealed and stays that way until
+       * somebody signs in — which is exactly "not visible even with access to
+       * the PC".
+       */
+      await built.app.close();
+      await comfy.close();
+
+      const restarted = await buildApp({
+        comfyUrl,
+        dbPath: join(dir, 'vault.db'),
+        dataDir: dir,
+        archiveDir: join(dir, 'archive'),
+        webDir: join(dir, 'no-web'),
+        password: null,
+        logLevel: 'silent',
+      });
+      await restarted.app.listen({ port: 0, host: '127.0.0.1' });
+      const restartedAddress = restarted.app.server.address();
+      const restartedUrl = `http://127.0.0.1:${
+        typeof restartedAddress === 'object' && restartedAddress ? restartedAddress.port : 0
+      }`;
+
+      try {
+        const status = (await (await fetch(`${restartedUrl}/api/status`)).json()) as StatusResponse;
+        expect(status.archiveLocked).toBe(true);
+
+        // A stolen session cookie is not enough — the key is not there.
+        const locked = await fetch(`${restartedUrl}/api/view?${params}`, { headers: { cookie } });
+        expect(locked.status).toBe(423);
+
+        // The wrong password does not unlock it either.
+        await fetch(`${restartedUrl}/api/auth/login`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ password: 'not the password' }),
+        });
+        expect((await fetch(`${restartedUrl}/api/view?${params}`, { headers: { cookie } })).status).toBe(423);
+
+        // The right one does.
+        const login = await fetch(`${restartedUrl}/api/auth/login`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ password: 'vault password' }),
+        });
+        const freshCookie = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+        const unlocked = await fetch(`${restartedUrl}/api/view?${params}`, {
+          headers: { cookie: freshCookie },
+        });
+        expect(unlocked.status).toBe(200);
+
+        // And the metadata survived encryption, so the settings are still there.
+        const page = (await (
+          await fetch(`${restartedUrl}/api/gallery`, { headers: { cookie: freshCookie } })
+        ).json()) as GalleryPage;
+        expect(page.items[0]?.title).toBe('a secret');
+        expect(Object.keys(page.items[0]?.seeds ?? {})).toContain('3.seed');
+      } finally {
+        await restarted.app.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  it('keeps images readable after a password change', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-rekey-'));
+    try {
+      const store = new Store(join(dir, 'rekey.db'));
+      const vault = new Vault(store);
+
+      vault.initialise('first password');
+      const secret = Buffer.from('the original pixels');
+      const sealed = vault.encrypt(secret);
+
+      expect(vault.rewrap('first password', 'second password')).toBe(true);
+      vault.lock();
+
+      // The old password is now useless…
+      expect(vault.unlock('first password')).toBe(false);
+      // …and the new one reads the file written under the old one, because
+      // re-keying rewraps the master key rather than re-encrypting anything.
+      expect(vault.unlock('second password')).toBe(true);
+      expect(vault.decrypt(sealed).toString()).toBe('the original pixels');
+
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe('folder import', () => {
+  it('scans a folder tree, imports into the encrypted archive, and refuses to escape it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-import-'));
+    const outputs = join(dir, 'outputs');
+    mkdirSync(join(outputs, 'nested'), { recursive: true });
+
+    // Two real PNGs, one in a subfolder, plus a non-image that must be ignored.
+    writeFileSync(join(outputs, 'first.png'), renderPlaceholder(64, 48, 'first'));
+    writeFileSync(join(outputs, 'nested', 'second.png'), renderPlaceholder(32, 64, 'second'));
+    writeFileSync(join(outputs, 'notes.txt'), 'not an image');
+    // And a secret outside the root, to prove traversal is blocked.
+    writeFileSync(join(dir, 'outside.png'), renderPlaceholder(16, 16, 'outside'));
+
+    const server = await bootIsolated({
+      dbPath: join(dir, 'import.db'),
+      dataDir: dir,
+      archiveDir: join(dir, 'archive'),
+      webDir: join(dir, 'no-web'),
+    });
+
+    try {
+      const claim = await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'import password' }),
+      });
+      const cookie = claim.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      // Nothing configured yet.
+      const before = (await (
+        await server.call('/api/import/scan', { cookie })
+      ).json()) as ImportScanResult;
+      expect(before.ok).toBe(false);
+
+      await server.call('/api/settings', {
+        method: 'PATCH',
+        cookie,
+        body: JSON.stringify({ importRoot: outputs }),
+      });
+
+      const scan = (await (
+        await server.call('/api/import/scan', { cookie })
+      ).json()) as ImportScanResult;
+      expect(scan.ok).toBe(true);
+      expect(scan.files.map((file) => file.path).sort()).toEqual([
+        'first.png',
+        'nested/second.png',
+      ]);
+
+      // Dimensions come from the file headers, so the grid can shape tiles
+      // before anything is downloaded.
+      const first = scan.files.find((file) => file.path === 'first.png');
+      expect(first).toMatchObject({ width: 64, height: 48, imported: false });
+
+      const result = (await (
+        await server.call('/api/import', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ paths: ['first.png', 'nested/second.png'], rating: 4 }),
+        })
+      ).json()) as ImportResult;
+      expect(result).toMatchObject({ imported: 2, skipped: 0 });
+      expect(result.failed).toEqual([]);
+
+      // They arrive as ordinary, rated gallery entries.
+      const page = (await (
+        await server.call('/api/gallery?minRating=4', { cookie })
+      ).json()) as GalleryPage;
+      expect(page.items).toHaveLength(2);
+      expect(page.items.every((item) => item.source === 'import')).toBe(true);
+      expect(page.items[0]?.images[0]?.archived).toBe(true);
+
+      // And their bytes went into the encrypted store like everything else.
+      const archived = readdirSync(join(dir, 'archive'), { recursive: true }) as string[];
+      const files = archived
+        .map((name) => join(dir, 'archive', String(name)))
+        .filter((candidate) => statSync(candidate).isFile());
+      expect(files.length).toBeGreaterThan(0);
+      for (const file of files) {
+        expect(readFileSync(file).subarray(0, 6).toString()).toBe('LTNTv1');
+      }
+
+      // Re-importing is a no-op rather than a duplicate.
+      const again = (await (
+        await server.call('/api/import', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ paths: ['first.png'] }),
+        })
+      ).json()) as ImportResult;
+      expect(again).toMatchObject({ imported: 0, skipped: 1 });
+
+      // The scan now marks them, so the UI can grey them out.
+      const rescan = (await (
+        await server.call('/api/import/scan', { cookie })
+      ).json()) as ImportScanResult;
+      expect(rescan.files.every((file) => file.imported)).toBe(true);
+
+      /*
+       * The important one: an authenticated caller must not be able to read
+       * files outside the configured folder by asking nicely.
+       */
+      const escape = (await (
+        await server.call('/api/import', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ paths: ['../outside.png', '/etc/hostname'] }),
+        })
+      ).json()) as ImportResult;
+      expect(escape.imported).toBe(0);
+      expect(escape.failed).toHaveLength(2);
+      expect(escape.failed.every((entry) => /outside the import folder/.test(entry.reason))).toBe(true);
+    } finally {
+      await server.dispose();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 40_000);
 });

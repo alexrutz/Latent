@@ -2,6 +2,13 @@ import type {
   AppSettings,
   ArchiveStats,
   ComfyImageRef,
+  Favorite,
+  FavoriteSort,
+  ImportResult,
+  ImportScanResult,
+  PromptBlock,
+  PromptBlockInput,
+  TileSpan,
   ConnectionInput,
   ConnectionSummary,
   ConnectionTestResult,
@@ -159,6 +166,71 @@ export const api = {
   pruneArchive: () => request<{ removed: number }>('/api/archive/prune', { method: 'POST' }),
 
   loras: () => request<string[]>('/api/models/loras'),
+
+  /** Override how many grid cells an image occupies; null returns it to auto. */
+  setTileSpan: (generationId: string, image: ComfyImageRef, span: TileSpan | null) =>
+    request<GenerationRecord>(`/api/gallery/${generationId}/tile`, {
+      method: 'PUT',
+      body: JSON.stringify({ image, span }),
+    }),
+
+  /**
+   * Report an image's pixel size after the browser has loaded it, so the grid
+   * can shape its tile up front next time instead of reflowing.
+   */
+  reportDimensions: (image: ComfyImageRef, width: number, height: number) =>
+    request<void>('/api/images/dimensions', {
+      method: 'PUT',
+      body: JSON.stringify({ image, width, height }),
+    }),
+
+  /* ---------------------------------------------------------------- */
+  /* Favourites                                                        */
+  /* ---------------------------------------------------------------- */
+
+  favorites: (sort: FavoriteSort = 'rating') =>
+    request<Favorite[]>(`/api/favorites?sort=${sort}`),
+
+  addFavorite: (generationId: string, image: ComfyImageRef, note?: string) =>
+    request<Favorite>('/api/favorites', {
+      method: 'POST',
+      body: JSON.stringify({ generationId, image, note }),
+    }),
+
+  updateFavorite: (id: string, patch: { rating?: number; note?: string | null }) =>
+    request<Favorite>(`/api/favorites/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+
+  deleteFavorite: (id: string) => request<void>(`/api/favorites/${id}`, { method: 'DELETE' }),
+
+  /* ---------------------------------------------------------------- */
+  /* Prompt building blocks                                            */
+  /* ---------------------------------------------------------------- */
+
+  promptBlocks: () => request<PromptBlock[]>('/api/prompt-blocks'),
+
+  createPromptBlock: (input: PromptBlockInput) =>
+    request<PromptBlock>('/api/prompt-blocks', { method: 'POST', body: JSON.stringify(input) }),
+
+  updatePromptBlock: (id: string, input: Partial<PromptBlockInput>) =>
+    request<PromptBlock>(`/api/prompt-blocks/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+
+  deletePromptBlock: (id: string) =>
+    request<void>(`/api/prompt-blocks/${id}`, { method: 'DELETE' }),
+
+  /* ---------------------------------------------------------------- */
+  /* Folder import                                                     */
+  /* ---------------------------------------------------------------- */
+
+  scanImportFolder: () => request<ImportScanResult>('/api/import/scan'),
+
+  importFiles: (paths: string[], rating = 0) =>
+    request<ImportResult>('/api/import', {
+      method: 'POST',
+      body: JSON.stringify({ paths, rating }),
+    }),
 
   listWorkflows: () => request<WorkflowSummary[]>('/api/workflows'),
 
