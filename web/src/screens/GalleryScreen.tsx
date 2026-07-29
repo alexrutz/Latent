@@ -4,13 +4,21 @@ import { useNavigate } from 'react-router-dom';
 import type { GenerationRecord } from '@latent/shared';
 
 import { api, imageUrl } from '../api/client';
-import { useGallery, useSettings, useWorkflows } from '../api/queries';
+import { useGallery, useRateImage, useSettings, useWorkflows } from '../api/queries';
 import { ImageViewer, Thumb } from '../components/ImageViewer';
+import { RatingStars } from '../components/RatingStars';
 import { Button, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { usePendingStore } from '../state/pending';
 
+const FILTERS = [
+  { label: 'All', minRating: 0 },
+  { label: 'Rated', minRating: 1 },
+  { label: '★ 4+', minRating: 4 },
+] as const;
+
 export function GalleryScreen() {
-  const gallery = useGallery();
+  const [minRating, setMinRating] = useState(0);
+  const gallery = useGallery({ minRating });
   const [selected, setSelected] = useState<{ record: GenerationRecord; index: number } | null>(null);
   const sentinel = useRef<HTMLDivElement>(null);
 
@@ -39,6 +47,27 @@ export function GalleryScreen() {
   // would never gain its images while the viewer is open.
   const openRecord = selected ? (items.find((item) => item.id === selected.record.id) ?? selected.record) : null;
 
+  const filterBar = (
+    <div className="mb-3 flex items-center justify-between gap-3">
+      <h1 className="text-xl font-semibold">Gallery</h1>
+      <div className="flex gap-1 rounded-full bg-surface p-1">
+        {FILTERS.map((filter) => (
+          <button
+            key={filter.label}
+            type="button"
+            onClick={() => setMinRating(filter.minRating)}
+            className={cn(
+              'rounded-full px-3 py-1.5 text-xs',
+              minRating === filter.minRating ? 'bg-accent text-white' : 'text-muted',
+            )}
+          >
+            {filter.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
   if (gallery.isLoading) {
     return (
       <div className="grid h-full place-items-center">
@@ -49,28 +78,50 @@ export function GalleryScreen() {
 
   if (items.length === 0) {
     return (
-      <EmptyState
-        icon="▦"
-        title="Nothing generated yet"
-        hint="Results appear here as soon as a run finishes."
-      />
+      <div className="safe-t px-4 pt-3">
+        {filterBar}
+        <EmptyState
+          icon="▦"
+          title={minRating > 0 ? 'Nothing rated yet' : 'Nothing generated yet'}
+          hint={
+            minRating > 0
+              ? 'Rate a result and it is copied to this device, so it survives the ComfyUI instance being shut down.'
+              : 'Results appear here as soon as a run finishes.'
+          }
+        />
+      </div>
     );
   }
 
   return (
     <div className="safe-t px-4 pt-3 pb-6">
-      <h1 className="mb-3 text-xl font-semibold">Gallery</h1>
+      {filterBar}
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
         {items.map((record) =>
           record.images.length > 0 ? (
             record.images.map((image, imageIndex) => (
-              <Thumb
-                key={`${record.id}-${image.filename}`}
-                image={image}
-                alt={record.title}
-                onClick={() => setSelected({ record, index: imageIndex })}
-              />
+              <div key={`${record.id}-${image.filename}`} className="relative">
+                <Thumb
+                  image={image}
+                  alt={record.title}
+                  className="w-full"
+                  onClick={() => setSelected({ record, index: imageIndex })}
+                />
+                {image.rating > 0 && (
+                  <span
+                    title={
+                      image.archived
+                        ? 'Rated and stored on this device'
+                        : 'Rated, but not copied locally yet'
+                    }
+                    className="pointer-events-none absolute bottom-1 left-1 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] text-warn backdrop-blur"
+                  >
+                    {'★'.repeat(image.rating)}
+                    {!image.archived && <span className="ml-1 text-danger">!</span>}
+                  </span>
+                )}
+              </div>
             ))
           ) : (
             <PlaceholderCard key={record.id} record={record} />
@@ -154,6 +205,17 @@ function ViewerWithActions({
 
   const image = record.images[index];
   const workflowExists = workflows.data?.some((item) => item.id === record.workflowId) ?? false;
+  const rateImage = useRateImage();
+
+  const rate = async (rating: number) => {
+    if (!image) return;
+    setError(null);
+    try {
+      await rateImage.mutateAsync({ generationId: record.id, image, rating });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not save that rating');
+    }
+  };
 
   const rerun = (freshSeed: boolean) => {
     if (!record.workflowId) return;
@@ -228,6 +290,24 @@ function ViewerWithActions({
 
           {/* Scrolls sideways rather than wrapping — a two-line button row eats
               the bottom of the image on a small screen. */}
+          {/*
+            Rating is what copies the bytes onto this device, so it is the first
+            thing offered — it is the difference between keeping an image and
+            losing it when the instance is destroyed.
+          */}
+          {image && (
+            <div className="flex items-center justify-between gap-3">
+              <RatingStars value={image.rating} onChange={rate} size="sm" />
+              <span className="text-[11px] text-muted">
+                {image.archived
+                  ? 'Stored on this device'
+                  : image.rating > 0
+                    ? 'Not copied locally'
+                    : 'Rate to keep a local copy'}
+              </span>
+            </div>
+          )}
+
           <div className="no-scrollbar flex gap-2 overflow-x-auto [&>button]:shrink-0 [&>button]:whitespace-nowrap">
             <Button variant="secondary" size="sm" onClick={share}>
               Save

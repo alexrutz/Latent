@@ -1,5 +1,6 @@
 import type { ParamSchema, ParamValues } from '@latent/shared';
 
+import type { Archive } from '../archive.js';
 import type { Auth } from '../auth.js';
 import type { Config } from '../config.js';
 import type { Store } from '../db.js';
@@ -10,6 +11,7 @@ export interface AppContext {
   store: Store;
   orchestrator: Orchestrator;
   auth: Auth;
+  archive: Archive;
 }
 
 /**

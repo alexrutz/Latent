@@ -1,3 +1,5 @@
+import { Agent } from 'undici';
+
 import type {
   ApiWorkflow,
   ComfyImageRef,
@@ -8,6 +10,8 @@ import type {
   SystemStats,
   UploadImageResponse,
 } from '@latent/shared';
+
+import { authHeaders, type ConnectionConfig } from './connection.js';
 
 export class ComfyError extends Error {
   override name = 'ComfyError';
@@ -27,18 +31,56 @@ export interface ViewParams extends ComfyImageRef {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+/** A TLS error, as opposed to the server simply not being there. */
+export function isSelfSignedError(error: unknown): boolean {
+  const codes = ['DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'];
+  const seen = new Set<unknown>();
+
+  for (let current: unknown = error; current && !seen.has(current); current = (current as { cause?: unknown }).cause) {
+    seen.add(current);
+    const code = (current as { code?: string }).code;
+    if (code && codes.includes(code)) return true;
+    const message = (current as { message?: string }).message ?? '';
+    if (/self.signed certificate|unable to verify the first certificate/i.test(message)) return true;
+  }
+  return false;
+}
+
 /**
  * Typed client for ComfyUI's HTTP API.
  *
  * Recent ComfyUI builds mirror every route under `/api`, older ones only serve
  * them at the root. We probe once and remember which prefix answers, so the same
  * binary works against both.
+ *
+ * Auth headers and TLS behaviour come from the `ConnectionConfig`, so a local
+ * box and a token-protected vast.ai instance with a self-signed certificate are
+ * the same code path.
  */
 export class ComfyClient {
   private prefix: string | null = null;
   private probing: Promise<string> | null = null;
+  private readonly dispatcher: Agent | undefined;
+  readonly baseUrl: string;
 
-  constructor(readonly baseUrl: string) {}
+  constructor(readonly connection: ConnectionConfig) {
+    this.baseUrl = connection.url;
+    // Only built when the user explicitly opted in for this connection —
+    // vast.ai serves a self-signed certificate when ENABLE_HTTPS=true, and
+    // there is no other way to reach it.
+    this.dispatcher = connection.allowSelfSigned
+      ? new Agent({ connect: { rejectUnauthorized: false } })
+      : undefined;
+  }
+
+  private get headers(): Record<string, string> {
+    return authHeaders(this.connection);
+  }
+
+  /** Release the TLS agent's sockets when a connection is swapped out. */
+  async close(): Promise<void> {
+    await this.dispatcher?.close().catch(() => undefined);
+  }
 
   /** Resolve (and cache) the route prefix this server uses. */
   async resolvePrefix(): Promise<string> {
@@ -46,21 +88,38 @@ export class ComfyClient {
     if (this.probing) return this.probing;
 
     this.probing = (async () => {
+      let lastError: unknown;
+      let sawUnauthorized = false;
+
       for (const candidate of ['/api', '']) {
         try {
-          const response = await fetch(`${this.baseUrl}${candidate}/system_stats`, {
-            signal: AbortSignal.timeout(5_000),
-          });
+          const response = await fetch(
+            `${this.baseUrl}${candidate}/system_stats`,
+            this.init({ signal: AbortSignal.timeout(8_000) }),
+          );
           if (response.ok) {
             void response.body?.cancel();
             this.prefix = candidate;
             return candidate;
           }
-        } catch {
-          // Try the next candidate.
+          // 401/403 means we reached something that wants credentials — a very
+          // different problem from "nothing is listening", and worth saying so.
+          if (response.status === 401 || response.status === 403) sawUnauthorized = true;
+          void response.body?.cancel();
+        } catch (error) {
+          lastError = error;
         }
       }
+
       // Nothing answered. Don't cache — the server may just not be up yet.
+      if (sawUnauthorized) {
+        throw new ComfyError(`ComfyUI at ${this.baseUrl} rejected our credentials`, 401);
+      }
+      if (isSelfSignedError(lastError)) {
+        throw new ComfyError(
+          `${this.baseUrl} uses a self-signed certificate. Enable "Allow self-signed certificate" on this connection.`,
+        );
+      }
       throw new ComfyError(`Cannot reach ComfyUI at ${this.baseUrl}`);
     })();
 
@@ -85,6 +144,24 @@ export class ComfyClient {
     return url.toString();
   }
 
+  /**
+   * Add this connection's auth header and TLS dispatcher to a fetch init.
+   *
+   * `dispatcher` is undici's, and Node's global fetch *is* undici — it honours
+   * the field even though the DOM `RequestInit` type does not describe it.
+   */
+  private init(rest: RequestInit = {}): RequestInit {
+    // `Omit` then widen: @types/node declares `dispatcher` with its own bundled
+    // undici types, which are structurally incompatible with the `undici`
+    // package's own `Agent`. They are the same object at runtime.
+    const init: Omit<RequestInit, 'dispatcher'> & { dispatcher?: unknown } = {
+      ...rest,
+      headers: { ...this.headers, ...((rest.headers as Record<string, string>) ?? {}) },
+    };
+    if (this.dispatcher) init.dispatcher = this.dispatcher;
+    return init as RequestInit;
+  }
+
   private async request(
     path: string,
     init: RequestInit & { query?: Record<string, string | number | undefined> } = {},
@@ -94,12 +171,17 @@ export class ComfyClient {
 
     let response: Response;
     try {
-      response = await fetch(url, {
-        ...rest,
-        signal: rest.signal ?? AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
-      });
+      response = await fetch(
+        url,
+        this.init({ ...rest, signal: rest.signal ?? AbortSignal.timeout(DEFAULT_TIMEOUT_MS) }),
+      );
     } catch (cause) {
       this.resetPrefix();
+      if (isSelfSignedError(cause)) {
+        throw new ComfyError(
+          'ComfyUI is using a self-signed certificate. Enable "Allow self-signed certificate" on this connection.',
+        );
+      }
       throw new ComfyError(
         `Request to ComfyUI failed: ${cause instanceof Error ? cause.message : String(cause)}`,
       );
@@ -137,6 +219,16 @@ export class ComfyClient {
 
   systemStats(): Promise<SystemStats> {
     return this.json<SystemStats>('/system_stats');
+  }
+
+  /**
+   * Files in one of ComfyUI's model directories, e.g. `loras`.
+   *
+   * Older builds don't serve `/models/{folder}`; the caller falls back to
+   * reading the option list out of `/object_info`.
+   */
+  models(folder: string): Promise<string[]> {
+    return this.json<string[]>(`/models/${encodeURIComponent(folder)}`);
   }
 
   queue(): Promise<QueueResponse> {

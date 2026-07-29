@@ -4,7 +4,15 @@ import { useNavigate } from 'react-router-dom';
 import { defaultValues, findFieldByRole } from '@latent/shared';
 import type { ParamField, ParamValues, WidgetValue } from '@latent/shared';
 
-import { useGenerate, useWorkflow, useWorkflows } from '../api/queries';
+import {
+  useDeletePreset,
+  useGenerate,
+  usePresets,
+  useSavePreset,
+  useWorkflow,
+  useWorkflows,
+} from '../api/queries';
+import { LoraEditor } from '../components/LoraEditor';
 import { FieldChip, ImageField, PromptField, SeedField } from '../components/ParamControl';
 import { Button, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { useLiveStore } from '../state/live';
@@ -147,12 +155,13 @@ function GenerateForm({
   const negativeFields = byRole('negative_prompt');
   const imageFields = byRole('image_input');
   const seedFields = byRole('seed');
+  const loraTextFields = byRole('lora_text');
 
   /** Everything on the main screen that isn't given its own dedicated control. */
   const chipFields = fields.filter(
     (field) =>
       field.group === 'main' &&
-      !['prompt', 'negative_prompt', 'image_input', 'seed'].includes(field.role),
+      !['prompt', 'negative_prompt', 'image_input', 'seed', 'lora_text'].includes(field.role),
   );
   const advancedFields = fields.filter((field) => field.group === 'advanced');
 
@@ -226,12 +235,34 @@ function GenerateForm({
         </p>
       )}
 
+      <PresetBar
+        workflowId={detail.id}
+        values={values}
+        onApply={(preset) => setValues((current) => ({ ...current, ...preset }))}
+      />
+
       {promptFields.map((field) => (
-        <PromptField
+        <div key={field.id} className="space-y-2">
+          <PromptField
+            field={field}
+            value={values[field.id] ?? ''}
+            onChange={(value) => setValue(field.id, value)}
+          />
+          {/* LoRA tags live inside the prompt text; edit them structurally. */}
+          <LoraEditor
+            value={String(values[field.id] ?? '')}
+            onChange={(next) => setValue(field.id, next)}
+          />
+        </div>
+      ))}
+
+      {loraTextFields.map((field) => (
+        <LoraEditor
           key={field.id}
-          field={field}
-          value={values[field.id] ?? ''}
-          onChange={(value) => setValue(field.id, value)}
+          label={field.label}
+          alwaysShow
+          value={String(values[field.id] ?? '')}
+          onChange={(next) => setValue(field.id, next)}
         />
       ))}
 
@@ -390,6 +421,123 @@ function GenerateForm({
         </ul>
       </Sheet>
     </div>
+  );
+}
+
+/**
+ * Saved parameter sets for this workflow.
+ *
+ * Bulk change is the point: without it, trying a different look means opening
+ * Advanced and editing settings one sheet at a time, which nobody does twice.
+ */
+function PresetBar({
+  workflowId,
+  values,
+  onApply,
+}: {
+  workflowId: string;
+  values: ParamValues;
+  onApply: (values: ParamValues) => void;
+}) {
+  const presets = usePresets(workflowId);
+  const save = useSavePreset(workflowId);
+  const remove = useDeletePreset(workflowId);
+
+  const [saving, setSaving] = useState(false);
+  const [name, setName] = useState('');
+  const [applied, setApplied] = useState<string | null>(null);
+
+  const list = presets.data ?? [];
+
+  return (
+    <>
+      <div className="no-scrollbar -mx-4 flex gap-2 overflow-x-auto px-4">
+        {list.map((preset) => (
+          <button
+            key={preset.id}
+            type="button"
+            onClick={() => {
+              onApply(preset.values);
+              setApplied(preset.id);
+              window.setTimeout(() => setApplied(null), 1200);
+            }}
+            className={cn(
+              'h-9 shrink-0 rounded-full border px-3 text-sm whitespace-nowrap',
+              applied === preset.id
+                ? 'border-accent bg-accent text-white'
+                : 'border-line bg-surface text-body active:bg-surface-2',
+            )}
+          >
+            {preset.name}
+          </button>
+        ))}
+
+        <button
+          type="button"
+          onClick={() => setSaving(true)}
+          className="h-9 shrink-0 rounded-full border border-dashed border-line px-3 text-sm whitespace-nowrap text-muted active:bg-surface-2"
+        >
+          {list.length === 0 ? 'Save these settings' : '+ Save'}
+        </button>
+      </div>
+
+      <Sheet open={saving} onClose={() => setSaving(false)} title="Presets">
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <span className="text-xs tracking-wide text-muted uppercase">
+              Save the current settings
+            </span>
+            <div className="flex gap-2">
+              <input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="e.g. Fast draft"
+                className="min-w-0 flex-1 rounded-xl border border-line bg-surface px-4 py-3 focus:border-accent focus:outline-none"
+              />
+              <Button
+                variant="primary"
+                busy={save.isPending}
+                disabled={name.trim() === ''}
+                onClick={async () => {
+                  await save.mutateAsync({ name: name.trim(), values });
+                  setName('');
+                  setSaving(false);
+                }}
+              >
+                Save
+              </Button>
+            </div>
+            <p className="text-xs text-muted">
+              Saving under an existing name replaces it.
+            </p>
+          </div>
+
+          {list.length > 0 && (
+            <div className="space-y-2">
+              <span className="text-xs tracking-wide text-muted uppercase">Saved</span>
+              <ul className="space-y-1">
+                {list.map((preset) => (
+                  <li
+                    key={preset.id}
+                    className="flex items-center justify-between gap-3 rounded-xl border border-line px-3 py-2"
+                  >
+                    <span className="min-w-0 truncate text-sm">{preset.name}</span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      busy={remove.isPending}
+                      onClick={() => remove.mutate(preset.id)}
+                    >
+                      Delete
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </Sheet>
+    </>
   );
 }
 

@@ -9,6 +9,7 @@ import { GenerateScreen } from './screens/GenerateScreen';
 import { LoginScreen } from './screens/LoginScreen';
 import { QueueScreen } from './screens/QueueScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
+import { SetupScreen } from './screens/SetupScreen';
 import { useLiveSocket } from './state/useLiveSocket';
 
 export function App() {
@@ -25,6 +26,12 @@ export function App() {
         <Spinner className="size-8 text-muted" />
       </div>
     );
+  }
+
+  // A server nobody has claimed yet asks for a password to be chosen, rather
+  // than showing a login screen with nothing to log in to.
+  if (status.data?.setupRequired) {
+    return <SetupScreen onDone={() => void status.refetch()} />;
   }
 
   if (!authenticated) {

@@ -23,15 +23,26 @@ form. Nothing about your ComfyUI setup changes.
   — prompt, seed, steps, CFG, sampler, dimensions, model pickers. Model and
   sampler lists come from your server, so they are always the files you actually
   have installed.
+- **Remote instances, including vast.ai.** Save any number of connections and
+  switch between them. Bearer or basic tokens, and self-signed certificates, are
+  all handled — see [Connecting to vast.ai](#connecting-to-vastai).
 - **Live progress.** A persistent bar shows the running node, sampler progress
-  and the live preview image, and follows you between tabs.
+  and the live preview image, follows you between tabs, and **stays on screen
+  when the run finishes** so you actually see the picture you waited for.
 - **Gallery.** Every result, with the exact settings that produced it. Pinch to
   zoom, swipe between a batch, save to your camera roll, re-run, or send a
   result straight to img2img or an upscale pass.
+- **Ratings that outlive the GPU.** Rating an image copies it onto the machine
+  running Latent, so it survives the rented instance being destroyed.
+- **LoRA editor.** `<lora:name:0.8>` tags become rows with a strength slider and
+  a picker, instead of something you type by hand on a phone keyboard.
+- **Parameter presets.** Save a whole set of settings per workflow and re-apply
+  it in one tap.
 - **Queue.** See what is waiting, remove single jobs, clear the lot.
 - **Installable.** Add it to your home screen and it runs full-screen like an app.
-- **Optional password**, so you can expose it beyond your LAN without exposing
-  ComfyUI itself.
+- **Password protected.** The first person to open a new install chooses the
+  password.
+- **Optional terminal** for maintaining the host, off unless you enable it.
 
 ## Requirements
 
@@ -49,8 +60,8 @@ npm run build
 COMFY_URL=http://127.0.0.1:8188 npm start
 ```
 
-Then open `http://<your-computer's-LAN-ip>:6173` on your phone and add it to your
-home screen.
+Then open `http://<your-computer's-LAN-ip>:6173` on your phone, **choose a
+password when it asks**, and add it to your home screen.
 
 ### Configuration
 
@@ -58,15 +69,53 @@ All optional, set as environment variables:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `COMFY_URL` | `http://127.0.0.1:8188` | Where ComfyUI is listening |
+| `COMFY_URL` | `http://127.0.0.1:8188` | Seeds the first connection on a fresh install |
 | `PORT` | `6173` | Port Latent serves on |
 | `HOST` | `0.0.0.0` | Bind address (`0.0.0.0` so your phone can reach it) |
-| `LATENT_PASSWORD` | *unset* | If set, the app requires this password |
-| `LATENT_DATA_DIR` | `./data` | Where the SQLite database lives |
+| `LATENT_PASSWORD` | *unset* | Fixes the password, skipping the first-run prompt |
+| `LATENT_DATA_DIR` | `./data` | SQLite database and the image archive |
+| `LATENT_TERMINAL` | *unset* | Set to `1` to enable the built-in shell |
 | `LOG_LEVEL` | `info` | `trace`…`silent` |
 
-**Set `LATENT_PASSWORD` if the machine is reachable from anywhere but your own
-network.** Without it, anyone who can reach the port can use your GPU.
+After the first run, connections are managed in the app — `COMFY_URL` only
+matters for the very first boot.
+
+### The password
+
+Latent always requires one. On a fresh install the first person to open it
+chooses the password, and that window closes permanently once they do.
+
+**That means whoever reaches the address first gets the server.** Do it
+immediately, or set `LATENT_PASSWORD` and skip the window entirely — which is
+the right choice for anything unattended or reachable from outside your network.
+
+## Connecting to vast.ai
+
+vast.ai puts ComfyUI behind a proxy that requires a token, and — if the instance
+was started with `ENABLE_HTTPS=true` — a self-signed certificate.
+
+**When renting the instance, set `WEB_PASSWORD` to something you choose.** That
+value replaces the auto-generated `OPEN_BUTTON_TOKEN`, which you otherwise
+cannot read without SSHing into the box.
+
+Then in Latent, **Settings → Connections → Add**:
+
+| Field | Value |
+| --- | --- |
+| Address | The host and port the instance portal shows for ComfyUI |
+| Authentication | **Token** (sent as `Authorization: Bearer …`) |
+| Token | Your `WEB_PASSWORD` |
+| Allow self-signed certificate | On, if the address is `https://` |
+
+Hit **Test** first — it distinguishes "wrong address" from "wrong token" from
+"self-signed certificate", rather than just failing. Then **Save**, and
+**Use this** to switch to it.
+
+Basic auth works too (`vastai` / your token) if you prefer it.
+
+> Allowing a self-signed certificate means Latent stops verifying *who* it is
+> talking to on that connection. It is per-connection and off by default. It is
+> also the only way to reach a vast.ai instance using its own certificate.
 
 ### Docker
 
@@ -94,6 +143,32 @@ recognise goes to **Advanced** rather than being dropped. Use
 **Settings → Edit form** to show, hide, rename or promote any field. Those
 edits are stored separately from the derived form, so **Refresh models** (which
 re-reads node definitions after you install something new) never overwrites them.
+
+## Keeping images when the instance goes away
+
+A gallery entry normally just points at a file in ComfyUI's output directory. If
+that ComfyUI is a rented GPU, the directory stops existing the moment you end the
+rental — and every image you liked goes with it.
+
+**Rating an image copies it onto the machine running Latent.** From then on the
+gallery serves it from there, so it keeps working with the instance destroyed.
+The gallery's **Rated** and **★ 4+** filters show what you have kept, and
+Settings reports how much disk the archive is using and can drop copies of
+anything unrated.
+
+This is why it matters where Latent runs: put it on a machine that stays up (a
+PC, a NAS, a small always-on box), and point it at whatever GPU you are renting
+today.
+
+## The terminal
+
+Set `LATENT_TERMINAL=1` and Settings gains a shell on the machine running
+Latent, with a soft key row for Esc, Tab, Ctrl and the arrows that a phone
+keyboard does not have.
+
+It is exactly what it sounds like: **anyone who knows the password gets a shell
+on that machine.** It is off unless you turn it on, and it is not registered as a
+route at all when disabled.
 
 ## How it works
 
@@ -141,11 +216,14 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 
 | Path | What lives there |
 | --- | --- |
-| `shared/` | Types plus the form-building engine (`paramSchema.ts`) — pure, no I/O |
-| `server/` | Fastify proxy, ComfyUI client, live event hub, SQLite store |
+| `shared/` | Types, the form-building engine (`paramSchema.ts`) and LoRA tag parsing — pure, no I/O |
+| `server/` | Fastify proxy, ComfyUI client, live event hub, SQLite store, archive, terminal |
 | `server/src/mock/` | The mock ComfyUI used for development and tests |
 | `web/` | React + Vite PWA |
 | `e2e/` | Playwright tests |
+
+Schema changes go in `server/src/db.ts` as a new entry in `MIGRATIONS` — never by
+editing one that has shipped.
 
 ## Limitations
 
@@ -155,6 +233,12 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
   them in ComfyUI and import.
 - **Thumbnails** use ComfyUI's `preview=` parameter where available and fall
   back to full-size images where it isn't.
+- **Connection tokens are stored in plain text** in the local SQLite database.
+  Encrypting them with a key sitting next to that database would be theatre;
+  treat the data directory as sensitive.
+- **The terminal needs `node-pty`**, an optional native module. If it could not
+  be built for your platform, the terminal reports that instead of opening;
+  nothing else is affected.
 
 ## Licence
 

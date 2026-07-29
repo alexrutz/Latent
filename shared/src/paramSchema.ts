@@ -7,6 +7,7 @@ import type {
   ObjectInfo,
   WidgetValue,
 } from './comfyTypes.js';
+import { hasLoraTags } from './loraTags.js';
 import type {
   ControlKind,
   FieldOverrides,
@@ -259,12 +260,25 @@ function classifyPrompts(workflow: ApiWorkflow): PromptClassification {
   return { positive, negative };
 }
 
+/**
+ * A text field that carries `<lora:name:0.8>` tags, or is named for LoRAs.
+ *
+ * These get a structured editor instead of a text box — typing tags by hand on a
+ * phone is the single most tedious thing about driving a LoRA-heavy workflow.
+ */
+function isLoraTextInput(inputName: string, literal: WidgetValue): boolean {
+  if (typeof literal !== 'string') return false;
+  if (hasLoraTags(literal)) return true;
+  return /lora/i.test(inputName);
+}
+
 function detectRole(
   classType: string,
   inputName: string,
   options: InputOptions,
   nodeId: string,
   prompts: PromptClassification,
+  literal: WidgetValue,
 ): ParamRole {
   if ((inputName === 'text' || inputName === 'prompt') && prompts.negative.has(nodeId)) {
     return 'negative_prompt';
@@ -285,6 +299,9 @@ function detectRole(
   if (LORA_INPUTS.has(inputName)) return 'lora';
   if (VAE_INPUTS.has(inputName)) return 'vae';
   if (MODEL_INPUTS.has(inputName)) return 'model';
+  // Checked after the combo-backed LoRA inputs above, so a real `lora_name`
+  // dropdown stays a dropdown and only free text falls through to here.
+  if (isLoraTextInput(inputName, literal)) return 'lora_text';
   return 'other';
 }
 
@@ -292,6 +309,7 @@ function detectRole(
 const MAIN_ROLE_ORDER: ParamRole[] = [
   'prompt',
   'negative_prompt',
+  'lora_text',
   'image_input',
   'model',
   'lora',
@@ -376,6 +394,83 @@ function typeControl(
 }
 
 /* ------------------------------------------------------------------ */
+/* Practical slider ranges                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The range each role is actually used in, as opposed to what the node will
+ * tolerate.
+ *
+ * ComfyUI reports `steps: 1..10000` and `cfg: 0..100`. Mapped onto a phone-width
+ * slider that is roughly 40 steps per pixel — you cannot select 25. These bounds
+ * are what the slider spans; the true `/object_info` limits still apply to typed
+ * input and are reachable via the UI's full-range toggle.
+ */
+const PRACTICAL_RANGES: Partial<Record<ParamRole, [number, number]>> = {
+  steps: [1, 60],
+  cfg: [1, 20],
+  denoise: [0, 1],
+  width: [256, 2048],
+  height: [256, 2048],
+  batch_size: [1, 8],
+};
+
+/** Inputs recognised by name rather than role, mostly on custom nodes. */
+const PRACTICAL_RANGES_BY_NAME: Record<string, [number, number]> = {
+  strength_model: [-1, 2],
+  strength_clip: [-1, 2],
+  strength: [-1, 2],
+  guidance: [0, 10],
+  shift: [1, 12],
+  start_at_step: [0, 60],
+  end_at_step: [0, 60],
+};
+
+interface SoftRange {
+  softMin?: number;
+  softMax?: number;
+}
+
+function deriveSoftRange(
+  role: ParamRole,
+  inputName: string,
+  control: ControlKind,
+  hardMin: number | undefined,
+  hardMax: number | undefined,
+  defaultValue: WidgetValue,
+): SoftRange {
+  if (control !== 'int' && control !== 'float') return {};
+  // A seed has no meaningful "usual range" — it gets a dice button, not a slider.
+  if (role === 'seed') return {};
+
+  const preset = PRACTICAL_RANGES[role] ?? PRACTICAL_RANGES_BY_NAME[inputName];
+  let softMin: number;
+  let softMax: number;
+
+  if (preset) {
+    [softMin, softMax] = preset;
+  } else {
+    const hardSpan = hardMin !== undefined && hardMax !== undefined ? hardMax - hardMin : Infinity;
+    // A range that is already tight enough to aim at needs no help.
+    if (hardSpan <= 100) return {};
+
+    // Nothing recognised: centre a workable window on the exported default, which
+    // is by definition a value that made sense for this workflow.
+    const base = typeof defaultValue === 'number' && Number.isFinite(defaultValue) ? defaultValue : 1;
+    const spread = Math.max(Math.abs(base) * 2, control === 'int' ? 10 : 1);
+    softMin = base - spread;
+    softMax = base + spread;
+  }
+
+  // Never widen past what the node accepts.
+  if (hardMin !== undefined) softMin = Math.max(softMin, hardMin);
+  if (hardMax !== undefined) softMax = Math.min(softMax, hardMax);
+  if (!(softMax > softMin)) return {};
+
+  return { softMin, softMax };
+}
+
+/* ------------------------------------------------------------------ */
 /* Labels                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -385,6 +480,7 @@ const ROLE_LABELS: Partial<Record<ParamRole, string>> = {
   image_input: 'Input image',
   model: 'Model',
   lora: 'LoRA',
+  lora_text: 'LoRAs',
   vae: 'VAE',
   width: 'Width',
   height: 'Height',
@@ -458,8 +554,9 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
       // Known node, but the input isn't in its definition — a stale export or a
       // hidden input. Keep it, typed from its literal value.
       const options = specOptions(spec);
-      const role = detectRole(node.class_type, inputName, options, nodeId, prompts);
+      const role = detectRole(node.class_type, inputName, options, nodeId, prompts, value);
       const typed = typeControl(spec, options, value, role);
+      const soft = deriveSoftRange(role, inputName, typed.control, typed.min, typed.max, value);
 
       const mainIndex = MAIN_ROLE_ORDER.indexOf(role);
       const group: ParamGroup = mainIndex >= 0 ? 'main' : 'advanced';
@@ -477,6 +574,8 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
         ...(typed.options ? { options: typed.options } : {}),
         ...(typed.min !== undefined ? { min: typed.min } : {}),
         ...(typed.max !== undefined ? { max: typed.max } : {}),
+        ...(soft.softMin !== undefined ? { softMin: soft.softMin } : {}),
+        ...(soft.softMax !== undefined ? { softMax: soft.softMax } : {}),
         ...(typed.step !== undefined ? { step: typed.step } : {}),
         ...(typed.multiline ? { multiline: true } : {}),
         ...(typeof options.tooltip === 'string' ? { tooltip: options.tooltip } : {}),

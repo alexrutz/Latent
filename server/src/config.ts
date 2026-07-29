@@ -26,14 +26,31 @@ function normaliseUrl(url: string): string {
 export interface Config {
   port: number;
   host: string;
+  /** Seeds the first connection preset on a fresh install. */
   comfyUrl: string;
-  /** Optional shared password. When unset the app is open. */
+  /**
+   * Fixes the password from the environment, skipping the first-run claim.
+   * When unset, the first person to reach the server chooses it.
+   */
   password: string | null;
   dataDir: string;
   dbPath: string;
+  /** Where rated images are copied so they outlive the ComfyUI that made them. */
+  archiveDir: string;
   /** Directory of the built web app, served as the SPA. */
   webDir: string;
+  /**
+   * Whether the shell route exists at all. Off unless explicitly enabled —
+   * an authenticated web terminal is still remote code execution.
+   */
+  terminalEnabled: boolean;
   logLevel: string;
+}
+
+function flag(name: string, fallback = false): boolean {
+  const value = process.env[name];
+  if (value === undefined || value === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
 }
 
 export function loadConfig(): Config {
@@ -49,7 +66,9 @@ export function loadConfig(): Config {
     password: password ? password : null,
     dataDir,
     dbPath: resolve(dataDir, 'latent.db'),
+    archiveDir: resolve(dataDir, 'archive'),
     webDir: resolve(projectRoot, 'web/dist'),
+    terminalEnabled: flag('LATENT_TERMINAL'),
     logLevel: env('LOG_LEVEL', 'info'),
   };
 }

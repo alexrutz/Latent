@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ParamField, WidgetValue } from '@latent/shared';
 
 import { api, imageUrl } from '../api/client';
+import { NumericInput } from './NumericInput';
 import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
 
 interface ControlProps {
@@ -65,14 +66,16 @@ export function SeedField({
 
   return (
     <div className="flex items-center gap-2">
-      <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2">
+      <div className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-line bg-surface px-3">
         <span className="shrink-0 text-xs text-muted">Seed</span>
-        <input
-          type="number"
-          inputMode="numeric"
+        <NumericInput
           value={Number.isFinite(seed) ? seed : 0}
-          onChange={(event) => onChange(Number(event.target.value))}
-          className="min-w-0 flex-1 bg-transparent text-right tabular-nums focus:outline-none"
+          onChange={onChange}
+          integer
+          min={0}
+          max={field.max}
+          aria-label="Seed"
+          className="min-w-0 flex-1 border-0 bg-transparent px-0 text-right focus:border-0"
         />
       </div>
       <button
@@ -275,52 +278,79 @@ export function FieldEditor({ field, value, onChange }: ControlProps) {
 function NumberEditor({ field, value, onChange }: ControlProps) {
   const numeric = Number(value ?? field.defaultValue ?? 0);
   const current = Number.isFinite(numeric) ? numeric : 0;
+  const isInt = field.control === 'int';
+  const step = field.step ?? (isInt ? 1 : 0.01);
 
-  // A slider needs finite bounds. Seeds and other unbounded ints get a plain
-  // numeric field instead of a slider spanning 2^53.
-  const sliderMin = field.min ?? 0;
-  const sliderMax = field.max ?? 0;
+  /*
+   * Two ranges, and the difference is the whole point.
+   *
+   * `min`/`max` are what ComfyUI will tolerate — steps up to 10000. Spanning
+   * that on a phone-width slider gives ~40 steps per pixel, so the control is
+   * decorative. `softMin`/`softMax` are the range people actually work in; the
+   * toggle below reaches the full one when it is genuinely needed, and the
+   * number field always accepts anything within the hard limits.
+   */
+  const [fullRange, setFullRange] = useState(false);
+  const hasSoftRange = field.softMin !== undefined && field.softMax !== undefined;
+
+  const sliderMin = (fullRange || !hasSoftRange ? field.min : field.softMin) ?? field.min ?? 0;
+  const sliderMax = (fullRange || !hasSoftRange ? field.max : field.softMax) ?? field.max ?? 0;
   const showSlider =
-    Number.isFinite(sliderMin) && Number.isFinite(sliderMax) && sliderMax - sliderMin <= 100_000;
-  const step = field.step ?? (field.control === 'int' ? 1 : 0.01);
+    Number.isFinite(sliderMin) && Number.isFinite(sliderMax) && sliderMax > sliderMin;
+
+  // A value nudged past the soft range from elsewhere must still be visible on
+  // the slider rather than pinned silently at one end.
+  const outsideSoftRange = hasSoftRange && (current < sliderMin || current > sliderMax);
 
   return (
     <div className="space-y-5 py-2">
-      <div className="flex items-center gap-3">
-        <input
-          type="number"
-          inputMode={field.control === 'int' ? 'numeric' : 'decimal'}
-          value={current}
-          step={step}
-          min={field.min}
-          max={field.max}
-          onChange={(event) => onChange(Number(event.target.value))}
-          className="w-full rounded-xl border border-line bg-surface px-4 py-3 text-center text-2xl font-semibold tabular-nums focus:border-accent focus:outline-none"
-        />
-      </div>
+      <NumericInput
+        value={current}
+        onChange={onChange}
+        integer={isInt}
+        min={field.min}
+        max={field.max}
+        step={step}
+        aria-label={field.label}
+        className="w-full text-center text-2xl font-semibold"
+      />
 
       {showSlider && (
         <input
           type="range"
-          min={sliderMin}
-          max={sliderMax}
+          min={outsideSoftRange ? (field.min ?? sliderMin) : sliderMin}
+          max={outsideSoftRange ? (field.max ?? sliderMax) : sliderMax}
           step={step}
           value={current}
           onChange={(event) => onChange(Number(event.target.value))}
           className="h-11 w-full accent-[var(--color-accent)]"
-          aria-label={field.label}
+          aria-label={`${field.label} slider`}
         />
       )}
 
-      {(field.min !== undefined || field.max !== undefined) && (
-        <p className="text-center text-xs text-muted">
-          {field.min ?? '−∞'} – {field.max ?? '∞'}
-        </p>
-      )}
+      <div className="flex items-center justify-between text-xs text-muted">
+        <span className="tabular-nums">
+          {showSlider ? `${trim(sliderMin)} – ${trim(sliderMax)}` : 'No limit'}
+        </span>
+        {hasSoftRange && (
+          <button
+            type="button"
+            onClick={() => setFullRange((current) => !current)}
+            className="rounded-lg px-2 py-1 text-accent active:bg-surface-2"
+          >
+            {fullRange ? 'Usual range' : `Full range (${trim(field.min ?? 0)}–${trim(field.max ?? 0)})`}
+          </button>
+        )}
+      </div>
 
       {field.tooltip && <p className="text-sm text-muted">{field.tooltip}</p>}
     </div>
   );
+}
+
+/** Keep range labels short — `2048` not `2048.0000001`. */
+function trim(value: number): string {
+  return String(Number(value.toFixed(3)));
 }
 
 function ComboEditor({ field, value, onChange }: ControlProps) {

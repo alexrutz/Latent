@@ -38,6 +38,24 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
 
     const params = { filename, subfolder, type };
 
+    /*
+     * Archive first. This single check is what makes a rated image keep working
+     * after the ComfyUI that produced it has been destroyed — without it the
+     * gallery would be a wall of broken thumbnails the moment a vast.ai
+     * instance is torn down.
+     */
+    const known = ctx.store.findImage(params);
+    if (known?.archived_path) {
+      const bytes = await ctx.archive.read(known.archived_path);
+      if (bytes) {
+        return reply
+          .header('content-type', contentTypeFor(filename))
+          .header('cache-control', 'private, max-age=86400')
+          .header('x-latent-source', 'archive')
+          .send(bytes);
+      }
+    }
+
     let response: Response;
     try {
       response = await ctx.orchestrator.client.view({ ...params, preview });
@@ -137,6 +155,26 @@ function sendImageError(reply: FastifyReply, error: unknown) {
   return reply.code(502).send({
     error: error instanceof Error ? error.message : 'Could not fetch the image from ComfyUI',
   });
+}
+
+function contentTypeFor(filename: string): string {
+  const extension = filename.toLowerCase().split('.').pop() ?? '';
+  switch (extension) {
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'webp':
+      return 'image/webp';
+    case 'gif':
+      return 'image/gif';
+    case 'mp4':
+      return 'video/mp4';
+    case 'webm':
+      return 'video/webm';
+    case 'png':
+    default:
+      return 'image/png';
+  }
 }
 
 /**

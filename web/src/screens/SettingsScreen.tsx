@@ -4,6 +4,7 @@ import type { FieldOverrides, ParamField, WorkflowSummary } from '@latent/shared
 
 import { api } from '../api/client';
 import {
+  useArchiveStats,
   useDeleteWorkflow,
   useImportWorkflow,
   useRescanWorkflow,
@@ -16,6 +17,8 @@ import {
 } from '../api/queries';
 import { Toggle } from '../components/ParamControl';
 import { Button, Card, cn, ErrorNote, Row, Sheet, Spinner } from '../components/ui';
+import { ConnectionsScreen } from './ConnectionsScreen';
+import { TerminalScreen } from './TerminalScreen';
 
 export function SettingsScreen() {
   const status = useStatus();
@@ -25,8 +28,14 @@ export function SettingsScreen() {
   const importWorkflow = useImportWorkflow();
   const fileRef = useRef<HTMLInputElement>(null);
 
+  const archive = useArchiveStats();
+
   const [importError, setImportError] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [pruning, setPruning] = useState(false);
+  const [pruneResult, setPruneResult] = useState<string | null>(null);
 
   const onFile = async (file: File) => {
     setImportError(null);
@@ -58,7 +67,7 @@ export function SettingsScreen() {
         <Card className="divide-y divide-line py-0">
           <Row
             label={status.data?.comfyOnline ? 'Connected' : 'Not reachable'}
-            hint={status.data?.comfyUrl || undefined}
+            hint={status.data?.activeConnectionName ?? status.data?.comfyUrl ?? undefined}
           >
             <span
               className={cn(
@@ -78,6 +87,8 @@ export function SettingsScreen() {
           )}
         </Card>
       </section>
+
+      <ConnectionsScreen />
 
       {/* Workflows -------------------------------------------------- */}
       <section className="space-y-2">
@@ -151,12 +162,66 @@ export function SettingsScreen() {
         </section>
       )}
 
-      {/* Session ---------------------------------------------------- */}
-      {status.data?.authRequired && (
+      {/* Archive ---------------------------------------------------- */}
+      <section className="space-y-2">
+        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Saved images</h2>
+        <Card className="space-y-3">
+          <p className="text-xs text-muted">
+            Rating an image copies it onto this device, so it stays available after the ComfyUI
+            instance that produced it is gone.
+          </p>
+          <Row
+            label={`${archive.data?.images ?? 0} images stored`}
+            hint={formatBytes(archive.data?.bytes ?? 0)}
+          />
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              busy={pruning}
+              onClick={async () => {
+                setPruning(true);
+                try {
+                  const { removed } = await api.pruneArchive();
+                  setPruneResult(`Removed ${removed} unrated ${removed === 1 ? 'copy' : 'copies'}.`);
+                  await archive.refetch();
+                } finally {
+                  setPruning(false);
+                }
+              }}
+            >
+              Remove unrated copies
+            </Button>
+          </div>
+          {pruneResult && <p className="text-xs text-muted">{pruneResult}</p>}
+        </Card>
+      </section>
+
+      {/* Maintenance ------------------------------------------------ */}
+      {status.data?.terminalEnabled && (
         <section className="space-y-2">
-          <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Session</h2>
+          <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Maintenance</h2>
+          <Card className="space-y-3">
+            <p className="text-xs text-muted">
+              A shell on the machine running Latent. Enabled because this server was started with
+              LATENT_TERMINAL set.
+            </p>
+            <Button variant="secondary" onClick={() => setTerminalOpen(true)}>
+              Open terminal
+            </Button>
+          </Card>
+        </section>
+      )}
+
+      {/* Session ---------------------------------------------------- */}
+      <section className="space-y-2">
+        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Session</h2>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" onClick={() => setChangingPassword(true)}>
+            Change password
+          </Button>
           <Button
-            variant="secondary"
+            variant="ghost"
             onClick={async () => {
               await api.logout();
               window.location.reload();
@@ -164,12 +229,14 @@ export function SettingsScreen() {
           >
             Sign out
           </Button>
-        </section>
-      )}
+        </div>
+      </section>
 
       <p className="pt-2 text-center text-xs text-muted">Latent — a mobile client for ComfyUI</p>
 
       {editing && <FormEditorSheet workflowId={editing} onClose={() => setEditing(null)} />}
+      {changingPassword && <PasswordSheet onClose={() => setChangingPassword(false)} />}
+      {terminalOpen && <TerminalScreen onClose={() => setTerminalOpen(false)} />}
     </div>
   );
 }
@@ -372,6 +439,62 @@ function FieldEditorRow({
         </Button>
       </div>
     </div>
+  );
+}
+
+function PasswordSheet({ onClose }: { onClose: () => void }) {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.changePassword(current, next);
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not change the password');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Sheet open onClose={onClose} title="Change password">
+      <div className="space-y-3">
+        <input
+          type="password"
+          value={current}
+          onChange={(event) => setCurrent(event.target.value)}
+          placeholder="Current password"
+          autoComplete="current-password"
+          className="w-full rounded-xl border border-line bg-surface px-4 py-3 focus:border-accent focus:outline-none"
+        />
+        <input
+          type="password"
+          value={next}
+          onChange={(event) => setNext(event.target.value)}
+          placeholder="New password"
+          autoComplete="new-password"
+          className="w-full rounded-xl border border-line bg-surface px-4 py-3 focus:border-accent focus:outline-none"
+        />
+        <ErrorNote>{error}</ErrorNote>
+        <p className="text-xs text-muted">
+          Every other signed-in device will be logged out.
+        </p>
+        <Button
+          variant="primary"
+          size="lg"
+          busy={busy}
+          disabled={current === '' || next.length < 6}
+          onClick={submit}
+        >
+          Change it
+        </Button>
+      </div>
+    </Sheet>
   );
 }
 

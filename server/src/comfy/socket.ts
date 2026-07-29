@@ -7,6 +7,8 @@ import {
   type ComfyWsMessage,
 } from '@latent/shared';
 
+import { authHeaders, toWebSocketUrl, type ConnectionConfig } from './connection.js';
+
 export interface PreviewFrame {
   mimeType: 'image/jpeg' | 'image/png';
   data: Buffer;
@@ -45,7 +47,7 @@ export class ComfySocket extends EventEmitter<ComfySocketEvents> {
   private open = false;
 
   constructor(
-    private readonly wsUrl: string,
+    private readonly connection: ConnectionConfig,
     readonly clientId: string,
   ) {
     super();
@@ -95,8 +97,15 @@ export class ComfySocket extends EventEmitter<ComfySocketEvents> {
   private connect(): void {
     if (this.stopped) return;
 
-    const url = `${this.wsUrl}/ws?clientId=${encodeURIComponent(this.clientId)}`;
-    const socket = new WebSocket(url, { handshakeTimeout: 10_000 });
+    const url = `${toWebSocketUrl(this.connection.url)}/ws?clientId=${encodeURIComponent(this.clientId)}`;
+    const socket = new WebSocket(url, {
+      handshakeTimeout: 10_000,
+      // The whole reason Latent proxies rather than letting the browser connect
+      // directly: a browser WebSocket cannot send an Authorization header, so it
+      // could never reach a token-protected vast.ai instance.
+      headers: authHeaders(this.connection),
+      rejectUnauthorized: !this.connection.allowSelfSigned,
+    });
     socket.binaryType = 'nodebuffer';
     this.socket = socket;
 

@@ -218,6 +218,118 @@ describe('buildParamSchema — unknown custom nodes', () => {
   });
 });
 
+describe('soft slider ranges', () => {
+  const schema = build(sd15Txt2Img);
+
+  /**
+   * The reason this exists: object_info says steps go to 10000, so a slider
+   * spanning it moves ~40 steps per pixel on a phone and cannot select 25.
+   */
+  it('narrows steps and cfg to the range people actually work in', () => {
+    expect(byId(schema.fields, '3.steps')).toMatchObject({ min: 1, max: 10000, softMin: 1, softMax: 60 });
+    expect(byId(schema.fields, '3.cfg')).toMatchObject({ min: 0, max: 100, softMin: 1, softMax: 20 });
+  });
+
+  it('keeps the hard limits available alongside the soft ones', () => {
+    const steps = byId(schema.fields, '3.steps');
+    expect(steps?.max).toBe(10000);
+    expect(steps?.softMax).toBeLessThan(steps?.max as number);
+  });
+
+  it('gives dimensions a usable range', () => {
+    expect(byId(schema.fields, '5.width')).toMatchObject({ softMin: 256, softMax: 2048 });
+    expect(byId(schema.fields, '5.height')).toMatchObject({ softMin: 256, softMax: 2048 });
+  });
+
+  it('leaves an already-tight range alone', () => {
+    // denoise is 0..1 — nothing to improve on.
+    const denoise = byId(schema.fields, '3.denoise');
+    expect(denoise?.softMin).toBe(0);
+    expect(denoise?.softMax).toBe(1);
+  });
+
+  it('gives a seed no soft range, since it gets dice rather than a slider', () => {
+    expect(byId(schema.fields, '3.seed')?.softMin).toBeUndefined();
+    expect(byId(schema.fields, '3.seed')?.softMax).toBeUndefined();
+  });
+
+  it('never widens beyond what the node accepts', () => {
+    for (const field of schema.fields) {
+      if (field.softMin !== undefined && field.min !== undefined) {
+        expect(field.softMin).toBeGreaterThanOrEqual(field.min);
+      }
+      if (field.softMax !== undefined && field.max !== undefined) {
+        expect(field.softMax).toBeLessThanOrEqual(field.max);
+      }
+    }
+  });
+
+  it('centres a window on the default for an unrecognised wide-ranged input', () => {
+    const custom = buildParamSchema(
+      { '1': { class_type: 'Mystery', inputs: { wobble: 12 } } },
+      { Mystery: { input: { required: { wobble: ['INT', { min: 0, max: 1_000_000 }] } } } },
+    );
+    const field = byId(custom.fields, '1.wobble');
+    expect(field?.softMin).toBe(0); // clamped to the hard minimum
+    expect(field?.softMax).toBe(36);
+  });
+
+  it('gives LoRA strengths a sensible range', () => {
+    const withLora = buildParamSchema(
+      {
+        '1': {
+          class_type: 'LoraLoader',
+          inputs: { lora_name: 'pixel_art_xl.safetensors', strength_model: 1, strength_clip: 1 },
+        },
+      },
+      objectInfoFixture,
+    );
+    expect(byId(withLora.fields, '1.strength_model')).toMatchObject({ softMin: -1, softMax: 2 });
+  });
+
+  it('gives text controls no numeric range at all', () => {
+    expect(byId(schema.fields, '6.text')?.softMin).toBeUndefined();
+    expect(byId(schema.fields, '4.ckpt_name')?.softMax).toBeUndefined();
+  });
+});
+
+describe('LoRA text fields', () => {
+  it('detects a free-text field carrying lora tags and promotes it to the main screen', () => {
+    const wf = {
+      '1': {
+        class_type: 'WanVideoSampler',
+        inputs: { high_noise_lora: '<lora:detail:0.8>', steps: 20 },
+      },
+    };
+    const schema = buildParamSchema(wf, {});
+    const field = byId(schema.fields, '1.high_noise_lora');
+    expect(field?.role).toBe('lora_text');
+    expect(field?.group).toBe('main');
+  });
+
+  it('detects a lora-named text field even before any tag is typed', () => {
+    const schema = buildParamSchema(
+      { '1': { class_type: 'Custom', inputs: { lora_stack: '' } } },
+      {},
+    );
+    expect(byId(schema.fields, '1.lora_stack')?.role).toBe('lora_text');
+  });
+
+  it('does not steal a real lora_name dropdown', () => {
+    const schema = buildParamSchema(
+      { '1': { class_type: 'LoraLoader', inputs: { lora_name: 'pixel_art_xl.safetensors' } } },
+      objectInfoFixture,
+    );
+    // Still a combo of installed files, not a tag editor.
+    expect(byId(schema.fields, '1.lora_name')).toMatchObject({ role: 'lora', control: 'combo' });
+  });
+
+  it('leaves an ordinary prompt as a prompt even when it contains tags', () => {
+    const schema = build(sd15Txt2Img);
+    expect(byId(schema.fields, '6.text')?.role).toBe('prompt');
+  });
+});
+
 describe('applyOverrides', () => {
   const schema = build(sd15Txt2Img);
 

@@ -7,7 +7,7 @@ import {
 } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
-import type { AppSettings, GenerateRequest } from '@latent/shared';
+import type { AppSettings, ComfyImageRef, GenerateRequest, ParamValues } from '@latent/shared';
 
 import { useLiveStore } from '../state/live';
 import { api } from './client';
@@ -18,6 +18,9 @@ export const queryKeys = {
   workflow: (id: string) => ['workflow', id] as const,
   gallery: (workflowId?: string | null) => ['gallery', workflowId ?? 'all'] as const,
   settings: ['settings'] as const,
+  connections: ['connections'] as const,
+  presets: (workflowId: string) => ['presets', workflowId] as const,
+  archiveStats: ['archive-stats'] as const,
 };
 
 export function useStatus() {
@@ -108,14 +111,104 @@ export function useGenerate() {
   });
 }
 
-export function useGallery(workflowId?: string | null) {
+export function useGallery(options: { workflowId?: string | null; minRating?: number } = {}) {
+  const { workflowId, minRating = 0 } = options;
   return useInfiniteQuery({
-    queryKey: queryKeys.gallery(workflowId),
+    queryKey: [...queryKeys.gallery(workflowId), minRating],
     queryFn: ({ pageParam }) =>
-      api.gallery({ cursor: pageParam as string | null, limit: 30, workflowId }),
+      api.gallery({ cursor: pageParam as string | null, limit: 30, workflowId, minRating }),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor,
   });
+}
+
+/* ------------------------------------------------------------------ */
+/* Connections                                                         */
+/* ------------------------------------------------------------------ */
+
+export function useConnections() {
+  return useQuery({ queryKey: queryKeys.connections, queryFn: api.connections });
+}
+
+/** Any connection change can retarget the whole app, so refresh broadly. */
+function useConnectionMutation<TArgs>(fn: (args: TArgs) => Promise<unknown>) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.connections });
+      void client.invalidateQueries({ queryKey: queryKeys.status });
+      // Model lists and every workflow's option set belong to the old endpoint.
+      void client.invalidateQueries({ queryKey: ['workflow'] });
+      void client.invalidateQueries({ queryKey: ['loras'] });
+    },
+  });
+}
+
+export const useCreateConnection = () => useConnectionMutation(api.createConnection);
+export const useActivateConnection = () => useConnectionMutation(api.activateConnection);
+export const useDeleteConnection = () => useConnectionMutation(api.deleteConnection);
+export const useUpdateConnection = () =>
+  useConnectionMutation(({ id, patch }: { id: string; patch: Parameters<typeof api.updateConnection>[1] }) =>
+    api.updateConnection(id, patch),
+  );
+
+/* ------------------------------------------------------------------ */
+/* Presets                                                             */
+/* ------------------------------------------------------------------ */
+
+export function usePresets(workflowId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.presets(workflowId ?? ''),
+    queryFn: () => api.presets(workflowId as string),
+    enabled: Boolean(workflowId),
+  });
+}
+
+export function useSavePreset(workflowId: string | null) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, values }: { name: string; values: ParamValues }) =>
+      api.savePreset(workflowId as string, name, values),
+    onSuccess: () =>
+      void client.invalidateQueries({ queryKey: queryKeys.presets(workflowId ?? '') }),
+  });
+}
+
+export function useDeletePreset(workflowId: string | null) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deletePreset(id),
+    onSuccess: () =>
+      void client.invalidateQueries({ queryKey: queryKeys.presets(workflowId ?? '') }),
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Ratings                                                             */
+/* ------------------------------------------------------------------ */
+
+export function useRateImage() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      generationId,
+      image,
+      rating,
+    }: {
+      generationId: string;
+      image: ComfyImageRef;
+      rating: number;
+    }) => api.rateImage(generationId, image, rating),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['gallery'] });
+      void client.invalidateQueries({ queryKey: queryKeys.archiveStats });
+    },
+  });
+}
+
+export function useArchiveStats() {
+  return useQuery({ queryKey: queryKeys.archiveStats, queryFn: api.archiveStats });
 }
 
 /**

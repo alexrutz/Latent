@@ -59,6 +59,11 @@ export default defineConfig({
         COMFY_URL: `http://127.0.0.1:${MOCK_PORT}`,
         LATENT_DATA_DIR: 'data/e2e',
         LOG_LEVEL: 'warn',
+        // Fixes the password so the suite logs in deterministically instead of
+        // depending on whether a previous run already claimed the server. The
+        // first-run claim flow itself is covered by the integration tests.
+        LATENT_PASSWORD: 'e2e-password',
+        LATENT_TERMINAL: '1',
       },
       stdout: 'ignore',
     },

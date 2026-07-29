@@ -10,9 +10,9 @@ import type {
   ComfyExecutionErrorMessage,
   ComfyExecutionStartMessage,
   ComfyProgressMessage,
+  ComfyImageRef,
   ComfyStatusMessage,
   ComfyWsMessage,
-  GenerationImage,
   LiveState,
   ObjectInfo,
   ParamValues,
@@ -21,6 +21,7 @@ import type {
 } from '@latent/shared';
 
 import { ComfyClient } from './comfy/client.js';
+import type { ConnectionConfig } from './comfy/connection.js';
 import { ComfySocket } from './comfy/socket.js';
 import type { Store } from './db.js';
 import { Hub } from './hub.js';
@@ -58,9 +59,10 @@ function emptyState(): LiveState {
  * Routes stay thin — they validate input and call in here.
  */
 export class Orchestrator {
-  readonly client: ComfyClient;
+  private currentClient: ComfyClient;
+  private currentSocket: ComfySocket;
+  private connection: ConnectionConfig;
   readonly hub = new Hub();
-  private readonly socket: ComfySocket;
   private readonly clientId = randomUUID();
 
   private state: LiveState;
@@ -86,13 +88,56 @@ export class Orchestrator {
 
   constructor(
     private readonly store: Store,
-    comfyUrl: string,
-    wsUrl: string,
+    connection: ConnectionConfig,
     private readonly log: FastifyBaseLogger,
   ) {
-    this.client = new ComfyClient(comfyUrl);
-    this.socket = new ComfySocket(wsUrl, this.clientId);
+    this.connection = connection;
+    this.currentClient = new ComfyClient(connection);
+    this.currentSocket = new ComfySocket(connection, this.clientId);
     this.state = emptyState();
+  }
+
+  /** The active endpoint's REST client. Replaced wholesale when switching. */
+  get client(): ComfyClient {
+    return this.currentClient;
+  }
+
+  private get socket(): ComfySocket {
+    return this.currentSocket;
+  }
+
+  get activeConnection(): ConnectionConfig {
+    return this.connection;
+  }
+
+  /**
+   * Retarget at a different ComfyUI without restarting the process.
+   *
+   * Everything endpoint-specific has to go: the socket, the route-prefix probe,
+   * and the cached `/object_info` — model lists on the new box are a different
+   * set of files, and serving the old ones would silently offer checkpoints that
+   * do not exist there.
+   */
+  async switchConnection(next: ConnectionConfig): Promise<void> {
+    this.log.info(`Switching ComfyUI connection to ${next.name} (${next.url})`);
+
+    this.currentSocket.stop();
+    this.currentSocket.removeAllListeners();
+    await this.currentClient.close();
+
+    this.connection = next;
+    this.currentClient = new ComfyClient(next);
+    this.currentSocket = new ComfySocket(next, this.clientId);
+
+    this.objectInfoCache = null;
+    this.objectInfoInFlight = null;
+    this.queueState = { running: [], pending: [] };
+    this.state = { ...emptyState(), job: null };
+
+    this.bindSocket();
+    this.currentSocket.start();
+    this.pushState(true);
+    this.hub.broadcast({ type: 'queue', data: this.queueState });
   }
 
   /* ---------------------------------------------------------------- */
@@ -105,6 +150,12 @@ export class Orchestrator {
       this.log.warn(`Marked ${stale} interrupted generation(s) as failed after restart`);
     }
 
+    this.bindSocket();
+    this.socket.start();
+  }
+
+  /** Attach handlers to whichever socket is current. Re-run on every switch. */
+  private bindSocket(): void {
     this.socket.on('open', () => {
       this.log.info('Connected to ComfyUI');
       this.client.resetPrefix();
@@ -127,12 +178,11 @@ export class Orchestrator {
 
     this.socket.on('message', (message) => this.onComfyMessage(message));
     this.socket.on('preview', (frame) => this.hub.broadcastBinary(frame.data));
-
-    this.socket.start();
   }
 
   async stop(): Promise<void> {
     this.socket.stop();
+    await this.currentClient.close();
     this.hub.closeAll();
     if (this.stateTimer) clearTimeout(this.stateTimer);
     if (this.queueRefreshTimer) clearTimeout(this.queueRefreshTimer);
@@ -427,10 +477,9 @@ export class Orchestrator {
     if (images.length === 0) return;
 
     // `temp` images are ComfyUI's in-flight previews, not results.
-    const results: GenerationImage[] = images
+    const results: ComfyImageRef[] = images
       .filter((image) => image.type !== 'temp')
       .map((image) => ({
-        nodeId: node,
         filename: image.filename,
         subfolder: image.subfolder ?? '',
         type: image.type ?? 'output',

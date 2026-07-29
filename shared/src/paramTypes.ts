@@ -11,6 +11,8 @@ export type ParamRole =
   | 'image_input'
   | 'model'
   | 'lora'
+  /** A free-text field holding `<lora:name:0.8>` tags, edited structurally. */
+  | 'lora_text'
   | 'vae'
   | 'width'
   | 'height'
@@ -43,8 +45,19 @@ export interface ParamField {
   defaultValue: WidgetValue;
   /** Allowed values when `control === 'combo'`. */
   options?: string[];
+  /** Hard limits, straight from `/object_info`. Typed input is clamped to these. */
   min?: number;
   max?: number;
+  /**
+   * The range a slider actually uses.
+   *
+   * `/object_info` advertises the extremes a node will tolerate — steps up to
+   * 10000, CFG up to 100 — which makes a slider spanning them useless: one pixel
+   * of thumb travel jumps ~40 steps. These are the range people work in, and the
+   * UI offers a toggle to reach the full one when it is genuinely needed.
+   */
+  softMin?: number;
+  softMax?: number;
   step?: number;
   multiline?: boolean;
   tooltip?: string;

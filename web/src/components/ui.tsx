@@ -140,7 +140,12 @@ export function Sheet({ open, onClose, title, children, full = false }: SheetPro
         {title && (
           <div className="flex shrink-0 items-center justify-between gap-3 px-5 pb-3">
             <h2 className="text-lg font-semibold">{title}</h2>
-            <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close">
+            {/*
+              No aria-label here: it would override the visible text, so the
+              button would read as "Close" to a screen reader while showing
+              "Done" on screen — the mismatch WCAG's Label in Name forbids.
+            */}
+            <Button variant="ghost" size="sm" onClick={onClose}>
               Done
             </Button>
           </div>

@@ -7,7 +7,7 @@ import type { WebSocket } from 'ws';
 
 import { BINARY_EVENT_PREVIEW_IMAGE, BINARY_IMAGE_TYPE_PNG, isNodeLink } from '@latent/shared';
 import type { ApiWorkflow, ComfyImageRef, HistoryEntry } from '@latent/shared';
-import { objectInfoFixture } from '@latent/shared/fixtures';
+import { CHECKPOINTS, LORAS, objectInfoFixture, UPSCALE_MODELS } from '@latent/shared/fixtures';
 
 import { renderPlaceholder } from './png.js';
 
@@ -33,6 +33,12 @@ export interface MockComfyOptions {
   /** Emit binary preview frames while sampling. */
   previews?: boolean;
   logLevel?: string;
+  /**
+   * Demand `Authorization: Bearer <token>` (or Basic `vastai:<token>`), the way
+   * a vast.ai instance behind its Caddy proxy does. Exercises the whole
+   * authenticated-connection path without renting a GPU.
+   */
+  requireToken?: string;
 }
 
 export interface MockComfy {
@@ -49,6 +55,21 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
   const previewsEnabled = options.previews ?? true;
 
   const app = Fastify({ logger: { level: options.logLevel ?? 'warn' } });
+  const requiredToken = options.requireToken ?? null;
+
+  /** Accepts either scheme vast.ai's proxy supports. */
+  function tokenAccepted(header: string | undefined): boolean {
+    if (!requiredToken) return true;
+    if (!header) return false;
+
+    if (header.startsWith('Bearer ')) return header.slice(7) === requiredToken;
+    if (header.startsWith('Basic ')) {
+      const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+      const separator = decoded.indexOf(':');
+      return separator >= 0 && decoded.slice(separator + 1) === requiredToken;
+    }
+    return false;
+  }
 
   const sockets = new Map<string, Set<WebSocket>>();
   const pending: QueuedPrompt[] = [];
@@ -256,6 +277,13 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
     await app.register(fastifyMultipart);
     await app.register(fastifyWebsocket);
 
+    // The proxy in front of a real vast.ai instance guards every route,
+    // WebSocket upgrade included.
+    app.addHook('onRequest', async (request, reply) => {
+      if (tokenAccepted(request.headers.authorization)) return;
+      await reply.code(401).send({ error: 'unauthorized' });
+    });
+
     app.get('/ws', { websocket: true }, (socket, request) => {
       const clientId = String((request.query as { clientId?: string }).clientId ?? randomUUID());
       let set = sockets.get(clientId);
@@ -275,6 +303,14 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
     });
 
     route('GET', '/object_info', async () => objectInfoFixture);
+
+    route('GET', '/models/:folder', async (request, reply) => {
+      const { folder } = request.params as { folder: string };
+      if (folder === 'loras') return LORAS;
+      if (folder === 'checkpoints') return CHECKPOINTS;
+      if (folder === 'upscale_models') return UPSCALE_MODELS;
+      return reply.code(404).send({ error: 'unknown model folder' });
+    });
 
     route('GET', '/object_info/:classType', async (request, reply) => {
       const { classType } = request.params as { classType: string };

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -7,20 +8,63 @@ import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 
+import { Archive } from './archive.js';
 import { Auth } from './auth.js';
-import { loadConfig, toWebSocketUrl, type Config } from './config.js';
+import { plainConnection, type ConnectionConfig } from './comfy/connection.js';
+import { loadConfig, type Config } from './config.js';
 import { Store } from './db.js';
 import { Orchestrator } from './orchestrator.js';
+import { registerConnectionRoutes, toConfig } from './routes/connections.js';
 import type { AppContext } from './routes/context.js';
 import { registerGalleryRoutes } from './routes/gallery.js';
 import { registerGenerateRoutes } from './routes/generate.js';
 import { registerMediaRoutes } from './routes/media.js';
+import { registerPresetRoutes } from './routes/presets.js';
 import { registerQueueRoutes } from './routes/queue.js';
 import { registerSystemRoutes } from './routes/system.js';
 import { registerWorkflowRoutes } from './routes/workflows.js';
+import { attachTerminal } from './terminal.js';
 
 /** Routes reachable before logging in. */
-const PUBLIC_API_PATHS = new Set(['/api/status', '/api/auth/login', '/api/auth/logout']);
+const PUBLIC_API_PATHS = new Set([
+  '/api/status',
+  '/api/auth/login',
+  '/api/auth/logout',
+  // The claim endpoint has to be reachable by definition; it refuses once a
+  // password exists, so it cannot be used to take over a configured server.
+  '/api/auth/setup',
+]);
+
+/**
+ * Decide which ComfyUI to talk to at boot.
+ *
+ * A fresh install seeds a preset from `COMFY_URL`, so an existing v1 deployment
+ * keeps working with no configuration. After that the stored active connection
+ * wins — the environment variable is only ever a starting point.
+ */
+function resolveConnection(store: Store, config: Config, app: FastifyInstance): ConnectionConfig {
+  const active = store.getActiveConnection();
+  if (active) return toConfig(active);
+
+  if (store.countConnections() === 0) {
+    const id = randomUUID();
+    store.insertConnection(id, { name: 'Default', url: config.comfyUrl, authMode: 'none' });
+    store.activateConnection(id);
+    app.log.info(`Seeded the first connection from COMFY_URL (${config.comfyUrl})`);
+    const seeded = store.getConnectionWithSecret(id);
+    if (seeded) return toConfig(seeded);
+  }
+
+  // Connections exist but none is active (someone deleted the active one
+  // directly in the database). Fall back rather than starting up broken.
+  const first = store.listConnections()[0];
+  if (first) {
+    store.activateConnection(first.id);
+    const restored = store.getConnectionWithSecret(first.id);
+    if (restored) return toConfig(restored);
+  }
+  return plainConnection(config.comfyUrl);
+}
 
 export interface BuiltApp {
   app: FastifyInstance;
@@ -38,15 +82,37 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   });
 
   const store = new Store(config.dbPath);
-  const auth = new Auth(config.password);
-  const orchestrator = new Orchestrator(
-    store,
-    config.comfyUrl,
-    toWebSocketUrl(config.comfyUrl),
-    app.log,
-  );
+  const auth = new Auth(store, config.password);
+  const archive = new Archive(config.archiveDir, store);
+  const orchestrator = new Orchestrator(store, resolveConnection(store, config, app), app.log);
 
-  const ctx: AppContext = { config, store, orchestrator, auth };
+  const ctx: AppContext = { config, store, orchestrator, auth, archive };
+
+  /*
+   * Treat an empty JSON body as `{}`.
+   *
+   * Fastify's default parser rejects `content-type: application/json` with no
+   * body outright, which turns every bodyless POST (`/activate`, `/interrupt`)
+   * and DELETE into a 400 for any client that sets the header unconditionally —
+   * which most HTTP helpers do.
+   */
+  app.addContentTypeParser<string>(
+    'application/json',
+    { parseAs: 'string' },
+    (_request, body, done) => {
+      if (body === undefined || body === null || body === '') {
+        done(null, {});
+        return;
+      }
+      try {
+        done(null, JSON.parse(body));
+      } catch {
+        const error = new Error('Invalid JSON body') as Error & { statusCode?: number };
+        error.statusCode = 400;
+        done(error, undefined);
+      }
+    },
+  );
 
   await app.register(fastifyCookie);
   await app.register(fastifyMultipart);
@@ -60,11 +126,33 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   });
 
   registerSystemRoutes(app, ctx);
+  registerConnectionRoutes(app, ctx);
   registerWorkflowRoutes(app, ctx);
+  registerPresetRoutes(app, ctx);
   registerGenerateRoutes(app, ctx);
   registerQueueRoutes(app, ctx);
   registerGalleryRoutes(app, ctx);
   registerMediaRoutes(app, ctx);
+
+  /**
+   * The shell. Registered only when explicitly enabled — a route that does not
+   * exist cannot be reached by a stolen session cookie.
+   */
+  if (config.terminalEnabled) {
+    app.log.warn(
+      'LATENT_TERMINAL is on: anyone who logs in gets a shell on this machine.',
+    );
+    app.get('/api/terminal/ws', { websocket: true }, (socket, request) => {
+      if (!auth.isAuthenticated(request)) {
+        socket.close(4401, 'Authentication required');
+        return;
+      }
+      void attachTerminal(socket, app.log);
+    });
+  }
+
+  /** Drop archived copies of images nobody rated. */
+  app.post('/api/archive/prune', async () => ({ removed: await archive.pruneUnrated() }));
 
   /**
    * The live event stream.

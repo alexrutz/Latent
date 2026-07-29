@@ -56,6 +56,13 @@ export type GenerationStatus = 'queued' | 'running' | 'completed' | 'failed' | '
 
 export interface GenerationImage extends ComfyImageRef {
   nodeId: string;
+  /** 0 = unrated, 1–5 stars. */
+  rating: number;
+  /**
+   * True once the bytes have been copied into Latent's own archive, which is
+   * what lets a rated image outlive the ComfyUI instance that produced it.
+   */
+  archived: boolean;
 }
 
 export interface GenerationRecord {
@@ -132,6 +139,75 @@ export type ServerEvent =
   | { type: 'queue'; data: QueueState };
 
 /* ------------------------------------------------------------------ */
+/* Connections                                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * How to authenticate against a ComfyUI endpoint.
+ *
+ * vast.ai puts ComfyUI behind a proxy that accepts either
+ * `Authorization: Bearer <token>` or Basic auth as `vastai:<token>`, where the
+ * token is the instance's `OPEN_BUTTON_TOKEN` — or whatever you set
+ * `WEB_PASSWORD` to when renting the box, which replaces it.
+ */
+export type ConnectionAuthMode = 'none' | 'bearer' | 'basic';
+
+export interface ConnectionSummary {
+  id: string;
+  name: string;
+  url: string;
+  authMode: ConnectionAuthMode;
+  username: string | null;
+  /** Accept a self-signed certificate. vast.ai uses one when ENABLE_HTTPS=true. */
+  allowSelfSigned: boolean;
+  /** The secret itself is never sent to the client — only whether one is stored. */
+  hasSecret: boolean;
+  isActive: boolean;
+  createdAt: number;
+}
+
+export interface ConnectionInput {
+  name: string;
+  url: string;
+  authMode?: ConnectionAuthMode;
+  username?: string | null;
+  /** Omit to keep the stored secret unchanged; empty string clears it. */
+  secret?: string | null;
+  allowSelfSigned?: boolean;
+}
+
+export type ConnectionTestOutcome =
+  | 'ok'
+  | 'unreachable'
+  | 'unauthorized'
+  | 'self_signed'
+  | 'not_comfyui';
+
+export interface ConnectionTestResult {
+  outcome: ConnectionTestOutcome;
+  /** A sentence the user can act on, not a stack trace. */
+  message: string;
+  comfyVersion?: string | null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Workflow parameter presets                                          */
+/* ------------------------------------------------------------------ */
+
+export interface WorkflowPreset {
+  id: string;
+  workflowId: string;
+  name: string;
+  values: ParamValues;
+  createdAt: number;
+}
+
+export interface CreatePresetRequest {
+  name: string;
+  values: ParamValues;
+}
+
+/* ------------------------------------------------------------------ */
 /* Misc                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -141,7 +217,18 @@ export interface StatusResponse {
   comfyVersion: string | null;
   authRequired: boolean;
   authenticated: boolean;
+  /** No password has been chosen yet; the app must run its setup flow. */
+  setupRequired: boolean;
+  /** The terminal route only exists when the server was started with it enabled. */
+  terminalEnabled: boolean;
+  activeConnectionId: string | null;
+  activeConnectionName: string | null;
   devices: { name: string; vramTotal: number; vramFree: number }[];
+}
+
+export interface ArchiveStats {
+  images: number;
+  bytes: number;
 }
 
 export interface UploadImageResponse {

@@ -1,14 +1,20 @@
 import type {
   AppSettings,
+  ArchiveStats,
   ComfyImageRef,
+  ConnectionInput,
+  ConnectionSummary,
+  ConnectionTestResult,
   GalleryPage,
   GenerateRequest,
   GenerateResponse,
   GenerationRecord,
+  ParamValues,
   QueueState,
   StatusResponse,
   UploadImageResponse,
   WorkflowDetail,
+  WorkflowPreset,
   WorkflowSummary,
 } from '@latent/shared';
 
@@ -70,6 +76,13 @@ export function thumbnailUrl(image: ComfyImageRef): string {
 export const api = {
   status: () => request<StatusResponse>('/api/status'),
 
+  /** Claim an unconfigured server by choosing its password. One-shot. */
+  setup: (password: string) =>
+    request<{ ok: true }>('/api/auth/setup', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+
   login: (password: string) =>
     request<{ ok: true }>('/api/auth/login', {
       method: 'POST',
@@ -77,6 +90,75 @@ export const api = {
     }),
 
   logout: () => request<{ ok: true }>('/api/auth/logout', { method: 'POST' }),
+
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<{ ok: true }>('/api/auth/password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword }),
+    }),
+
+  /* ---------------------------------------------------------------- */
+  /* Connections                                                       */
+  /* ---------------------------------------------------------------- */
+
+  connections: () => request<ConnectionSummary[]>('/api/connections'),
+
+  createConnection: (input: ConnectionInput) =>
+    request<ConnectionSummary>('/api/connections', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  updateConnection: (id: string, input: Partial<ConnectionInput>) =>
+    request<ConnectionSummary>(`/api/connections/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+
+  deleteConnection: (id: string) =>
+    request<void>(`/api/connections/${id}`, { method: 'DELETE' }),
+
+  activateConnection: (id: string) =>
+    request<ConnectionSummary[]>(`/api/connections/${id}/activate`, { method: 'POST' }),
+
+  /** Try an endpoint before saving it, so the add form can report what's wrong. */
+  testConnection: (input: ConnectionInput) =>
+    request<ConnectionTestResult>('/api/connections/test', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  /* ---------------------------------------------------------------- */
+  /* Presets                                                           */
+  /* ---------------------------------------------------------------- */
+
+  presets: (workflowId: string) =>
+    request<WorkflowPreset[]>(`/api/workflows/${workflowId}/presets`),
+
+  savePreset: (workflowId: string, name: string, values: ParamValues) =>
+    request<WorkflowPreset>(`/api/workflows/${workflowId}/presets`, {
+      method: 'POST',
+      body: JSON.stringify({ name, values }),
+    }),
+
+  deletePreset: (id: string) => request<void>(`/api/presets/${id}`, { method: 'DELETE' }),
+
+  /* ---------------------------------------------------------------- */
+  /* Ratings and archive                                               */
+  /* ---------------------------------------------------------------- */
+
+  /** Rating above zero also copies the image into Latent's local archive. */
+  rateImage: (generationId: string, image: ComfyImageRef, rating: number) =>
+    request<GenerationRecord>(`/api/gallery/${generationId}/rating`, {
+      method: 'PUT',
+      body: JSON.stringify({ image, rating }),
+    }),
+
+  archiveStats: () => request<ArchiveStats>('/api/archive/stats'),
+
+  pruneArchive: () => request<{ removed: number }>('/api/archive/prune', { method: 'POST' }),
+
+  loras: () => request<string[]>('/api/models/loras'),
 
   listWorkflows: () => request<WorkflowSummary[]>('/api/workflows'),
 
@@ -111,11 +193,19 @@ export const api = {
 
   clearQueue: () => request<void>('/api/queue', { method: 'DELETE' }),
 
-  gallery: (params: { cursor?: string | null; limit?: number; workflowId?: string | null } = {}) => {
+  gallery: (
+    params: {
+      cursor?: string | null;
+      limit?: number;
+      workflowId?: string | null;
+      minRating?: number;
+    } = {},
+  ) => {
     const query = new URLSearchParams();
     if (params.cursor) query.set('cursor', params.cursor);
     if (params.limit) query.set('limit', String(params.limit));
     if (params.workflowId) query.set('workflowId', params.workflowId);
+    if (params.minRating) query.set('minRating', String(params.minRating));
     const suffix = query.toString();
     return request<GalleryPage>(`/api/gallery${suffix ? `?${suffix}` : ''}`);
   },
