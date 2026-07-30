@@ -4,6 +4,7 @@ import type { PromptBlock } from './apiTypes.js';
 import {
   composeRandomPrompt,
   DEFAULT_RANDOM_PROMPT_CONFIG,
+  groupLimitFor,
   normaliseRandomPromptConfig,
   pickRandomBlocks,
   randomPromptPool,
@@ -71,6 +72,36 @@ describe('normaliseRandomPromptConfig', () => {
     const older = normaliseRandomPromptConfig({ enabled: true, minBlocks: 1, maxBlocks: 1 });
     expect(older.keepTyped).toBe(true);
     expect(older.onePerGroup).toBe(true);
+    expect(older.groupLimits).toEqual({});
+  });
+
+  it('lower-cases group keys and drops limits that make no sense', () => {
+    const result = normaliseRandomPromptConfig({
+      groupLimits: { ' Place ': 1, ATMOSPHERE: '3', Broken: 'lots', Negative: -2 },
+    });
+    expect(result.groupLimits).toEqual({ place: 1, atmosphere: 3 });
+  });
+
+  it('ignores a groupLimits that is not an object', () => {
+    expect(normaliseRandomPromptConfig({ groupLimits: ['nope'] }).groupLimits).toEqual({});
+    expect(normaliseRandomPromptConfig({ groupLimits: 5 }).groupLimits).toEqual({});
+  });
+});
+
+describe('groupLimitFor', () => {
+  it('follows the global default for a group with no setting', () => {
+    expect(groupLimitFor(config({ onePerGroup: true }), 'Lighting')).toBe(1);
+    expect(groupLimitFor(config({ onePerGroup: false }), 'Lighting')).toBe(0);
+  });
+
+  it('lets an explicit setting beat the default in both directions', () => {
+    expect(groupLimitFor(config({ onePerGroup: true, groupLimits: { mood: 3 } }), 'Mood')).toBe(3);
+    expect(groupLimitFor(config({ onePerGroup: false, groupLimits: { place: 1 } }), 'Place')).toBe(1);
+  });
+
+  it('leaves ungrouped blocks unlimited unless told otherwise', () => {
+    expect(groupLimitFor(config({ onePerGroup: true }), '')).toBe(0);
+    expect(groupLimitFor(config({ groupLimits: { '': 2 } }), '')).toBe(2);
   });
 });
 
@@ -113,6 +144,63 @@ describe('pickRandomBlocks', () => {
     expect(new Set(groups).size).toBe(groups.length);
     // Lighting has two candidates, so a four-block draw can only reach three.
     expect(drawn).toHaveLength(3);
+  });
+
+  /**
+   * The distinction the per-group limit exists for: exactly one block should say
+   * where the picture is, while several can say what it feels like.
+   */
+  it('honours a per-group limit over the global default', () => {
+    const scene = [
+      block('p1', 'Iceland', 'a black sand beach', 'Place', 0),
+      block('p2', 'Kyoto', 'a temple garden', 'Place', 1),
+      block('a1', 'Misty', 'low fog', 'Atmosphere', 2),
+      block('a2', 'Brooding', 'heavy clouds', 'Atmosphere', 3),
+      block('a3', 'Still', 'not a breath of wind', 'Atmosphere', 4),
+    ];
+
+    const drawn = pickRandomBlocks(
+      scene,
+      // Global default is one per group; Atmosphere is allowed three.
+      config({ minBlocks: 5, maxBlocks: 5, groupLimits: { atmosphere: 3 } }),
+      '',
+      rng(0.5),
+    );
+
+    const places = drawn.filter((b) => b.category === 'Place');
+    const atmosphere = drawn.filter((b) => b.category === 'Atmosphere');
+    expect(places).toHaveLength(1);
+    expect(atmosphere).toHaveLength(3);
+  });
+
+  it('treats a group limit of zero as no limit at all', () => {
+    const scene = [
+      block('a1', 'One', 'one', 'Atmosphere', 0),
+      block('a2', 'Two', 'two', 'Atmosphere', 1),
+      block('a3', 'Three', 'three', 'Atmosphere', 2),
+    ];
+    const drawn = pickRandomBlocks(
+      scene,
+      config({ minBlocks: 3, maxBlocks: 3, groupLimits: { atmosphere: 0 } }),
+      '',
+      rng(0.5),
+    );
+    expect(drawn).toHaveLength(3);
+  });
+
+  it('matches a group whatever case it was typed in', () => {
+    const scene = [
+      block('p1', 'A', 'a', 'Place', 0),
+      block('p2', 'B', 'b', 'PLACE', 1),
+      block('p3', 'C', 'c', 'place', 2),
+    ];
+    const drawn = pickRandomBlocks(
+      scene,
+      config({ minBlocks: 3, maxBlocks: 3, groupLimits: { Place: 1 } }),
+      '',
+      rng(0.5),
+    );
+    expect(drawn).toHaveLength(1);
   });
 
   it('lets ungrouped blocks coexist, since nothing says they conflict', () => {

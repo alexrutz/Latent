@@ -11,6 +11,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { Archive } from './archive.js';
 import { Auth } from './auth.js';
 import { Importer } from './importer.js';
+import { InputLibrary } from './inputLibrary.js';
 import { Vault } from './vault.js';
 import { plainConnection, type ConnectionConfig } from './comfy/connection.js';
 import { loadConfig, type Config } from './config.js';
@@ -22,6 +23,7 @@ import { registerGalleryRoutes } from './routes/gallery.js';
 import { registerFavoriteRoutes } from './routes/favorites.js';
 import { registerGenerateRoutes } from './routes/generate.js';
 import { registerImportRoutes } from './routes/import.js';
+import { registerInputImageRoutes } from './routes/inputImages.js';
 import { registerLayoutRoutes } from './routes/layouts.js';
 import { registerMediaRoutes } from './routes/media.js';
 import { registerPromptBlockRoutes } from './routes/promptBlocks.js';
@@ -92,6 +94,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   const vault = new Vault(store);
   const archive = new Archive(config.archiveDir, store, vault);
   const importer = new Importer(store, archive);
+  const inputs = new InputLibrary(store);
   const orchestrator = new Orchestrator(store, resolveConnection(store, config, app), app.log);
 
   // With the password fixed in the environment there is nobody to wait for, so
@@ -99,7 +102,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   // first sign-in.
   if (config.password) vault.unlock(config.password);
 
-  const ctx: AppContext = { config, store, orchestrator, auth, archive, vault, importer };
+  const ctx: AppContext = { config, store, orchestrator, auth, archive, vault, importer, inputs };
 
   /*
    * Treat an empty JSON body as `{}`.
@@ -149,6 +152,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   registerFavoriteRoutes(app, ctx);
   registerPromptBlockRoutes(app, ctx);
   registerImportRoutes(app, ctx);
+  registerInputImageRoutes(app, ctx);
   registerMediaRoutes(app, ctx);
 
   /**

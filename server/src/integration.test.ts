@@ -9,6 +9,7 @@ import type {
   GenerationRecord,
   ImportResult,
   ImportScanResult,
+  InputScanResult,
   QueueEntry,
   QueueState,
   ServerEvent,
@@ -1946,4 +1947,114 @@ describe('random prompt mode', () => {
       });
     }
   }, 30_000);
+});
+
+describe('input image folder', () => {
+  /**
+   * The mirror of the output importer. Nothing here writes to the folder or the
+   * database — the only outward action is copying a chosen file into ComfyUI,
+   * which happens server-side so the bytes never travel to the phone.
+   */
+  it('lists a folder, serves small previews, and copies a choice into ComfyUI', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-inputs-'));
+    const inputs = join(dir, 'refs');
+    mkdirSync(join(inputs, 'nested'), { recursive: true });
+
+    writeFileSync(join(inputs, 'beach.png'), renderPlaceholder(800, 600, 'beach'));
+    writeFileSync(join(inputs, 'nested', 'sketch.png'), renderPlaceholder(600, 800, 'sketch'));
+    writeFileSync(join(inputs, 'notes.txt'), 'not an image');
+    // A secret outside the root, to prove traversal is refused.
+    writeFileSync(join(dir, 'secret.png'), renderPlaceholder(16, 16, 'secret'));
+
+    const comfy = createMockComfy({ logLevel: 'silent' });
+    const comfyUrl = await comfy.listen(0);
+    const server = await bootIsolated({ comfyUrl, dbPath: join(dir, 'inputs.db'), dataDir: dir });
+
+    try {
+      const claim = await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'input password' }),
+      });
+      const cookie = claim.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      // Nothing configured yet: say so rather than pretending the folder is empty.
+      const before = (await (
+        await server.call('/api/input-images', { cookie })
+      ).json()) as InputScanResult;
+      expect(before.ok).toBe(false);
+      expect(before.message).toMatch(/No input folder/i);
+
+      await server.call('/api/settings', {
+        method: 'PATCH',
+        cookie,
+        body: JSON.stringify({ inputRoot: inputs }),
+      });
+
+      const scan = (await (
+        await server.call('/api/input-images', { cookie })
+      ).json()) as InputScanResult;
+      expect(scan.ok).toBe(true);
+      const paths = scan.files.map((file) => file.path).sort();
+      expect(paths).toEqual(['beach.png', 'nested/sketch.png']);
+      // Sizes are read from the header, so the picker can shape its grid.
+      expect(scan.files.find((f) => f.path === 'beach.png')?.width).toBe(800);
+
+      // The preview is genuinely smaller than the original.
+      const full = await server.call('/api/input-images/file?path=beach.png', { cookie });
+      expect(full.status).toBe(200);
+      const fullBytes = Buffer.from(await full.arrayBuffer());
+
+      const preview = await server.call('/api/input-images/file?path=beach.png&preview=1', {
+        cookie,
+      });
+      expect(preview.status).toBe(200);
+      const previewBytes = Buffer.from(await preview.arrayBuffer());
+      expect(previewBytes.length).toBeLessThan(fullBytes.length);
+
+      // Using one copies it into ComfyUI's input directory, ready for LoadImage.
+      const used = await server.call('/api/input-images/use', {
+        method: 'POST',
+        cookie,
+        body: JSON.stringify({ path: 'nested/sketch.png' }),
+      });
+      expect(used.status).toBe(200);
+      const uploaded = (await used.json()) as { name: string; type: string };
+      expect(uploaded.type).toBe('input');
+      expect(uploaded.name).toContain('sketch');
+
+      // And that upload really is fetchable from ComfyUI afterwards.
+      const back = await server.call(
+        `/api/view?filename=${encodeURIComponent(uploaded.name)}&type=input`,
+        { cookie },
+      );
+      expect(back.status).toBe(200);
+
+      /*
+       * The one that matters: an authenticated caller must not be able to read
+       * files outside the configured folder by asking nicely.
+       */
+      for (const escape of ['../secret.png', '/etc/hostname', 'nested/../../secret.png']) {
+        const denied = await server.call(
+          `/api/input-images/file?path=${encodeURIComponent(escape)}`,
+          { cookie },
+        );
+        expect(denied.status).toBe(404);
+
+        const deniedUse = await server.call('/api/input-images/use', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ path: escape }),
+        });
+        expect(deniedUse.status).toBe(404);
+      }
+
+      // Unauthenticated callers get nothing at all.
+      const anonymous = await server.call('/api/input-images');
+      expect(anonymous.status).toBe(401);
+    } finally {
+      await server.dispose();
+      await comfy.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 40_000);
 });

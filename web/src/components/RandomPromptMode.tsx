@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 
-import { randomPromptPool } from '@latent/shared';
+import { groupLimitFor, normaliseGroupKey, randomPromptPool, UNGROUPED_KEY } from '@latent/shared';
 import type { PromptBlock, RandomPromptConfig, RandomPromptRoll } from '@latent/shared';
 
 import { api } from '../api/client';
@@ -155,7 +155,7 @@ function RandomPromptSheet({ base, onClose }: { base: string; onClose: () => voi
               />
               <OptionRow
                 label="One block per group"
-                hint="Stops two lighting styles landing in the same prompt."
+                hint="The starting point. Any group can be set on its own below."
                 checked={config.onePerGroup}
                 onChange={(onePerGroup) => patch({ onePerGroup })}
               />
@@ -189,7 +189,30 @@ function RandomPromptSheet({ base, onClose }: { base: string; onClose: () => voi
 
               {grouped.map(([group, items]) => (
                 <div key={group} className="space-y-1.5">
-                  <p className="text-[11px] tracking-wide text-muted uppercase">{group}</p>
+                  {/*
+                    Each group says how many of its blocks may land in one prompt.
+                    One place, but as much atmosphere as you like — that
+                    distinction is the whole reason this is per-group rather than
+                    a single switch.
+                  */}
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="min-w-0 truncate text-[11px] tracking-wide text-muted uppercase">
+                      {group}
+                    </p>
+                    <GroupLimitPicker
+                      group={group}
+                      value={groupLimitFor(config, groupKeyOf(group))}
+                      max={items.length}
+                      onChange={(limit) =>
+                        patch({
+                          groupLimits: {
+                            ...config.groupLimits,
+                            [groupKeyOf(group)]: limit,
+                          },
+                        })
+                      }
+                    />
+                  </div>
                   <div className="flex flex-wrap gap-1.5">
                     {items.map((block) => {
                       // With no explicit pool every block is in, so the chips show
@@ -284,6 +307,56 @@ function toggleId(config: RandomPromptConfig, library: PromptBlock[], id: string
   // Back to the whole library: store that as "no pool" so blocks added later are
   // included automatically.
   return next.length === library.length ? [] : next;
+}
+
+/** The pool sheet labels ungrouped blocks; the config keys them by empty string. */
+function groupKeyOf(label: string): string {
+  return label === 'Ungrouped' ? UNGROUPED_KEY : normaliseGroupKey(label);
+}
+
+/**
+ * How many blocks one group may contribute, including "any".
+ *
+ * Rendered per group rather than as a global switch because groups genuinely
+ * differ: exactly one should say where the picture is, while several can say
+ * what it feels like.
+ */
+function GroupLimitPicker({
+  group,
+  value,
+  max,
+  onChange,
+}: {
+  group: string;
+  value: number;
+  max: number;
+  onChange: (limit: number) => void;
+}) {
+  // No point offering "at most 3" to a group with two blocks in it.
+  const options = [
+    ...Array.from({ length: Math.min(max, 3) }, (_unused, index) => index + 1),
+    0,
+  ];
+
+  return (
+    <div className="flex shrink-0 gap-0.5" role="group" aria-label={`${group} limit`}>
+      {options.map((option) => (
+        <button
+          key={option}
+          type="button"
+          aria-label={`${group}: ${option === 0 ? 'any' : `at most ${option}`}`}
+          aria-pressed={value === option}
+          onClick={() => onChange(option)}
+          className={cn(
+            'h-5 min-w-5 rounded px-1 text-[10px] tabular-nums',
+            value === option ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+          )}
+        >
+          {option === 0 ? 'any' : option}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function CountPicker({

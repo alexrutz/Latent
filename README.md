@@ -62,9 +62,12 @@ form. Nothing about your ComfyUI setup changes.
 - **Random prompt mode.** Let the app draw the prompt from your blocks instead —
   from the whole library or a pool you narrow by hand. Every queued run gets its
   own draw, so a batch of eight is eight different pictures.
-- **Edit a photo before it uploads.** Crop to an aspect ratio, rotate, mirror
-  and downscale on the device, so an img2img input is the right shape before the
-  bytes are sent anywhere.
+- **Edit a photo before it uploads.** Crop to an aspect ratio, rotate by quarter
+  turns or a free angle, mirror and downscale on the device, so an img2img input
+  is the right shape before the bytes are sent anywhere.
+- **An input folder.** Point Latent at a folder of reference shots, sketches and
+  masks and pick one straight from the image input — copied into ComfyUI
+  server-side, so the file never travels to your phone and back.
 - **Queue.** See what is waiting, remove single jobs, clear the lot.
 - **Installable.** Add it to your home screen and it runs full-screen like an app.
 - **Password protected.** The first person to open a new install chooses the
@@ -217,6 +220,26 @@ still there years later.
 > and no back door; that is what makes the encryption worth anything. The
 > database, and the settings in it, survive — the pictures do not.
 
+## An input folder
+
+**Settings → Input images.** Give it a path and its contents appear behind
+**From folder** next to any image input — reference shots, sketches, masks,
+anything a workflow should read rather than produce.
+
+Tapping a picture copies it into ComfyUI's input directory **server-side**. The
+bytes go from the Latent machine straight to ComfyUI; nothing travels to the
+phone, which is what makes picking a 12 MP photo cost one small request instead
+of a download and a re-upload. The grid itself only ever loads generated
+thumbnails.
+
+**Edit** on a picture is the opt-in path: only then is the original pulled down,
+so you can crop or straighten it first. The result is uploaded like any other
+edited photo.
+
+The folder is strictly read-only — Latent never writes to it — and, like the
+import folder, a path is refused the moment it tries to escape the configured
+root.
+
 ## Importing an existing output folder
 
 **Settings → Import from a folder.** Give it a path, and Latent walks it
@@ -252,7 +275,12 @@ every queued run draws its own prompt. Settings:
   Off, the prompt is built purely from blocks.
 - **One block per group** (on by default) — the groups you already gave your
   blocks become the constraint that keeps a random prompt coherent. Two lighting
-  blocks in one prompt fight each other; this stops that happening.
+  blocks in one prompt fight each other; this stops that happening. It is only
+  the starting point, though: **each group has its own limit** next to its name
+  in the pool — `1`, `2`, `3` or `any`. Exactly one block should say *where* the
+  picture is, or it is set in two countries at once; three describing the
+  *atmosphere* stack up perfectly well. Blocks with no group at all are unlimited
+  unless you say otherwise.
 - **Pool** — every block by default. Tap any chip to narrow it, and "Use all
   blocks" to go back. An empty pool is stored as "no pool", so blocks you add
   later are included automatically.
@@ -300,6 +328,22 @@ workflow itself is deleted.
 to leave eight "cancelled" tombstones at the top of your pictures. A cancel that
 landed mid-batch still keeps whatever images it managed to produce — those are
 real results.
+
+## Editing a photo
+
+Picking any image input — from the camera roll or the input folder's **Edit** —
+opens the same editor: crop to a ratio, rotate in quarter turns, mirror, and
+**straighten** by any angle up to 45° either way.
+
+A free angle leaves empty wedges at the corners, so the crop box automatically
+starts at the largest rectangle that fits *inside* the rotated picture. That is
+what makes straightening a one-slider job rather than a slider plus a manual
+trim. Anything still outside the crop is filled black rather than left
+transparent: a transparent PNG becomes an alpha mask inside ComfyUI, which is not
+what anyone means by "straighten".
+
+Output is capped at 2048px on the longest edge, and **Original** skips the canvas
+entirely when the picture was already right.
 
 ## The terminal
 

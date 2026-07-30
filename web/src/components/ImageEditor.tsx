@@ -35,21 +35,85 @@ interface Crop {
 
 const FULL_CROP: Crop = { x: 0, y: 0, width: 1, height: 1 };
 
+/** Largest fine adjustment either way. Beyond this, use the 90° buttons. */
+const MAX_FINE_ANGLE = 45;
+
+/** The size of the box a rotated rectangle needs. */
+function rotatedBounds(width: number, height: number, degrees: number) {
+  const radians = (degrees * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(radians));
+  const sin = Math.abs(Math.sin(radians));
+  return {
+    width: Math.ceil(width * cos + height * sin),
+    height: Math.ceil(width * sin + height * cos),
+  };
+}
+
+/**
+ * The largest axis-aligned rectangle that fits *inside* a rotated one.
+ *
+ * This is what makes a straighten tool usable. Rotating by three degrees leaves
+ * four empty wedges at the corners; without this you would have to crop them
+ * away by hand every time, and the standard formula does it exactly.
+ *
+ * Returned as fractions of the rotated bounding box, which is the coordinate
+ * space the crop rectangle already lives in.
+ */
+function inscribedRect(width: number, height: number, degrees: number) {
+  const radians = Math.abs((degrees * Math.PI) / 180) % Math.PI;
+  const angle = radians > Math.PI / 2 ? Math.PI - radians : radians;
+  if (angle < 1e-6) return { width: 1, height: 1 };
+
+  const longer = Math.max(width, height);
+  const shorter = Math.min(width, height);
+  const sin = Math.sin(angle);
+  const cos = Math.cos(angle);
+
+  let innerWidth: number;
+  let innerHeight: number;
+
+  if (shorter <= 2 * sin * cos * longer || Math.abs(sin - cos) < 1e-6) {
+    // Half-constrained: the solution touches the longer side's midpoint.
+    const half = 0.5 * shorter;
+    if (width >= height) {
+      innerWidth = half / sin;
+      innerHeight = half / cos;
+    } else {
+      innerWidth = half / cos;
+      innerHeight = half / sin;
+    }
+  } else {
+    // Fully constrained: all four corners touch.
+    const cos2 = cos * cos - sin * sin;
+    innerWidth = (width * cos - height * sin) / cos2;
+    innerHeight = (height * cos - width * sin) / cos2;
+  }
+
+  const bounds = rotatedBounds(width, height, degrees);
+  return {
+    width: Math.max(0.05, Math.min(1, innerWidth / bounds.width)),
+    height: Math.max(0.05, Math.min(1, innerHeight / bounds.height)),
+  };
+}
+
 /**
  * Draw the source rotated and mirrored into a canvas of the resulting size.
  *
  * Doing this as its own step is what keeps the maths honest: everything
- * afterwards — the preview, the crop, the export — works on an upright image, so
- * there is no sign-juggling per rotation case.
+ * afterwards — the preview, the crop, the export — works on one upright image,
+ * so there is no sign-juggling per rotation case and no difference between a
+ * quarter turn and a three-degree straighten.
  */
 function renderStage(
   source: HTMLImageElement,
   rotation: number,
   flipH: boolean,
 ): HTMLCanvasElement {
-  const swap = rotation % 180 !== 0;
-  const width = swap ? source.naturalHeight : source.naturalWidth;
-  const height = swap ? source.naturalWidth : source.naturalHeight;
+  const { width, height } = rotatedBounds(
+    source.naturalWidth,
+    source.naturalHeight,
+    rotation,
+  );
 
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -57,9 +121,17 @@ function renderStage(
 
   const context = canvas.getContext('2d');
   if (context) {
+    // Black rather than transparent in the corners a free angle leaves behind:
+    // a transparent input becomes an alpha mask inside ComfyUI, which is a
+    // surprise nobody wants from a straighten tool. The crop defaults inside
+    // the picture anyway, so it is rarely seen.
+    context.fillStyle = '#000';
+    context.fillRect(0, 0, width, height);
+
     context.translate(width / 2, height / 2);
     context.rotate((rotation * Math.PI) / 180);
     if (flipH) context.scale(-1, 1);
+    context.imageSmoothingQuality = 'high';
     context.drawImage(source, -source.naturalWidth / 2, -source.naturalHeight / 2);
   }
   return canvas;
@@ -75,8 +147,11 @@ export function ImageEditor({
   onDone: (edited: File) => void;
 }) {
   const [source, setSource] = useState<HTMLImageElement | null>(null);
-  const [rotation, setRotation] = useState(0);
+  /** Quarter turns, kept separate from the fine angle so each control is simple. */
+  const [quarterTurns, setQuarterTurns] = useState(0);
+  const [fineAngle, setFineAngle] = useState(0);
   const [flipH, setFlipH] = useState(false);
+  const rotation = quarterTurns * 90 + fineAngle;
   const [crop, setCrop] = useState<Crop>(FULL_CROP);
   const [aspect, setAspect] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
@@ -96,9 +171,7 @@ export function ImageEditor({
   }, [file]);
 
   const stageSize = source
-    ? rotation % 180 === 0
-      ? { width: source.naturalWidth, height: source.naturalHeight }
-      : { width: source.naturalHeight, height: source.naturalWidth }
+    ? rotatedBounds(source.naturalWidth, source.naturalHeight, rotation)
     : { width: 1, height: 1 };
 
   /** Paint the upright image into the visible canvas. */
@@ -116,23 +189,40 @@ export function ImageEditor({
     context?.drawImage(stage, 0, 0, canvas.width, canvas.height);
   }, [source, rotation, flipH]);
 
-  /** Re-fit the crop box whenever the shape or the rotation changes. */
+  /**
+   * Re-fit the crop box whenever the shape or the rotation changes.
+   *
+   * A free angle leaves empty wedges at the corners, so the box starts at the
+   * largest rectangle that fits inside the picture — which is what makes a
+   * straighten tool feel finished rather than like homework.
+   */
   useEffect(() => {
     if (!source) return;
+
+    const limit = inscribedRect(source.naturalWidth, source.naturalHeight, rotation);
+
     if (aspect === null) {
-      setCrop(FULL_CROP);
+      setCrop({
+        x: (1 - limit.width) / 2,
+        y: (1 - limit.height) / 2,
+        width: limit.width,
+        height: limit.height,
+      });
       return;
     }
 
-    const imageAspect = stageSize.width / stageSize.height;
-    // Largest centred box of the requested shape that still fits.
-    const width = aspect >= imageAspect ? 1 : aspect / imageAspect;
-    const height = aspect >= imageAspect ? imageAspect / aspect : 1;
+    // Largest centred box of the requested shape that fits inside that limit.
+    const limitAspect = (limit.width * stageSize.width) / (limit.height * stageSize.height);
+    const width = aspect >= limitAspect ? limit.width : limit.width * (aspect / limitAspect);
+    const height = aspect >= limitAspect ? limit.height * (limitAspect / aspect) : limit.height;
     setCrop({ x: (1 - width) / 2, y: (1 - height) / 2, width, height });
-  }, [aspect, source, stageSize.width, stageSize.height]);
+  }, [aspect, rotation, source, stageSize.width, stageSize.height]);
+
+  /** True whenever the crop keeps less than the whole frame, so it can be moved. */
+  const cropping = crop.width < 0.999 || crop.height < 0.999;
 
   const onPointerDown = (event: React.PointerEvent) => {
-    if (aspect === null) return;
+    if (!cropping) return;
     (event.currentTarget as Element).setPointerCapture?.(event.pointerId);
     drag.current = { x: event.clientX, y: event.clientY, crop };
   };
@@ -231,7 +321,7 @@ export function ImageEditor({
                 Four dimmed panels around the crop, rather than a hole punched in
                 an overlay — simple, and it makes the kept region unmistakable.
               */}
-              {aspect !== null && (
+              {cropping && (
                 <>
                   <div
                     className="pointer-events-none absolute inset-x-0 top-0 bg-black/55"
@@ -270,7 +360,7 @@ export function ImageEditor({
               )}
             </div>
 
-            {aspect !== null && (
+            {cropping && (
               <p className="text-center text-xs text-muted">Drag to reposition the frame</p>
             )}
 
@@ -303,14 +393,14 @@ export function ImageEditor({
                 <Button
                   variant="secondary"
                   size="sm"
-                  onClick={() => setRotation((current) => (current + 270) % 360)}
+                  onClick={() => setQuarterTurns((current) => current - 1)}
                 >
                   ↺ Left
                 </Button>
                 <Button
                   variant="secondary"
                   size="sm"
-                  onClick={() => setRotation((current) => (current + 90) % 360)}
+                  onClick={() => setQuarterTurns((current) => current + 1)}
                 >
                   ↻ Right
                 </Button>
@@ -325,13 +415,51 @@ export function ImageEditor({
                   variant="ghost"
                   size="sm"
                   onClick={() => {
-                    setRotation(0);
+                    setQuarterTurns(0);
+                    setFineAngle(0);
                     setFlipH(false);
                     setAspect(null);
                     setCrop(FULL_CROP);
                   }}
                 >
                   Reset
+                </Button>
+              </div>
+            </div>
+
+            {/*
+              Straightening, separate from the quarter turns.
+              A horizon is never off by ninety degrees, it is off by two — and
+              the crop follows automatically, so no black wedges are left behind.
+            */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium tracking-wide text-muted uppercase">
+                  Straighten
+                </span>
+                <span className="text-xs tabular-nums text-muted" data-testid="editor-fine-angle">
+                  {fineAngle > 0 ? '+' : ''}
+                  {fineAngle.toFixed(1)}°
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min={-MAX_FINE_ANGLE}
+                  max={MAX_FINE_ANGLE}
+                  step={0.5}
+                  value={fineAngle}
+                  onChange={(event) => setFineAngle(Number(event.target.value))}
+                  aria-label="Straighten"
+                  className="h-8 min-w-0 flex-1 accent-[var(--color-accent)]"
+                />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={fineAngle === 0}
+                  onClick={() => setFineAngle(0)}
+                >
+                  0°
                 </Button>
               </div>
             </div>

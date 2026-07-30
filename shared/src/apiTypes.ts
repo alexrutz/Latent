@@ -453,6 +453,36 @@ export interface AppSettings {
   defaultWorkflowId: string | null;
   /** Absolute path to a ComfyUI output folder to scan for import. */
   importRoot: string | null;
+  /**
+   * Absolute path to a folder of pictures to feed *into* workflows.
+   *
+   * The mirror of `importRoot`: that one is finished work coming in to be kept,
+   * this one is reference photos, sketches and masks going out to img2img.
+   */
+  inputRoot: string | null;
+}
+
+/* ------------------------------------------------------------------ */
+/* Input image library                                                 */
+/* ------------------------------------------------------------------ */
+
+export interface InputImage {
+  /** Path relative to the configured input root. */
+  path: string;
+  name: string;
+  bytes: number;
+  modifiedAt: number;
+  width: number | null;
+  height: number | null;
+}
+
+export interface InputScanResult {
+  root: string;
+  ok: boolean;
+  message?: string;
+  files: InputImage[];
+  /** True when the folder holds more images than the scan will list. */
+  truncated: boolean;
 }
 
 /** Gallery layout, kept on the device rather than the server. */

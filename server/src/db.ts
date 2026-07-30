@@ -404,6 +404,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   img2imgWorkflowId: null,
   defaultWorkflowId: null,
   importRoot: null,
+  inputRoot: null,
 };
 
 export class Store {

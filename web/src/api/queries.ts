@@ -274,18 +274,34 @@ export function useSetTileSpan() {
  * Fire-and-forget on purpose: it is an optimisation for the *next* visit, and a
  * failure should never surface as an error over a picture that loaded fine.
  */
-export function useReportDimensions() {
-  return useMutation({
-    mutationFn: ({
-      image,
-      width,
-      height,
-    }: {
-      image: ComfyImageRef;
-      width: number;
-      height: number;
-    }) => api.reportDimensions(image, width, height),
-    onError: () => undefined,
+/**
+ * Images already told the server their size, so it never has to be asked twice.
+ *
+ * Module-level rather than per-component: the gallery unmounts and remounts as
+ * you move between tabs, and re-reporting a hundred sizes each time is pure
+ * waste on a mobile connection.
+ */
+const reportedSizes = new Set<string>();
+
+/**
+ * Tell the server an image's real pixel size.
+ *
+ * Deliberately **not** a React Query mutation. As one it re-rendered the whole
+ * gallery on every state change, and lazy-loaded thumbnails fire this
+ * continuously while you scroll — a hundred images meant a hundred full-grid
+ * re-renders, which is exactly what made a long scroll stutter.
+ *
+ * Fire-and-forget: it is an optimisation for the *next* visit, and a failure must
+ * never surface as an error over a picture that loaded perfectly.
+ */
+export function reportImageDimensions(image: ComfyImageRef, width: number, height: number): void {
+  const key = `${image.type}/${image.subfolder}/${image.filename}`;
+  if (reportedSizes.has(key)) return;
+  reportedSizes.add(key);
+
+  void api.reportDimensions(image, width, height).catch(() => {
+    // Allow a retry on the next load rather than silently never trying again.
+    reportedSizes.delete(key);
   });
 }
 

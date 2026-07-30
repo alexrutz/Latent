@@ -37,8 +37,22 @@ export interface RandomPromptConfig {
   maxBlocks: number;
   /** Keep what is typed and add to it, rather than replacing it entirely. */
   keepTyped: boolean;
-  /** At most one block per group, so two lighting styles never collide. */
+  /**
+   * Default limit for a group that has no explicit one: at most one block, or
+   * unlimited. The starting point, not the last word — see `groupLimits`.
+   */
   onePerGroup: boolean;
+  /**
+   * Per-group override: how many blocks that group may contribute. `0` means no
+   * limit.
+   *
+   * Groups do not all behave the same way. Exactly one block should describe the
+   * *place*, or the picture is set in two countries at once — but three blocks
+   * describing the *atmosphere* stack up perfectly well, and forbidding that
+   * throws away most of the variation the mode exists to produce. Keyed by the
+   * group name, lower-cased, so renaming case does not orphan the setting.
+   */
+  groupLimits: Record<string, number>;
 }
 
 export const DEFAULT_RANDOM_PROMPT_CONFIG: RandomPromptConfig = {
@@ -48,7 +62,30 @@ export const DEFAULT_RANDOM_PROMPT_CONFIG: RandomPromptConfig = {
   maxBlocks: 4,
   keepTyped: true,
   onePerGroup: true,
+  groupLimits: {},
 };
+
+/** Blocks with no group at all, which never exclude one another by default. */
+export const UNGROUPED_KEY = '';
+
+/**
+ * How many blocks this group may contribute. `0` means no limit.
+ *
+ * An explicit per-group setting always wins. Without one, a named group follows
+ * the global default, and ungrouped blocks are unlimited — nothing about them
+ * says they conflict.
+ */
+export function groupLimitFor(config: RandomPromptConfig, group: string): number {
+  const key = normaliseGroupKey(group);
+  const explicit = config.groupLimits[key];
+  if (typeof explicit === 'number' && Number.isFinite(explicit)) return Math.max(0, explicit);
+  if (key === UNGROUPED_KEY) return 0;
+  return config.onePerGroup ? 1 : 0;
+}
+
+export function normaliseGroupKey(group: string): string {
+  return group.trim().toLowerCase();
+}
 
 /** Sanity bound on the draw size, so a bad value cannot build a 500-part prompt. */
 const MAX_BLOCKS_PER_PROMPT = 24;
@@ -75,7 +112,20 @@ export function normaliseRandomPromptConfig(raw: unknown): RandomPromptConfig {
     maxBlocks: Math.max(min, max),
     keepTyped: input.keepTyped !== false,
     onePerGroup: input.onePerGroup !== false,
+    groupLimits: normaliseGroupLimits(input.groupLimits),
   };
+}
+
+function normaliseGroupLimits(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+
+  const limits: Record<string, number> = {};
+  for (const [group, value] of Object.entries(raw as Record<string, unknown>)) {
+    const numeric = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(numeric) || numeric < 0) continue;
+    limits[normaliseGroupKey(group)] = Math.min(Math.round(numeric), MAX_BLOCKS_PER_PROMPT);
+  }
+  return limits;
 }
 
 function clampCount(value: unknown, fallback: number): number {
@@ -113,18 +163,21 @@ export function pickRandomBlocks(
 
   const shuffled = shuffle(pool, random);
 
+  /*
+   * Apply each group's limit. One block may describe the place; several may
+   * describe the atmosphere. Which is which is the user's call, per group.
+   */
   const candidates: PromptBlock[] = [];
-  if (config.onePerGroup) {
-    const seen = new Set<string>();
-    for (const block of shuffled) {
-      const group = block.category.trim().toLowerCase();
-      // Ungrouped blocks are all independent, so they never exclude each other.
-      if (group !== '' && seen.has(group)) continue;
-      if (group !== '') seen.add(group);
-      candidates.push(block);
+  const used = new Map<string, number>();
+  for (const block of shuffled) {
+    const key = normaliseGroupKey(block.category);
+    const limit = groupLimitFor(config, key);
+    if (limit > 0) {
+      const count = used.get(key) ?? 0;
+      if (count >= limit) continue;
+      used.set(key, count + 1);
     }
-  } else {
-    candidates.push(...shuffled);
+    candidates.push(block);
   }
 
   const span = config.maxBlocks - config.minBlocks + 1;

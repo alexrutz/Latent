@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { ParamField, WidgetValue } from '@latent/shared';
+import type { InputImage, ParamField, WidgetValue } from '@latent/shared';
 
-import { api, imageUrl } from '../api/client';
+import { api, imageUrl, inputImageUrl } from '../api/client';
 import { ImageEditor } from './ImageEditor';
+import { InputImagePicker } from './InputImagePicker';
 import { NumericInput } from './NumericInput';
 import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
 
@@ -114,7 +115,28 @@ export function ImageField({ field, value, onChange }: ControlProps) {
   const [error, setError] = useState<string | null>(null);
   /** Held back for editing rather than uploaded straight away. */
   const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [picking, setPicking] = useState(false);
   const filename = typeof value === 'string' ? value : '';
+
+  /**
+   * Pull a folder image down so it can be edited before use.
+   *
+   * Only on request: the point of the folder picker is that choosing a picture
+   * normally costs nothing on the phone's connection, and downloading a 12 MP
+   * original just in case would throw that away.
+   */
+  const editFromFolder = async (image: InputImage) => {
+    setPicking(false);
+    setError(null);
+    try {
+      const response = await fetch(inputImageUrl(image.path));
+      if (!response.ok) throw new Error('That image could not be read');
+      const blob = await response.blob();
+      setPendingFile(new File([blob], image.name, { type: blob.type || 'image/png' }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not open that image');
+    }
+  };
 
   const upload = async (file: File) => {
     setUploading(true);
@@ -155,16 +177,30 @@ export function ImageField({ field, value, onChange }: ControlProps) {
 
         <div className="min-w-0 flex-1 space-y-2">
           <p className="truncate text-sm text-muted">{filename || 'No image selected'}</p>
-          <Button
-            variant="secondary"
-            size="sm"
-            busy={uploading}
-            onClick={() => inputRef.current?.click()}
-          >
-            {uploading ? 'Uploading…' : filename ? 'Replace' : 'Choose photo'}
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              busy={uploading}
+              onClick={() => inputRef.current?.click()}
+            >
+              {uploading ? 'Uploading…' : filename ? 'Replace' : 'Choose photo'}
+            </Button>
+            {/* The folder on the Latent machine, for reference shots and masks
+                that were never on the phone to begin with. */}
+            <Button variant="ghost" size="sm" onClick={() => setPicking(true)}>
+              From folder
+            </Button>
+          </div>
         </div>
       </div>
+
+      <InputImagePicker
+        open={picking}
+        onClose={() => setPicking(false)}
+        onPicked={onChange}
+        onEdit={(image) => void editFromFolder(image)}
+      />
 
       {/*
         No `capture` attribute: it forces the camera and hides the photo

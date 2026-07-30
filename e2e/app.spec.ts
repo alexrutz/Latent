@@ -396,6 +396,57 @@ test.describe('gallery, favourites and the prompt builder', () => {
     // the data-saving requirement.
     expect(requested.length).toBeGreaterThan(0);
     expect(requested.every((url) => url.includes('preview='))).toBe(true);
+
+    /*
+     * And the bytes really are the small version. Asserting the URL alone would
+     * pass even if the server quietly served the full-size file, so check what
+     * the browser actually decoded: the mock renders results at 384px and
+     * previews at 128px.
+     */
+    const decoded = await page
+      .locator('img[alt*="thumbnail check"]')
+      .first()
+      .evaluate((image: HTMLImageElement) => image.naturalWidth);
+    expect(decoded).toBe(128);
+  });
+
+  /**
+   * A long gallery used to stutter. Two causes, both fixed: reporting an image's
+   * size was a React Query mutation that re-rendered every tile on each of the
+   * hundred loads, and off-screen tiles were still being laid out and painted.
+   */
+  test('keeps a long grid cheap to scroll', async ({ page }) => {
+    await generate(page, 'scroll load', 8);
+    await open(page, '/gallery');
+    await expect(page.locator('img[alt*="scroll load"]').first()).toBeVisible({ timeout: 30_000 });
+
+    // Off-screen tiles opt out of rendering work.
+    const contained = await page
+      .locator('img[alt*="scroll load"]')
+      .first()
+      .evaluate((image: HTMLImageElement) => {
+        const tile = image.closest('div[style]');
+        return tile ? getComputedStyle(tile).contentVisibility : null;
+      });
+    expect(contained).toBe('auto');
+
+    /*
+     * Each image reports its size at most once, ever. Before, this fired on every
+     * load and on every remount — the request storm that came with the re-render
+     * storm.
+     */
+    const reports: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/dimensions')) reports.push(request.url());
+    });
+
+    await page.locator('main').evaluate((element) => element.scrollTo(0, element.scrollHeight));
+    await page.waitForTimeout(600);
+    await page.locator('main').evaluate((element) => element.scrollTo(0, 0));
+    await page.waitForTimeout(600);
+
+    // Scrolling back and forth must not re-report anything already reported.
+    expect(reports).toHaveLength(0);
   });
 
   test('lets the grid width be changed and remembers it', async ({ page }) => {
@@ -588,7 +639,8 @@ test.describe('the phone ergonomics pass', () => {
 
     await page.getByRole('button', { name: 'Save current' }).click();
     await page.getByPlaceholder('e.g. Quick draft').fill('Sparse');
-    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    // Scoped to the sheet: the Settings page behind it has its own Save buttons.
+    await page.getByRole('dialog').getByRole('button', { name: 'Save', exact: true }).click();
     // Scoped to the layout: the Connections list below has an "in use" badge too.
     await expect(page.getByRole('button', { name: /Sparse.*in use/ })).toBeVisible();
 
@@ -948,5 +1000,120 @@ test.describe('random prompt mode', () => {
     await page.getByRole('button', { name: /Random prompt/ }).click();
     await expect(page.getByText(/No prompt blocks saved yet/)).toBeVisible();
     await expect(page.getByRole('button', { name: 'Draw three examples' })).toHaveCount(0);
+  });
+});
+
+test.describe('picking inputs and straightening them', () => {
+  test.beforeEach(async () => {
+    await resetState();
+  });
+
+  /** A folder of reference pictures on the machine running Latent. */
+  function seedInputFolder() {
+    const root = mkdtempSync(join(tmpdir(), 'latent-e2e-inputs-'));
+    mkdirSync(join(root, 'nested'), { recursive: true });
+    writeFileSync(join(root, 'harbour.png'), renderPlaceholder(900, 600, 'harbour'));
+    writeFileSync(join(root, 'nested', 'sketch.png'), renderPlaceholder(600, 900, 'sketch'));
+    return root;
+  }
+
+  /**
+   * Choosing a folder image must not cost the phone anything: the file is copied
+   * into ComfyUI on the server, so no image bytes travel to the browser at all.
+   */
+  test('uses a picture from the input folder without downloading it', async ({ page }) => {
+    const root = seedInputFolder();
+    await withApi(async (ctx) => {
+      await ctx.patch('/api/settings', { data: { inputRoot: root } });
+      await ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } });
+    });
+
+    await open(page, '/');
+
+    const fullSize: string[] = [];
+    page.on('request', (request) => {
+      const url = request.url();
+      if (url.includes('/api/input-images/file') && !url.includes('preview=')) fullSize.push(url);
+    });
+
+    await page.getByRole('button', { name: 'From folder' }).click();
+    await expect(page.getByRole('heading', { name: 'From the input folder' })).toBeVisible();
+    await expect(page.getByText('2 images')).toBeVisible();
+
+    // Subfolders are included, and the grid loads previews only.
+    await expect(page.getByRole('img', { name: 'sketch.png' })).toBeVisible();
+    await page.screenshot({ path: 'test-results/23-input-folder.png' });
+
+    await page.getByRole('img', { name: 'harbour.png' }).click();
+
+    // The chosen file lands in ComfyUI's input directory under its own name.
+    await expect(page.getByText(/harbour\.png/)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('heading', { name: 'From the input folder' })).toBeHidden();
+
+    // …and the original never came down to the browser.
+    expect(fullSize).toHaveLength(0);
+  });
+
+  /** Editing is the opt-in path: only then are the full bytes worth fetching. */
+  test('edits a folder picture before using it', async ({ page }) => {
+    const root = seedInputFolder();
+    await withApi(async (ctx) => {
+      await ctx.patch('/api/settings', { data: { inputRoot: root } });
+      await ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } });
+    });
+
+    await open(page, '/');
+    await page.getByRole('button', { name: 'From folder' }).click();
+    await page.getByRole('button', { name: 'Edit harbour.png' }).click();
+
+    await expect(page.getByRole('heading', { name: 'Adjust photo' })).toBeVisible();
+    await expect(page.getByTestId('editor-output-size')).toHaveText(/900×600/);
+
+    await page.getByRole('button', { name: 'Use' }).click();
+    await expect(page.getByText(/harbour_edited\.png/)).toBeVisible({ timeout: 20_000 });
+  });
+
+  /**
+   * A horizon is never off by ninety degrees, it is off by two — and the crop has
+   * to follow, or every straighten leaves black wedges to trim by hand.
+   */
+  test('straightens by a free angle and crops the empty corners away', async ({ page }) => {
+    await seedWorkflow();
+    await withApi((ctx) => ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } }));
+
+    await open(page, '/');
+    await page.getByRole('button', { name: /Choose photo|Replace/ }).click();
+    await page.locator('input[type="file"]').setInputFiles({
+      name: 'horizon.png',
+      mimeType: 'image/png',
+      buffer: renderPlaceholder(800, 600, 'horizon'),
+    });
+
+    await expect(page.getByRole('heading', { name: 'Adjust photo' })).toBeVisible();
+    await expect(page.getByTestId('editor-fine-angle')).toHaveText('0.0°');
+    await expect(page.getByTestId('editor-output-size')).toHaveText(/800×600/);
+
+    await page.getByRole('slider', { name: 'Straighten' }).fill('5');
+    await expect(page.getByTestId('editor-fine-angle')).toHaveText('+5.0°');
+
+    /*
+     * The result must be smaller than the original in both directions: the crop
+     * has pulled inside the rotated picture rather than keeping the black
+     * corners a rotation leaves behind.
+     */
+    const size = await page.getByTestId('editor-output-size').innerText();
+    const [width, height] = (size.match(/(\d+)×(\d+)/) ?? []).slice(1).map(Number);
+    expect(width).toBeGreaterThan(0);
+    expect(width).toBeLessThan(800);
+    expect(height).toBeLessThan(600);
+    await page.screenshot({ path: 'test-results/24-straighten.png' });
+
+    // Back to zero restores the whole frame.
+    await page.getByRole('button', { name: '0°', exact: true }).click();
+    await expect(page.getByTestId('editor-output-size')).toHaveText(/800×600/);
+
+    // A quarter turn still swaps the sides, and composes with the fine angle.
+    await page.getByRole('button', { name: '↻ Right' }).click();
+    await expect(page.getByTestId('editor-output-size')).toHaveText(/600×800/);
   });
 });

@@ -203,6 +203,8 @@ export function SettingsScreen() {
       </section>
 
       {/* Folder import ---------------------------------------------- */}
+      <InputFolderSection />
+
       <ImportSection />
 
       {/* Maintenance ------------------------------------------------ */}
@@ -449,6 +451,60 @@ function FieldEditorRow({
         </Button>
       </div>
     </div>
+  );
+}
+
+/**
+ * The folder of pictures to feed *into* workflows.
+ *
+ * The mirror of the import folder: that one is finished work coming in to be
+ * kept, this one is reference shots, sketches and masks going out to img2img.
+ * Read-only — Latent never writes here.
+ */
+function InputFolderSection() {
+  const settings = useSettings();
+  const updateSettings = useUpdateSettings();
+  const [path, setPath] = useState(settings.data?.inputRoot ?? '');
+  const [saved, setSaved] = useState(false);
+
+  return (
+    <section className="space-y-2">
+      <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Input images</h2>
+      <Card className="space-y-3">
+        <p className="text-xs text-muted">
+          A folder of pictures to use as workflow inputs. Anything in here shows up under “From
+          folder” next to an image input, and is copied into ComfyUI without passing through your
+          phone. Subfolders are included; nothing is ever written back.
+        </p>
+
+        <div className="flex gap-2">
+          <input
+            value={path}
+            onChange={(event) => {
+              setPath(event.target.value);
+              setSaved(false);
+            }}
+            placeholder="/home/you/reference"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            className="min-w-0 flex-1 rounded-xl border border-line bg-surface px-4 py-3 text-sm focus:border-accent focus:outline-none"
+          />
+          <Button
+            variant="secondary"
+            busy={updateSettings.isPending}
+            onClick={() => {
+              updateSettings.mutate({ inputRoot: path.trim() || null });
+              setSaved(true);
+            }}
+          >
+            Save
+          </Button>
+        </div>
+
+        {saved && <p className="text-xs text-muted">Saved.</p>}
+      </Card>
+    </section>
   );
 }
 

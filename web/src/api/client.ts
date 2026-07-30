@@ -8,6 +8,7 @@ import type {
   FormLayout,
   ImportResult,
   ImportScanResult,
+  InputScanResult,
   PromptBlock,
   PromptBlockInput,
   RandomPromptConfig,
@@ -82,6 +83,13 @@ export function imageUrl(image: ComfyImageRef, preview?: string): string {
 /** A downscaled variant, so a gallery grid doesn't pull full-size PNGs. */
 export function thumbnailUrl(image: ComfyImageRef): string {
   return imageUrl(image, 'webp;70');
+}
+
+/** A file in the configured input folder. `preview` keeps a picker grid cheap. */
+export function inputImageUrl(path: string, preview = false): string {
+  const params = new URLSearchParams({ path });
+  if (preview) params.set('preview', '1');
+  return `/api/input-images/file?${params.toString()}`;
 }
 
 export const api = {
@@ -265,6 +273,24 @@ export const api = {
   /* ---------------------------------------------------------------- */
 
   scanImportFolder: () => request<ImportScanResult>('/api/import/scan'),
+
+  /* ---------------------------------------------------------------- */
+  /* Input image library                                               */
+  /* ---------------------------------------------------------------- */
+
+  inputImages: () => request<InputScanResult>('/api/input-images'),
+
+  /**
+   * Copy a folder image into ComfyUI's input directory.
+   *
+   * Server-side, so the bytes never make the round trip to the phone — the whole
+   * reason for having this rather than making you re-upload the file.
+   */
+  useInputImage: (path: string) =>
+    request<UploadImageResponse>('/api/input-images/use', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
 
   importFiles: (paths: string[], rating = 0) =>
     request<ImportResult>('/api/import', {

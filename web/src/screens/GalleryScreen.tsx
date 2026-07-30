@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import type { GenerationImage, GenerationRecord, GridSettings } from '@latent/shared';
@@ -8,7 +8,7 @@ import {
   useAddFavorite,
   useGallery,
   useRateImage,
-  useReportDimensions,
+  reportImageDimensions,
   useSetTileSpan,
   useSettings,
   useWorkflows,
@@ -39,8 +39,22 @@ export function GalleryScreen() {
   const sentinel = useRef<HTMLDivElement>(null);
   const firstResult = useRef<HTMLDivElement>(null);
   const scrolledOnce = useRef(false);
-  const reportDimensions = useReportDimensions();
   const setTileSpan = useSetTileSpan();
+
+  /*
+   * Stable callbacks so the memoised tiles stay memoised. A fresh arrow per tile
+   * per render defeats `memo` entirely, and with a few hundred tiles in a long
+   * gallery that is the difference between a smooth scroll and a stuttering one.
+   */
+  const openTile = useCallback(
+    (record: GenerationRecord, _image: GenerationImage, index: number) =>
+      setSelected({ record, index }),
+    [],
+  );
+  const holdTile = useCallback(
+    (record: GenerationRecord, image: GenerationImage) => setTileTarget({ record, image }),
+    [],
+  );
 
   const items = useMemo(
     () => gallery.data?.pages.flatMap((page) => page.items) ?? [],
@@ -224,12 +238,10 @@ export function GalleryScreen() {
                 ref={recordIndex === firstResultIndex && imageIndex === 0 ? firstResult : undefined}
                 record={record}
                 image={image}
+                index={imageIndex}
                 settings={settings}
-                onOpen={() => setSelected({ record, index: imageIndex })}
-                onHold={() => setTileTarget({ record, image })}
-                onMeasured={(width, height) =>
-                  reportDimensions.mutate({ image, width, height })
-                }
+                onOpen={openTile}
+                onHold={holdTile}
               />
             ))
           ) : (
@@ -297,49 +309,74 @@ export function GalleryScreen() {
   );
 }
 
-/** One thumbnail, shaped by its aspect ratio and badged with its rating. */
-const GalleryTile = forwardRef<
-  HTMLDivElement,
-  {
-    record: GenerationRecord;
-    image: GenerationImage;
-    settings: GridSettings;
-    onOpen: () => void;
-    onHold: () => void;
-    onMeasured: (width: number, height: number) => void;
-  }
->(function GalleryTile({ record, image, settings, onOpen, onHold, onMeasured }, ref) {
-  const style = useTileStyle(image, settings);
+/**
+ * One thumbnail, shaped by its aspect ratio and badged with its rating.
+ *
+ * Memoised, and it matters: a gallery is hundreds of these, and without it every
+ * one re-rendered whenever anything on the screen changed.
+ */
+const GalleryTile = memo(
+  forwardRef<
+    HTMLDivElement,
+    {
+      record: GenerationRecord;
+      image: GenerationImage;
+      index: number;
+      settings: GridSettings;
+      onOpen: (record: GenerationRecord, image: GenerationImage, index: number) => void;
+      onHold: (record: GenerationRecord, image: GenerationImage) => void;
+    }
+  >(function GalleryTile({ record, image, index, settings, onOpen, onHold }, ref) {
+    const style = useTileStyle(image, settings);
 
-  return (
-    <div ref={ref} className="relative min-w-0" style={style}>
-      <Thumb
-        image={image}
-        alt={record.title}
-        className="size-full"
-        onClick={onOpen}
-        onLongPress={onHold}
-        onMeasured={onMeasured}
-      />
-      {image.rating > 0 && (
-        <span
-          title={
-            image.archived ? 'Rated and stored on this device' : 'Rated, but not copied locally yet'
-          }
-          className="pointer-events-none absolute bottom-1 left-1 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] text-warn backdrop-blur"
-        >
-          {'★'.repeat(image.rating)}
-          {!image.archived && <span className="ml-1 text-danger">!</span>}
-        </span>
-      )}
-      {record.source === 'import' && (
-        <span className="pointer-events-none absolute top-1 right-1 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] text-muted backdrop-blur">
-          imported
-        </span>
-      )}
-    </div>
-  );
-});
+    return (
+      <div
+        ref={ref}
+        className="relative min-w-0"
+        style={{
+          ...style,
+          /*
+           * Skip layout and paint for tiles that are off screen. With a few
+           * hundred thumbnails the browser is otherwise doing that work for the
+           * entire list on every frame of a scroll.
+           *
+           * `contain-intrinsic-size` supplies a placeholder size so the
+           * scrollbar stays honest and skipped tiles do not collapse.
+           */
+          contentVisibility: 'auto',
+          containIntrinsicSize: 'auto 200px',
+        }}
+      >
+        <Thumb
+          image={image}
+          alt={record.title}
+          className="size-full"
+          onClick={() => onOpen(record, image, index)}
+          onLongPress={() => onHold(record, image)}
+          onMeasured={(width, height) => reportImageDimensions(image, width, height)}
+        />
+        {image.rating > 0 && (
+          <span
+            title={
+              image.archived
+                ? 'Rated and stored on this device'
+                : 'Rated, but not copied locally yet'
+            }
+            className="pointer-events-none absolute bottom-1 left-1 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] text-warn backdrop-blur"
+          >
+            {'★'.repeat(image.rating)}
+            {!image.archived && <span className="ml-1 text-danger">!</span>}
+          </span>
+        )}
+        {record.source === 'import' && (
+          <span className="pointer-events-none absolute top-1 right-1 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] text-muted backdrop-blur">
+            imported
+          </span>
+        )}
+      </div>
+    );
+  }),
+);
 
 /**
  * A queued, running or failed generation that has no image to show yet.
