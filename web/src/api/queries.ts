@@ -32,6 +32,7 @@ export const queryKeys = {
   favorites: ['favorites'] as const,
   promptBlocks: ['prompt-blocks'] as const,
   promptMode: ['prompt-mode'] as const,
+  variationPresets: ['variation-presets'] as const,
   importScan: ['import-scan'] as const,
   presets: (workflowId: string) => ['presets', workflowId] as const,
   layouts: (workflowId: string) => ['layouts', workflowId] as const,
@@ -373,6 +374,37 @@ export const useDeletePromptBlock = () =>
 
 export function usePromptMode() {
   return useQuery({ queryKey: queryKeys.promptMode, queryFn: api.promptMode });
+}
+
+export function useVariationPresets() {
+  return useQuery({ queryKey: queryKeys.variationPresets, queryFn: api.variationPresets });
+}
+
+/** Save, load and delete the whole variation setup as one named thing. */
+export function useVariationPresetMutations() {
+  const client = useQueryClient();
+  const invalidate = () => {
+    void client.invalidateQueries({ queryKey: queryKeys.variationPresets });
+    void client.invalidateQueries({ queryKey: queryKeys.promptMode });
+  };
+
+  return {
+    save: useMutation({
+      mutationFn: (name: string) => api.saveVariationPreset(name),
+      onSuccess: invalidate,
+    }),
+    apply: useMutation({
+      mutationFn: (id: string) => api.applyVariationPreset(id),
+      onSuccess: (config) => {
+        client.setQueryData(queryKeys.promptMode, config);
+        invalidate();
+      },
+    }),
+    remove: useMutation({
+      mutationFn: (id: string) => api.deleteVariationPreset(id),
+      onSuccess: invalidate,
+    }),
+  };
 }
 
 export function useUpdatePromptMode() {

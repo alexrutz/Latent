@@ -176,24 +176,31 @@ function FavoriteSheet({ favorite, onClose }: { favorite: Favorite; onClose: () 
   if (viewing && favorite.image) {
     return (
       <ImageViewer
-        record={{
-          id: favorite.generationId ?? favorite.id,
-          promptId: '',
-          workflowId: favorite.workflowId,
-          workflowName: '',
-          status: 'completed',
-          error: null,
-          values: favorite.values,
-          seeds: {},
-          // A favourite snapshots the values, not the rendered summary — the
-          // viewer only needs the images and the title here.
-          params: [],
-          title: favorite.title,
-          images: [favorite.image],
-          createdAt: favorite.createdAt,
-          completedAt: favorite.createdAt,
-          source: 'comfy',
-        }}
+        // One favourite at a time: there is nothing to swipe to from here, and
+        // the surrounding list is sorted by rating rather than by run.
+        entries={[
+          {
+            record: {
+              id: favorite.generationId ?? favorite.id,
+              promptId: '',
+              workflowId: favorite.workflowId,
+              workflowName: '',
+              status: 'completed',
+              error: null,
+              values: favorite.values,
+              seeds: {},
+              // A favourite snapshots the values, not the rendered summary — the
+              // viewer only needs the image and the title here.
+              params: [],
+              title: favorite.title,
+              images: [favorite.image],
+              createdAt: favorite.createdAt,
+              completedAt: favorite.createdAt,
+              source: 'comfy',
+            },
+            image: favorite.image,
+          },
+        ]}
         index={0}
         onIndexChange={() => undefined}
         onClose={() => setViewing(false)}

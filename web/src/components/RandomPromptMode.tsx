@@ -1,10 +1,32 @@
 import { useMemo, useState } from 'react';
 
-import { groupLimitFor, normaliseGroupKey, randomPromptPool, UNGROUPED_KEY } from '@latent/shared';
-import type { PromptBlock, RandomPromptConfig, RandomPromptRoll } from '@latent/shared';
+import {
+  candidateValues,
+  defaultRuleFor,
+  groupLimitFor,
+  normaliseGroupKey,
+  randomPromptPool,
+  UNGROUPED_KEY,
+  variableFields,
+} from '@latent/shared';
+import type {
+  PromptBlock,
+  RandomParamRule,
+  RandomPromptConfig,
+  RandomPromptRoll,
+} from '@latent/shared';
 
 import { api } from '../api/client';
-import { usePromptBlocks, usePromptMode, useUpdatePromptMode } from '../api/queries';
+import {
+  usePromptBlocks,
+  usePromptMode,
+  useUpdatePromptMode,
+  useVariationPresetMutations,
+  useVariationPresets,
+  useWorkflow,
+  useWorkflows,
+} from '../api/queries';
+import { NumericInput } from './NumericInput';
 import { Toggle } from './ParamControl';
 import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
 
@@ -245,7 +267,21 @@ function RandomPromptSheet({ base, onClose }: { base: string; onClose: () => voi
             </div>
 
             <ErrorNote>{error}</ErrorNote>
+          </>
+        )}
 
+        {/*
+          Parameter variation, deliberately below the prompt and collapsed.
+          Sweeping CFG is a real thing to want, but the prompt is what decides
+          whether a picture is interesting — so this stays out of the way until
+          it is asked for.
+        */}
+        <ParamVariation config={config} onChange={patch} />
+
+        <VariationPresets />
+
+        {library.length > 0 && (
+          <>
             {/* Seeing three examples before committing eight renders to it. */}
             <div className="space-y-2 border-t border-line pt-3">
               <Button
@@ -307,6 +343,270 @@ function toggleId(config: RandomPromptConfig, library: PromptBlock[], id: string
   // Back to the whole library: store that as "no pool" so blocks added later are
   // included automatically.
   return next.length === library.length ? [] : next;
+}
+
+/**
+ * Numeric parameters drawn from a range, kept as small as it can be.
+ *
+ * Collapsed by default and one line per rule: the prompt is the thing that
+ * decides whether a picture is interesting, and this must not push it off screen.
+ */
+function ParamVariation({
+  config,
+  onChange,
+}: {
+  config: RandomPromptConfig;
+  onChange: (patch: Partial<RandomPromptConfig>) => void;
+}) {
+  const [open, setOpen] = useState(config.params.length > 0);
+  const [adding, setAdding] = useState(false);
+  const workflows = useWorkflows();
+  const [workflowId, setWorkflowId] = useState<string | null>(null);
+  const workflow = useWorkflow(workflowId ?? workflows.data?.[0]?.id ?? null);
+
+  const available = useMemo(
+    () => (workflow.data ? variableFields(workflow.data.schema) : []),
+    [workflow.data],
+  );
+  const used = new Set(config.params.map((rule) => rule.key));
+
+  const setRule = (key: string, patch: Partial<RandomParamRule>) =>
+    onChange({
+      params: config.params.map((rule) => (rule.key === key ? { ...rule, ...patch } : rule)),
+    });
+
+  return (
+    <div className="space-y-2 border-t border-line pt-3">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between text-left"
+      >
+        <span className="text-xs font-medium tracking-wide text-muted uppercase">
+          Parameters{config.params.length > 0 && ` (${config.params.length})`}
+        </span>
+        <span className="text-xs text-accent">{open ? 'Hide' : 'Show'}</span>
+      </button>
+
+      {open && (
+        <div className="space-y-1.5">
+          {config.params.length === 0 && (
+            <p className="text-[11px] text-muted">
+              Give a value a range and an interval, and each run draws one of the results.
+            </p>
+          )}
+
+          {config.params.map((rule) => {
+            const values = candidateValues(rule);
+            return (
+              <div key={rule.key} className="space-y-0.5 rounded-lg border border-line px-2 py-1.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="min-w-0 flex-1 truncate text-xs">{rule.label}</span>
+                  <RuleNumber
+                    label={`${rule.label} from`}
+                    value={rule.min}
+                    onChange={(min) => setRule(rule.key, { min })}
+                  />
+                  <span className="text-[10px] text-muted">–</span>
+                  <RuleNumber
+                    label={`${rule.label} to`}
+                    value={rule.max}
+                    onChange={(max) => setRule(rule.key, { max })}
+                  />
+                  <span className="text-[10px] text-muted">step</span>
+                  <RuleNumber
+                    label={`${rule.label} step`}
+                    value={rule.step}
+                    onChange={(step) => setRule(rule.key, { step })}
+                  />
+                  <button
+                    type="button"
+                    aria-label={`Remove ${rule.label}`}
+                    onClick={() =>
+                      onChange({ params: config.params.filter((item) => item.key !== rule.key) })
+                    }
+                    className="shrink-0 px-1 text-xs text-muted"
+                  >
+                    ✕
+                  </button>
+                </div>
+                {/* Exactly what this rule can produce — no guessing. */}
+                <p className="truncate text-[10px] tabular-nums text-muted">
+                  {values.slice(0, 8).join(', ')}
+                  {values.length > 8 && ` … (${values.length})`}
+                </p>
+              </div>
+            );
+          })}
+
+          {adding ? (
+            <div className="space-y-1 rounded-lg border border-line p-2">
+              {workflows.data && workflows.data.length > 1 && (
+                <select
+                  value={workflowId ?? workflows.data[0]?.id ?? ''}
+                  onChange={(event) => setWorkflowId(event.target.value)}
+                  aria-label="Workflow to take parameters from"
+                  className="w-full rounded-md bg-surface-2 px-2 py-1 text-xs"
+                >
+                  {workflows.data.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <div className="flex max-h-40 flex-wrap gap-1 overflow-y-auto">
+                {available
+                  .filter((field) => !used.has(field.id))
+                  .map((field) => (
+                    <button
+                      key={field.id}
+                      type="button"
+                      onClick={() => {
+                        onChange({ params: [...config.params, defaultRuleFor(field)] });
+                        setAdding(false);
+                      }}
+                      className="rounded-full border border-line px-2 py-1 text-[11px] active:bg-surface-2"
+                    >
+                      {field.label}
+                    </button>
+                  ))}
+              </div>
+              {available.length === 0 && (
+                <p className="text-[11px] text-muted">
+                  That workflow has no numeric settings to vary.
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={() => setAdding(false)}
+                className="w-full py-1 text-[11px] text-muted"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setAdding(true)}
+              className="w-full rounded-lg border border-dashed border-line py-1.5 text-[11px] text-accent"
+            >
+              + Vary a parameter
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A very small number field, sized for a one-line rule row. */
+function RuleNumber({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <NumericInput
+      value={value}
+      onChange={(next) => onChange(Number(next))}
+      aria-label={label}
+      className="w-11 shrink-0 rounded-md border-0 bg-surface-2 px-1 py-0.5 text-center text-xs"
+    />
+  );
+}
+
+/**
+ * Saving and loading the whole setup — prompt draw and parameter draw together.
+ *
+ * One thing, because that is how it is used: "landscapes, high step count" is a
+ * different way of working from "portraits, fast drafts", and switching between
+ * them should be one tap rather than eight.
+ */
+function VariationPresets() {
+  const presets = useVariationPresets();
+  const { save, apply, remove } = useVariationPresetMutations();
+  const [name, setName] = useState('');
+  const [naming, setNaming] = useState(false);
+
+  return (
+    <div className="space-y-2 border-t border-line pt-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium tracking-wide text-muted uppercase">Saved setups</span>
+        <button
+          type="button"
+          onClick={() => setNaming((current) => !current)}
+          className="text-xs text-accent"
+        >
+          {naming ? 'Cancel' : 'Save current'}
+        </button>
+      </div>
+
+      {naming && (
+        <div className="flex gap-2">
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="e.g. Moody landscapes"
+            className="min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-2 py-1 text-xs focus:border-accent focus:outline-none"
+          />
+          <Button
+            variant="primary"
+            size="sm"
+            busy={save.isPending}
+            disabled={name.trim() === ''}
+            onClick={() =>
+              save.mutate(name.trim(), {
+                onSuccess: () => {
+                  setName('');
+                  setNaming(false);
+                },
+              })
+            }
+          >
+            Save
+          </Button>
+        </div>
+      )}
+
+      {(presets.data ?? []).length === 0 ? (
+        <p className="text-[11px] text-muted">
+          Nothing saved yet. A setup keeps the blocks, the limits and the parameter ranges together.
+        </p>
+      ) : (
+        <ul className="space-y-1">
+          {(presets.data ?? []).map((preset) => (
+            <li key={preset.id} className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => apply.mutate(preset.id)}
+                className="min-w-0 flex-1 truncate rounded-lg px-2 py-1 text-left text-xs active:bg-surface-2"
+              >
+                {preset.name}
+                <span className="ml-2 text-[10px] text-muted">
+                  {preset.config.blockIds.length === 0 ? 'all blocks' : `${preset.config.blockIds.length} blocks`}
+                  {preset.config.params.length > 0 && `, ${preset.config.params.length} params`}
+                </span>
+              </button>
+              <button
+                type="button"
+                aria-label={`Delete ${preset.name}`}
+                onClick={() => remove.mutate(preset.id)}
+                className="shrink-0 px-1 text-xs text-muted"
+              >
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 /** The pool sheet labels ungrouped blocks; the config keys them by empty string. */

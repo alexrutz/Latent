@@ -93,4 +93,52 @@ export function registerPromptBlockRoutes(app: FastifyInstance, ctx: AppContext)
       };
     },
   );
+
+  /* ---------------------------------------------------------------- */
+  /* Saved variation setups                                            */
+  /* ---------------------------------------------------------------- */
+
+  app.get('/api/prompt-mode/presets', async () => ctx.store.listVariationPresets());
+
+  /**
+   * Save the whole setup — prompt draw and parameter draw together.
+   *
+   * `config` is optional: without it the live setup is snapshotted, which is what
+   * "save this" means when you have just finished arranging it.
+   */
+  app.post<{ Body: { name?: string; config?: RandomPromptConfig } }>(
+    '/api/prompt-mode/presets',
+    async (request, reply) => {
+      const name = request.body?.name?.trim();
+      if (!name) return reply.code(400).send({ error: 'Give the setup a name' });
+
+      const config = request.body?.config ?? ctx.store.getRandomPromptConfig();
+      return reply.code(201).send(ctx.store.saveVariationPreset(randomUUID(), name, config));
+    },
+  );
+
+  /**
+   * Load a saved setup.
+   *
+   * `enabled` is deliberately not restored from the preset: loading one is a
+   * statement about *what* to vary, not about whether variation is on right now.
+   */
+  app.post<{ Params: { id: string } }>(
+    '/api/prompt-mode/presets/:id/apply',
+    async (request, reply) => {
+      const preset = ctx.store.getVariationPreset(request.params.id);
+      if (!preset) return reply.code(404).send({ error: 'That saved setup is gone' });
+
+      const { enabled: _ignored, ...rest } = preset.config;
+      return ctx.store.setRandomPromptConfig(rest);
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>('/api/prompt-mode/presets/:id', async (request, reply) => {
+    if (!ctx.store.getVariationPreset(request.params.id)) {
+      return reply.code(404).send({ error: 'That saved setup is gone' });
+    }
+    ctx.store.deleteVariationPreset(request.params.id);
+    return reply.code(204).send();
+  });
 }

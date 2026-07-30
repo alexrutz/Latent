@@ -2058,3 +2058,177 @@ describe('input image folder', () => {
     }
   }, 40_000);
 });
+
+describe('parameter variation', () => {
+  async function workflowId(): Promise<string> {
+    const workflows = await json<{ id: string; name: string }[]>(api('/api/workflows'));
+    const existing = workflows.find((w) => w.name === 'SD1.5 txt2img');
+    if (existing) return existing.id;
+    const created = await json<WorkflowDetail>(
+      api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'SD1.5 txt2img', graph: sd15Txt2Img }),
+      }),
+    );
+    return created.id;
+  }
+
+  async function reset() {
+    await api('/api/queue', { method: 'DELETE' });
+    await api('/api/queue/interrupt', { method: 'POST' });
+    await api('/api/prompt-mode', {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled: false, params: [], blockIds: [] }),
+    });
+    await waitFor(async () => {
+      const state = await json<QueueState>(api('/api/queue'));
+      return state.running.length + state.pending.length === 0 ? state : null;
+    });
+  }
+
+  /**
+   * A step sweep across a batch is the single most common thing anyone does by
+   * hand with a queue. Every queued item must draw its own value.
+   */
+  it('draws a value per queued item, only from the range and interval given', async () => {
+    const id = await workflowId();
+    try {
+      await api('/api/prompt-mode', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          enabled: true,
+          params: [{ key: '3.steps', label: 'Steps', min: 20, max: 40, step: 10 }],
+        }),
+      });
+
+      await api('/api/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          workflowId: id,
+          values: { '6.text': 'a sweep', '3.steps': 5 },
+          batchCount: 6,
+        }),
+      });
+
+      const queue = await waitFor(async () => {
+        const state = await json<QueueState>(api('/api/queue'));
+        return state.running.length + state.pending.length >= 3 ? state : null;
+      });
+
+      const drawn = [...queue.running, ...queue.pending].map((entry) =>
+        Number(entry.params.find((param) => param.label === 'Steps')?.value),
+      );
+      expect(drawn.length).toBeGreaterThan(2);
+
+      // Only the discrete candidates the rule allows, never the typed 5.
+      for (const value of drawn) expect([20, 30, 40]).toContain(value);
+      expect(drawn).not.toContain(5);
+
+      // The prompt is untouched: only the parameter was being varied.
+      expect([...queue.running, ...queue.pending].every((e) => e.title === 'a sweep')).toBe(true);
+    } finally {
+      await reset();
+    }
+  }, 40_000);
+
+  it('leaves parameters alone when the mode is off', async () => {
+    const id = await workflowId();
+    try {
+      // Rules are stored, but the master switch is off.
+      await api('/api/prompt-mode', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          enabled: false,
+          params: [{ key: '3.steps', label: 'Steps', min: 20, max: 40, step: 10 }],
+        }),
+      });
+
+      await api('/api/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          workflowId: id,
+          values: { '6.text': 'untouched', '3.steps': 7 },
+        }),
+      });
+
+      const queued = await waitFor(async () => {
+        const state = await json<QueueState>(api('/api/queue'));
+        const all = [...state.running, ...state.pending];
+        return all.length > 0 ? all : null;
+      });
+      expect(queued[0]?.params.find((param) => param.label === 'Steps')?.value).toBe('7');
+    } finally {
+      await reset();
+    }
+  }, 30_000);
+
+  /**
+   * Prompt draw and parameter draw are one setup in use, so they save and load
+   * together — otherwise the two halves can silently disagree.
+   */
+  it('saves and reloads the whole setup as one named thing', async () => {
+    const block = ((await (
+      await api('/api/prompt-blocks', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Moody', category: 'Mood', text: 'heavy clouds' }),
+      })
+    ).json()) as { id: string }).id;
+
+    try {
+      await api('/api/prompt-mode', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          enabled: true,
+          blockIds: [block],
+          minBlocks: 1,
+          maxBlocks: 1,
+          groupLimits: { mood: 2 },
+          params: [{ key: '3.cfg', label: 'CFG', min: 4, max: 9, step: 1 }],
+        }),
+      });
+
+      const saved = await json<{ id: string; name: string }>(
+        api('/api/prompt-mode/presets', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'Moody landscapes' }),
+        }),
+      );
+      expect(saved.name).toBe('Moody landscapes');
+
+      // Wander away from it entirely.
+      await api('/api/prompt-mode', {
+        method: 'PATCH',
+        body: JSON.stringify({ blockIds: [], minBlocks: 4, maxBlocks: 4, groupLimits: {}, params: [] }),
+      });
+
+      const restored = await json<{
+        blockIds: string[];
+        minBlocks: number;
+        groupLimits: Record<string, number>;
+        params: { key: string; step: number }[];
+        enabled: boolean;
+      }>(api(`/api/prompt-mode/presets/${saved.id}/apply`, { method: 'POST' }));
+
+      // Everything comes back together: pool, limits and parameter ranges.
+      expect(restored.blockIds).toEqual([block]);
+      expect(restored.minBlocks).toBe(1);
+      expect(restored.groupLimits).toEqual({ mood: 2 });
+      expect(restored.params).toEqual([{ key: '3.cfg', label: 'CFG', min: 4, max: 9, step: 1 }]);
+
+      // Saving under the same name replaces rather than duplicating.
+      await api('/api/prompt-mode/presets', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Moody landscapes' }),
+      });
+      const list = await json<{ id: string }[]>(api('/api/prompt-mode/presets'));
+      expect(list).toHaveLength(1);
+
+      const removed = await api(`/api/prompt-mode/presets/${list[0]!.id}`, { method: 'DELETE' });
+      expect(removed.status).toBe(204);
+      expect(await json<unknown[]>(api('/api/prompt-mode/presets'))).toHaveLength(0);
+    } finally {
+      await api(`/api/prompt-blocks/${block}`, { method: 'DELETE' });
+      await reset();
+    }
+  }, 30_000);
+});

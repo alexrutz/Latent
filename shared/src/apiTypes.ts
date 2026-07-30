@@ -1,3 +1,4 @@
+import type { RandomPromptConfig } from './randomPrompt.js';
 import type { ApiWorkflow, ComfyImageRef } from './comfyTypes.js';
 import type { FieldOverrides, ParamSchema, ParamValues } from './paramTypes.js';
 
@@ -462,6 +463,20 @@ export interface AppSettings {
   inputRoot: string | null;
 }
 
+/**
+ * A named snapshot of the whole variation setup.
+ *
+ * Prompt draw and parameter draw together, because they are one way of working
+ * — "landscapes, high step count" is a different setup from "portraits, fast
+ * drafts", and switching between them should be one tap, not eight.
+ */
+export interface VariationPreset {
+  id: string;
+  name: string;
+  config: RandomPromptConfig;
+  createdAt: number;
+}
+
 /* ------------------------------------------------------------------ */
 /* Input image library                                                 */
 /* ------------------------------------------------------------------ */
@@ -496,10 +511,26 @@ export interface GridSettings {
   uniformTiles: boolean;
   /** Favourites list shows thumbnails (the default) or is a compact list. */
   favoriteThumbnails: boolean;
+  /**
+   * Parameter keys drawn over each grid thumbnail, in the order chosen.
+   *
+   * Separate from `viewerParams` because the two have very different room: a
+   * thumbnail fits two or three numbers, the full-size viewer several more.
+   */
+  gridParams: string[];
+  /** Parameter keys drawn over the full-size picture. */
+  viewerParams: string[];
+  /** Prefix each overlay value with a two-letter abbreviation of its name. */
+  overlayLabels: boolean;
 }
 
 export const DEFAULT_GRID_SETTINGS: GridSettings = {
   columns: 2,
   uniformTiles: false,
   favoriteThumbnails: true,
+  // Nothing overlaid by default: a clean grid is the right first impression, and
+  // the picker is one tap away when you are comparing a sweep.
+  gridParams: [],
+  viewerParams: [],
+  overlayLabels: true,
 };

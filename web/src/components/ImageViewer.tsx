@@ -5,16 +5,33 @@ import type { GenerationImage, GenerationRecord } from '@latent/shared';
 import { imageUrl } from '../api/client';
 import { cn } from './ui';
 
-interface ImageViewerProps {
+/** One image in the viewer's flat list, with the run it came from. */
+export interface ViewerEntry {
   record: GenerationRecord;
+  image: GenerationImage;
+}
+
+interface ImageViewerProps {
+  /**
+   * Everything swipeable, flattened.
+   *
+   * Flat rather than one record at a time: a batch of four is not a meaningful
+   * boundary when you are flicking through a gallery, and stopping dead at the
+   * end of one run made swiping feel broken.
+   */
+  entries: ViewerEntry[];
   index: number;
   onIndexChange: (index: number) => void;
   onClose: () => void;
   footer?: React.ReactNode;
+  /** A caption drawn over the bottom of the picture, e.g. chosen parameters. */
+  overlay?: React.ReactNode;
 }
 
 const MAX_SCALE = 5;
 const DOUBLE_TAP_SCALE = 2.5;
+/** How long to wait for a second tap before treating one as a single tap. */
+const DOUBLE_TAP_MS = 280;
 
 /**
  * Full-screen image viewer with pinch-zoom, pan, and swipe between results.
@@ -23,8 +40,17 @@ const DOUBLE_TAP_SCALE = 2.5;
  * fixed-position overlay does not get native pinch-zoom, and the alternative
  * (letting the page zoom) breaks the surrounding UI.
  */
-export function ImageViewer({ record, index, onIndexChange, onClose, footer }: ImageViewerProps) {
-  const image = record.images[index];
+export function ImageViewer({
+  entries,
+  index,
+  onIndexChange,
+  onClose,
+  footer,
+  overlay,
+}: ImageViewerProps) {
+  const entry = entries[index];
+  const record = entry?.record;
+  const image = entry?.image;
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
@@ -32,6 +58,7 @@ export function ImageViewer({ record, index, onIndexChange, onClose, footer }: I
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gestureStart = useRef({ distance: 0, scale: 1, x: 0, y: 0, offsetX: 0, offsetY: 0 });
   const lastTap = useRef(0);
+  const tapTimer = useRef<number | undefined>(undefined);
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
 
   const reset = useCallback(() => {
@@ -40,25 +67,39 @@ export function ImageViewer({ record, index, onIndexChange, onClose, footer }: I
   }, []);
 
   // A new image always starts unzoomed.
-  useEffect(reset, [index, record.id, reset]);
+  useEffect(reset, [index, reset]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
-      if (event.key === 'ArrowRight' && index < record.images.length - 1) onIndexChange(index + 1);
+      if (event.key === 'ArrowRight' && index < entries.length - 1) onIndexChange(index + 1);
       if (event.key === 'ArrowLeft' && index > 0) onIndexChange(index - 1);
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [index, record.images.length, onClose, onIndexChange]);
+  }, [index, entries.length, onClose, onIndexChange]);
 
-  if (!image) return null;
+  // Any pending single-tap must not fire after the viewer has gone.
+  useEffect(() => () => window.clearTimeout(tapTimer.current), []);
+
+  if (!image || !record) return null;
 
   const distanceBetween = (a: { x: number; y: number }, b: { x: number; y: number }) =>
     Math.hypot(a.x - b.x, a.y - b.y);
 
   const onPointerDown = (event: React.PointerEvent) => {
-    (event.target as Element).setPointerCapture?.(event.pointerId);
+    /*
+     * Capture keeps events coming if the finger leaves the element mid-swipe.
+     * It is an optimisation, not a requirement, and it throws for a pointer the
+     * browser does not consider active — so a failure here must not be allowed
+     * to abort the handler and swallow the whole gesture.
+     */
+    try {
+      (event.target as Element).setPointerCapture?.(event.pointerId);
+    } catch {
+      // Carry on without it.
+    }
+
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
 
     if (pointers.current.size === 2) {
@@ -116,26 +157,48 @@ export function ImageViewer({ record, index, onIndexChange, onClose, footer }: I
     if (pointers.current.size === 0) {
       setDragging(false);
 
-      // Unzoomed horizontal flick moves between images in the batch.
+      // Unzoomed horizontal flick moves through the gallery.
       if (start && scale === 1) {
         const dx = event.clientX - start.x;
         const dy = event.clientY - start.y;
         if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-          if (dx < 0 && index < record.images.length - 1) onIndexChange(index + 1);
+          if (dx < 0 && index < entries.length - 1) onIndexChange(index + 1);
           if (dx > 0 && index > 0) onIndexChange(index - 1);
+          swipeStart.current = null;
+          lastTap.current = 0;
+          window.clearTimeout(tapTimer.current);
+          return;
+        }
+        // A drag that went nowhere in particular is not a tap either.
+        if (Math.abs(dx) > 12 || Math.abs(dy) > 12) {
           swipeStart.current = null;
           return;
         }
       }
 
-      // Double tap toggles zoom, the standard photo-viewer gesture.
       const now = Date.now();
-      if (now - lastTap.current < 300) {
+      if (now - lastTap.current < DOUBLE_TAP_MS) {
+        // Double tap toggles zoom, the standard photo-viewer gesture. It wins
+        // over the single tap, whose action is still waiting on the timer.
+        window.clearTimeout(tapTimer.current);
         if (scale > 1) reset();
         else setScale(DOUBLE_TAP_SCALE);
         lastTap.current = 0;
       } else {
         lastTap.current = now;
+        /*
+         * A single tap closes the viewer — or, when zoomed in, zooms back out
+         * first, because closing on a stray tap while inspecting detail would be
+         * infuriating.
+         *
+         * Deferred by the double-tap window: without the wait, the first tap of
+         * a double tap would close the viewer before the second arrived.
+         */
+        window.clearTimeout(tapTimer.current);
+        tapTimer.current = window.setTimeout(() => {
+          if (scale > 1) reset();
+          else onClose();
+        }, DOUBLE_TAP_MS);
       }
     }
     swipeStart.current = null;
@@ -152,16 +215,16 @@ export function ImageViewer({ record, index, onIndexChange, onClose, footer }: I
         >
           ✕
         </button>
-        {record.images.length > 1 && (
+        {entries.length > 1 && (
           <span className="text-sm text-white/60 tabular-nums">
-            {index + 1} / {record.images.length}
+            {index + 1} / {entries.length}
           </span>
         )}
         <span className="size-11" />
       </div>
 
       <div
-        className="min-h-0 flex-1 touch-none overflow-hidden"
+        className="relative min-h-0 flex-1 touch-none overflow-hidden"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -179,6 +242,15 @@ export function ImageViewer({ record, index, onIndexChange, onClose, footer }: I
             transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})`,
           }}
         />
+
+        {/* Over the picture, not below it: this is a glance, and the footer is
+            already carrying the actions. Hidden while zoomed, where it would
+            just be in the way of what you are inspecting. */}
+        {overlay && scale === 1 && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-3 pt-6 pb-2">
+            {overlay}
+          </div>
+        )}
       </div>
 
       {footer && <div className="safe-b shrink-0 bg-black/80 px-4 py-3">{footer}</div>}

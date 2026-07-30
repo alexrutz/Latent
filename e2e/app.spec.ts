@@ -89,8 +89,19 @@ async function resetState() {
     // Random prompt mode is server-side state; leaving it on would silently
     // rewrite the prompt in every test that follows.
     await ctx.patch('/api/prompt-mode', {
-      data: { enabled: false, blockIds: [], minBlocks: 2, maxBlocks: 4, keepTyped: true },
+      data: {
+        enabled: false,
+        blockIds: [],
+        minBlocks: 2,
+        maxBlocks: 4,
+        keepTyped: true,
+        groupLimits: {},
+        params: [],
+      },
     });
+
+    const setups = (await (await ctx.get('/api/prompt-mode/presets')).json()) as { id: string }[];
+    for (const setup of setups) await ctx.delete(`/api/prompt-mode/presets/${setup.id}`);
   });
 }
 
@@ -1115,5 +1126,251 @@ test.describe('picking inputs and straightening them', () => {
     // A quarter turn still swaps the sides, and composes with the fine angle.
     await page.getByRole('button', { name: '↻ Right' }).click();
     await expect(page.getByTestId('editor-output-size')).toHaveText(/600×800/);
+  });
+});
+
+test.describe('living in the gallery', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+  });
+
+  /** Generate a batch and wait for the images to land. */
+  async function generateBatch(page: Page, prompt: string, batch: number) {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill(prompt);
+    if (batch > 1) await page.getByRole('button', { name: String(batch), exact: true }).click();
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    // Counted for *this* prompt, not the gallery as a whole: an earlier run's
+    // images would otherwise satisfy the wait before this one had started.
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const gallery = (await (await ctx.get('/api/gallery?limit=100')).json()) as {
+              items: { title: string; images: unknown[] }[];
+            };
+            return gallery.items
+              .filter((item) => item.title === prompt)
+              .reduce((total, item) => total + item.images.length, 0);
+          }),
+        { timeout: 60_000 },
+      )
+      .toBeGreaterThanOrEqual(batch);
+  }
+
+  /**
+   * A batch is not a meaningful boundary when flicking through results, so the
+   * viewer swipes across the whole gallery — including from one run into the next.
+   */
+  test('swipes across every image, not just one run', async ({ page }) => {
+    await generateBatch(page, 'first run', 2);
+    await generateBatch(page, 'second run', 2);
+
+    await open(page, '/gallery');
+    // The newest run is at the top, so the first tile belongs to it.
+    await page.locator('main img').first().click();
+
+    // Four pictures across two runs, all in one swipeable list.
+    const counter = page.getByText(/^\d+ \/ 4$/);
+    await expect(counter).toBeVisible();
+    await expect(page.locator('div.z-60 img')).toHaveAttribute('alt', /second run/);
+
+    const stage = page.locator('div.touch-none').first();
+
+    /**
+     * A horizontal flick, dispatched as the pointer events the viewer listens
+     * for. Driving the handler directly rather than asking the browser to
+     * synthesise a touch gesture: what is being tested here is the navigation
+     * across runs, not Chromium's gesture recognition.
+     */
+    const swipe = async (direction: -1 | 1) => {
+      const box = (await stage.boundingBox()) as { x: number; y: number; width: number; height: number };
+      const midY = box.y + box.height / 2;
+      const from = box.x + box.width * (direction < 0 ? 0.8 : 0.2);
+      const to = from + direction * box.width * 0.6;
+
+      // `bubbles` matters: React listens at the root, so a non-bubbling event
+      // dispatched on a descendant never reaches the handler at all.
+      const base = { pointerId: 1, bubbles: true, isPrimary: true };
+      await stage.dispatchEvent('pointerdown', { ...base, clientX: from, clientY: midY });
+      await stage.dispatchEvent('pointermove', { ...base, clientX: to, clientY: midY });
+      await stage.dispatchEvent('pointerup', { ...base, clientX: to, clientY: midY });
+    };
+
+    // Swiping to the end crosses out of this run and into the previous one,
+    // which is the whole point — a batch is not a boundary worth stopping at.
+    await swipe(-1);
+    await swipe(-1);
+    await swipe(-1);
+    await expect(counter).toHaveText('4 / 4');
+    await expect(page.locator('div.z-60 img')).toHaveAttribute('alt', /first run/);
+
+    // …and back the other way.
+    await swipe(1);
+    await expect(counter).toHaveText('3 / 4');
+  });
+
+  /** Tapping the picture closes it — the gesture everyone tries first. */
+  test('closes an opened image with a tap', async ({ page }) => {
+    await generateBatch(page, 'tap to close', 1);
+    await open(page, '/gallery');
+
+    await page.locator('img[alt*="tap to close"]').first().click();
+    await expect(page.getByRole('button', { name: 'Details' })).toBeVisible();
+
+    const stage = page.locator('div.touch-none').first();
+    await stage.click({ position: { x: 40, y: 40 } });
+
+    // Deferred by the double-tap window, so give it a moment.
+    await expect(page.getByRole('button', { name: 'Details' })).toBeHidden({ timeout: 5_000 });
+  });
+
+  /**
+   * Favouriting saved silently: nothing on screen changed, so it looked broken
+   * and invited a second tap that saved a duplicate.
+   */
+  test('shows that an image is favourited, and unfavourites on a second tap', async ({ page }) => {
+    await generateBatch(page, 'a keeper too', 1);
+    await open(page, '/gallery');
+    await page.locator('img[alt*="a keeper too"]').first().click();
+
+    const button = page.getByRole('button', { name: /Favourite/ });
+    await expect(button).toHaveAttribute('aria-pressed', 'false');
+
+    await button.click();
+    await expect(page.getByRole('button', { name: '★ Favourited' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Favourite/ })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    // Tapping again removes it rather than saving a second copy.
+    await page.getByRole('button', { name: '★ Favourited' }).click();
+    await expect(page.getByRole('button', { name: '☆ Favourite' })).toBeVisible();
+
+    const favourites = await withApi(async (ctx) =>
+      (await (await ctx.get('/api/favorites')).json()) as unknown[],
+    );
+    expect(favourites).toHaveLength(0);
+  });
+
+  /** The action row used to run off the right edge with nothing to say so. */
+  test('keeps every viewer action inside the screen', async ({ page }) => {
+    await generateBatch(page, 'button row', 1);
+    await open(page, '/gallery');
+    await page.locator('img[alt*="button row"]').first().click();
+
+    const width = page.viewportSize()?.width ?? 0;
+    expect(width).toBeGreaterThan(0);
+
+    for (const name of ['Favourite', 'Save', 'New seed', 'Reuse settings', 'Upscale', 'Details']) {
+      const button = page.getByRole('button', { name: new RegExp(name) }).first();
+      await expect(button).toBeVisible();
+      const box = await button.boundingBox();
+      expect(box, `${name} has no box`).not.toBeNull();
+      const { x, width: w } = box as { x: number; width: number };
+      expect(x, `${name} starts off screen`).toBeGreaterThanOrEqual(0);
+      expect(x + w, `${name} runs past the right edge`).toBeLessThanOrEqual(width + 1);
+    }
+    await page.screenshot({ path: 'test-results/25-viewer-actions.png' });
+  });
+
+  /**
+   * Comparing a sweep means reading the numbers off the thumbnails. Opening each
+   * picture to find them loses the comparison entirely.
+   */
+  test('draws chosen parameters on thumbnails and on the big picture', async ({ page }) => {
+    await generateBatch(page, 'overlay check', 2);
+    await open(page, '/gallery');
+
+    // Nothing overlaid until asked.
+    await expect(page.getByTestId('param-overlay')).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Values on thumbnails' }).click();
+    await page.getByRole('button', { name: 'Steps', exact: true }).click();
+    await page.getByRole('button', { name: 'CFG', exact: true }).click();
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    const overlays = page.getByTestId('param-overlay');
+    await expect(overlays.first()).toBeVisible();
+    // Short labels plus the value: `St20 Cf8`, readable without opening anything.
+    await expect(overlays.first()).toContainText('St');
+    await expect(overlays.first()).toContainText('20');
+    await page.screenshot({ path: 'test-results/26-grid-overlay.png' });
+
+    // The viewer keeps its own, separate selection. Scoped to the viewer: the
+    // grid is still mounted behind it, overlays and all.
+    await page.locator('img[alt*="overlay check"]').first().click();
+    const viewer = page.locator('div.z-60');
+    await expect(viewer.getByTestId('param-overlay')).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Values on the picture' }).click();
+    await page.getByRole('button', { name: 'Seed', exact: true }).click();
+    await page.getByRole('button', { name: 'Done' }).click();
+    await expect(viewer.getByTestId('param-overlay')).toBeVisible();
+    await expect(viewer.getByTestId('param-overlay')).toContainText('Se');
+    // …and it is the viewer's own list, not the grid's.
+    await expect(viewer.getByTestId('param-overlay')).not.toContainText('Cf');
+
+    // The choice belongs to the device, so it survives a reload.
+    await page.reload();
+    await signIn(page);
+    await expect(page.getByTestId('param-overlay').first()).toContainText('St');
+  });
+});
+
+test.describe('varying the parameters too', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+  });
+
+  test('sweeps a value across a batch and saves the setup with the prompt one', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/prompt-blocks', { data: { name: 'Moody', category: 'Mood', text: 'heavy clouds' } }),
+    );
+
+    await open(page, '/');
+    await page.getByRole('button', { name: /Random prompt/ }).click();
+    await page.getByRole('switch', { name: 'Draw the prompt' }).click();
+
+    // The parameters section is collapsed by default — prompts come first.
+    await expect(page.getByRole('button', { name: 'Steps', exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: /^Parameters/ }).click();
+    await page.getByRole('button', { name: '+ Vary a parameter' }).click();
+    await page.getByRole('button', { name: 'Steps', exact: true }).click();
+
+    // A rule states its range, and shows exactly what it can produce.
+    await page.getByRole('textbox', { name: 'Steps from' }).fill('20');
+    await page.getByRole('textbox', { name: 'Steps to' }).fill('40');
+    await page.getByRole('textbox', { name: 'Steps step' }).fill('10');
+    await expect(page.getByText('20, 30, 40')).toBeVisible();
+    await page.screenshot({ path: 'test-results/27-param-variation.png' });
+
+    // Saved as one thing, together with the prompt setup.
+    await page.getByRole('button', { name: 'Save current' }).click();
+    await page.getByPlaceholder('e.g. Moody landscapes').fill('Sweep');
+    await page.getByRole('dialog').getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByRole('button', { name: /Sweep.*1 params/ })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    // And a batch really does draw different values.
+    await page.getByPlaceholder('Describe the image…').fill('a sweep');
+    await page.getByRole('button', { name: '4', exact: true }).click();
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await page.getByRole('link', { name: 'Queue' }).click();
+    const cards = page.getByTestId('queue-card');
+    await expect(cards.nth(2)).toBeVisible({ timeout: 30_000 });
+
+    const steps = await cards.locator('li', { hasText: 'Steps' }).allInnerTexts();
+    expect(steps.length).toBeGreaterThan(2);
+    for (const text of steps) expect(['Steps20', 'Steps30', 'Steps40']).toContain(text.replace(/\s/g, ''));
+
+    await withApi((ctx) => ctx.delete('/api/queue'));
+    await withApi((ctx) => ctx.post('/api/queue/interrupt'));
   });
 });

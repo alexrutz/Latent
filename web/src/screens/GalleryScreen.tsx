@@ -6,6 +6,8 @@ import type { GenerationImage, GenerationRecord, GridSettings } from '@latent/sh
 import { api, imageUrl } from '../api/client';
 import {
   useAddFavorite,
+  useDeleteFavorite,
+  useFavorites,
   useGallery,
   useRateImage,
   reportImageDimensions,
@@ -13,13 +15,24 @@ import {
   useSettings,
   useWorkflows,
 } from '../api/queries';
-import { ImageViewer, Thumb } from '../components/ImageViewer';
+import { ImageViewer, Thumb, type ViewerEntry } from '../components/ImageViewer';
+import {
+  overlayValues,
+  ParamOverlayLine,
+  ParamOverlayPicker,
+} from '../components/ParamOverlay';
 import { RatingStars } from '../components/RatingStars';
 import { ThumbGrid, useTileStyle } from '../components/ThumbGrid';
 import { Toggle } from '../components/ParamControl';
 import { Button, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { TILE_OPTIONS, useGridSettings } from '../state/grid';
 import { usePendingStore } from '../state/pending';
+
+/** A stable identity for one picture, unique across runs. */
+function identify(entry: ViewerEntry | undefined): string | null {
+  if (!entry) return null;
+  return `${entry.record.id}/${entry.image.subfolder}/${entry.image.filename}`;
+}
 
 const FILTERS = [
   { label: 'All', minRating: 0 },
@@ -30,7 +43,15 @@ const FILTERS = [
 export function GalleryScreen() {
   const [minRating, setMinRating] = useState(0);
   const gallery = useGallery({ minRating });
-  const [selected, setSelected] = useState<{ record: GenerationRecord; index: number } | null>(null);
+  /**
+   * Which picture the viewer is showing, as `generation/filename`.
+   *
+   * Not a position: the list grows underneath while a queue drains, and a stored
+   * index would then point at a different picture. Not the filename alone
+   * either — two runs can in principle write the same name, and then every
+   * lookup would find the first one.
+   */
+  const [selected, setSelected] = useState<string | null>(null);
   const [tileTarget, setTileTarget] = useState<
     { record: GenerationRecord; image: GenerationImage } | null
   >(null);
@@ -47,8 +68,7 @@ export function GalleryScreen() {
    * gallery that is the difference between a smooth scroll and a stuttering one.
    */
   const openTile = useCallback(
-    (record: GenerationRecord, _image: GenerationImage, index: number) =>
-      setSelected({ record, index }),
+    (record: GenerationRecord, image: GenerationImage) => setSelected(identify({ record, image })),
     [],
   );
   const holdTile = useCallback(
@@ -59,6 +79,18 @@ export function GalleryScreen() {
   const items = useMemo(
     () => gallery.data?.pages.flatMap((page) => page.items) ?? [],
     [gallery.data],
+  );
+
+  /*
+   * Every picture in the gallery, flattened.
+   *
+   * This is what the viewer swipes through. A batch of four is not a meaningful
+   * boundary when you are flicking through results, and stopping dead at the end
+   * of one run made swiping feel broken.
+   */
+  const entries = useMemo<ViewerEntry[]>(
+    () => items.flatMap((record) => record.images.map((image) => ({ record, image }))),
+    [items],
   );
 
   // Infinite scroll: load the next page as the end of the list comes into view.
@@ -126,9 +158,16 @@ export function GalleryScreen() {
     };
   }, [items.length]);
 
-  // The open record must track live updates, or a still-running generation
-  // would never gain its images while the viewer is open.
-  const openRecord = selected ? (items.find((item) => item.id === selected.record.id) ?? selected.record) : null;
+  /*
+   * Where the open picture sits in the flat list, recomputed each render.
+   *
+   * Derived rather than stored, so a generation finishing while the viewer is
+   * open shifts the list under it without the viewer jumping to a different
+   * picture.
+   */
+  const viewerIndex = selected
+    ? entries.findIndex((candidate) => identify(candidate) === selected)
+    : -1;
 
   const filterBar = (
     <div className="mb-3 flex items-center justify-between gap-2">
@@ -149,6 +188,16 @@ export function GalleryScreen() {
             </button>
           ))}
         </div>
+        {/* Its own selection, separate from the viewer's: a thumbnail has room
+            for two or three numbers, not eight. */}
+        <ParamOverlayPicker
+          label="Values on thumbnails"
+          records={items}
+          selected={settings.gridParams}
+          withLabels={settings.overlayLabels}
+          onChange={(gridParams) => updateSettings({ gridParams })}
+          onWithLabelsChange={(overlayLabels) => updateSettings({ overlayLabels })}
+        />
         <button
           type="button"
           onClick={() => setShowLayout(true)}
@@ -297,11 +346,13 @@ export function GalleryScreen() {
         </div>
       </Sheet>
 
-      {openRecord && selected && (
+      {viewerIndex >= 0 && (
         <ViewerWithActions
-          record={openRecord}
-          index={Math.min(selected.index, Math.max(0, openRecord.images.length - 1))}
-          onIndexChange={(index) => setSelected({ record: openRecord, index })}
+          entries={entries}
+          index={viewerIndex}
+          grid={settings}
+          onGridChange={updateSettings}
+          onIndexChange={(next) => setSelected(identify(entries[next]))}
           onClose={() => setSelected(null)}
         />
       )}
@@ -328,6 +379,10 @@ const GalleryTile = memo(
     }
   >(function GalleryTile({ record, image, index, settings, onOpen, onHold }, ref) {
     const style = useTileStyle(image, settings);
+    const overlay = useMemo(
+      () => overlayValues(record, settings.gridParams),
+      [record, settings.gridParams],
+    );
 
     return (
       <div
@@ -372,6 +427,18 @@ const GalleryTile = memo(
           <span className="pointer-events-none absolute top-1 right-1 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] text-muted backdrop-blur">
             imported
           </span>
+        )}
+
+        {/*
+          The chosen values, inside the thumbnail.
+          The point is comparing a sweep without opening anything: eight results
+          of a step ramp are eight numbers, and tapping into each to find them
+          loses the comparison entirely.
+        */}
+        {overlay.length > 0 && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 to-transparent px-1 pt-3 pb-0.5">
+            <ParamOverlayLine items={overlay} withLabels={settings.overlayLabels} compact />
+          </div>
         )}
       </div>
     );
@@ -419,13 +486,18 @@ function PlaceholderCard({ record }: { record: GenerationRecord }) {
 /* ------------------------------------------------------------------ */
 
 function ViewerWithActions({
-  record,
+  entries,
   index,
+  grid,
+  onGridChange,
   onIndexChange,
   onClose,
 }: {
-  record: GenerationRecord;
+  entries: ViewerEntry[];
   index: number;
+  /** Which parameters to draw over the picture, shared with the grid's own. */
+  grid: GridSettings;
+  onGridChange: (patch: Partial<GridSettings>) => void;
   onIndexChange: (index: number) => void;
   onClose: () => void;
 }) {
@@ -437,16 +509,45 @@ function ViewerWithActions({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const image = record.images[index];
-  const workflowExists = workflows.data?.some((item) => item.id === record.workflowId) ?? false;
   const rateImage = useRateImage();
   const addFavorite = useAddFavorite();
+  const removeFavorite = useDeleteFavorite();
+  const favorites = useFavorites();
+
+  // Every hook above runs unconditionally; only then is it safe to bail. The
+  // gallery only renders this once it has found the entry, so a miss means the
+  // picture was deleted underneath us — closing is the right answer.
+  const entry = entries[index];
+  if (!entry) return null;
+
+  const { record, image } = entry;
+  const workflowExists = workflows.data?.some((item) => item.id === record.workflowId) ?? false;
+
+  /*
+   * Whether *this* image is already a favourite.
+   *
+   * Read from the stored list rather than tracked locally, so the button tells
+   * the truth when the viewer is reopened — and so a second tap removes it
+   * instead of silently saving a duplicate, which is what used to happen.
+   */
+  const existingFavorite = image
+    ? (favorites.data?.find(
+        (entry) =>
+          entry.generationId === record.id &&
+          entry.image?.filename === image.filename &&
+          entry.image?.subfolder === image.subfolder,
+      ) ?? null)
+    : null;
 
   const favorite = async () => {
     if (!image) return;
     setError(null);
     try {
-      await addFavorite.mutateAsync({ generationId: record.id, image });
+      if (existingFavorite) {
+        await removeFavorite.mutateAsync(existingFavorite.id);
+      } else {
+        await addFavorite.mutateAsync({ generationId: record.id, image });
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not save that favourite');
     }
@@ -525,10 +626,16 @@ function ViewerWithActions({
 
   return (
     <ImageViewer
-      record={record}
+      entries={entries}
       index={index}
       onIndexChange={onIndexChange}
       onClose={onClose}
+      overlay={
+        <ParamOverlayLine
+          items={overlayValues(record, grid.viewerParams)}
+          withLabels={grid.overlayLabels}
+        />
+      }
       footer={
         <div className="space-y-2">
           <ErrorNote>{error}</ErrorNote>
@@ -553,15 +660,26 @@ function ViewerWithActions({
             </div>
           )}
 
-          <div className="no-scrollbar flex gap-2 overflow-x-auto [&>button]:shrink-0 [&>button]:whitespace-nowrap">
+          {/*
+            Wraps rather than scrolling sideways. The row used to run off the
+            right edge with no scrollbar to say so, which just looked broken —
+            and half of these are actions you reach for constantly.
+          */}
+          <div className="flex flex-wrap gap-1.5 [&>button]:whitespace-nowrap">
             <Button
-              variant="secondary"
+              // Says which state it is in, and which way the next tap goes.
+              variant={existingFavorite ? 'primary' : 'secondary'}
               size="sm"
-              busy={addFavorite.isPending}
+              busy={addFavorite.isPending || removeFavorite.isPending}
               onClick={favorite}
-              title="Keep this image and its settings in Favourites"
+              aria-pressed={Boolean(existingFavorite)}
+              title={
+                existingFavorite
+                  ? 'In Favourites — tap to remove'
+                  : 'Keep this image and its settings in Favourites'
+              }
             >
-              ☆ Favourite
+              {existingFavorite ? '★ Favourited' : '☆ Favourite'}
             </Button>
             <Button variant="secondary" size="sm" onClick={share}>
               Save
@@ -602,6 +720,16 @@ function ViewerWithActions({
             <Button variant="ghost" size="sm" onClick={() => setShowDetails(true)}>
               Details
             </Button>
+            {/* Which values are drawn over the picture. Its own choice, separate
+                from the grid's — there is room for more here. */}
+            <ParamOverlayPicker
+              label="Values on the picture"
+              records={entries.map((candidate) => candidate.record)}
+              selected={grid.viewerParams}
+              withLabels={grid.overlayLabels}
+              onChange={(viewerParams) => onGridChange({ viewerParams })}
+              onWithLabelsChange={(overlayLabels) => onGridChange({ overlayLabels })}
+            />
           </div>
 
           <Sheet open={showDetails} onClose={() => setShowDetails(false)} title="Settings used" full>

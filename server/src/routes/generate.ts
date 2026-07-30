@@ -5,6 +5,7 @@ import {
   applyParams,
   buildParamSummary,
   composeRandomPrompt,
+  drawRandomParams,
   pickRandomBlocks,
 } from '@latent/shared';
 import type { GenerateRequest, GenerateResponse, ParamValues } from '@latent/shared';
@@ -41,8 +42,9 @@ export function registerGenerateRoutes(app: FastifyInstance, ctx: AppContext): v
     const promptFields = schema.fields.filter(
       (field) => field.role === 'prompt' && !field.hidden,
     );
-    const drawing = randomConfig.enabled && promptFields.length > 0;
-    const blocks = drawing ? ctx.store.listPromptBlocks() : [];
+    const drawingPrompt = randomConfig.enabled && promptFields.length > 0;
+    const drawingParams = randomConfig.enabled && randomConfig.params.length > 0;
+    const blocks = drawingPrompt ? ctx.store.listPromptBlocks() : [];
 
     /**
      * Replace every positive prompt with a freshly drawn one.
@@ -72,7 +74,17 @@ export function registerGenerateRoutes(app: FastifyInstance, ctx: AppContext): v
     const promptIds: string[] = [];
 
     for (let i = 0; i < batchCount; i += 1) {
-      const itemValues = drawing ? drawPrompts(values) : values;
+      let itemValues = drawingPrompt ? drawPrompts(values) : values;
+
+      /*
+       * Parameter variation, drawn per item like the prompt. Applied after the
+       * prompt so a rule can never be overwritten by it, and before `applyParams`
+       * so the drawn value is what actually reaches the graph.
+       */
+      if (drawingParams) {
+        itemValues = { ...itemValues, ...drawRandomParams(schema, randomConfig.params) };
+      }
+
       // Re-derived per item: with a drawn prompt the title differs each time, and
       // the title is what the gallery and queue show.
       const title = deriveTitle(schema, itemValues, detail.name);

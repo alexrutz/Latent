@@ -1,4 +1,5 @@
 import type { PromptBlock } from './apiTypes.js';
+import { normaliseRandomParams, type RandomParamRule } from './randomParams.js';
 import { addFragment, promptContainsFragment } from './promptFragments.js';
 
 /**
@@ -53,6 +54,15 @@ export interface RandomPromptConfig {
    * group name, lower-cased, so renaming case does not orphan the setting.
    */
   groupLimits: Record<string, number>;
+  /**
+   * Numeric parameters to draw from a range, alongside the prompt.
+   *
+   * Lives here, in what the name still calls the *prompt* config, because the two
+   * are one setup in use: "this kind of picture, made this way". They are saved,
+   * loaded and switched on together, so splitting them into two stored objects
+   * would only create a way for them to disagree.
+   */
+  params: RandomParamRule[];
 }
 
 export const DEFAULT_RANDOM_PROMPT_CONFIG: RandomPromptConfig = {
@@ -63,6 +73,7 @@ export const DEFAULT_RANDOM_PROMPT_CONFIG: RandomPromptConfig = {
   keepTyped: true,
   onePerGroup: true,
   groupLimits: {},
+  params: [],
 };
 
 /** Blocks with no group at all, which never exclude one another by default. */
@@ -113,6 +124,7 @@ export function normaliseRandomPromptConfig(raw: unknown): RandomPromptConfig {
     keepTyped: input.keepTyped !== false,
     onePerGroup: input.onePerGroup !== false,
     groupLimits: normaliseGroupLimits(input.groupLimits),
+    params: normaliseRandomParams(input.params),
   };
 }
 

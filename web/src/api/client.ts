@@ -14,6 +14,7 @@ import type {
   RandomPromptConfig,
   RandomPromptRoll,
   TileSpan,
+  VariationPreset,
   ConnectionInput,
   ConnectionSummary,
   ConnectionTestResult,
@@ -260,6 +261,21 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(patch),
     }),
+
+  variationPresets: () => request<VariationPreset[]>('/api/prompt-mode/presets'),
+
+  /** Omitting `config` snapshots the live setup, which is what "save this" means. */
+  saveVariationPreset: (name: string, config?: RandomPromptConfig) =>
+    request<VariationPreset>('/api/prompt-mode/presets', {
+      method: 'POST',
+      body: JSON.stringify({ name, config }),
+    }),
+
+  applyVariationPreset: (id: string) =>
+    request<RandomPromptConfig>(`/api/prompt-mode/presets/${id}/apply`, { method: 'POST' }),
+
+  deleteVariationPreset: (id: string) =>
+    request<void>(`/api/prompt-mode/presets/${id}`, { method: 'DELETE' }),
 
   /** Example draws from the server, using the same code path as a real submit. */
   previewPromptMode: (base: string, config?: Partial<RandomPromptConfig>) =>

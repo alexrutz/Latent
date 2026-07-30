@@ -20,6 +20,7 @@ import type {
   PromptBlock,
   PromptBlockInput,
   TileSpan,
+  VariationPreset,
   WorkflowDetail,
   WorkflowPreset,
   WorkflowSummary,
@@ -196,6 +197,24 @@ CREATE INDEX idx_layouts_workflow ON layouts (workflow_id, created_at);
  */
 MIGRATIONS.push(`
 ALTER TABLE generations ADD COLUMN params_json TEXT NOT NULL DEFAULT '[]';
+`);
+
+/**
+ * v6: named snapshots of the whole variation setup.
+ *
+ * Random prompting and parameter variation are one thing in use — "this kind of
+ * picture, made this way" — so they are saved and loaded together rather than as
+ * two halves that can disagree.
+ */
+MIGRATIONS.push(`
+CREATE TABLE variation_presets (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL UNIQUE,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX idx_variation_presets_created ON variation_presets (created_at);
 `);
 
 interface WorkflowRow {
@@ -1359,6 +1378,47 @@ export class Store {
     const next = normaliseRandomPromptConfig({ ...this.getRandomPromptConfig(), ...patch });
     this.setSecretSetting(RANDOM_PROMPT_KEY, JSON.stringify(next));
     return next;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Saved variation setups                                            */
+  /* ---------------------------------------------------------------- */
+
+  listVariationPresets(): VariationPreset[] {
+    return this.db
+      .prepare<[], { id: string; name: string; config_json: string; created_at: number }>(
+        'SELECT * FROM variation_presets ORDER BY name ASC',
+      )
+      .all()
+      .map((row) => ({
+        id: row.id,
+        name: row.name,
+        createdAt: row.created_at,
+        config: normaliseRandomPromptConfig(parseJson<unknown>(row.config_json, {})),
+      }));
+  }
+
+  /** Saving under an existing name overwrites it — that is what people mean. */
+  saveVariationPreset(id: string, name: string, config: RandomPromptConfig): VariationPreset {
+    this.db
+      .prepare(
+        `INSERT INTO variation_presets (id, name, config_json, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(name) DO UPDATE SET config_json = excluded.config_json`,
+      )
+      .run(id, name, JSON.stringify(normaliseRandomPromptConfig(config)), Date.now());
+
+    const saved = this.listVariationPresets().find((preset) => preset.name === name);
+    if (!saved) throw new Error('Preset vanished immediately after being saved');
+    return saved;
+  }
+
+  getVariationPreset(id: string): VariationPreset | null {
+    return this.listVariationPresets().find((preset) => preset.id === id) ?? null;
+  }
+
+  deleteVariationPreset(id: string): void {
+    this.db.prepare('DELETE FROM variation_presets WHERE id = ?').run(id);
   }
 
   getSettings(): AppSettings {

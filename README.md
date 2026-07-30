@@ -35,9 +35,12 @@ form. Nothing about your ComfyUI setup changes.
   was submitted with — including its seed — so you can tell eight variations of
   one prompt apart and cancel the one you regret. One switch expands them all
   for a side-by-side comparison.
-- **Gallery.** Every result, with the exact settings that produced it. Pinch to
-  zoom, swipe between a batch, save to your camera roll, re-run, or send a
-  result straight to img2img or an upscale pass.
+- **Gallery.** Every result, with the exact settings that produced it. Swipe
+  through the whole gallery, pinch to zoom, tap to close, save to your camera
+  roll, re-run, or send a result straight to img2img or an upscale pass.
+- **Values on the pictures.** Pick which settings to draw over the thumbnails —
+  `St20 Cf8`, small enough to fit — so a sweep can be compared at a glance
+  without opening anything. The full-size viewer has its own separate choice.
 - **Ratings that outlive the GPU.** Rating an image copies it onto the machine
   running Latent — **encrypted**, so it survives the rented instance being
   destroyed without leaving your pictures readable on disk.
@@ -62,6 +65,9 @@ form. Nothing about your ComfyUI setup changes.
 - **Random prompt mode.** Let the app draw the prompt from your blocks instead —
   from the whole library or a pool you narrow by hand. Every queued run gets its
   own draw, so a batch of eight is eight different pictures.
+- **Parameter sweeps.** Give any numeric setting a range and an interval; each
+  run draws one of the resulting values. Saved together with the prompt setup as
+  one named thing, because that is how it is used.
 - **Edit a photo before it uploads.** Crop to an aspect ratio, rotate by quarter
   turns or a free angle, mirror and downscale on the device, so an img2img input
   is the right shape before the bytes are sent anywhere.
@@ -301,6 +307,56 @@ Two things worth knowing:
 If the pool is empty — no blocks saved, or narrowed to nothing — your typed
 prompt is submitted unchanged rather than blank.
 
+### Sweeping parameters too
+
+Under **Parameters** in the same sheet, give any numeric setting a **range and an
+interval**. `20 to 40, step 10` means each run draws one of `20, 30, 40` — the
+candidates are listed under the rule, so there is never a question of what a rule
+will actually do.
+
+Discrete on purpose. A continuous range would produce 7.318294 and make two runs
+impossible to compare; a small set of values is something you can hold in your
+head. Rules are clamped to the node's own limits, integer fields stay integral,
+and a rule naming a field the current workflow does not have is skipped rather
+than submitted blindly.
+
+The section sits below the prompt controls and starts collapsed, because the
+prompt is what decides whether a picture is interesting.
+
+### Saving a whole setup
+
+**Save current** keeps the blocks, the pool, the group limits *and* the parameter
+ranges under one name. They are one way of working — "moody landscapes, high step
+count" is a different setup from "portraits, fast drafts" — so switching between
+them is one tap rather than eight.
+
+Loading a setup deliberately does **not** switch variation on or off. That is a
+statement about what to vary, not about whether you want it right now.
+
+## In the gallery
+
+**Swiping crosses runs.** The viewer holds every picture in the gallery as one
+flat list, so a flick keeps going past the end of a batch instead of stopping
+dead at a boundary that means nothing while you are browsing.
+
+**A tap closes it** — the gesture everyone tries first. Zoomed in, the first tap
+zooms back out instead, because closing on a stray tap while inspecting detail
+would be maddening. Double tap still toggles zoom; the single tap waits out the
+double-tap window before acting.
+
+**Values on the pictures.** The ⓘ button in the gallery header chooses what is
+drawn over each *thumbnail*; the one in the viewer's action row chooses what is
+drawn over the *full-size* picture. Two selections, because a thumbnail fits two
+or three numbers and the viewer fits more.
+
+Labels are abbreviated to two letters and lengthened only as far as needed to
+stay distinct within the set on screen — so `Seed` and `Sequence` become `Se` and
+`Seq`, while `Steps` and `Sampler` are just `St` and `Sa`. Turn **Short labels**
+off for bare numbers.
+
+The values come from what each run recorded when it was queued, so they describe
+what actually ran even after the workflow has changed.
+
 ## Timings and the queue
 
 The step rate and the time remaining are measured **on the server**, where the
@@ -401,7 +457,7 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 
 | Path | What lives there |
 | --- | --- |
-| `shared/` | Types, the form-building engine (`paramSchema.ts`), LoRA tag parsing, the queue's parameter summaries and the random-prompt draw — pure, no I/O |
+| `shared/` | Types, the form-building engine (`paramSchema.ts`), LoRA tag parsing, the queue's parameter summaries and both random draws (`randomPrompt.ts`, `randomParams.ts`) — pure, no I/O |
 | `server/` | Fastify proxy, ComfyUI client, live event hub, SQLite store, archive, terminal |
 | `server/src/vault.ts` | Archive encryption: master key, wrapping, unlock on sign-in |
 | `server/src/images/` | A dependency-free PNG decoder/resizer for thumbnails and image sizes |

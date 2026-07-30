@@ -210,7 +210,13 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
         const batch = typeof findBatchSize(workflow) === 'number' ? findBatchSize(workflow) : 1;
         const images: ComfyImageRef[] = [];
         for (let i = 0; i < batch; i += 1) {
-          const filename = `Latent_${String(promptCounter).padStart(5, '0')}_${nodeId}_${i}.png`;
+          /*
+           * Numbered from *this* job, not the live counter. Reading the shared
+           * counter here named two prompts of one batch identically, because
+           * both were submitted before either finished executing — real ComfyUI
+           * never repeats an output filename, and neither should the mock.
+           */
+          const filename = `Latent_${String(job.number).padStart(5, '0')}_${nodeId}_${i}.png`;
           files.set(`output//${filename}`, renderPlaceholder(OUTPUT_SIZE, OUTPUT_SIZE, `${seed}#${i}`));
           images.push({ filename, subfolder: '', type: 'output' });
         }
