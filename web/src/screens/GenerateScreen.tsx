@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { defaultValues, findFieldByRole } from '@latent/shared';
+import { defaultValues, findFieldByRole, usesPointLine } from '@latent/shared';
 import type { ParamField, ParamValues, WidgetValue } from '@latent/shared';
 
 import {
@@ -13,13 +13,15 @@ import {
   useWorkflow,
   useWorkflows,
 } from '../api/queries';
+import { LiveBar } from '../components/LiveBar';
 import { LoraEditor } from '../components/LoraEditor';
+import { PointLine } from '../components/PointLine';
 import { PromptBuilder } from '../components/PromptBuilder';
-import { RandomPromptMode } from '../components/RandomPromptMode';
 import { FieldChip, ImageField, PromptField, SeedField } from '../components/ParamControl';
 import { Button, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { useLiveStore } from '../state/live';
 import { usePendingStore } from '../state/pending';
+import { savePromptDraft } from '../state/promptDraft';
 
 const LAST_WORKFLOW_KEY = 'latent.lastWorkflowId';
 
@@ -162,12 +164,24 @@ function GenerateForm({
   const loraTextFields = byRole('lora_text');
 
   /** Everything on the main screen that isn't given its own dedicated control. */
-  const chipFields = fields.filter(
+  const mainOther = fields.filter(
     (field) =>
       field.group === 'main' &&
       !['prompt', 'negative_prompt', 'image_input', 'seed', 'lora_text'].includes(field.role),
   );
+  // A point line needs a full row; everything else pairs up in the grid.
+  const pointFields = mainOther.filter((field) => usesPointLine(field));
+  const chipFields = mainOther.filter((field) => !usesPointLine(field));
   const advancedFields = fields.filter((field) => field.group === 'advanced');
+
+  // Hand the typed prompt to the Random tab, which previews draws on top of it.
+  const promptDraft = promptFields
+    .map((field) => String(values[field.id] ?? ''))
+    .join(' ')
+    .trim();
+  useEffect(() => {
+    savePromptDraft(promptDraft);
+  }, [promptDraft]);
 
   const setValue = (id: string, value: WidgetValue) =>
     setValues((current) => ({ ...current, [id]: value }));
@@ -265,8 +279,6 @@ function GenerateForm({
               value={String(values[field.id] ?? '')}
               onChange={(next) => setValue(field.id, next)}
             />
-            {/* Let the machine assemble the prompt from saved blocks instead. */}
-            <RandomPromptMode base={String(values[field.id] ?? '')} />
           </div>
         </div>
       ))}
@@ -301,18 +313,36 @@ function GenerateForm({
       ))}
 
       {/*
-        Wraps rather than scrolling sideways. The sampler settings are what you
-        reach for most, and having to swipe a row to discover that CFG exists
-        made them feel hidden — every one of them should be on screen at once.
+        Fields set to a point line get a row of their own — the whole point is
+        that the values are on screen, which needs the width.
+      */}
+      {pointFields.map((field) => (
+        <PointLine
+          key={field.id}
+          field={field}
+          value={values[field.id] ?? field.defaultValue}
+          onChange={(value) => setValue(field.id, value)}
+        />
+      ))}
+
+      {/*
+        A two-column grid, not a wrapping row.
+
+        Wrapping put chips of every width wherever they happened to land, which
+        read as a scattered heap rather than a list of settings. Equal columns
+        line the labels up, so the sampler block can be scanned down instead of
+        hunted through — and every value is still on screen at once, which is why
+        it stopped being a sideways-scrolling row in the first place.
       */}
       {chipFields.length > 0 && (
-        <div className="flex flex-wrap gap-2">
+        <div className="grid grid-cols-2 gap-1.5">
           {chipFields.map((field) => (
             <FieldChip
               key={field.id}
               field={field}
               value={values[field.id] ?? field.defaultValue}
               onChange={(value) => setValue(field.id, value)}
+              block
             />
           ))}
         </div>
@@ -437,19 +467,31 @@ function GenerateForm({
           </p>
         )}
 
-        <Button
-          variant="primary"
-          size="lg"
-          onClick={submit}
-          busy={generate.isPending}
-          disabled={!comfyOnline}
-        >
-          {justQueued
-            ? 'Queued ✓'
-            : job
-              ? `Queue ${batchCount > 1 ? `${batchCount} more` : 'another'}`
-              : `Generate${batchCount > 1 ? ` ×${batchCount}` : ''}`}
-        </Button>
+        {/*
+          Progress and Generate share one row.
+          Stacked, they cost two rows of a phone screen for two things you look
+          at together — and the form is what the space is for. The bar only
+          appears while something is running, so an idle screen still gives the
+          button the full width.
+        */}
+        <div className="flex items-stretch gap-2">
+          <LiveBar inline />
+          <Button
+            variant="primary"
+            size="lg"
+            fullWidth={!job}
+            className={job ? 'shrink-0' : undefined}
+            onClick={submit}
+            busy={generate.isPending}
+            disabled={!comfyOnline}
+          >
+            {justQueued
+              ? 'Queued ✓'
+              : job
+                ? `+${batchCount > 1 ? batchCount : 1}`
+                : `Generate${batchCount > 1 ? ` ×${batchCount}` : ''}`}
+          </Button>
+        </div>
 
         {!comfyOnline && (
           <p className="text-center text-xs text-danger">

@@ -640,6 +640,8 @@ export function applyOverrides(schema: ParamSchema, overrides: FieldOverrides = 
       ...(o.group !== undefined ? { group: o.group } : {}),
       ...(o.hidden !== undefined ? { hidden: o.hidden } : {}),
       ...(o.order !== undefined ? { order: o.order } : {}),
+      ...(o.inputMode !== undefined ? { inputMode: o.inputMode } : {}),
+      ...(o.points !== undefined ? { points: o.points } : {}),
     };
   });
 

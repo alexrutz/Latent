@@ -26,44 +26,25 @@ import {
   useWorkflow,
   useWorkflows,
 } from '../api/queries';
-import { NumericInput } from './NumericInput';
-import { Toggle } from './ParamControl';
-import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
+import { NumericInput } from '../components/NumericInput';
+import { Toggle } from '../components/ParamControl';
+import { Button, cn, ErrorNote, Spinner } from '../components/ui';
+import { readPromptDraft } from '../state/promptDraft';
 
 /**
- * Random prompt mode.
+ * Everything about varying a run: the prompt draw and the parameter sweeps.
  *
- * Once you have a library of phrases, the interesting thing to do with it is not
- * picking four by hand — it is letting the machine pick four and seeing what
- * comes out, again and again, without touching the keyboard between runs.
+ * A tab of its own rather than a sheet buried under the prompt field. It grew
+ * into a screenful — pool, per-group limits, parameter ranges, saved setups —
+ * and something you arrange once and then leave alone deserves a place you can
+ * find, not a button you have to remember is there.
  *
- * The draw itself happens on the server, once per queued item, so a batch of
- * eight is eight different pictures rather than the same prompt eight times. This
- * sheet only configures it, and previews it by asking the server for example
- * draws through the same code path a real submit uses.
+ * The draws themselves happen on the server, once per queued item, so a batch of
+ * eight is eight different pictures rather than the same prompt eight times.
+ * This screen only configures them, and previews by asking the server for
+ * example draws through the same code path a real submit uses.
  */
-export function RandomPromptMode({ base }: { base: string }) {
-  const [open, setOpen] = useState(false);
-  const mode = usePromptMode();
-  const enabled = mode.data?.enabled ?? false;
-
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        aria-pressed={enabled}
-        className={cn('self-start text-xs', enabled ? 'text-accent' : 'text-muted')}
-      >
-        🎲 {enabled ? 'Random prompt on' : 'Random prompt'}
-      </button>
-
-      {open && <RandomPromptSheet base={base} onClose={() => setOpen(false)} />}
-    </>
-  );
-}
-
-function RandomPromptSheet({ base, onClose }: { base: string; onClose: () => void }) {
+export function VariationScreen() {
   const mode = usePromptMode();
   const update = useUpdatePromptMode();
   const blocks = usePromptBlocks();
@@ -71,6 +52,10 @@ function RandomPromptSheet({ base, onClose }: { base: string; onClose: () => voi
   const [rolls, setRolls] = useState<RandomPromptRoll[] | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // What is typed on the Generate screen right now: with "keep what I typed" on
+  // it is part of every prompt, so a preview without it would be a fiction.
+  const [typed] = useState(readPromptDraft);
 
   const config = mode.data;
   const library = blocks.data ?? [];
@@ -100,7 +85,7 @@ function RandomPromptSheet({ base, onClose }: { base: string; onClose: () => voi
     setPreviewing(true);
     setError(null);
     try {
-      const result = await api.previewPromptMode(base, config);
+      const result = await api.previewPromptMode(typed, config);
       setRolls(result.rolls);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not draw a preview');
@@ -111,11 +96,9 @@ function RandomPromptSheet({ base, onClose }: { base: string; onClose: () => voi
 
   if (!config) {
     return (
-      <Sheet open onClose={onClose} title="Random prompt" full>
-        <div className="grid place-items-center py-12">
-          <Spinner className="size-6 text-muted" />
-        </div>
-      </Sheet>
+      <div className="grid h-full place-items-center">
+        <Spinner className="size-6 text-muted" />
+      </div>
     );
   }
 
@@ -123,7 +106,8 @@ function RandomPromptSheet({ base, onClose }: { base: string; onClose: () => voi
   const narrowed = config.blockIds.length > 0;
 
   return (
-    <Sheet open onClose={onClose} title="Random prompt" full>
+    <div className="safe-t px-4 pt-3 pb-6">
+      <h1 className="mb-3 text-xl font-semibold">Random</h1>
       <div className="space-y-4">
         <div className="flex items-center justify-between rounded-xl border border-line bg-surface px-3 py-2">
           <div className="min-w-0">
@@ -294,6 +278,12 @@ function RandomPromptSheet({ base, onClose }: { base: string; onClose: () => voi
                 Draw three examples
               </Button>
 
+              {config.keepTyped && typed !== '' && (
+                <p className="truncate text-[11px] text-muted">
+                  On top of what you typed: “{typed}”
+                </p>
+              )}
+
               {rolls && (
                 <ul className="space-y-1.5" data-testid="random-prompt-preview">
                   {rolls.map((roll, index) => (
@@ -322,7 +312,7 @@ function RandomPromptSheet({ base, onClose }: { base: string; onClose: () => voi
           </>
         )}
       </div>
-    </Sheet>
+    </div>
   );
 }
 
@@ -414,7 +404,7 @@ function ParamVariation({
                     value={rule.max}
                     onChange={(max) => setRule(rule.key, { max })}
                   />
-                  <span className="text-[10px] text-muted">step</span>
+                  <span className="text-[10px] text-muted">/</span>
                   <RuleNumber
                     label={`${rule.label} step`}
                     value={rule.step}
@@ -516,7 +506,8 @@ function RuleNumber({
       value={value}
       onChange={(next) => onChange(Number(next))}
       aria-label={label}
-      className="w-11 shrink-0 rounded-md border-0 bg-surface-2 px-1 py-0.5 text-center text-xs"
+      // Wide enough for a four-digit value: `w-11` clipped "20" to "2(".
+      className="w-14 shrink-0 rounded-md border-0 bg-surface-2 px-1 py-0.5 text-center text-xs"
     />
   );
 }

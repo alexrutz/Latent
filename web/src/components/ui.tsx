@@ -18,9 +18,16 @@ type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
-  /** Full-width, 56px tall — for the primary action at the bottom of a screen. */
+  /** `lg` is the one primary action at the bottom of a screen. */
   size?: 'sm' | 'md' | 'lg';
   busy?: boolean;
+  /**
+   * Stretch to the container. Defaults on for `lg`, which is nearly always the
+   * full-width action — but not always, and `w-full` in the size class could not
+   * be overridden reliably from outside, since which of two width utilities wins
+   * depends on stylesheet order rather than on the order they are written in.
+   */
+  fullWidth?: boolean;
 }
 
 const VARIANTS: Record<ButtonVariant, string> = {
@@ -39,18 +46,20 @@ const VARIANTS: Record<ButtonVariant, string> = {
 const SIZES = {
   sm: 'h-8 px-2.5 text-sm rounded-lg',
   md: 'h-10 px-3.5 text-[15px] rounded-xl',
-  lg: 'h-12 px-5 text-base rounded-xl w-full',
+  lg: 'h-12 px-5 text-base rounded-xl',
 };
 
 export function Button({
   variant = 'secondary',
   size = 'md',
   busy = false,
+  fullWidth,
   className,
   children,
   disabled,
   ...rest
 }: ButtonProps) {
+  const stretch = fullWidth ?? size === 'lg';
   return (
     <button
       {...rest}
@@ -60,6 +69,7 @@ export function Button({
         'disabled:opacity-60',
         VARIANTS[variant],
         SIZES[size],
+        stretch && 'w-full',
         className,
       )}
     >

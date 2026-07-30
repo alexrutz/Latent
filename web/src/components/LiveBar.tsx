@@ -21,7 +21,7 @@ import { Button, cn, ErrorNote, Sheet } from './ui';
  * used to do — dumped the user back on the form at the exact instant the image
  * they had been waiting for became available.
  */
-export function LiveBar() {
+export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
   const job = useLiveStore((state) => state.live.job);
   const liveAt = useLiveStore((state) => state.liveAt);
   const finished = useLiveStore((state) => state.finished);
@@ -73,6 +73,88 @@ export function LiveBar() {
 
   const elapsed = job.stats.elapsedMs + sinceUpdate(now, liveAt);
   const eta = remainingEta(job.stats, now, liveAt);
+
+  /*
+   * The full detail, shared by both shapes. Whichever bar you tapped, the same
+   * preview, progress and statistics open — the inline form is a summary of
+   * this, not a cut-down version of it.
+   */
+  const sheet = (
+      <Sheet open={expanded} onClose={() => setExpanded(false)} title="Generating">
+        <div className="space-y-4">
+          <div className="overflow-hidden rounded-2xl border border-line bg-surface-2">
+            {previewUrl ? (
+              <img src={previewUrl} alt="Live preview" className="w-full object-contain" />
+            ) : (
+              <div className="grid aspect-square place-items-center text-sm text-muted">
+                Waiting for the first preview…
+              </div>
+            )}
+          </div>
+
+          <div>
+            <p className="text-sm font-medium">{job.title}</p>
+            <p className="text-xs text-muted">{job.nodeTitle ?? 'Starting…'}</p>
+          </div>
+
+          <div className="space-y-1">
+            <div className="h-2 overflow-hidden rounded-full bg-surface-3">
+              <div
+                className="h-full rounded-full bg-accent transition-[width] duration-150"
+                style={{ width: `${Math.min(100, Math.max(2, fraction * 100))}%` }}
+              />
+            </div>
+            <div className="flex justify-between text-xs text-muted">
+              <span>
+                {job.progressMax > 0
+                  ? `Step ${job.progress} of ${job.progressMax}`
+                  : `${Math.round(job.graphProgress * 100)}% of the graph`}
+              </span>
+              {queueRemaining > 1 && <span>{queueRemaining - 1} more queued</span>}
+            </div>
+          </div>
+
+          <JobStatsPanel job={job} now={now} liveAt={liveAt} queueRemaining={queueRemaining} />
+
+          <Button variant="danger" size="lg" busy={cancelling} onClick={cancel}>
+            Cancel this run
+          </Button>
+        </div>
+      </Sheet>
+  );
+
+  /*
+   * Inline: the Generate screen puts this in the same row as its button, so the
+   * two together cost one row instead of two. Everything the full bar carries is
+   * still a tap away in the sheet — this is a summary, not a reduced feature.
+   */
+  if (inline) {
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          aria-label="Generation progress"
+          className="flex min-w-0 flex-1 flex-col justify-center gap-1 rounded-xl border border-line bg-surface px-2.5 py-1.5 text-left"
+        >
+          <p className="truncate text-[11px] tabular-nums text-muted">
+            {Math.round(fraction * 100)}%
+            {eta !== null && ` · ${formatSeconds(eta)} left`}
+            {job.progressMax > 0 && ` · ${job.progress}/${job.progressMax}`}
+            {queueRemaining > 1 && ` · ${queueRemaining - 1} queued`}
+          </p>
+          <span className="block h-1 overflow-hidden rounded-full bg-surface-3">
+            <span
+              className="block h-full rounded-full bg-accent transition-[width] duration-150"
+              style={{ width: `${Math.min(100, Math.max(2, fraction * 100))}%` }}
+            />
+          </span>
+        </button>
+
+        {sheet}
+      </>
+    );
+  }
 
   return (
     <>
@@ -143,47 +225,7 @@ export function LiveBar() {
         )}
       </div>
 
-      <Sheet open={expanded} onClose={() => setExpanded(false)} title="Generating">
-        <div className="space-y-4">
-          <div className="overflow-hidden rounded-2xl border border-line bg-surface-2">
-            {previewUrl ? (
-              <img src={previewUrl} alt="Live preview" className="w-full object-contain" />
-            ) : (
-              <div className="grid aspect-square place-items-center text-sm text-muted">
-                Waiting for the first preview…
-              </div>
-            )}
-          </div>
-
-          <div>
-            <p className="text-sm font-medium">{job.title}</p>
-            <p className="text-xs text-muted">{job.nodeTitle ?? 'Starting…'}</p>
-          </div>
-
-          <div className="space-y-1">
-            <div className="h-2 overflow-hidden rounded-full bg-surface-3">
-              <div
-                className="h-full rounded-full bg-accent transition-[width] duration-150"
-                style={{ width: `${Math.min(100, Math.max(2, fraction * 100))}%` }}
-              />
-            </div>
-            <div className="flex justify-between text-xs text-muted">
-              <span>
-                {job.progressMax > 0
-                  ? `Step ${job.progress} of ${job.progressMax}`
-                  : `${Math.round(job.graphProgress * 100)}% of the graph`}
-              </span>
-              {queueRemaining > 1 && <span>{queueRemaining - 1} more queued</span>}
-            </div>
-          </div>
-
-          <JobStatsPanel job={job} now={now} liveAt={liveAt} queueRemaining={queueRemaining} />
-
-          <Button variant="danger" size="lg" busy={cancelling} onClick={cancel}>
-            Cancel this run
-          </Button>
-        </div>
-      </Sheet>
+      {sheet}
     </>
   );
 }

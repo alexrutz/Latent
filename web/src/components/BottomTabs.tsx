@@ -13,6 +13,7 @@ const TABS: Tab[] = [
   { to: '/', label: 'Generate', icon: '✦' },
   { to: '/gallery', label: 'Gallery', icon: '▦' },
   { to: '/favorites', label: 'Favourites', icon: '★' },
+  { to: '/variation', label: 'Random', icon: '🎲' },
   { to: '/queue', label: 'Queue', icon: '≡' },
   { to: '/settings', label: 'Settings', icon: '⚙' },
 ];

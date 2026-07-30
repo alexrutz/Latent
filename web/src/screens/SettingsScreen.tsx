@@ -1,6 +1,13 @@
 import { useRef, useState } from 'react';
 
-import type { FieldOverrides, ParamField, WorkflowDetail, WorkflowSummary } from '@latent/shared';
+import { fieldPoints, fieldPointValues, usesPointLine } from '@latent/shared';
+import type {
+  FieldOverride,
+  FieldOverrides,
+  ParamField,
+  WorkflowDetail,
+  WorkflowSummary,
+} from '@latent/shared';
 
 import { api } from '../api/client';
 import {
@@ -20,6 +27,7 @@ import {
   useWorkflow,
   useWorkflows,
 } from '../api/queries';
+import { NumericInput } from '../components/NumericInput';
 import { Toggle } from '../components/ParamControl';
 import { Button, Card, cn, ErrorNote, Row, Sheet, Spinner } from '../components/ui';
 import { ConnectionsScreen } from './ConnectionsScreen';
@@ -407,6 +415,7 @@ function FormEditorSheet({ workflowId, onClose }: { workflowId: string; onClose:
                     onMove={() =>
                       patch(field.id, { group: field.group === 'main' ? 'advanced' : 'main' })
                     }
+                    onPatch={(change) => patch(field.id, change)}
                   />
                 ))}
               </div>
@@ -423,13 +432,20 @@ function FieldEditorRow({
   onRename,
   onToggleHidden,
   onMove,
+  onPatch,
 }: {
   field: ParamField;
   onRename: (label: string) => void;
   onToggleHidden: () => void;
   onMove: () => void;
+  onPatch: (patch: FieldOverride) => void;
 }) {
   const [label, setLabel] = useState(field.label);
+
+  const numeric = field.control === 'int' || field.control === 'float';
+  const points = usesPointLine(field);
+  const line = fieldPoints(field);
+  const preview = fieldPointValues(field);
 
   return (
     <div className={cn('rounded-xl border border-line p-3', field.hidden && 'opacity-50')}>
@@ -450,7 +466,94 @@ function FieldEditorRow({
           {field.group === 'main' ? 'To Advanced' : 'To main'}
         </Button>
       </div>
+
+      {/*
+        How this value is edited. The sheet with a slider and a keyboard is right
+        for something that could be anything; for steps or CFG, where you cycle
+        between the same handful of numbers, a row of points is one tap instead
+        of three and a keyboard.
+      */}
+      {numeric && (
+        <div className="mt-2 space-y-1.5 border-t border-line pt-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] text-muted">Editing</span>
+            <div className="flex gap-1">
+              {(
+                [
+                  ['input', 'Slider'],
+                  ['points', 'Points'],
+                ] as const
+              ).map(([mode, text]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  aria-pressed={points === (mode === 'points')}
+                  onClick={() => onPatch({ inputMode: mode })}
+                  className={cn(
+                    'h-7 rounded-md px-2 text-[11px]',
+                    points === (mode === 'points')
+                      ? 'bg-accent text-white'
+                      : 'bg-surface-2 text-muted',
+                  )}
+                >
+                  {text}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {points && (
+            <>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-muted">from</span>
+                <PointNumber
+                  label={`${field.label} points from`}
+                  value={line.min}
+                  onChange={(min) => onPatch({ points: { ...line, min } })}
+                />
+                <span className="text-[10px] text-muted">to</span>
+                <PointNumber
+                  label={`${field.label} points to`}
+                  value={line.max}
+                  onChange={(max) => onPatch({ points: { ...line, max } })}
+                />
+                <span className="text-[10px] text-muted">step</span>
+                <PointNumber
+                  label={`${field.label} points step`}
+                  value={line.step}
+                  onChange={(step) => onPatch({ points: { ...line, step } })}
+                />
+              </div>
+              {/* Exactly what the line will offer — no guessing from three numbers. */}
+              <p className="truncate text-[10px] tabular-nums text-muted">
+                {preview.slice(0, 10).join(', ')}
+                {preview.length > 10 && ` … (${preview.length})`}
+              </p>
+            </>
+          )}
+        </div>
+      )}
     </div>
+  );
+}
+
+/** A very small number field, sized for the one-line points row. */
+function PointNumber({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <NumericInput
+      value={value}
+      onChange={(next) => onChange(Number(next))}
+      aria-label={label}
+      className="w-12 shrink-0 rounded-md border-0 bg-surface-2 px-1 py-0.5 text-center text-xs"
+    />
   );
 }
 

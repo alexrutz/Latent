@@ -4,10 +4,13 @@ import {
   candidateValues,
   defaultRuleFor,
   drawRandomParams,
+  fieldPointValues,
   MAX_CANDIDATES,
+  nearestPoint,
   normaliseRandomParams,
   overlayChoices,
   shortLabels,
+  usesPointLine,
   variableFields,
   type RandomParamRule,
 } from './randomParams.js';
@@ -186,6 +189,43 @@ describe('variableFields and defaultRuleFor', () => {
     );
     expect(made.step).toBeLessThan(1);
     expect(candidateValues(made).length).toBeGreaterThan(2);
+  });
+});
+
+describe('point lines', () => {
+  it('only applies to numeric fields that asked for it', () => {
+    expect(usesPointLine(field({ id: 'a', inputMode: 'points', control: 'int' }))).toBe(true);
+    expect(usesPointLine(field({ id: 'a', inputMode: 'points', control: 'float' }))).toBe(true);
+    // A combo or a prompt has nothing to put on a number line.
+    expect(usesPointLine(field({ id: 'a', inputMode: 'points', control: 'combo' }))).toBe(false);
+    expect(usesPointLine(field({ id: 'a', control: 'int' }))).toBe(false);
+  });
+
+  it('uses the configured range when there is one', () => {
+    const configured = field({ id: 'a', points: { min: 10, max: 30, step: 10 } });
+    expect(fieldPointValues(configured)).toEqual([10, 20, 30]);
+  });
+
+  /**
+   * Switching a field to a point line must immediately produce something usable,
+   * not an empty row waiting for three numbers.
+   */
+  it('falls back to a usable line derived from the field itself', () => {
+    const values = fieldPointValues(
+      field({ id: 'a', control: 'int', softMin: 1, softMax: 60, min: 1, max: 10000 }),
+    );
+    expect(values.length).toBeGreaterThan(2);
+    expect(values.length).toBeLessThanOrEqual(12);
+    expect(values[0]).toBe(1);
+  });
+
+  it('finds the nearest point, so a value from elsewhere still reads as selected', () => {
+    // A preset, a reused result or a random draw can land between two points.
+    expect(nearestPoint([20, 30, 40], 33)).toBe(30);
+    expect(nearestPoint([20, 30, 40], 36)).toBe(40);
+    expect(nearestPoint([20, 30, 40], 5)).toBe(20);
+    expect(nearestPoint([20, 30, 40], 999)).toBe(40);
+    expect(nearestPoint([], 10)).toBeNull();
   });
 });
 

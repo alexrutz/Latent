@@ -258,8 +258,22 @@ export function formatValue(field: ParamField, value: WidgetValue): string {
   return text.length > 18 ? `${text.slice(0, 17)}…` : text;
 }
 
-export function FieldChip({ field, value, onChange }: ControlProps) {
+/**
+ * `block` fills its container and pushes the value to the right edge, so a grid
+ * of chips lines its labels and values up into columns instead of scattering
+ * them at whatever width each happens to be.
+ */
+export function FieldChip({
+  field,
+  value,
+  onChange,
+  block = false,
+}: ControlProps & { block?: boolean }) {
   const [open, setOpen] = useState(false);
+
+  const shell = block
+    ? 'flex h-10 w-full min-w-0 items-center justify-between gap-1.5 rounded-lg border px-2.5'
+    : 'flex h-10 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 whitespace-nowrap';
 
   if (field.control === 'boolean') {
     return (
@@ -268,12 +282,12 @@ export function FieldChip({ field, value, onChange }: ControlProps) {
         onClick={() => onChange(!value)}
         aria-pressed={Boolean(value)}
         className={cn(
-          'flex h-10 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 whitespace-nowrap',
+          shell,
           value ? 'border-accent/50 bg-accent/15 text-accent' : 'border-line bg-surface text-muted',
         )}
       >
-        <span className="text-[11px]">{field.label}</span>
-        <span className="text-sm font-medium">{value ? 'On' : 'Off'}</span>
+        <span className="min-w-0 truncate text-[11px]">{field.label}</span>
+        <span className="shrink-0 text-sm font-medium">{value ? 'On' : 'Off'}</span>
       </button>
     );
   }
@@ -283,10 +297,15 @@ export function FieldChip({ field, value, onChange }: ControlProps) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex h-10 shrink-0 items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 whitespace-nowrap active:bg-surface-2"
+        className={cn(shell, 'border-line bg-surface active:bg-surface-2')}
       >
-        <span className="text-[11px] text-muted">{field.label}</span>
-        <span className="max-w-32 truncate text-sm font-medium tabular-nums">
+        <span className="min-w-0 truncate text-[11px] text-muted">{field.label}</span>
+        <span
+          className={cn(
+            'shrink-0 truncate text-sm font-medium tabular-nums',
+            block ? 'max-w-[55%]' : 'max-w-32',
+          )}
+        >
           {formatValue(field, value)}
         </span>
       </button>

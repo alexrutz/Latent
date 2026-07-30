@@ -64,10 +64,14 @@ form. Nothing about your ComfyUI setup changes.
   takes that phrase back out.
 - **Random prompt mode.** Let the app draw the prompt from your blocks instead —
   from the whole library or a pool you narrow by hand. Every queued run gets its
-  own draw, so a batch of eight is eight different pictures.
+  own draw, so a batch of eight is eight different pictures. It has its own
+  **🎲 Random** tab, because it is a screenful you arrange once and come back to.
 - **Parameter sweeps.** Give any numeric setting a range and an interval; each
   run draws one of the resulting values. Saved together with the prompt setup as
   one named thing, because that is how it is used.
+- **Point lines.** Any numeric field can be a row of pre-set values instead of a
+  sheet with a slider and a keyboard — set the range and interval once, then
+  changing Steps from 20 to 40 is a single tap.
 - **Edit a photo before it uploads.** Crop to an aspect ratio, rotate by quarter
   turns or a free angle, mirror and downscale on the device, so an img2img input
   is the right shape before the bytes are sent anywhere.
@@ -187,6 +191,28 @@ and tapping a saved layout puts it back — so one workflow can have a stripped
 Deleting a layout only forgets the arrangement; it never changes the form you
 are looking at.
 
+### Sliders, or a line of points
+
+Every numeric field has two ways of being edited, chosen per field under
+**Settings → Edit form**:
+
+- **Slider** — the chip opens a sheet with a slider and a keyboard. Right for a
+  value that could be anything.
+- **Points** — a row of pre-set values on the form itself. Set the range and the
+  interval (`20 to 50, step 10` gives `20 30 40 50`, listed under the fields so
+  there is nothing to work out), and from then on changing the value is one tap.
+
+The second exists because of how these values are actually used: nobody sweeps
+Steps continuously, they cycle between the same handful of numbers, and three
+taps plus a keyboard to get from 20 to 30 is three taps too many. A value that
+arrives from a preset, a reused result or a random draw and lands between two
+points highlights the nearest one and says **off the line**, rather than quietly
+rounding itself.
+
+Everything that stays a chip is laid out in **two even columns**, so a sampler
+block reads as a list you can scan down instead of a wrapped heap of
+differently-sized bubbles.
+
 ## Keeping images when the instance goes away
 
 A gallery entry normally just points at a file in ComfyUI's output directory. If
@@ -272,8 +298,11 @@ Once you have a library of prompt blocks, the interesting thing to do with it is
 not picking four by hand — it is letting the app pick four, over and over, and
 seeing what comes out.
 
-Open **🎲 Random prompt** under the prompt field and turn it on. From then on
-every queued run draws its own prompt. Settings:
+Open the **🎲 Random** tab and turn it on. From then on every queued run draws
+its own prompt. It is a tab rather than a sheet under the prompt field: pool,
+per-group limits, parameter ranges and saved setups add up to a screenful, and
+something you arrange once and then leave alone deserves a place you can find
+rather than a button you have to remember is there. Settings:
 
 - **Blocks per prompt** — a range, so the length varies too.
 - **Keep what I typed** (on by default) — the draw is *added* to your prompt, so
@@ -292,7 +321,10 @@ every queued run draws its own prompt. Settings:
   later are included automatically.
 
 **Draw three examples** asks the *server* for sample draws through the same code
-path a real submit uses, so a preview can never disagree with what you get.
+path a real submit uses, so a preview can never disagree with what you get. With
+"keep what I typed" on it draws on top of whatever is in the prompt field on the
+Generate screen, and says so — a preview against an empty prompt would be a
+fiction now that the two live on different tabs.
 
 Two things worth knowing:
 
@@ -309,7 +341,7 @@ prompt is submitted unchanged rather than blank.
 
 ### Sweeping parameters too
 
-Under **Parameters** in the same sheet, give any numeric setting a **range and an
+Under **Parameters** in the same tab, give any numeric setting a **range and an
 interval**. `20 to 40, step 10` means each run draws one of `20, 30, 40` — the
 candidates are listed under the rule, so there is never a question of what a rule
 will actually do.
@@ -358,6 +390,13 @@ The values come from what each run recorded when it was queued, so they describe
 what actually ran even after the workflow has changed.
 
 ## Timings and the queue
+
+On the Generate screen the progress bar and the **Generate** button share one
+row: they are two things you look at together, and stacked they cost two rows of
+a phone screen that the form needs. Tapping the bar opens the same detail sheet —
+preview, progress, full statistics — that the full-width bar opens everywhere
+else. The bar only exists while something is running, so an idle screen still
+gives the button the whole width.
 
 The step rate and the time remaining are measured **on the server**, where the
 progress events actually arrive. That matters for two reasons: every device shows

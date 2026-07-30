@@ -114,7 +114,9 @@ async function seedWorkflow(name = WORKFLOW_NAME) {
 
 async function importViaUi(page: Page, name: string, graph: unknown) {
   await open(page, '/settings');
-  await page.getByRole('button', { name: 'Import' }).click();
+  // Exact: a configured import folder puts a "Show <path>" button on the same
+  // screen, and those paths contain the word "import".
+  await page.getByRole('button', { name: 'Import', exact: true }).click();
   await page.locator('input[type="file"]').setInputFiles({
     name: `${name}.json`,
     mimeType: 'application/json',
@@ -634,6 +636,115 @@ test.describe('the phone ergonomics pass', () => {
   });
 
   /**
+   * Fitting is not the same as being readable. Wrapping put chips of every width
+   * wherever they landed, which is a heap; equal columns are a list.
+   */
+  test('lines the sampler chips up in even columns', async ({ page }) => {
+    await open(page, '/');
+
+    const chips = page.getByRole('button', { name: /^(Steps|CFG|Sampler|Scheduler|Denoise)/ });
+    const boxes = [];
+    for (let index = 0; index < (await chips.count()); index += 1) {
+      const box = await chips.nth(index).boundingBox();
+      expect(box).not.toBeNull();
+      boxes.push(box as { x: number; y: number; width: number });
+    }
+    expect(boxes.length).toBeGreaterThanOrEqual(4);
+
+    // Two columns, every chip the same width as its neighbours.
+    const widths = new Set(boxes.map((box) => Math.round(box.width)));
+    expect(widths.size).toBe(1);
+    const columns = new Set(boxes.map((box) => Math.round(box.x)));
+    expect(columns.size).toBe(2);
+    // And the second chip is beside the first, not under it.
+    expect(Math.round(boxes[0]!.y)).toBe(Math.round(boxes[1]!.y));
+  });
+
+  /**
+   * Changing Steps from 20 to 30 used to be a tap, a sheet, a keyboard and a
+   * Done. For a value you cycle between the same handful of numbers, that is
+   * three taps too many — so a field can be a line of pre-set points instead.
+   */
+  test('turns a number into a line of points you tap', async ({ page }) => {
+    await open(page, '/settings');
+    await page.getByRole('button', { name: 'Edit form' }).click();
+
+    // The whole editor card for `steps`, reached from the line that names it —
+    // `hasText` on its own matches every ancestor div up to the page.
+    const row = page.locator('p', { hasText: '· steps · ' }).locator('xpath=ancestor::div[2]');
+    await row.getByRole('button', { name: 'Points' }).click();
+    await row.getByRole('textbox', { name: /points from/ }).fill('20');
+    await row.getByRole('textbox', { name: /points to/ }).fill('50');
+    await row.getByRole('textbox', { name: /points step/ }).fill('10');
+
+    // The settings say exactly what the line will offer, rather than three
+    // numbers you have to do the arithmetic on.
+    await expect(row.getByText('20, 30, 40, 50')).toBeVisible();
+    await page.screenshot({ path: 'test-results/28-point-settings.png' });
+
+    await page.getByRole('button', { name: 'Done' }).click();
+    await page.getByRole('link', { name: 'Generate' }).click();
+
+    // On the form the values are on screen, and one tap picks one — no sheet.
+    const line = page.getByRole('group', { name: 'Steps' });
+    await expect(line).toBeVisible();
+    await expect(line.getByRole('button')).toHaveCount(4);
+    // Four points and nothing else — the chip that opened a sheet is gone.
+    await expect(page.getByRole('button', { name: /^Steps/ })).toHaveCount(4);
+
+    await line.getByRole('button', { name: 'Steps 40' }).click();
+    await expect(line.getByRole('button', { name: 'Steps 40' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await page.screenshot({ path: 'test-results/29-point-line.png' });
+
+    // And that is the value the render is actually given.
+    await page.getByPlaceholder('Describe the image…').fill('forty steps please');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await page.getByRole('link', { name: 'Queue' }).click();
+    const card = page.getByTestId('queue-card').first();
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    await expect(card.locator('li', { hasText: 'Steps' })).toContainText('40');
+
+    await withApi((ctx) => ctx.post('/api/queue/interrupt'));
+  });
+
+  /**
+   * Progress and Generate are looked at together, so they cost one row rather
+   * than two — on a phone the difference is a settings row of form.
+   */
+  test('shares one row between the progress bar and Generate', async ({ page }) => {
+    await open(page, '/');
+
+    const button = page.getByRole('button', { name: /^Generate/ });
+    const idle = await button.boundingBox();
+
+    await page.getByPlaceholder('Describe the image…').fill('side by side');
+    await button.click();
+
+    const bar = page.getByRole('button', { name: 'Generation progress' });
+    await expect(bar).toBeVisible({ timeout: 30_000 });
+
+    const queue = page.getByRole('button', { name: /^(\+\d|Queued)/ });
+    const barBox = (await bar.boundingBox()) as { y: number; height: number; x: number };
+    const queueBox = (await queue.boundingBox()) as { y: number; x: number };
+
+    // Beside, not above: same row, bar on the left.
+    expect(Math.abs(barBox.y - queueBox.y)).toBeLessThan(8);
+    expect(barBox.x).toBeLessThan(queueBox.x);
+    // And the pair is no taller than the button was on its own.
+    expect(barBox.height).toBeLessThanOrEqual((idle as { height: number }).height + 2);
+    await page.screenshot({ path: 'test-results/30-generate-row.png' });
+
+    // The full bar is not also on screen — that would be the two rows again.
+    await expect(page.getByText(/elapsed/)).toHaveCount(0);
+
+    await withApi((ctx) => ctx.post('/api/queue/interrupt'));
+  });
+
+  /**
    * Rearranging a form is fiddly on a phone, so having done it once you should
    * be able to keep the arrangement and come back to it.
    */
@@ -772,8 +883,13 @@ test.describe('knowing what is happening', () => {
     await page.getByPlaceholder('Describe the image…').fill('how long will this take');
     await page.getByRole('button', { name: /^Generate/ }).click();
 
-    // The collapsed bar answers it in one line, without being opened.
+    // On Generate the bar shares its row with the button, so it answers in the
+    // shortest form there is: how far along, and how much longer.
     await expect(page.getByText(/left/).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole('button', { name: 'Generation progress' })).toContainText('%');
+
+    // Every other tab has the room for the full bar, rate and all.
+    await page.getByRole('link', { name: 'Gallery' }).click();
     await expect(page.getByText(/steps\/s|s\/step/).first()).toBeVisible();
     await expect(page.getByText(/elapsed/)).toBeVisible();
 
@@ -924,9 +1040,9 @@ test.describe('random prompt mode', () => {
     await open(page, '/');
 
     await page.getByPlaceholder('Describe the image…').fill('a lighthouse');
-    await page.getByRole('button', { name: /Random prompt/ }).click();
+    await page.getByRole('link', { name: 'Random' }).click();
 
-    await expect(page.getByRole('heading', { name: 'Random prompt' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Random' })).toBeVisible();
     await page.getByRole('switch', { name: 'Draw the prompt' }).click();
 
     // Every block is in the pool until one is tapped.
@@ -940,17 +1056,15 @@ test.describe('random prompt mode', () => {
     await expect(preview.locator('li').first()).toContainText('a lighthouse');
     await page.screenshot({ path: 'test-results/21-random-prompt.png' });
 
-    await page.getByRole('button', { name: 'Done' }).click();
-
-    // The Generate button admits the prompt is not what the field says.
-    await expect(page.getByRole('button', { name: /Random prompt on/ })).toBeVisible();
+    // Back on Generate, the button admits the prompt is not what the field says.
+    await page.getByRole('link', { name: 'Generate' }).click();
     await expect(page.getByText(/Prompt drawn from blocks/)).toBeVisible();
   });
 
   test('narrows the pool to hand-picked blocks', async ({ page }) => {
     await seedBlocks();
     await open(page, '/');
-    await page.getByRole('button', { name: /Random prompt/ }).click();
+    await page.getByRole('link', { name: 'Random' }).click();
     await page.getByRole('switch', { name: 'Draw the prompt' }).click();
 
     // Tapping a selected chip removes just that one — the pool was "everything".
@@ -1008,7 +1122,7 @@ test.describe('random prompt mode', () => {
 
   test('says plainly that there is nothing to draw from', async ({ page }) => {
     await open(page, '/');
-    await page.getByRole('button', { name: /Random prompt/ }).click();
+    await page.getByRole('link', { name: 'Random' }).click();
     await expect(page.getByText(/No prompt blocks saved yet/)).toBeVisible();
     await expect(page.getByRole('button', { name: 'Draw three examples' })).toHaveCount(0);
   });
@@ -1333,7 +1447,7 @@ test.describe('varying the parameters too', () => {
     );
 
     await open(page, '/');
-    await page.getByRole('button', { name: /Random prompt/ }).click();
+    await page.getByRole('link', { name: 'Random' }).click();
     await page.getByRole('switch', { name: 'Draw the prompt' }).click();
 
     // The parameters section is collapsed by default — prompts come first.
@@ -1352,10 +1466,10 @@ test.describe('varying the parameters too', () => {
     // Saved as one thing, together with the prompt setup.
     await page.getByRole('button', { name: 'Save current' }).click();
     await page.getByPlaceholder('e.g. Moody landscapes').fill('Sweep');
-    await page.getByRole('dialog').getByRole('button', { name: 'Save', exact: true }).click();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByRole('button', { name: /Sweep.*1 params/ })).toBeVisible();
 
-    await page.getByRole('button', { name: 'Done' }).click();
+    await page.getByRole('link', { name: 'Generate' }).click();
 
     // And a batch really does draw different values.
     await page.getByPlaceholder('Describe the image…').fill('a sweep');

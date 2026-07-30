@@ -1,5 +1,5 @@
 import type { ParamSummaryItem } from './apiTypes.js';
-import type { ParamField, ParamSchema, ParamValues } from './paramTypes.js';
+import type { FieldPoints, ParamField, ParamSchema, ParamValues } from './paramTypes.js';
 
 /**
  * Drawing numeric parameters from a range, alongside the random prompt.
@@ -35,26 +35,35 @@ export interface RandomParamRule {
 export const MAX_CANDIDATES = 64;
 
 /**
- * The values a rule can actually produce, in order.
+ * Every value in `[min, max]` reachable from `min` in whole steps.
  *
  * Rounded to the step's own precision: floating-point addition otherwise walks
  * 7.5 → 8.000000000000002, which then shows up in the recorded settings and
  * makes two identical runs look different.
+ *
+ * Shared by the two features that both mean "a small set of values worth
+ * choosing between": a variation rule draws one at random, and a point line
+ * puts them on screen to be tapped.
  */
-export function candidateValues(rule: RandomParamRule): number[] {
-  const min = Math.min(rule.min, rule.max);
-  const max = Math.max(rule.min, rule.max);
-  if (!Number.isFinite(min) || !Number.isFinite(max)) return [];
-  if (!Number.isFinite(rule.step) || rule.step <= 0) return [min];
+export function discreteValues(min: number, max: number, step: number): number[] {
+  const low = Math.min(min, max);
+  const high = Math.max(min, max);
+  if (!Number.isFinite(low) || !Number.isFinite(high)) return [];
+  if (!Number.isFinite(step) || step <= 0) return [low];
 
-  const decimals = decimalsOf(rule.step);
+  const decimals = decimalsOf(step);
   const values: number[] = [];
   for (let i = 0; values.length < MAX_CANDIDATES; i += 1) {
-    const value = round(min + i * rule.step, decimals);
-    if (value > max + Number.EPSILON) break;
+    const value = round(low + i * step, decimals);
+    if (value > high + Number.EPSILON) break;
     values.push(value);
   }
-  return values.length > 0 ? values : [min];
+  return values.length > 0 ? values : [low];
+}
+
+/** The values a rule can actually produce, in order. */
+export function candidateValues(rule: RandomParamRule): number[] {
+  return discreteValues(rule.min, rule.max, rule.step);
 }
 
 function decimalsOf(step: number): number {
@@ -162,6 +171,47 @@ export function defaultRuleFor(field: ParamField): RandomParamRule {
       : Math.max(0.05, Math.round(rough * 20) / 20);
 
   return { key: field.id, label: field.label, min, max, step };
+}
+
+/* ------------------------------------------------------------------ */
+/* Point lines                                                         */
+/* ------------------------------------------------------------------ */
+
+/** True when this field should be edited by tapping a point rather than typing. */
+export function usesPointLine(field: ParamField): boolean {
+  return field.inputMode === 'points' && (field.control === 'int' || field.control === 'float');
+}
+
+/**
+ * The points a field offers, falling back to a sensible line derived from its
+ * own working range.
+ *
+ * The fallback matters: switching a field to a point line should immediately
+ * produce something usable, not an empty row waiting for three numbers.
+ */
+export function fieldPoints(field: ParamField): FieldPoints {
+  if (field.points) return field.points;
+
+  const rule = defaultRuleFor(field);
+  return { min: rule.min, max: rule.max, step: rule.step };
+}
+
+/** The values a field's point line puts on screen, in order. */
+export function fieldPointValues(field: ParamField): number[] {
+  const points = fieldPoints(field);
+  return discreteValues(points.min, points.max, points.step);
+}
+
+/**
+ * The point nearest a value, so a line always shows the current setting as
+ * selected even when it came from somewhere else — a preset, a reused result, or
+ * a random draw that landed between two points.
+ */
+export function nearestPoint(values: number[], value: number): number | null {
+  if (values.length === 0) return null;
+  return values.reduce((best, candidate) =>
+    Math.abs(candidate - value) < Math.abs(best - value) ? candidate : best,
+  );
 }
 
 /* ------------------------------------------------------------------ */

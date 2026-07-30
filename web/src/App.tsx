@@ -1,4 +1,4 @@
-import { Route, Routes } from 'react-router-dom';
+import { Route, Routes, useLocation } from 'react-router-dom';
 
 import { useLiveCacheSync, useStatus } from './api/queries';
 import { BottomTabs } from './components/BottomTabs';
@@ -11,10 +11,12 @@ import { LoginScreen } from './screens/LoginScreen';
 import { QueueScreen } from './screens/QueueScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { SetupScreen } from './screens/SetupScreen';
+import { VariationScreen } from './screens/VariationScreen';
 import { useLiveSocket } from './state/useLiveSocket';
 
 export function App() {
   const status = useStatus();
+  const onGenerate = useLocation().pathname === '/';
   const authenticated = status.data ? !status.data.authRequired || status.data.authenticated : false;
 
   // Only hold a socket open once we're allowed to use the API.
@@ -48,13 +50,19 @@ export function App() {
           <Route path="/" element={<GenerateScreen />} />
           <Route path="/gallery" element={<GalleryScreen />} />
           <Route path="/favorites" element={<FavoritesScreen />} />
+          <Route path="/variation" element={<VariationScreen />} />
           <Route path="/queue" element={<QueueScreen />} />
           <Route path="/settings" element={<SettingsScreen />} />
           <Route path="*" element={<GenerateScreen />} />
         </Routes>
       </main>
 
-      <LiveBar />
+      {/*
+        Everywhere but Generate, which shows the same bar inline beside its
+        button — two rows for progress and Generate is a lot of a phone screen
+        for two things you look at together.
+      */}
+      {!onGenerate && <LiveBar />}
       <BottomTabs />
     </div>
   );

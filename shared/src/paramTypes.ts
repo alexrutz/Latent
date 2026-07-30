@@ -59,6 +59,12 @@ export interface ParamField {
   softMin?: number;
   softMax?: number;
   step?: number;
+  /**
+   * Resolved from the field's override: how it is edited, and with which values
+   * when that is a point line. Absent means the ordinary input.
+   */
+  inputMode?: NumericInputMode;
+  points?: FieldPoints;
   multiline?: boolean;
   tooltip?: string;
   group: ParamGroup;
@@ -74,11 +80,32 @@ export interface ParamField {
 }
 
 /** User customisations, stored separately so a re-scan never loses them. */
+/**
+ * How a numeric field is edited.
+ *
+ * `input` is the general-purpose control: a sheet with a slider and a keyboard.
+ * `points` is a line of pre-set values you tap — no sheet, no typing, one
+ * gesture. Worth choosing per field, because the values people actually use for
+ * steps or CFG are a handful they return to over and over, while a seed is never
+ * one of a short list.
+ */
+export type NumericInputMode = 'input' | 'points';
+
+/** The range and interval a point line offers. */
+export interface FieldPoints {
+  min: number;
+  max: number;
+  step: number;
+}
+
 export interface FieldOverride {
   label?: string;
   group?: ParamGroup;
   hidden?: boolean;
   order?: number;
+  /** How this field is edited. Numeric fields only; ignored elsewhere. */
+  inputMode?: NumericInputMode;
+  points?: FieldPoints;
 }
 
 export type FieldOverrides = Record<string, FieldOverride>;
