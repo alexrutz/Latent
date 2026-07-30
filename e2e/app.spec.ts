@@ -85,6 +85,12 @@ async function resetState() {
 
     const blocks = (await (await ctx.get('/api/prompt-blocks')).json()) as { id: string }[];
     for (const block of blocks) await ctx.delete(`/api/prompt-blocks/${block.id}`);
+
+    // Random prompt mode is server-side state; leaving it on would silently
+    // rewrite the prompt in every test that follows.
+    await ctx.patch('/api/prompt-mode', {
+      data: { enabled: false, blockIds: [], minBlocks: 2, maxBlocks: 4, keepTyped: true },
+    });
   });
 }
 
@@ -827,5 +833,120 @@ test.describe('knowing what is happening', () => {
       () => getComputedStyle(document.documentElement).touchAction,
     );
     expect(touchAction).toBe('pan-x pan-y');
+  });
+});
+
+test.describe('random prompt mode', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+  });
+
+  /** Seed a small library with two groups, through the API. */
+  async function seedBlocks() {
+    await withApi(async (ctx) => {
+      for (const block of [
+        { name: 'Golden hour', category: 'Lighting', text: 'warm rim light' },
+        { name: 'Blue hour', category: 'Lighting', text: 'cool ambient light' },
+        { name: '35mm', category: 'Camera', text: 'shot on 35mm' },
+        { name: 'Ilford', category: 'Film', text: 'black and white grain' },
+      ]) {
+        await ctx.post('/api/prompt-blocks', { data: block });
+      }
+    });
+  }
+
+  test('turns on, previews real draws, and says so next to Generate', async ({ page }) => {
+    await seedBlocks();
+    await open(page, '/');
+
+    await page.getByPlaceholder('Describe the image…').fill('a lighthouse');
+    await page.getByRole('button', { name: /Random prompt/ }).click();
+
+    await expect(page.getByRole('heading', { name: 'Random prompt' })).toBeVisible();
+    await page.getByRole('switch', { name: 'Draw the prompt' }).click();
+
+    // Every block is in the pool until one is tapped.
+    await expect(page.getByText('Pool (4 of 4)')).toBeVisible();
+
+    // The preview comes from the server, so it is what a submit would really do.
+    await page.getByRole('button', { name: 'Draw three examples' }).click();
+    const preview = page.getByTestId('random-prompt-preview');
+    await expect(preview).toBeVisible();
+    await expect(preview.locator('li')).toHaveCount(3);
+    await expect(preview.locator('li').first()).toContainText('a lighthouse');
+    await page.screenshot({ path: 'test-results/21-random-prompt.png' });
+
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    // The Generate button admits the prompt is not what the field says.
+    await expect(page.getByRole('button', { name: /Random prompt on/ })).toBeVisible();
+    await expect(page.getByText(/Prompt drawn from blocks/)).toBeVisible();
+  });
+
+  test('narrows the pool to hand-picked blocks', async ({ page }) => {
+    await seedBlocks();
+    await open(page, '/');
+    await page.getByRole('button', { name: /Random prompt/ }).click();
+    await page.getByRole('switch', { name: 'Draw the prompt' }).click();
+
+    // Tapping a selected chip removes just that one — the pool was "everything".
+    await page.getByRole('button', { name: /Blue hour/ }).click();
+    await expect(page.getByText('Pool (3 of 4)')).toBeVisible();
+    await page.getByRole('button', { name: /Ilford/ }).click();
+    await page.getByRole('button', { name: /35mm/ }).click();
+    await expect(page.getByText('Pool (1 of 4)')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Draw three examples' }).click();
+    const preview = page.getByTestId('random-prompt-preview');
+    await expect(preview.locator('li').first()).toContainText('warm rim light');
+    await expect(preview).not.toContainText('cool ambient light');
+
+    // And it can be handed back to the whole library in one tap.
+    await page.getByRole('button', { name: 'Use all blocks' }).click();
+    await expect(page.getByText('Pool (4 of 4)')).toBeVisible();
+  });
+
+  /** The whole point: a batch of several is several different pictures. */
+  test('gives every item in a batch its own prompt', async ({ page }) => {
+    await seedBlocks();
+    await withApi((ctx) =>
+      ctx.patch('/api/prompt-mode', {
+        data: { enabled: true, minBlocks: 2, maxBlocks: 2, keepTyped: true },
+      }),
+    );
+
+    await open(page, '/');
+    await page.getByRole('button', { name: /Steps/ }).click();
+    await page.getByRole('textbox', { name: 'Steps' }).fill('60');
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    await page.getByPlaceholder('Describe the image…').fill('a lighthouse');
+    await page.getByRole('button', { name: '4', exact: true }).click();
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await page.getByRole('link', { name: 'Queue' }).click();
+    const cards = page.getByTestId('queue-card');
+    await expect(cards.nth(2)).toBeVisible({ timeout: 30_000 });
+
+    const titles = await cards.locator('p.line-clamp-2').allInnerTexts();
+    expect(titles.length).toBeGreaterThan(2);
+    for (const title of titles) {
+      // Typed text kept, drawn phrases added.
+      expect(title.startsWith('a lighthouse')).toBe(true);
+      expect(title.length).toBeGreaterThan('a lighthouse'.length);
+    }
+    expect(new Set(titles).size).toBeGreaterThan(1);
+    await page.screenshot({ path: 'test-results/22-random-batch.png' });
+
+    await withApi((ctx) => ctx.delete('/api/queue'));
+    await withApi((ctx) => ctx.post('/api/queue/interrupt'));
+  });
+
+  test('says plainly that there is nothing to draw from', async ({ page }) => {
+    await open(page, '/');
+    await page.getByRole('button', { name: /Random prompt/ }).click();
+    await expect(page.getByText(/No prompt blocks saved yet/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Draw three examples' })).toHaveCount(0);
   });
 });

@@ -59,6 +59,9 @@ form. Nothing about your ComfyUI setup changes.
 - **Prompt blocks.** Save the phrases you reuse and assemble a prompt by tapping
   chips instead of typing paragraphs on a phone keyboard. Tapping a chip again
   takes that phrase back out.
+- **Random prompt mode.** Let the app draw the prompt from your blocks instead —
+  from the whole library or a pool you narrow by hand. Every queued run gets its
+  own draw, so a batch of eight is eight different pictures.
 - **Edit a photo before it uploads.** Crop to an aspect ratio, rotate, mirror
   and downscale on the device, so an img2img input is the right shape before the
   bytes are sent anywhere.
@@ -234,6 +237,42 @@ therefore serves them from the archive directly, and says so plainly if the
 archive is locked or was encrypted under a different password, rather than
 showing a broken tile.
 
+## Random prompt mode
+
+Once you have a library of prompt blocks, the interesting thing to do with it is
+not picking four by hand — it is letting the app pick four, over and over, and
+seeing what comes out.
+
+Open **🎲 Random prompt** under the prompt field and turn it on. From then on
+every queued run draws its own prompt. Settings:
+
+- **Blocks per prompt** — a range, so the length varies too.
+- **Keep what I typed** (on by default) — the draw is *added* to your prompt, so
+  "photo of a lighthouse" stays the subject and the blocks supply the treatment.
+  Off, the prompt is built purely from blocks.
+- **One block per group** (on by default) — the groups you already gave your
+  blocks become the constraint that keeps a random prompt coherent. Two lighting
+  blocks in one prompt fight each other; this stops that happening.
+- **Pool** — every block by default. Tap any chip to narrow it, and "Use all
+  blocks" to go back. An empty pool is stored as "no pool", so blocks you add
+  later are included automatically.
+
+**Draw three examples** asks the *server* for sample draws through the same code
+path a real submit uses, so a preview can never disagree with what you get.
+
+Two things worth knowing:
+
+- **The draw happens on the server, once per queued item.** Rolling in the browser
+  would send one prompt eight times, which is the opposite of the point — and it
+  means you can queue eight and lock your phone.
+- **The drawn prompt is what gets recorded.** The queue, the gallery and the
+  generation history all show the prompt that actually ran, so a result you liked
+  can be reproduced. What is stored as the workflow's *last used* values stays the
+  text you typed, so the form never reopens full of random phrases.
+
+If the pool is empty — no blocks saved, or narrowed to nothing — your typed
+prompt is submitted unchanged rather than blank.
+
 ## Timings and the queue
 
 The step rate and the time remaining are measured **on the server**, where the
@@ -318,7 +357,7 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 
 | Path | What lives there |
 | --- | --- |
-| `shared/` | Types, the form-building engine (`paramSchema.ts`), LoRA tag parsing and the queue's parameter summaries — pure, no I/O |
+| `shared/` | Types, the form-building engine (`paramSchema.ts`), LoRA tag parsing, the queue's parameter summaries and the random-prompt draw — pure, no I/O |
 | `server/` | Fastify proxy, ComfyUI client, live event hub, SQLite store, archive, terminal |
 | `server/src/vault.ts` | Archive encryption: master key, wrapping, unlock on sign-in |
 | `server/src/images/` | A dependency-free PNG decoder/resizer for thumbnails and image sizes |

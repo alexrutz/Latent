@@ -8,12 +8,14 @@ import {
   useDeletePreset,
   useGenerate,
   usePresets,
+  usePromptMode,
   useSavePreset,
   useWorkflow,
   useWorkflows,
 } from '../api/queries';
 import { LoraEditor } from '../components/LoraEditor';
 import { PromptBuilder } from '../components/PromptBuilder';
+import { RandomPromptMode } from '../components/RandomPromptMode';
 import { FieldChip, ImageField, PromptField, SeedField } from '../components/ParamControl';
 import { Button, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { useLiveStore } from '../state/live';
@@ -103,6 +105,7 @@ function GenerateForm({
 }: GenerateFormProps) {
   const detail = workflowQuery.data;
   const generate = useGenerate();
+  const randomMode = usePromptMode();
   const job = useLiveStore((state) => state.live.job);
   const comfyOnline = useLiveStore((state) => state.live.comfyOnline);
 
@@ -262,6 +265,8 @@ function GenerateForm({
               value={String(values[field.id] ?? '')}
               onChange={(next) => setValue(field.id, next)}
             />
+            {/* Let the machine assemble the prompt from saved blocks instead. */}
+            <RandomPromptMode base={String(values[field.id] ?? '')} />
           </div>
         </div>
       ))}
@@ -420,6 +425,18 @@ function GenerateForm({
       {/* Fully opaque, not translucent: chips scrolling underneath showed
           through as half-visible shapes below the button. */}
       <div className="sticky bottom-0 -mx-4 mt-auto space-y-1 border-t border-line bg-ink px-4 pt-2 pb-1">
+        {/*
+          Said out loud, right where you tap. With random mode on, what gets
+          rendered is not what the prompt field says — leaving that implicit
+          would be genuinely confusing the next time you came back to the app.
+        */}
+        {randomMode.data?.enabled && promptFields.length > 0 && (
+          <p className="text-center text-[11px] text-accent">
+            🎲 Prompt drawn from blocks: {randomMode.data.minBlocks}–{randomMode.data.maxBlocks} per
+            run
+          </p>
+        )}
+
         <Button
           variant="primary"
           size="lg"

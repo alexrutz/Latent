@@ -24,7 +24,8 @@ import type {
   WorkflowPreset,
   WorkflowSummary,
 } from '@latent/shared';
-import type { ApiWorkflow } from '@latent/shared';
+import type { ApiWorkflow, RandomPromptConfig } from '@latent/shared';
+import { DEFAULT_RANDOM_PROMPT_CONFIG, normaliseRandomPromptConfig } from '@latent/shared';
 
 /**
  * Ordered, append-only migrations.
@@ -394,6 +395,9 @@ function toPreset(row: PresetRow): WorkflowPreset {
     createdAt: row.created_at,
   };
 }
+
+/** Settings key holding the random-prompt configuration as JSON. */
+const RANDOM_PROMPT_KEY = 'random_prompt';
 
 const DEFAULT_SETTINGS: AppSettings = {
   upscaleWorkflowId: null,
@@ -1327,6 +1331,33 @@ export class Store {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       )
       .run(key, value);
+  }
+
+  /**
+   * The random-prompt configuration.
+   *
+   * Server-side rather than per-device because the draw itself happens here, once
+   * per queued item — a phone that queues eight and walks away must not have to
+   * stay connected for the remaining seven to be randomised.
+   *
+   * Stored as one JSON blob in `settings`, so no migration is needed and adding a
+   * field later cannot invalidate what is already saved: `normalise` fills gaps.
+   */
+  getRandomPromptConfig(): RandomPromptConfig {
+    const raw = this.getSecretSetting(RANDOM_PROMPT_KEY);
+    if (!raw) return { ...DEFAULT_RANDOM_PROMPT_CONFIG };
+    try {
+      return normaliseRandomPromptConfig(JSON.parse(raw));
+    } catch {
+      // A corrupt value must not take the server down; fall back to "off".
+      return { ...DEFAULT_RANDOM_PROMPT_CONFIG };
+    }
+  }
+
+  setRandomPromptConfig(patch: Partial<RandomPromptConfig>): RandomPromptConfig {
+    const next = normaliseRandomPromptConfig({ ...this.getRandomPromptConfig(), ...patch });
+    this.setSecretSetting(RANDOM_PROMPT_KEY, JSON.stringify(next));
+    return next;
   }
 
   getSettings(): AppSettings {

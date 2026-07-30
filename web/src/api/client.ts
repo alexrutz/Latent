@@ -10,6 +10,8 @@ import type {
   ImportScanResult,
   PromptBlock,
   PromptBlockInput,
+  RandomPromptConfig,
+  RandomPromptRoll,
   TileSpan,
   ConnectionInput,
   ConnectionSummary,
@@ -242,6 +244,21 @@ export const api = {
 
   deletePromptBlock: (id: string) =>
     request<void>(`/api/prompt-blocks/${id}`, { method: 'DELETE' }),
+
+  promptMode: () => request<RandomPromptConfig>('/api/prompt-mode'),
+
+  updatePromptMode: (patch: Partial<RandomPromptConfig>) =>
+    request<RandomPromptConfig>('/api/prompt-mode', {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+
+  /** Example draws from the server, using the same code path as a real submit. */
+  previewPromptMode: (base: string, config?: Partial<RandomPromptConfig>) =>
+    request<{ pool: number; rolls: RandomPromptRoll[] }>('/api/prompt-mode/preview', {
+      method: 'POST',
+      body: JSON.stringify({ base, config }),
+    }),
 
   /* ---------------------------------------------------------------- */
   /* Folder import                                                     */

@@ -1,0 +1,190 @@
+import type { PromptBlock } from './apiTypes.js';
+import { addFragment, promptContainsFragment } from './promptFragments.js';
+
+/**
+ * Building a prompt from a random draw of saved blocks.
+ *
+ * The point is variation you did not have to think of. Once you have a library of
+ * phrases, the interesting thing to do with it is not picking four by hand — it is
+ * letting the machine pick four and seeing what comes out, over and over, without
+ * touching the keyboard between runs.
+ *
+ * Two decisions shape the whole design:
+ *
+ * 1. **The draw happens once per queued item, on the server.** Rolling in the
+ *    browser would give a batch of eight the same prompt eight times, which is
+ *    the opposite of what this is for.
+ * 2. **At most one block per group, by default.** Blocks are grouped (Lighting,
+ *    Camera, Style), and two lighting blocks in one prompt fight each other. The
+ *    groups you already made are the constraint that keeps a random prompt
+ *    coherent instead of mush.
+ *
+ * Pure: no I/O, no React, and the RNG is injected so tests are deterministic.
+ */
+
+export interface RandomPromptConfig {
+  /** Whether a queued run draws its prompt instead of using what is typed. */
+  enabled: boolean;
+  /**
+   * Block ids the draw is narrowed to. Empty means the whole library.
+   *
+   * Ids rather than names, and unknown ids are simply ignored — deleting a block
+   * must not break a saved pool.
+   */
+  blockIds: string[];
+  /** How many blocks go into one prompt. Inclusive. */
+  minBlocks: number;
+  maxBlocks: number;
+  /** Keep what is typed and add to it, rather than replacing it entirely. */
+  keepTyped: boolean;
+  /** At most one block per group, so two lighting styles never collide. */
+  onePerGroup: boolean;
+}
+
+export const DEFAULT_RANDOM_PROMPT_CONFIG: RandomPromptConfig = {
+  enabled: false,
+  blockIds: [],
+  minBlocks: 2,
+  maxBlocks: 4,
+  keepTyped: true,
+  onePerGroup: true,
+};
+
+/** Sanity bound on the draw size, so a bad value cannot build a 500-part prompt. */
+const MAX_BLOCKS_PER_PROMPT = 24;
+
+/**
+ * Coerce whatever came out of the database or off the wire into a usable config.
+ *
+ * Called on both read and write. A stored value can predate a field, and a
+ * hand-edited one can be nonsense; neither should be able to crash a render.
+ */
+export function normaliseRandomPromptConfig(raw: unknown): RandomPromptConfig {
+  const input = (raw ?? {}) as Partial<Record<keyof RandomPromptConfig, unknown>>;
+
+  const min = clampCount(input.minBlocks, DEFAULT_RANDOM_PROMPT_CONFIG.minBlocks);
+  const max = clampCount(input.maxBlocks, DEFAULT_RANDOM_PROMPT_CONFIG.maxBlocks);
+
+  return {
+    enabled: input.enabled === true,
+    blockIds: Array.isArray(input.blockIds)
+      ? [...new Set(input.blockIds.filter((id): id is string => typeof id === 'string' && id !== ''))]
+      : [],
+    // Swapped rather than rejected: "between 4 and 2" plainly means 2 to 4.
+    minBlocks: Math.min(min, max),
+    maxBlocks: Math.max(min, max),
+    keepTyped: input.keepTyped !== false,
+    onePerGroup: input.onePerGroup !== false,
+  };
+}
+
+function clampCount(value: unknown, fallback: number): number {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(Math.max(Math.round(numeric), 0), MAX_BLOCKS_PER_PROMPT);
+}
+
+/** The blocks eligible for a draw, after the pool has been narrowed. */
+export function randomPromptPool(
+  blocks: PromptBlock[],
+  config: RandomPromptConfig,
+): PromptBlock[] {
+  if (config.blockIds.length === 0) return blocks;
+  const wanted = new Set(config.blockIds);
+  return blocks.filter((block) => wanted.has(block.id));
+}
+
+/**
+ * Draw the blocks for one prompt.
+ *
+ * `base` is what is already typed: anything it already contains is excluded, so a
+ * draw never appends a phrase that is sitting there twenty characters earlier.
+ */
+export function pickRandomBlocks(
+  blocks: PromptBlock[],
+  config: RandomPromptConfig,
+  base = '',
+  random: () => number = Math.random,
+): PromptBlock[] {
+  const pool = randomPromptPool(blocks, config).filter(
+    (block) => block.text.trim() !== '' && !promptContainsFragment(base, block.text),
+  );
+  if (pool.length === 0) return [];
+
+  const shuffled = shuffle(pool, random);
+
+  const candidates: PromptBlock[] = [];
+  if (config.onePerGroup) {
+    const seen = new Set<string>();
+    for (const block of shuffled) {
+      const group = block.category.trim().toLowerCase();
+      // Ungrouped blocks are all independent, so they never exclude each other.
+      if (group !== '' && seen.has(group)) continue;
+      if (group !== '') seen.add(group);
+      candidates.push(block);
+    }
+  } else {
+    candidates.push(...shuffled);
+  }
+
+  const span = config.maxBlocks - config.minBlocks + 1;
+  const wanted = config.minBlocks + Math.floor(random() * span);
+  const count = Math.min(Math.max(wanted, 0), candidates.length);
+
+  /*
+   * Selection is random; arrangement is not. The library's own order is
+   * reinstated so the prompt reads the way you organised it — subject before
+   * lighting before camera — rather than shuffling the meaning too.
+   */
+  return candidates.slice(0, count).sort((a, b) => a.position - b.position);
+}
+
+/**
+ * Fold drawn blocks into a prompt.
+ *
+ * Kept separate from the draw so a workflow with two prompt fields (SDXL base and
+ * refiner) can apply the *same* draw to each field's own text, instead of
+ * describing two different pictures.
+ */
+export function composeRandomPrompt(
+  base: string,
+  drawn: PromptBlock[],
+  keepTyped: boolean,
+): string {
+  /*
+   * An empty draw keeps whatever was typed, even when told to replace it. The
+   * alternative is submitting a blank prompt because the pool was empty, which is
+   * never what anyone meant.
+   */
+  if (drawn.length === 0) return base;
+
+  let prompt = keepTyped ? base : '';
+  for (const block of drawn) prompt = addFragment(prompt, block.text);
+  return prompt;
+}
+
+export interface RandomPromptRoll {
+  prompt: string;
+  blocks: PromptBlock[];
+}
+
+/** Draw and compose in one step, for a single prompt field or a preview. */
+export function rollRandomPrompt(
+  blocks: PromptBlock[],
+  config: RandomPromptConfig,
+  base = '',
+  random: () => number = Math.random,
+): RandomPromptRoll {
+  const drawn = pickRandomBlocks(blocks, config, base, random);
+  return { prompt: composeRandomPrompt(base, drawn, config.keepTyped), blocks: drawn };
+}
+
+/** Fisher–Yates, so every ordering is equally likely and the RNG is injectable. */
+function shuffle<T>(items: T[], random: () => number): T[] {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j] as T, copy[i] as T];
+  }
+  return copy;
+}

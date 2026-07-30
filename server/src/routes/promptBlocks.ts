@@ -1,9 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 
-import type { PromptBlockInput } from '@latent/shared';
+import { rollRandomPrompt } from '@latent/shared';
+import type { PromptBlockInput, RandomPromptConfig } from '@latent/shared';
 
 import type { AppContext } from './context.js';
+
+/** How many example draws a preview request returns. */
+const PREVIEW_COUNT = 3;
 
 /**
  * Saved fragments of prompt text.
@@ -51,4 +55,42 @@ export function registerPromptBlockRoutes(app: FastifyInstance, ctx: AppContext)
     ctx.store.deletePromptBlock(request.params.id);
     return reply.code(204).send();
   });
+
+  /* ---------------------------------------------------------------- */
+  /* Random prompt mode                                                */
+  /* ---------------------------------------------------------------- */
+
+  app.get('/api/prompt-mode', async () => ctx.store.getRandomPromptConfig());
+
+  app.patch<{ Body: Partial<RandomPromptConfig> }>('/api/prompt-mode', async (request) =>
+    ctx.store.setRandomPromptConfig(request.body ?? {}),
+  );
+
+  /**
+   * Example draws, so you can see what the mode will actually produce before
+   * committing a batch of eight renders to it.
+   *
+   * Drawn here rather than in the browser so the preview uses exactly the same
+   * code path as a real submit — a preview that agrees with itself but not with
+   * the server would be worse than none.
+   */
+  app.post<{ Body: { base?: string; config?: Partial<RandomPromptConfig> } }>(
+    '/api/prompt-mode/preview',
+    async (request) => {
+      const body = request.body ?? {};
+      // Unsaved edits are honoured, so the preview tracks the controls live.
+      const config = { ...ctx.store.getRandomPromptConfig(), ...(body.config ?? {}) };
+      const blocks = ctx.store.listPromptBlocks();
+      const base = typeof body.base === 'string' ? body.base : '';
+
+      return {
+        pool: blocks.filter(
+          (block) => config.blockIds.length === 0 || config.blockIds.includes(block.id),
+        ).length,
+        rolls: Array.from({ length: PREVIEW_COUNT }, () =>
+          rollRandomPrompt(blocks, config, base),
+        ),
+      };
+    },
+  );
 }

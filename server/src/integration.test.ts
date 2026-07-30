@@ -1717,3 +1717,233 @@ describe('form layouts', () => {
     }
   }, 30_000);
 });
+
+describe('random prompt mode', () => {
+  /**
+   * Find the shared test workflow, importing it if this block is being run on its
+   * own — `vitest -t` skips the describe that would otherwise have created it.
+   */
+  async function txt2imgWorkflowId(): Promise<string> {
+    const workflows = await json<{ id: string; name: string }[]>(api('/api/workflows'));
+    const existing = workflows.find((w) => w.name === 'SD1.5 txt2img');
+    if (existing) return existing.id;
+
+    const created = await json<WorkflowDetail>(
+      api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'SD1.5 txt2img', graph: sd15Txt2Img }),
+      }),
+    );
+    return created.id;
+  }
+
+  /**
+   * The whole point is a batch that varies. The draw therefore has to happen on
+   * the server, once per queued item — a browser rolling once would send the same
+   * prompt eight times, which is precisely what this replaces.
+   */
+  it('draws a different prompt for every item in a batch', async () => {
+    const workflowId = await txt2imgWorkflowId();
+
+    // A library with three groups, so one-per-group has something to enforce.
+    const library = [
+      { name: 'Golden hour', category: 'Lighting', text: 'warm rim light' },
+      { name: 'Blue hour', category: 'Lighting', text: 'cool ambient light' },
+      { name: '35mm', category: 'Camera', text: 'shot on 35mm' },
+      { name: 'Ilford', category: 'Film', text: 'black and white grain' },
+    ];
+    const created: string[] = [];
+    for (const block of library) {
+      const response = await api('/api/prompt-blocks', {
+        method: 'POST',
+        body: JSON.stringify(block),
+      });
+      created.push(((await response.json()) as { id: string }).id);
+    }
+
+    try {
+      const config = await json<{ enabled: boolean; minBlocks: number }>(
+        api('/api/prompt-mode', {
+          method: 'PATCH',
+          body: JSON.stringify({ enabled: true, minBlocks: 2, maxBlocks: 2, keepTyped: true }),
+        }),
+      );
+      expect(config.enabled).toBe(true);
+      expect(config.minBlocks).toBe(2);
+
+      await api('/api/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          workflowId,
+          values: { '6.text': 'a lighthouse', '3.steps': 40 },
+          batchCount: 6,
+        }),
+      });
+
+      const queue = await waitFor(async () => {
+        const state = await json<QueueState>(api('/api/queue'));
+        return state.running.length + state.pending.length >= 3 ? state : null;
+      });
+
+      const entries = [...queue.running, ...queue.pending];
+      const titles = entries.map((entry) => entry.title);
+
+      // Each title keeps the typed prompt and gains drawn phrases.
+      for (const title of titles) {
+        expect(title.startsWith('a lighthouse')).toBe(true);
+        expect(title.length).toBeGreaterThan('a lighthouse'.length);
+      }
+
+      // …and they are not all the same, which is the entire feature.
+      expect(new Set(titles).size).toBeGreaterThan(1);
+
+      /*
+       * One block per group: two lighting phrases must never land together.
+       * Checked on every item, because a single lucky draw proves nothing.
+       */
+      for (const title of titles) {
+        const lighting = ['warm rim light', 'cool ambient light'].filter((phrase) =>
+          title.includes(phrase),
+        );
+        expect(lighting.length).toBeLessThanOrEqual(1);
+      }
+
+      // The drawn prompt is what got submitted, so it is what the history records
+      // — otherwise a result you liked could never be reproduced.
+      const page = await json<GalleryPage>(api('/api/gallery?limit=100'));
+      const stored = page.items.find((item) => item.title === titles[0]);
+      expect(stored).toBeDefined();
+      expect(String(stored?.values['6.text'])).toBe(stored?.title);
+    } finally {
+      await api('/api/queue', { method: 'DELETE' });
+      await api('/api/queue/interrupt', { method: 'POST' });
+      await api('/api/prompt-mode', {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled: false, blockIds: [] }),
+      });
+      for (const id of created) await api(`/api/prompt-blocks/${id}`, { method: 'DELETE' });
+      await waitFor(async () => {
+        const state = await json<QueueState>(api('/api/queue'));
+        return state.running.length + state.pending.length === 0 ? state : null;
+      });
+    }
+  }, 40_000);
+
+  it('narrows the draw to a chosen pool, and leaves the prompt alone when the pool is empty', async () => {
+    const workflowId = await txt2imgWorkflowId();
+
+    const only = ((await (
+      await api('/api/prompt-blocks', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Only this', category: 'Style', text: 'the only phrase' }),
+      })
+    ).json()) as { id: string }).id;
+    const other = ((await (
+      await api('/api/prompt-blocks', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Not this', category: 'Style', text: 'never drawn' }),
+      })
+    ).json()) as { id: string }).id;
+
+    try {
+      await api('/api/prompt-mode', {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled: true, minBlocks: 1, maxBlocks: 1, blockIds: [only] }),
+      });
+
+      // The preview uses the same code path as a submit, so it is worth asserting.
+      const preview = await json<{ pool: number; rolls: { prompt: string }[] }>(
+        api('/api/prompt-mode/preview', {
+          method: 'POST',
+          body: JSON.stringify({ base: 'a portrait' }),
+        }),
+      );
+      expect(preview.pool).toBe(1);
+      for (const roll of preview.rolls) {
+        expect(roll.prompt).toBe('a portrait, the only phrase');
+        expect(roll.prompt).not.toContain('never drawn');
+      }
+
+      /*
+       * A pool narrowed to nothing must submit the typed prompt untouched. The
+       * alternative — a blank prompt — is never what anyone meant.
+       */
+      await api('/api/prompt-mode', {
+        method: 'PATCH',
+        body: JSON.stringify({ blockIds: ['no-such-block'], keepTyped: false }),
+      });
+      const empty = await json<{ pool: number; rolls: { prompt: string }[] }>(
+        api('/api/prompt-mode/preview', {
+          method: 'POST',
+          body: JSON.stringify({ base: 'untouched' }),
+        }),
+      );
+      expect(empty.pool).toBe(0);
+      expect(empty.rolls.every((roll) => roll.prompt === 'untouched')).toBe(true);
+
+      await api('/api/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          workflowId,
+          values: { '6.text': 'untouched', '3.steps': 40 },
+        }),
+      });
+      const queued = await waitFor(async () => {
+        const state = await json<QueueState>(api('/api/queue'));
+        const all = [...state.running, ...state.pending];
+        return all.length > 0 ? all : null;
+      });
+      expect(queued[0]?.title).toBe('untouched');
+    } finally {
+      await api('/api/queue', { method: 'DELETE' });
+      await api('/api/queue/interrupt', { method: 'POST' });
+      await api('/api/prompt-mode', {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled: false, blockIds: [] }),
+      });
+      for (const id of [only, other]) await api(`/api/prompt-blocks/${id}`, { method: 'DELETE' });
+      await waitFor(async () => {
+        const state = await json<QueueState>(api('/api/queue'));
+        return state.running.length + state.pending.length === 0 ? state : null;
+      });
+    }
+  }, 40_000);
+
+  it('leaves the prompt alone when the mode is off', async () => {
+    const workflowId = await txt2imgWorkflowId();
+
+    const id = ((await (
+      await api('/api/prompt-blocks', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Idle', text: 'should not appear' }),
+      })
+    ).json()) as { id: string }).id;
+
+    try {
+      const config = await json<{ enabled: boolean }>(api('/api/prompt-mode'));
+      expect(config.enabled).toBe(false);
+
+      await api('/api/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          workflowId,
+          values: { '6.text': 'exactly this', '3.steps': 40 },
+        }),
+      });
+      const queued = await waitFor(async () => {
+        const state = await json<QueueState>(api('/api/queue'));
+        const all = [...state.running, ...state.pending];
+        return all.length > 0 ? all : null;
+      });
+      expect(queued[0]?.title).toBe('exactly this');
+    } finally {
+      await api('/api/queue', { method: 'DELETE' });
+      await api('/api/queue/interrupt', { method: 'POST' });
+      await api(`/api/prompt-blocks/${id}`, { method: 'DELETE' });
+      await waitFor(async () => {
+        const state = await json<QueueState>(api('/api/queue'));
+        return state.running.length + state.pending.length === 0 ? state : null;
+      });
+    }
+  }, 30_000);
+});

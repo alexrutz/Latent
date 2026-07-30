@@ -15,6 +15,7 @@ import type {
   GenerateRequest,
   ParamValues,
   PromptBlockInput,
+  RandomPromptConfig,
   TileSpan,
 } from '@latent/shared';
 
@@ -30,6 +31,7 @@ export const queryKeys = {
   connections: ['connections'] as const,
   favorites: ['favorites'] as const,
   promptBlocks: ['prompt-blocks'] as const,
+  promptMode: ['prompt-mode'] as const,
   importScan: ['import-scan'] as const,
   presets: (workflowId: string) => ['presets', workflowId] as const,
   layouts: (workflowId: string) => ['layouts', workflowId] as const,
@@ -348,6 +350,23 @@ export const useUpdatePromptBlock = () =>
 
 export const useDeletePromptBlock = () =>
   usePromptBlockMutation((id: string) => api.deletePromptBlock(id));
+
+/* ------------------------------------------------------------------ */
+/* Random prompt mode                                                  */
+/* ------------------------------------------------------------------ */
+
+export function usePromptMode() {
+  return useQuery({ queryKey: queryKeys.promptMode, queryFn: api.promptMode });
+}
+
+export function useUpdatePromptMode() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: Partial<RandomPromptConfig>) => api.updatePromptMode(patch),
+    // The server normalises the config, so trust its answer over the patch.
+    onSuccess: (config) => client.setQueryData(queryKeys.promptMode, config),
+  });
+}
 
 /* ------------------------------------------------------------------ */
 /* Folder import                                                       */
