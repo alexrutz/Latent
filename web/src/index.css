@@ -30,6 +30,14 @@
     color-scheme: dark;
     /* Stop iOS bumping font sizes in landscape. */
     -webkit-text-size-adjust: 100%;
+    /*
+     * Scrolling yes, pinch and double-tap zoom no. Excluding `pinch-zoom` here
+     * is what actually enforces the viewport's `user-scalable=no` in engines
+     * that honour touch-action. The image viewer sets `touch-action: none` on
+     * its own stage and drives pinch from pointer events, so zooming a picture
+     * is unaffected.
+     */
+    touch-action: pan-x pan-y;
   }
 
   body {

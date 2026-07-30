@@ -15,6 +15,7 @@ import type {
   FavoriteSort,
   FormLayout,
   GenerationImage,
+  ParamSummaryItem,
   ParamValues,
   PromptBlock,
   PromptBlockInput,
@@ -183,6 +184,19 @@ CREATE TABLE layouts (
 CREATE INDEX idx_layouts_workflow ON layouts (workflow_id, created_at);
 `);
 
+/**
+ * v5: a readable parameter summary per generation.
+ *
+ * The queue screen has to let you pick one job out of eight and cancel it, which
+ * needs the values each was submitted with — and `values_json` alone cannot give
+ * that, because its keys are `3.steps` and the labels live in the workflow's
+ * schema, which may have been re-arranged or deleted since. Recording the
+ * rendered summary at submit time keeps the listing honest about what ran.
+ */
+MIGRATIONS.push(`
+ALTER TABLE generations ADD COLUMN params_json TEXT NOT NULL DEFAULT '[]';
+`);
+
 interface WorkflowRow {
   id: string;
   name: string;
@@ -203,6 +217,7 @@ interface GenerationRow {
   error: string | null;
   values_json: string;
   seeds_json: string;
+  params_json: string;
   title: string;
   created_at: number;
   completed_at: number | null;
@@ -564,12 +579,13 @@ export class Store {
     title: string;
     values: ParamValues;
     seeds: Record<string, number>;
+    params?: ParamSummaryItem[];
   }): void {
     this.db
       .prepare(
         `INSERT INTO generations
-           (id, prompt_id, workflow_id, workflow_name, status, error, values_json, seeds_json, title, created_at, completed_at)
-         VALUES (?, ?, ?, ?, 'queued', NULL, ?, ?, ?, ?, NULL)`,
+           (id, prompt_id, workflow_id, workflow_name, status, error, values_json, seeds_json, params_json, title, created_at, completed_at)
+         VALUES (?, ?, ?, ?, 'queued', NULL, ?, ?, ?, ?, ?, NULL)`,
       )
       .run(
         record.id,
@@ -578,6 +594,7 @@ export class Store {
         record.workflowName,
         JSON.stringify(record.values),
         JSON.stringify(record.seeds),
+        JSON.stringify(record.params ?? []),
         record.title,
         Date.now(),
       );
@@ -664,6 +681,19 @@ export class Store {
       params.push(options.minRating);
     }
 
+    /*
+     * A run you stopped on purpose is not a gallery entry.
+     *
+     * Cancelling used to leave a "cancelled" placeholder behind, so clearing a
+     * queue of eight filled the top of the gallery with eight tombstones for
+     * pictures that were never made. A cancel that landed mid-batch does keep
+     * whatever images it managed to produce — those are real results.
+     */
+    where.push(
+      `(status <> 'cancelled'
+        OR EXISTS (SELECT 1 FROM images WHERE images.generation_id = generations.id))`,
+    );
+
     const sql = `SELECT * FROM generations
                  ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
                  ORDER BY created_at DESC, id DESC
@@ -718,6 +748,7 @@ export class Store {
       error: row.error,
       values: parseJson<ParamValues>(row.values_json, {}),
       seeds: parseJson<Record<string, number>>(row.seeds_json, {}),
+      params: parseJson<ParamSummaryItem[]>(row.params_json, []),
       title: row.title,
       images: images.map(toGenerationImage),
       createdAt: row.created_at,

@@ -5,11 +5,17 @@
     <!--
       viewport-fit=cover lets the app paint into the notch/home-indicator area;
       the layout adds safe-area padding back where it matters.
-      maximum-scale is deliberately NOT set to 1: pinch-zoom on results matters
-      more than avoiding an occasional focus zoom, and inputs use 16px text so
-      iOS does not zoom on focus anyway.
+
+      Zoom is locked off. Nothing here is too small to read — inputs are 16px
+      minimum, which is also what stops iOS zooming on focus — so browser zoom
+      only ever fires by accident, leaving the app scrolled sideways with the tab
+      bar off screen. Zooming a *picture* still works: the viewer implements pinch
+      itself with pointer events, which is unaffected by this.
     -->
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
     <meta name="theme-color" content="#0a0a0f" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />

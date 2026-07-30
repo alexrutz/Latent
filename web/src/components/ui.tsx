@@ -2,6 +2,7 @@ import {
   useEffect,
   useRef,
   type ButtonHTMLAttributes,
+  type HTMLAttributes,
   type ReactNode,
 } from 'react';
 
@@ -29,10 +30,16 @@ const VARIANTS: Record<ButtonVariant, string> = {
   danger: 'bg-danger/15 text-danger active:bg-danger/25',
 };
 
+/*
+ * Heights are the tap target, not decoration: 44px is Apple's minimum and 40 is
+ * about the floor for a thumb, so `sm` and `md` sit there rather than being
+ * padded out further. `lg` is the one full-width primary action per screen and
+ * stays generous, since it is what you aim at without looking.
+ */
 const SIZES = {
-  sm: 'h-9 px-3 text-sm rounded-lg',
-  md: 'h-11 px-4 text-[15px] rounded-xl',
-  lg: 'h-14 px-5 text-base rounded-2xl w-full',
+  sm: 'h-8 px-2.5 text-sm rounded-lg',
+  md: 'h-10 px-3.5 text-[15px] rounded-xl',
+  lg: 'h-12 px-5 text-base rounded-xl w-full',
 };
 
 export function Button({
@@ -150,12 +157,12 @@ export function Sheet({
           full ? 'h-[92dvh]' : 'max-h-[85dvh]',
         )}
       >
-        <div className="flex shrink-0 items-center justify-between px-5 pt-3 pb-2">
+        <div className="flex shrink-0 items-center justify-between px-4 pt-2 pb-1">
           <div className="mx-auto h-1 w-10 rounded-full bg-surface-3" />
         </div>
         {title && (
-          <div className="flex shrink-0 items-center justify-between gap-3 px-5 pb-3">
-            <h2 className="text-lg font-semibold">{title}</h2>
+          <div className="flex shrink-0 items-center justify-between gap-3 px-4 pb-2">
+            <h2 className="text-base font-semibold">{title}</h2>
             {/*
               No aria-label here: it would override the visible text, so the
               button would read as "Close" to a screen reader while showing
@@ -166,7 +173,7 @@ export function Sheet({
             </Button>
           </div>
         )}
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-5">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-4">{children}</div>
       </div>
     </div>
   );
@@ -176,9 +183,15 @@ export function Sheet({
 /* Misc                                                                */
 /* ------------------------------------------------------------------ */
 
-export function Card({ children, className }: { children: ReactNode; className?: string }) {
+export function Card({
+  children,
+  className,
+  ...rest
+}: { children: ReactNode; className?: string } & HTMLAttributes<HTMLDivElement>) {
   return (
-    <div className={cn('rounded-2xl border border-line bg-surface p-4', className)}>{children}</div>
+    <div {...rest} className={cn('rounded-xl border border-line bg-surface p-3', className)}>
+      {children}
+    </div>
   );
 }
 
@@ -194,7 +207,7 @@ export function EmptyState({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-3 px-8 py-16 text-center">
+    <div className="flex flex-col items-center justify-center gap-2 px-8 py-12 text-center">
       {icon && <div className="text-4xl opacity-40">{icon}</div>}
       <p className="text-base font-medium">{title}</p>
       {hint && <p className="max-w-xs text-sm text-muted">{hint}</p>}
@@ -208,7 +221,7 @@ export function ErrorNote({ children }: { children: ReactNode }) {
   return (
     <p
       role="alert"
-      className="rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger"
+      className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-sm text-danger"
     >
       {children}
     </p>
@@ -226,7 +239,7 @@ export function Row({
   children?: ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between gap-4 py-3">
+    <div className="flex items-center justify-between gap-4 py-2">
       <div className="min-w-0">
         <p className="truncate text-[15px]">{label}</p>
         {hint && <p className="truncate text-xs text-muted">{hint}</p>}

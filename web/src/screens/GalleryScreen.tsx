@@ -341,10 +341,16 @@ const GalleryTile = forwardRef<
   );
 });
 
-/** A queued, running or failed generation that has no image to show yet. */
+/**
+ * A queued, running or failed generation that has no image to show yet.
+ *
+ * There is deliberately no "cancelled" state here: the server leaves a
+ * cancelled run out of the gallery entirely unless it managed to produce an
+ * image. Clearing a queue of eight used to leave eight tombstones at the top of
+ * the gallery for pictures that were never made.
+ */
 function PlaceholderCard({ record }: { record: GenerationRecord }) {
   const failed = record.status === 'failed';
-  const cancelled = record.status === 'cancelled';
 
   return (
     <div
@@ -359,8 +365,6 @@ function PlaceholderCard({ record }: { record: GenerationRecord }) {
           <p className="text-xs font-medium text-danger">Failed</p>
           <p className="line-clamp-3 text-[10px] text-muted">{record.error}</p>
         </div>
-      ) : cancelled ? (
-        <p className="text-xs text-muted">Cancelled</p>
       ) : (
         <div className="space-y-2">
           <Spinner className="mx-auto size-5 text-muted" />

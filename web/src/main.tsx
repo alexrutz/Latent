@@ -18,6 +18,18 @@ const queryClient = new QueryClient({
   },
 });
 
+/*
+ * Stop Safari zooming the page.
+ *
+ * Safari has ignored `user-scalable=no` in the viewport meta since iOS 10, and
+ * these Safari-only gesture events are the remaining way to refuse a page pinch.
+ * The image viewer is untouched: it implements pinch with pointer events, which
+ * these do not intercept.
+ */
+for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
+  document.addEventListener(type, (event) => event.preventDefault(), { passive: false });
+}
+
 const container = document.getElementById('root');
 if (!container) throw new Error('Missing #root');
 

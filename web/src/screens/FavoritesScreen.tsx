@@ -185,6 +185,9 @@ function FavoriteSheet({ favorite, onClose }: { favorite: Favorite; onClose: () 
           error: null,
           values: favorite.values,
           seeds: {},
+          // A favourite snapshots the values, not the rendered summary — the
+          // viewer only needs the images and the title here.
+          params: [],
           title: favorite.title,
           images: [favorite.image],
           createdAt: favorite.createdAt,

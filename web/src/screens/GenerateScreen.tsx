@@ -206,13 +206,15 @@ function GenerateForm({
   }
 
   return (
-    <div className="safe-t flex flex-col gap-4 px-4 pt-3 pb-6">
+    // min-h-full so `mt-auto` on the pinned footer has something to push
+    // against on a form too short to scroll.
+    <div className="safe-t flex min-h-full flex-col gap-3 px-4 pt-2 pb-2">
       {/* Workflow selector + connection state */}
       <div className="flex items-center gap-2">
         <button
           type="button"
           onClick={() => setShowPicker(true)}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2.5 text-left active:bg-surface-2"
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-left active:bg-surface-2"
         >
           <span className="min-w-0 flex-1 truncate font-medium">{detail.name}</span>
           <span className="shrink-0 text-muted" aria-hidden>
@@ -337,7 +339,7 @@ function GenerateForm({
       )}
 
       {/* Batch */}
-      <div className="flex items-center justify-between rounded-xl border border-line bg-surface px-3 py-2.5">
+      <div className="flex items-center justify-between rounded-xl border border-line bg-surface px-3 py-1.5">
         <span className="text-sm">Queue this many</span>
         <div className="flex items-center gap-1">
           {[1, 2, 4, 8].map((count) => (
@@ -346,7 +348,7 @@ function GenerateForm({
               type="button"
               onClick={() => setBatchCount(count)}
               className={cn(
-                'size-9 rounded-lg text-sm tabular-nums',
+                'size-8 rounded-lg text-sm tabular-nums',
                 batchCount === count ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
               )}
             >
@@ -361,20 +363,37 @@ function GenerateForm({
           <button
             type="button"
             onClick={() => setShowAdvanced(true)}
-            className="flex items-center justify-between rounded-xl border border-line bg-surface px-3 py-2.5 text-left active:bg-surface-2"
+            className="flex items-center justify-between rounded-xl border border-line bg-surface px-3 py-2 text-left active:bg-surface-2"
           >
             <span className="text-sm">Advanced</span>
             <span className="text-xs text-muted">{advancedFields.length} settings ›</span>
           </button>
 
           <Sheet open={showAdvanced} onClose={() => setShowAdvanced(false)} title="Advanced" full>
-            <div className="space-y-4">
+            {/*
+              Two columns of chips, not a stack of labelled blocks.
+
+              Advanced is where a big workflow puts thirty inputs, and giving each
+              one a heading, a caption and a full-width control turned it into
+              several screens of scrolling to reach the one you came for. A chip
+              already carries its own label and value, so the heading was
+              redundant; the wide controls (text, image) still get a full row
+              because they cannot be read in half of one.
+            */}
+            <div className="flex flex-wrap gap-1.5">
               {advancedFields.map((field) => (
-                <div key={field.id} className="space-y-1.5">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="text-sm">{field.label}</span>
-                    <span className="truncate text-xs text-muted">{field.nodeTitle}</span>
-                  </div>
+                <div
+                  key={field.id}
+                  className={cn(
+                    'min-w-0',
+                    isWideControl(field) ? 'w-full space-y-1' : 'max-w-full',
+                  )}
+                >
+                  {isWideControl(field) && (
+                    <span className="block truncate text-[11px] tracking-wide text-muted uppercase">
+                      {field.label}
+                    </span>
+                  )}
                   <AdvancedRow
                     field={field}
                     value={values[field.id] ?? field.defaultValue}
@@ -389,25 +408,38 @@ function GenerateForm({
 
       <ErrorNote>{error}</ErrorNote>
 
-      <Button
-        variant="primary"
-        size="lg"
-        onClick={submit}
-        busy={generate.isPending}
-        disabled={!comfyOnline}
-      >
-        {justQueued
-          ? 'Queued ✓'
-          : job
-            ? `Queue ${batchCount > 1 ? `${batchCount} more` : 'another'}`
-            : `Generate${batchCount > 1 ? ` ×${batchCount}` : ''}`}
-      </Button>
+      {/*
+        Pinned to the bottom of the scroll area.
 
-      {!comfyOnline && (
-        <p className="text-center text-xs text-danger">
-          ComfyUI is unreachable — check that it is running.
-        </p>
-      )}
+        A long form put Generate below the fold, so starting a render meant
+        scrolling past every setting to reach the one button you always press.
+        Sticky rather than fixed: it releases into the flow once the form is
+        short enough not to scroll, so a two-field workflow does not get a
+        floating bar over empty space.
+      */}
+      {/* Fully opaque, not translucent: chips scrolling underneath showed
+          through as half-visible shapes below the button. */}
+      <div className="sticky bottom-0 -mx-4 mt-auto space-y-1 border-t border-line bg-ink px-4 pt-2 pb-1">
+        <Button
+          variant="primary"
+          size="lg"
+          onClick={submit}
+          busy={generate.isPending}
+          disabled={!comfyOnline}
+        >
+          {justQueued
+            ? 'Queued ✓'
+            : job
+              ? `Queue ${batchCount > 1 ? `${batchCount} more` : 'another'}`
+              : `Generate${batchCount > 1 ? ` ×${batchCount}` : ''}`}
+        </Button>
+
+        {!comfyOnline && (
+          <p className="text-center text-xs text-danger">
+            ComfyUI is unreachable — check that it is running.
+          </p>
+        )}
+      </div>
 
       <Sheet open={showPicker} onClose={() => setShowPicker(false)} title="Workflow">
         <ul className="space-y-1">
@@ -552,6 +584,16 @@ function PresetBar({
   );
 }
 
+/**
+ * Controls that need a whole row: anything holding text, or an image.
+ *
+ * Everything else is a chip that states its own name and value, so it can sit
+ * next to its neighbours instead of claiming a line.
+ */
+function isWideControl(field: ParamField): boolean {
+  return field.control === 'textarea' || field.control === 'text' || field.control === 'image';
+}
+
 /** Advanced fields are rendered inline rather than behind another sheet. */
 function AdvancedRow({
   field,
@@ -562,7 +604,8 @@ function AdvancedRow({
   value: WidgetValue;
   onChange: (value: WidgetValue) => void;
 }) {
-  if (field.control === 'textarea' || field.control === 'text' || field.control === 'image') {
+  if (isWideControl(field)) {
+    // The label is already printed above the row, so hide the control's own.
     return (
       <div className="[&>label>span:first-child]:hidden">
         <FieldChipFallback field={field} value={value} onChange={onChange} />

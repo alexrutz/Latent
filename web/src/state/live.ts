@@ -6,6 +6,16 @@ interface LiveStore {
   /** Our own socket to the Latent server. */
   socketConnected: boolean;
   live: LiveState;
+  /**
+   * When this client received the current `live` (its own clock).
+   *
+   * The job's ETA is measured on the server and arrives once per sampler step,
+   * which for a slow model is every few seconds — long enough for a static
+   * countdown to look frozen. Interpolating needs a start point, and it has to be
+   * a local one: the server's timestamps come from a different clock, and on a
+   * rented box that clock can be minutes off.
+   */
+  liveAt: number;
   queue: QueueState;
   /** Object URL of the most recent sampler preview frame. */
   previewUrl: string | null;
@@ -38,6 +48,7 @@ const initialLive: LiveState = {
 export const useLiveStore = create<LiveStore>((set, get) => ({
   socketConnected: false,
   live: initialLive,
+  liveAt: 0,
   queue: { running: [], pending: [] },
   previewUrl: null,
   lastGeneration: null,
@@ -53,7 +64,7 @@ export const useLiveStore = create<LiveStore>((set, get) => ({
         if (jobChanged) get().clearPreview();
         // A new run supersedes the previous result on screen.
         if (event.data.job && jobChanged) set({ finished: null });
-        set({ live: event.data });
+        set({ live: event.data, liveAt: Date.now() });
         break;
       }
       case 'queue':
@@ -65,12 +76,15 @@ export const useLiveStore = create<LiveStore>((set, get) => ({
 
         // Hold on to a run that has just ended so the UI can show its result
         // rather than snapping back to the form.
+        //
+        // Cancelling is excluded on purpose. You already know what happened —
+        // you did it — so a card announcing the run you just stopped is noise,
+        // and it used to say "Done" over an empty frame.
         const wasWatching = get().live.job?.promptId === record.promptId;
-        const ended =
-          record.status === 'completed' ||
-          record.status === 'failed' ||
-          record.status === 'cancelled';
-        if (ended && (wasWatching || get().finished?.id === record.id)) {
+        const ended = record.status === 'completed' || record.status === 'failed';
+        if (record.status === 'cancelled' && get().finished?.id === record.id) {
+          set({ finished: null });
+        } else if (ended && (wasWatching || get().finished?.id === record.id)) {
           set({ finished: record });
         }
         break;

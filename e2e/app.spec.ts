@@ -310,9 +310,10 @@ test.describe('the phone-specific fixes', () => {
     const prompt = page.getByPlaceholder('Describe the image…');
     await prompt.fill('a castle <lora:pixel_art_xl.safetensors:0.8>');
 
-    // The tag is lifted out of the text into a real control.
+    // The tag is lifted out of the text into a real control, and the prompt
+    // textarea still shows the literal text so nothing looks swallowed.
     await expect(page.getByText('pixel_art_xl', { exact: true })).toBeVisible();
-    await expect(page.getByText('Plus text: a castle')).toBeVisible();
+    await expect(prompt).toHaveValue('a castle <lora:pixel_art_xl.safetensors:0.8>');
 
     // Adjusting the strength rewrites the tag, leaving the prose intact.
     const strength = page.getByRole('textbox', { name: 'pixel_art_xl.safetensors strength' });
@@ -582,7 +583,8 @@ test.describe('the phone ergonomics pass', () => {
     await page.getByRole('button', { name: 'Save current' }).click();
     await page.getByPlaceholder('e.g. Quick draft').fill('Sparse');
     await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(page.getByText('in use')).toBeVisible();
+    // Scoped to the layout: the Connections list below has an "in use" badge too.
+    await expect(page.getByRole('button', { name: /Sparse.*in use/ })).toBeVisible();
 
     // Undo it by hand, so activating the layout has something to restore.
     await row('steps').getByRole('button', { name: 'To main' }).click();
@@ -676,5 +678,154 @@ test.describe('the phone ergonomics pass', () => {
       })
       .toBe(800);
     await expect(page.getByText('Stored on this device')).toBeVisible();
+  });
+});
+
+test.describe('knowing what is happening', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+  });
+
+  /**
+   * "How much longer?" is the only question a progress bar is asked, and the bar
+   * did not answer it. The numbers are measured server-side, so they survive a
+   * reconnect instead of restarting from zero.
+   */
+  test('shows time left and a step rate while running, with detail on tap', async ({ page }) => {
+    await open(page, '/');
+
+    // Enough steps that the mock's step delay adds up to a measurable rate.
+    await page.getByRole('button', { name: /Steps/ }).click();
+    await page.getByRole('textbox', { name: 'Steps' }).fill('40');
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    await page.getByPlaceholder('Describe the image…').fill('how long will this take');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    // The collapsed bar answers it in one line, without being opened.
+    await expect(page.getByText(/left/).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/steps\/s|s\/step/).first()).toBeVisible();
+    await expect(page.getByText(/elapsed/)).toBeVisible();
+
+    // Detail is one tap away and does not cover the app.
+    await expect(page.getByTestId('job-stats')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Stats' }).click();
+
+    const stats = page.getByTestId('job-stats');
+    await expect(stats).toBeVisible();
+    await expect(stats).toContainText('Remaining');
+    await expect(stats).toContainText('Per step');
+    await expect(stats).toContainText('Nodes done');
+    await page.screenshot({ path: 'test-results/18-live-stats.png' });
+
+    // Still reachable — the panel must not have pushed the tab bar off screen.
+    await expect(page.getByRole('link', { name: 'Gallery' })).toBeInViewport();
+
+    await page.getByRole('button', { name: 'Hide stats' }).click();
+    await expect(page.getByTestId('job-stats')).toHaveCount(0);
+
+    await withApi((ctx) => ctx.post('/api/queue/interrupt'));
+  });
+
+  /**
+   * Queueing eight variations of one prompt is normal, and then the queue has to
+   * let you find the one you regret.
+   */
+  test('shows each queued job\'s settings so the right one can be removed', async ({ page }) => {
+    await open(page, '/');
+
+    // Slow enough that the queue does not drain while the test is reading it.
+    await page.getByRole('button', { name: /Steps/ }).click();
+    await page.getByRole('textbox', { name: 'Steps' }).fill('60');
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    await page.getByPlaceholder('Describe the image…').fill('one of several');
+    await page.getByRole('button', { name: '4', exact: true }).click();
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await page.getByRole('link', { name: 'Queue' }).click();
+    const cards = page.getByTestId('queue-card');
+    await expect(cards.nth(1)).toBeVisible({ timeout: 30_000 });
+
+    // The identifying values are on the card without any interaction — including
+    // the seed, which in a batch is the only thing that differs.
+    const first = cards.first();
+    await expect(first).toContainText('Steps');
+    await expect(first).toContainText('Seed');
+    await expect(first).not.toContainText('Denoise');
+
+    // One switch opens every card, because the point is comparing them.
+    await page.getByRole('switch', { name: 'All settings' }).click();
+    await expect(first).toContainText('Denoise');
+    await page.screenshot({ path: 'test-results/19-queue-params.png' });
+
+    // And a single job can be dropped without touching the others. Take the last
+    // one: it is furthest from running, so it cannot finish on its own mid-test.
+    const target = cards.last();
+    const promptId = await target.getAttribute('data-prompt-id');
+    expect(promptId).toBeTruthy();
+
+    await target.getByRole('button', { name: 'Remove' }).click();
+    await expect(page.locator(`[data-prompt-id="${promptId}"]`)).toHaveCount(0, {
+      timeout: 20_000,
+    });
+    // The others are still queued — this removed one job, not the batch.
+    await expect(cards.first()).toBeVisible();
+
+    await withApi((ctx) => ctx.delete('/api/queue'));
+    await withApi((ctx) => ctx.post('/api/queue/interrupt'));
+  });
+
+  /** Clearing a queue used to fill the gallery with tombstones. */
+  test('does not leave cancelled runs in the gallery', async ({ page }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('cancel me');
+    await page.getByRole('button', { name: '4', exact: true }).click();
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await page.getByRole('link', { name: 'Queue' }).click();
+    await expect(page.getByText(/in line/).first()).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('button', { name: /^Clear/ }).click();
+    await withApi((ctx) => ctx.post('/api/queue/interrupt'));
+
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    // Give the gallery a moment to settle before asserting an absence.
+    await page.waitForTimeout(1500);
+    await expect(page.getByText('Cancelled')).toHaveCount(0);
+  });
+
+  /** Generate is the one button always pressed; it must never need a scroll. */
+  test('keeps the Generate button on screen however long the form is', async ({ page }) => {
+    await open(page, '/');
+
+    const generate = page.getByRole('button', { name: /^Generate/ });
+    await expect(generate).toBeInViewport();
+
+    // Scroll the form to the top and it is still there.
+    await page.locator('main').evaluate((element) => element.scrollTo(0, 0));
+    await expect(generate).toBeInViewport();
+
+    // …and to the bottom.
+    await page.locator('main').evaluate((element) => element.scrollTo(0, element.scrollHeight));
+    await expect(generate).toBeInViewport();
+    await page.screenshot({ path: 'test-results/20-pinned-generate.png' });
+  });
+
+  /** Accidental pinch-zoom left the app scrolled sideways with no tab bar. */
+  test('is not zoomable', async ({ page }) => {
+    await open(page, '/');
+
+    const viewport = await page
+      .locator('meta[name="viewport"]')
+      .getAttribute('content');
+    expect(viewport).toContain('user-scalable=no');
+    expect(viewport).toContain('maximum-scale=1');
+
+    // The CSS half, which is what engines honouring touch-action actually obey.
+    const touchAction = await page.evaluate(
+      () => getComputedStyle(document.documentElement).touchAction,
+    );
+    expect(touchAction).toBe('pan-x pan-y');
   });
 });

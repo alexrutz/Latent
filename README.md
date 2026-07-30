@@ -26,9 +26,15 @@ form. Nothing about your ComfyUI setup changes.
 - **Remote instances, including vast.ai.** Save any number of connections and
   switch between them. Bearer or basic tokens, and self-signed certificates, are
   all handled — see [Connecting to vast.ai](#connecting-to-vastai).
-- **Live progress.** A persistent bar shows the running node, sampler progress
-  and the live preview image, follows you between tabs, and **stays on screen
-  when the run finishes** so you actually see the picture you waited for.
+- **Live progress, with numbers.** A persistent bar shows the live preview, the
+  sampler's step rate and **how much longer it has to go**, follows you between
+  tabs, and **stays on screen when the run finishes** so you actually see the
+  picture you waited for. A tap opens the full timing breakdown without covering
+  the app.
+- **A queue you can actually manage.** Every waiting job lists the settings it
+  was submitted with — including its seed — so you can tell eight variations of
+  one prompt apart and cancel the one you regret. One switch expands them all
+  for a side-by-side comparison.
 - **Gallery.** Every result, with the exact settings that produced it. Pinch to
   zoom, swipe between a batch, save to your camera roll, re-run, or send a
   result straight to img2img or an upscale pass.
@@ -228,6 +234,34 @@ therefore serves them from the archive directly, and says so plainly if the
 archive is locked or was encrypted under a different password, rather than
 showing a broken tile.
 
+## Timings and the queue
+
+The step rate and the time remaining are measured **on the server**, where the
+progress events actually arrive. That matters for two reasons: every device shows
+the same numbers, and a phone that locks its screen mid-render and comes back
+gets the real elapsed time instead of restarting a stopwatch from zero.
+
+The per-step average deliberately ignores the first step of each sampler pass —
+on a cold instance that one step includes loading the model and warming up CUDA,
+which is easily twenty seconds and would poison the estimate for the whole run.
+The average also resets when a new node starts sampling, because a two-sampler
+workflow runs at two different speeds and one figure would be wrong for both.
+
+The remaining time is for the **current sampler pass**, not the whole graph:
+that is the part whose length is knowable. When several jobs are waiting and a
+previous run has finished, the stats panel also estimates when the queue as a
+whole will drain, assuming the rest take as long as the last one did.
+
+In the queue, each job carries a snapshot of the values it was submitted with,
+recorded at submit time rather than looked up later — so the listing keeps
+describing what actually ran even after the workflow's form is re-arranged or the
+workflow itself is deleted.
+
+**Cancelled runs leave no trace in the gallery.** Clearing a queue of eight used
+to leave eight "cancelled" tombstones at the top of your pictures. A cancel that
+landed mid-batch still keeps whatever images it managed to produce — those are
+real results.
+
 ## The terminal
 
 Set `LATENT_TERMINAL=1` and Settings gains a shell on the machine running
@@ -284,7 +318,7 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 
 | Path | What lives there |
 | --- | --- |
-| `shared/` | Types, the form-building engine (`paramSchema.ts`) and LoRA tag parsing — pure, no I/O |
+| `shared/` | Types, the form-building engine (`paramSchema.ts`), LoRA tag parsing and the queue's parameter summaries — pure, no I/O |
 | `server/` | Fastify proxy, ComfyUI client, live event hub, SQLite store, archive, terminal |
 | `server/src/vault.ts` | Archive encryption: master key, wrapping, unlock on sign-in |
 | `server/src/images/` | A dependency-free PNG decoder/resizer for thumbnails and image sizes |

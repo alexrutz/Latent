@@ -90,6 +90,13 @@ export interface GenerationRecord {
   error: string | null;
   values: ParamValues;
   seeds: Record<string, number>;
+  /**
+   * The submitted values rendered for display, recorded at submit time.
+   *
+   * Empty for anything queued before this existed, and for prompts queued from
+   * ComfyUI's own UI.
+   */
+  params: ParamSummaryItem[];
   /** A short human summary (the positive prompt) for gallery cards. */
   title: string;
   images: GenerationImage[];
@@ -108,6 +115,27 @@ export interface GalleryPage {
 /* Queue                                                               */
 /* ------------------------------------------------------------------ */
 
+/**
+ * One parameter as it was actually submitted, ready to display.
+ *
+ * Recorded at submit time rather than derived later: the workflow's form can be
+ * re-arranged or deleted afterwards, and what matters in a queue listing is what
+ * this particular job was given, not what the workflow looks like now.
+ */
+export interface ParamSummaryItem {
+  /** Field id, e.g. `3.steps`. */
+  key: string;
+  label: string;
+  value: string;
+  /**
+   * Worth showing in a one-line summary.
+   *
+   * The point is being able to tell two queued jobs apart at a glance, so this
+   * covers what people actually vary: steps, CFG, sampler, size, seed, model.
+   */
+  primary: boolean;
+}
+
 export interface QueueEntry {
   promptId: string;
   number: number;
@@ -115,6 +143,8 @@ export interface QueueEntry {
   title: string;
   workflowName: string;
   createdAt: number | null;
+  /** What this job was submitted with. Empty for prompts queued elsewhere. */
+  params: ParamSummaryItem[];
 }
 
 export interface QueueState {
@@ -125,6 +155,31 @@ export interface QueueState {
 /* ------------------------------------------------------------------ */
 /* Live job state (pushed over our WebSocket)                          */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Timing for the running job.
+ *
+ * Measured on the server, where the progress events actually arrive, so every
+ * client agrees and a phone that reconnects mid-run gets the real numbers
+ * instead of starting its own stopwatch from zero.
+ */
+export interface JobStats {
+  /** Wall clock since the run started. */
+  elapsedMs: number;
+  /** Mean time per sampler step in the current pass. Null until two steps in. */
+  msPerStep: number | null;
+  /** Estimated time left in the current sampler pass. */
+  etaMs: number | null;
+  /** Steps left in the current pass. */
+  stepsRemaining: number;
+  /** Nodes finished, and how many the graph has. */
+  nodesDone: number;
+  nodesTotal: number;
+  /** Wall clock inside the node currently executing. */
+  nodeElapsedMs: number;
+  /** How long the last run that finished took, for comparison. */
+  lastRunMs: number | null;
+}
 
 export interface LiveJob {
   promptId: string;
@@ -139,6 +194,7 @@ export interface LiveJob {
   /** Fraction of the graph's nodes finished, 0..1. */
   graphProgress: number;
   startedAt: number;
+  stats: JobStats;
 }
 
 export interface LiveState {

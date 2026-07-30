@@ -9,6 +9,7 @@ import type {
   GenerationRecord,
   ImportResult,
   ImportScanResult,
+  QueueEntry,
   QueueState,
   ServerEvent,
   StatusResponse,
@@ -370,6 +371,198 @@ describe('queue', () => {
     });
     expect(drained.pending).toHaveLength(0);
   }, 30_000);
+
+  /**
+   * The queue exists to let you cancel the *right* job. Three items sharing one
+   * prompt are indistinguishable without their values, and picking wrongly is
+   * the failure this guards against.
+   */
+  it('carries each job\'s settings, so one of several can be picked out and removed', async () => {
+    const list = await json<{ id: string; name: string }[]>(api('/api/workflows'));
+    const workflow = list.find((w) => w.name === 'SD1.5 txt2img');
+
+    await api('/api/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        workflowId: workflow?.id,
+        values: { '6.text': 'identical prompt', '3.steps': 40, '3.cfg': 9.5 },
+        batchCount: 3,
+        randomizeSeeds: true,
+      }),
+    });
+
+    const queue = await waitFor(async () => {
+      const state = await json<QueueState>(api('/api/queue'));
+      return state.pending.length >= 2 ? state : null;
+    });
+
+    const entry = queue.pending[0] as QueueEntry;
+    expect(entry.params.length).toBeGreaterThan(0);
+
+    const summary = new Map(entry.params.map((item) => [item.label, item.value]));
+    expect(summary.get('Steps')).toBe('40');
+    expect(summary.get('CFG')).toBe('9.5');
+    // The prompt is the entry's title; repeating it as a parameter would be noise.
+    expect(entry.params.some((item) => item.value.includes('identical prompt'))).toBe(false);
+
+    // Enough of it is promoted to fit a summary line, and not all of it.
+    const promoted = entry.params.filter((item) => item.primary);
+    expect(promoted.length).toBeGreaterThan(0);
+    expect(promoted.length).toBeLessThanOrEqual(entry.params.length);
+
+    // Each item in a batch gets its own seed, which is often the only thing
+    // telling two queued jobs apart — so it has to be in the summary.
+    const seeds = queue.pending.map(
+      (item) => item.params.find((param) => param.label === 'Seed')?.value,
+    );
+    expect(new Set(seeds).size).toBe(seeds.length);
+
+    // And removing that one specific job leaves the others alone.
+    const before = queue.pending.length;
+    const removed = await api(`/api/queue/${entry.promptId}`, { method: 'DELETE' });
+    expect(removed.status).toBeLessThan(300);
+
+    const after = await waitFor(async () => {
+      const state = await json<QueueState>(api('/api/queue'));
+      return state.pending.every((item) => item.promptId !== entry.promptId) ? state : null;
+    });
+    expect(after.pending.length).toBe(before - 1);
+
+    await api('/api/queue', { method: 'DELETE' });
+    await api('/api/queue/interrupt', { method: 'POST' });
+    await waitFor(async () => {
+      const state = await json<QueueState>(api('/api/queue'));
+      return state.running.length + state.pending.length === 0 ? state : null;
+    });
+  }, 30_000);
+
+  /**
+   * Cancelling used to leave a "cancelled" tombstone in the gallery, so clearing
+   * a queue of eight put eight dead cards at the top of your pictures.
+   */
+  it('leaves no gallery entry behind for a run that was cancelled before it made anything', async () => {
+    const list = await json<{ id: string; name: string }[]>(api('/api/workflows'));
+    const workflow = list.find((w) => w.name === 'SD1.5 txt2img');
+
+    await api('/api/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        workflowId: workflow?.id,
+        values: { '6.text': 'never to be seen', '3.steps': 40 },
+        batchCount: 3,
+      }),
+    });
+
+    await waitFor(async () => {
+      const state = await json<QueueState>(api('/api/queue'));
+      return state.pending.length >= 2 ? state : null;
+    });
+
+    await api('/api/queue', { method: 'DELETE' });
+    await api('/api/queue/interrupt', { method: 'POST' });
+
+    // The rows are marked cancelled in the database — the runs did happen, and
+    // the record of them is deliberately kept…
+    const cancelled = await waitFor(() => {
+      const db = new Database(join(dataDir, 'test.db'), { readonly: true });
+      try {
+        const rows = db
+          .prepare("SELECT status FROM generations WHERE title = 'never to be seen'")
+          .all() as { status: string }[];
+        return rows.length > 0 && rows.every((row) => row.status === 'cancelled') ? rows : null;
+      } finally {
+        db.close();
+      }
+    });
+    expect(cancelled.length).toBeGreaterThan(0);
+
+    // …and none of them shows up as a picture.
+    const page = await json<GalleryPage>(api('/api/gallery?limit=100'));
+    const titles = page.items.map((item) => item.title);
+    expect(titles).not.toContain('never to be seen');
+    expect(page.items.some((item) => item.status === 'cancelled')).toBe(false);
+  }, 30_000);
+});
+
+describe('generation statistics', () => {
+  /**
+   * The ETA has to come from the server: it is where the progress events land,
+   * so every client agrees and a phone that reconnects mid-run gets the real
+   * numbers instead of starting its own stopwatch from zero.
+   */
+  it('measures per-step timing and an ETA while the sampler runs', async () => {
+    const list = await json<{ id: string; name: string }[]>(api('/api/workflows'));
+    const workflow = list.find((w) => w.name === 'SD1.5 txt2img');
+
+    const socket = new WebSocket(`${baseUrl.replace('http', 'ws')}/api/ws`, { headers: { cookie } });
+    const states: Extract<ServerEvent, { type: 'state' | 'snapshot' }>[] = [];
+    socket.on('message', (data, isBinary) => {
+      if (isBinary) return;
+      const event = JSON.parse(String(data)) as ServerEvent;
+      if (event.type === 'state' || event.type === 'snapshot') states.push(event);
+    });
+    await new Promise((resolve, reject) => {
+      socket.once('open', resolve);
+      socket.once('error', reject);
+    });
+
+    try {
+      await api('/api/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          workflowId: workflow?.id,
+          // Enough steps that the mock's 15ms delay adds up to a measurable rate.
+          values: { '6.text': 'stats please', '3.steps': 30 },
+        }),
+      });
+
+      const timed = await waitFor(() =>
+        states.find(
+          (event) =>
+            event.data.job?.title === 'stats please' &&
+            event.data.job.stats.msPerStep !== null &&
+            event.data.job.stats.etaMs !== null,
+        ),
+      );
+
+      const stats = timed.data.job!.stats;
+      expect(stats.msPerStep).toBeGreaterThan(0);
+      expect(stats.etaMs).toBeGreaterThanOrEqual(0);
+      expect(stats.stepsRemaining).toBeGreaterThan(0);
+      expect(stats.elapsedMs).toBeGreaterThan(0);
+      // The graph is counted too, so the panel can say where in it we are.
+      expect(stats.nodesTotal).toBeGreaterThan(0);
+
+      /*
+       * The ETA must be the remaining steps at the measured rate. Checked as a
+       * loose band, not an equality: it is derived from wall-clock timings on a
+       * shared CI box, and pinning it exactly would only ever produce a flaky
+       * test that says nothing about correctness.
+       */
+      const expected = stats.stepsRemaining * (stats.msPerStep as number);
+      expect(stats.etaMs).toBeLessThanOrEqual(expected + 1);
+
+      // And a finished run leaves a yardstick for the next one.
+      await waitFor(() => states.find((event) => event.data.job === null && states.length > 3));
+      await api('/api/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          workflowId: workflow?.id,
+          values: { '6.text': 'stats again', '3.steps': 10 },
+        }),
+      });
+      const second = await waitFor(() =>
+        states.find(
+          (event) => event.data.job?.title === 'stats again' && event.data.job.stats.lastRunMs !== null,
+        ),
+      );
+      expect(second.data.job!.stats.lastRunMs).toBeGreaterThan(0);
+    } finally {
+      socket.close();
+      await api('/api/queue', { method: 'DELETE' });
+      await api('/api/queue/interrupt', { method: 'POST' });
+    }
+  }, 40_000);
 });
 
 describe('recovering from a ComfyUI restart', () => {

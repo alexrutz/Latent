@@ -43,7 +43,7 @@ export function PromptField({ field, value, onChange, compact = false }: Control
         rows={compact ? 2 : 3}
         placeholder={field.role === 'negative_prompt' ? 'What to avoid…' : 'Describe the image…'}
         className={cn(
-          'w-full resize-none rounded-2xl border border-line bg-surface px-4 py-3',
+          'w-full resize-none rounded-xl border border-line bg-surface px-3 py-2',
           'leading-relaxed placeholder:text-muted/60',
           'focus:border-accent focus:outline-none',
         )}
@@ -425,15 +425,23 @@ function ComboEditor({ field, value, onChange }: ControlProps) {
 export function Toggle({
   checked,
   onChange,
+  label,
 }: {
   checked: boolean;
   onChange: (value: boolean) => void;
+  /**
+   * Accessible name. Needed wherever the switch is not already described by
+   * adjacent text a screen reader will reach — a `<label>` element cannot name a
+   * button, so this is the only way to name one.
+   */
+  label?: string;
 }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label}
       onClick={() => onChange(!checked)}
       className={cn(
         'relative h-7 w-12 shrink-0 rounded-full transition-colors',

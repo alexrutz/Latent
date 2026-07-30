@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 
-import { applyOverrides, applyParams } from '@latent/shared';
+import { applyOverrides, applyParams, buildParamSummary } from '@latent/shared';
 import type { GenerateRequest, GenerateResponse } from '@latent/shared';
 
 import { ComfyError } from '../comfy/client.js';
@@ -31,14 +31,19 @@ export function registerGenerateRoutes(app: FastifyInstance, ctx: AppContext): v
         lockedSeedFields: body.lockedSeedFields ?? [],
       });
 
+      // Built per item, not once: each item in a batch gets its own seed, and
+      // the seed is often the only thing distinguishing two queued jobs.
+      const submitted = { ...values, ...seeds };
+
       try {
         const result = await ctx.orchestrator.submit({
           graph: workflow,
           workflowId: detail.id,
           workflowName: detail.name,
           title,
-          values: { ...values, ...seeds },
+          values: submitted,
           seeds,
+          params: buildParamSummary(schema, submitted),
         });
         generationIds.push(result.generationId);
         promptIds.push(result.promptId);

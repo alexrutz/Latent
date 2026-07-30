@@ -90,12 +90,19 @@ export function LoraEditor({
             underneath, which pushed the prompt and the sampler settings off
             screen for something that is rarely the thing you came to adjust.
           */}
+          {/*
+            A grid, not a flex row. With flex, a long filename and a fixed-width
+            slider fight over the same space and the slider is the one that loses
+            — it ran off the right edge of the screen. Here the name gets one
+            column that can shrink to nothing and the controls get theirs, so the
+            slider is always fully on screen no matter how the LoRA is named.
+          */}
           {parsed.tags.map((tag, index) => (
             <li
               key={`${tag.name}-${index}`}
-              className="flex items-center gap-2 rounded-lg border border-line bg-surface px-2.5 py-1.5"
+              className="grid grid-cols-[minmax(0,1fr)_5.5rem_2.5rem_1.75rem] items-center gap-1.5 rounded-lg border border-line bg-surface px-2 py-1"
             >
-              <span className="min-w-0 flex-1 truncate text-xs" title={tag.name}>
+              <span className="min-w-0 truncate text-xs" title={tag.name}>
                 {prettyName(tag.name)}
               </span>
               <input
@@ -108,7 +115,7 @@ export function LoraEditor({
                   setTags(updateLoraTag(parsed.tags, index, { strength: Number(event.target.value) }))
                 }
                 aria-label={`${tag.name} strength slider`}
-                className="h-8 w-24 shrink-0 accent-[var(--color-accent)]"
+                className="h-7 w-full min-w-0 accent-[var(--color-accent)]"
               />
               <NumericInput
                 value={tag.strength}
@@ -117,13 +124,13 @@ export function LoraEditor({
                 max={4}
                 step={0.05}
                 aria-label={`${tag.name} strength`}
-                className="w-14 shrink-0 border-0 bg-transparent px-0 py-1 text-right text-sm"
+                className="w-full min-w-0 border-0 bg-transparent px-0 py-0.5 text-right text-sm"
               />
               <button
                 type="button"
                 onClick={() => setTags(removeLoraTag(parsed.tags, index))}
                 aria-label={`Remove ${tag.name}`}
-                className="grid size-8 shrink-0 place-items-center rounded-lg text-muted active:bg-surface-2"
+                className="grid size-7 place-items-center justify-self-end rounded-md text-muted active:bg-surface-2"
               >
                 ✕
               </button>
@@ -132,13 +139,16 @@ export function LoraEditor({
         </ul>
       )}
 
-      {/* What is left of the field once the tags are stripped, so it is obvious
-          the editor has not swallowed anything the user typed. */}
-      {parsed.tags.length > 0 && parsed.text && (
-        <p className="truncate text-xs text-muted" title={parsed.text}>
-          Plus text: {parsed.text}
-        </p>
-      )}
+      {/*
+        The exact string that goes to ComfyUI.
+
+        This is a verification readout, not an editor: its whole job is letting
+        you confirm the tags came out right, so it is one line by default and
+        opens to the full text on tap. Only for a field that exists purely to
+        hold LoRAs — under a prompt the textarea above already shows the text,
+        and repeating it would be clutter.
+      */}
+      {alwaysShow && value.trim() !== '' && <RawValue value={value} />}
 
       {picker}
     </div>
@@ -147,6 +157,30 @@ export function LoraEditor({
 
 function prettyName(name: string): string {
   return (name.split(/[\\/]/).pop() ?? name).replace(/\.(safetensors|ckpt|pt)$/i, '');
+}
+
+/** One line of the field's literal contents, expandable when you need all of it. */
+function RawValue({ value }: { value: string }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <button
+      type="button"
+      onClick={() => setOpen((current) => !current)}
+      aria-expanded={open}
+      aria-label="Raw field value"
+      className="block w-full text-left"
+    >
+      <span
+        className={cn(
+          'block rounded-md bg-surface-2 px-2 py-1 font-mono text-[10px] leading-snug text-muted',
+          open ? 'break-all whitespace-pre-wrap' : 'truncate',
+        )}
+      >
+        {value}
+      </span>
+    </button>
+  );
 }
 
 function LoraPicker({

@@ -13,8 +13,10 @@ import type {
   ComfyImageRef,
   ComfyStatusMessage,
   ComfyWsMessage,
+  JobStats,
   LiveState,
   ObjectInfo,
+  ParamSummaryItem,
   ParamValues,
   QueueEntry,
   QueueState,
@@ -40,6 +42,37 @@ interface TrackedPrompt {
   nodeTitles: Map<string, string>;
   executed: Set<string>;
   finished: boolean;
+  /** What the job was submitted with, for the queue listing. */
+  params: ParamSummaryItem[];
+}
+
+/**
+ * Step timing for the sampler pass currently running.
+ *
+ * Reset whenever a new node starts reporting progress: a two-sampler workflow
+ * runs at two different speeds, and averaging across both would give an ETA
+ * that is wrong for each of them.
+ */
+interface StepTiming {
+  /** When the pass's first progress event arrived. */
+  firstAt: number;
+  /** Step number at `firstAt` — usually 1, not always. */
+  firstStep: number;
+  lastAt: number;
+  lastStep: number;
+}
+
+function emptyStats(): JobStats {
+  return {
+    elapsedMs: 0,
+    msPerStep: null,
+    etaMs: null,
+    stepsRemaining: 0,
+    nodesDone: 0,
+    nodesTotal: 0,
+    nodeElapsedMs: 0,
+    lastRunMs: null,
+  };
 }
 
 function emptyState(): LiveState {
@@ -81,6 +114,12 @@ export class Orchestrator {
    * from its very first frame instead of flashing "Untitled".
    */
   private readonly inFlightSubmits: { title: string; workflowName: string }[] = [];
+
+  /** Timing for the sampler pass in progress, and when the current node began. */
+  private stepTiming: StepTiming | null = null;
+  private nodeStartedAt = 0;
+  /** Duration of the last run that finished, so the next one has a yardstick. */
+  private lastRunMs: number | null = null;
 
   private stateDirty = false;
   private stateTimer: NodeJS.Timeout | null = null;
@@ -263,6 +302,8 @@ export class Orchestrator {
     title: string;
     values: ParamValues;
     seeds: Record<string, number>;
+    /** Readable summary of the submitted values, for the queue listing. */
+    params?: ParamSummaryItem[];
   }): Promise<{ generationId: string; promptId: string }> {
     const inFlight = { title: input.title, workflowName: input.workflowName };
     this.inFlightSubmits.push(inFlight);
@@ -283,6 +324,7 @@ export class Orchestrator {
     }
 
     const generationId = randomUUID();
+    const params = input.params ?? [];
     this.store.insertGeneration({
       id: generationId,
       promptId: response.prompt_id,
@@ -291,6 +333,7 @@ export class Orchestrator {
       title: input.title,
       values: input.values,
       seeds: input.seeds,
+      params,
     });
 
     const nodeTitles = new Map<string, string>();
@@ -306,6 +349,7 @@ export class Orchestrator {
       nodeTitles,
       executed: new Set(),
       finished: false,
+      params,
     });
 
     // ComfyUI often starts executing before this HTTP response lands, so
@@ -415,6 +459,9 @@ export class Orchestrator {
     // ComfyUI's own UI and we genuinely have no name for it.
     const inFlight = this.inFlightSubmits[0];
 
+    this.stepTiming = null;
+    this.nodeStartedAt = Date.now();
+
     this.state.job = {
       promptId,
       generationId: tracked?.generationId ?? null,
@@ -425,7 +472,9 @@ export class Orchestrator {
       progressMax: 0,
       graphProgress: 0,
       startedAt: Date.now(),
+      stats: { ...emptyStats(), lastRunMs: this.lastRunMs },
     };
+    this.updateStats();
 
     this.store.setGenerationStatus(promptId, 'running');
     this.emitGeneration(promptId);
@@ -455,14 +504,69 @@ export class Orchestrator {
     this.state.job.nodeTitle = tracked?.nodeTitles.get(node) ?? node;
     this.state.job.progress = 0;
     this.state.job.progressMax = 0;
+    // A different node samples at a different speed, so the running average
+    // starts over rather than blending two passes into one wrong ETA.
+    this.stepTiming = null;
+    this.nodeStartedAt = Date.now();
+    this.updateStats();
     this.pushState(true);
   }
 
   private onProgress(message: ComfyProgressMessage): void {
     if (!this.state.job) return;
-    this.state.job.progress = message.data.value ?? 0;
+    const step = message.data.value ?? 0;
+    this.state.job.progress = step;
     this.state.job.progressMax = message.data.max ?? 0;
+
+    const now = Date.now();
+    if (!this.stepTiming || step < this.stepTiming.lastStep) {
+      // First step of the pass, or the counter went backwards because a new pass
+      // began without an `executing` in between.
+      this.stepTiming = { firstAt: now, firstStep: step, lastAt: now, lastStep: step };
+    } else {
+      this.stepTiming.lastAt = now;
+      this.stepTiming.lastStep = step;
+    }
+
+    this.updateStats();
     this.pushState();
+  }
+
+  /**
+   * Recompute the running job's timing.
+   *
+   * The per-step mean is measured from the *second* step onwards: the first
+   * includes model loading, VAE setup and CUDA warm-up, which on a cold vast.ai
+   * box can be twenty seconds and would poison the estimate for the whole run.
+   */
+  private updateStats(): void {
+    const job = this.state.job;
+    if (!job) return;
+
+    const now = Date.now();
+    const timing = this.stepTiming;
+    const stepsCounted = timing ? timing.lastStep - timing.firstStep : 0;
+
+    const msPerStep =
+      timing && stepsCounted > 0 ? (timing.lastAt - timing.firstAt) / stepsCounted : null;
+
+    const stepsRemaining = job.progressMax > 0 ? Math.max(0, job.progressMax - job.progress) : 0;
+
+    job.stats = {
+      elapsedMs: now - job.startedAt,
+      msPerStep,
+      // Count the time already spent waiting on the step in flight, so a stalled
+      // run's ETA grows instead of sitting still and lying about it.
+      etaMs:
+        msPerStep !== null && stepsRemaining > 0
+          ? Math.max(0, stepsRemaining * msPerStep - (now - (timing?.lastAt ?? now)))
+          : null,
+      stepsRemaining,
+      nodesDone: this.tracked.get(job.promptId)?.executed.size ?? 0,
+      nodesTotal: this.tracked.get(job.promptId)?.nodeIds.size ?? 0,
+      nodeElapsedMs: this.nodeStartedAt > 0 ? now - this.nodeStartedAt : 0,
+      lastRunMs: this.lastRunMs,
+    };
   }
 
   private onExecuted(message: ComfyExecutedMessage): void {
@@ -508,6 +612,7 @@ export class Orchestrator {
     if (!tracked || !this.state.job || this.state.job.promptId !== promptId) return;
     const total = tracked.nodeIds.size || 1;
     this.state.job.graphProgress = Math.min(1, tracked.executed.size / total);
+    this.updateStats();
   }
 
   private finishPrompt(
@@ -519,7 +624,13 @@ export class Orchestrator {
     this.markFinished(promptId, status, error);
 
     if (this.state.job?.promptId === promptId) {
+      // Only a run that actually got to the end is a useful yardstick for the
+      // next one; a cancelled or failed run says nothing about how long this
+      // workflow takes.
+      if (status === 'completed') this.lastRunMs = Date.now() - this.state.job.startedAt;
       this.state.job = null;
+      this.stepTiming = null;
+      this.nodeStartedAt = 0;
     }
     this.state.lastError = status === 'failed' ? error : null;
     this.scheduleQueueRefresh();
@@ -582,7 +693,9 @@ export class Orchestrator {
     const [number, promptId] = Array.isArray(item) ? item : [0, ''];
     const id = String(promptId ?? '');
     const tracked = this.tracked.get(id);
-    const record = tracked ? null : this.store.getGenerationByPromptId(id);
+    // The stored record is needed for `createdAt` and, after a restart, for
+    // everything — the in-memory map does not survive one, but the queue does.
+    const record = this.store.getGenerationByPromptId(id);
 
     return {
       promptId: id,
@@ -593,6 +706,7 @@ export class Orchestrator {
       title: tracked?.title ?? record?.title ?? 'Queued in ComfyUI',
       workflowName: tracked?.workflowName ?? record?.workflowName ?? '—',
       createdAt: record?.createdAt ?? null,
+      params: tracked?.params ?? record?.params ?? [],
     };
   }
 
