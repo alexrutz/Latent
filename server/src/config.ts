@@ -35,6 +35,11 @@ export interface Config {
   password: string | null;
   dataDir: string;
   dbPath: string;
+  /**
+   * Where the portable settings files live. A directory above the project by
+   * default, so deleting the project for a clean start keeps the arrangement.
+   */
+  stateDir: string;
   /** Where rated images are copied so they outlive the ComfyUI that made them. */
   archiveDir: string;
   /** Directory of the built web app, served as the SPA. */
@@ -66,6 +71,7 @@ export function loadConfig(): Config {
     password: password ? password : null,
     dataDir,
     dbPath: resolve(dataDir, 'latent.db'),
+    stateDir: resolve(projectRoot, env('LATENT_STATE_DIR', '..')),
     archiveDir: resolve(dataDir, 'archive'),
     webDir: resolve(projectRoot, 'web/dist'),
     terminalEnabled: flag('LATENT_TERMINAL'),

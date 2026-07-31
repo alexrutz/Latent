@@ -58,6 +58,9 @@ export default defineConfig({
         PORT: String(SERVER_PORT),
         COMFY_URL: `http://127.0.0.1:${MOCK_PORT}`,
         LATENT_DATA_DIR: 'data/e2e',
+        // Keep the portable settings files inside the test data directory
+        // rather than beside the checkout.
+        LATENT_STATE_DIR: 'data/e2e',
         LOG_LEVEL: 'warn',
         // Fixes the password so the suite logs in deterministically instead of
         // depending on whether a previous run already claimed the server. The

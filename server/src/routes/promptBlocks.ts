@@ -37,6 +37,16 @@ export function registerPromptBlockRoutes(app: FastifyInstance, ctx: AppContext)
     return reply.code(201).send(block);
   });
 
+  /** The result of a drag: one new sequence for the blocks it names. */
+  app.post<{ Body: { ids?: string[] } }>('/api/prompt-blocks/reorder', async (request, reply) => {
+    const ids = request.body?.ids;
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) {
+      return reply.code(400).send({ error: 'Send the new order as a list of ids' });
+    }
+    ctx.store.reorderPromptBlocks(ids);
+    return ctx.store.listPromptBlocks();
+  });
+
   app.patch<{ Params: { id: string }; Body: Partial<PromptBlockInput> }>(
     '/api/prompt-blocks/:id',
     async (request, reply) => {

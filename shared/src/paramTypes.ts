@@ -65,6 +65,8 @@ export interface ParamField {
    */
   inputMode?: NumericInputMode;
   points?: FieldPoints;
+  /** How much of a row this field takes on the Generate screen. */
+  width?: FieldWidth;
   multiline?: boolean;
   tooltip?: string;
   group: ParamGroup;
@@ -91,6 +93,16 @@ export interface ParamField {
  */
 export type NumericInputMode = 'input' | 'points';
 
+/**
+ * How wide a field is drawn.
+ *
+ * The form is two columns of chips; `full` gives a field the whole row. Which
+ * one is right depends on the value, not on its type — a sampler name needs the
+ * width its options do, while four short numbers read better side by side — so
+ * it is a per-field choice rather than a rule.
+ */
+export type FieldWidth = 'half' | 'full';
+
 /** The range and interval a point line offers. */
 export interface FieldPoints {
   min: number;
@@ -106,6 +118,7 @@ export interface FieldOverride {
   /** How this field is edited. Numeric fields only; ignored elsewhere. */
   inputMode?: NumericInputMode;
   points?: FieldPoints;
+  width?: FieldWidth;
 }
 
 export type FieldOverrides = Record<string, FieldOverride>;

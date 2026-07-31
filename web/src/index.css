@@ -91,6 +91,24 @@
   }
 }
 
+/*
+ * Privacy blur.
+ *
+ * A single attribute on the root element rather than a prop threaded through
+ * every component that can show a picture — this has to cover the gallery, the
+ * viewer, thumbnails in the queue, the live preview and anything added later,
+ * and a rule that only covers what somebody remembered to opt in is not a
+ * privacy feature at all.
+ *
+ * The saturation cut goes with the blur because a heavy blur still leaves the
+ * dominant colour, which is often enough to recognise a picture you have seen
+ * before. Anything genuinely unusable when blurred — the crop preview in the
+ * image editor — opts out with `data-blur-exempt`.
+ */
+[data-blur='on'] img:not([data-blur-exempt]) {
+  filter: blur(20px) saturate(0.55);
+}
+
 @keyframes latent-rise {
   from {
     transform: translateY(100%);

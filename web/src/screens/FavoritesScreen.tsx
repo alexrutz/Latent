@@ -193,6 +193,7 @@ function FavoriteSheet({ favorite, onClose }: { favorite: Favorite; onClose: () 
               // viewer only needs the image and the title here.
               params: [],
               title: favorite.title,
+              texts: [],
               images: [favorite.image],
               createdAt: favorite.createdAt,
               completedAt: favorite.createdAt,

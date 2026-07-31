@@ -19,6 +19,7 @@ import { PointLine } from '../components/PointLine';
 import { PromptBuilder } from '../components/PromptBuilder';
 import { FieldChip, ImageField, PromptField, SeedField } from '../components/ParamControl';
 import { Button, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
+import { pruneDrafts, useFormDrafts } from '../state/formDraft';
 import { useLiveStore } from '../state/live';
 import { usePendingStore } from '../state/pending';
 import { savePromptDraft } from '../state/promptDraft';
@@ -39,6 +40,8 @@ export function GenerateScreen() {
   useEffect(() => {
     const list = workflows.data;
     if (!list || list.length === 0) return;
+    // Deleting a workflow should not leave its form draft behind forever.
+    pruneDrafts(list.map((item) => item.id));
     if (!workflowId || !list.some((item) => item.id === workflowId)) {
       setWorkflowId(list[0]!.id);
     }
@@ -111,35 +114,54 @@ function GenerateForm({
   const job = useLiveStore((state) => state.live.job);
   const comfyOnline = useLiveStore((state) => state.live.comfyOnline);
 
-  const [values, setValues] = useState<ParamValues>({});
-  const [lockedSeeds, setLockedSeeds] = useState<string[]>([]);
-  const [batchCount, setBatchCount] = useState(1);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [justQueued, setJustQueued] = useState(0);
   const initialisedFor = useRef<string | null>(null);
 
+  /*
+   * The form lives in a store rather than in this component.
+   *
+   * Leaving the tab unmounts this screen, and rebuilding its state from the
+   * workflow's last *submitted* values looked like the app reverting settings
+   * on its own — which is exactly what it was doing.
+   */
+  const draft = useFormDrafts((state) => (detail ? state.drafts[detail.id] : undefined));
+  const setDraft = useFormDrafts((state) => state.set);
+  const patchDraft = useFormDrafts((state) => state.patch);
+
+  const values = draft?.values ?? {};
+  const lockedSeeds = draft?.lockedSeeds ?? [];
+  const batchCount = draft?.batchCount ?? 1;
+
   /**
    * Seed the form from the workflow's last-used values, then apply any pending
-   * handoff on top. Runs once per workflow so typing is never clobbered by a
-   * background refetch.
+   * handoff on top. Runs once per workflow, and only when there is nothing set
+   * up already — a draft the user built is never overwritten by a refetch.
    */
   useEffect(() => {
     if (!detail || initialisedFor.current === detail.id) return;
     initialisedFor.current = detail.id;
 
-    const base = { ...defaultValues(detail.schema), ...detail.lastValues };
     const handoff = consumePending();
+    const reused = handoff?.workflowId === detail.id;
+    const stored = useFormDrafts.getState().drafts[detail.id];
 
-    if (handoff?.workflowId === detail.id) {
-      Object.assign(base, handoff.values ?? {});
+    // "Reuse these settings" is an explicit instruction and wins; otherwise
+    // whatever was already set up stays exactly as it was left.
+    if (stored && !reused) return;
 
-      if (handoff.imageFilename) {
+    const base = { ...defaultValues(detail.schema), ...detail.lastValues };
+
+    if (reused) {
+      Object.assign(base, handoff?.values ?? {});
+
+      if (handoff?.imageFilename) {
         const imageField = findFieldByRole(detail.schema, 'image_input');
         if (imageField) base[imageField.id] = handoff.imageFilename;
       }
-      if (handoff.freshSeed) {
+      if (handoff?.freshSeed) {
         for (const field of detail.schema.fields) {
           if (field.role === 'seed') {
             base[field.id] = Math.floor(Math.random() * 2 ** 32);
@@ -148,8 +170,12 @@ function GenerateForm({
       }
     }
 
-    setValues(base);
-  }, [detail, consumePending]);
+    setDraft(detail.id, {
+      values: base,
+      lockedSeeds: stored?.lockedSeeds ?? [],
+      batchCount: stored?.batchCount ?? 1,
+    });
+  }, [detail, consumePending, setDraft]);
 
   const fields = useMemo(
     () => (detail ? detail.schema.fields.filter((field) => !field.hidden) : []),
@@ -183,8 +209,10 @@ function GenerateForm({
     savePromptDraft(promptDraft);
   }, [promptDraft]);
 
-  const setValue = (id: string, value: WidgetValue) =>
-    setValues((current) => ({ ...current, [id]: value }));
+  const setValue = (id: string, value: WidgetValue) => {
+    if (!detail) return;
+    patchDraft(detail.id, { values: { ...values, [id]: value } });
+  };
 
   const anySeedUnlocked = seedFields.some((field) => !lockedSeeds.includes(field.id));
 
@@ -258,7 +286,7 @@ function GenerateForm({
       <PresetBar
         workflowId={detail.id}
         values={values}
-        onApply={(preset) => setValues((current) => ({ ...current, ...preset }))}
+        onApply={(preset) => patchDraft(detail.id, { values: { ...values, ...preset } })}
       />
 
       {promptFields.map((field) => (
@@ -337,13 +365,14 @@ function GenerateForm({
       {chipFields.length > 0 && (
         <div className="grid grid-cols-2 gap-1.5">
           {chipFields.map((field) => (
-            <FieldChip
-              key={field.id}
-              field={field}
-              value={values[field.id] ?? field.defaultValue}
-              onChange={(value) => setValue(field.id, value)}
-              block
-            />
+            <div key={field.id} className={cn('min-w-0', field.width === 'full' && 'col-span-2')}>
+              <FieldChip
+                field={field}
+                value={values[field.id] ?? field.defaultValue}
+                onChange={(value) => setValue(field.id, value)}
+                block
+              />
+            </div>
           ))}
         </div>
       )}
@@ -356,11 +385,11 @@ function GenerateForm({
           onChange={(value) => setValue(field.id, value)}
           locked={lockedSeeds.includes(field.id)}
           onToggleLock={() =>
-            setLockedSeeds((current) =>
-              current.includes(field.id)
-                ? current.filter((id) => id !== field.id)
-                : [...current, field.id],
-            )
+            patchDraft(detail.id, {
+              lockedSeeds: lockedSeeds.includes(field.id)
+                ? lockedSeeds.filter((id) => id !== field.id)
+                : [...lockedSeeds, field.id],
+            })
           }
         />
       ))}
@@ -381,7 +410,7 @@ function GenerateForm({
             <button
               key={count}
               type="button"
-              onClick={() => setBatchCount(count)}
+              onClick={() => patchDraft(detail.id, { batchCount: count })}
               className={cn(
                 'size-8 rounded-lg text-sm tabular-nums',
                 batchCount === count ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
@@ -462,7 +491,7 @@ function GenerateForm({
         */}
         {randomMode.data?.enabled && promptFields.length > 0 && (
           <p className="text-center text-[11px] text-accent">
-            🎲 Prompt drawn from blocks: {randomMode.data.minBlocks}–{randomMode.data.maxBlocks} per
+            ⁂ Prompt drawn from blocks: {randomMode.data.minBlocks}–{randomMode.data.maxBlocks} per
             run
           </p>
         )}
@@ -650,6 +679,9 @@ function PresetBar({
  * next to its neighbours instead of claiming a line.
  */
 function isWideControl(field: ParamField): boolean {
+  // An explicit width wins: the whole point of setting one is to override what
+  // the control type would have chosen.
+  if (field.width) return field.width === 'full';
   return field.control === 'textarea' || field.control === 'text' || field.control === 'image';
 }
 

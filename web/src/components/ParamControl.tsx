@@ -503,9 +503,15 @@ export function Toggle({
         checked ? 'bg-accent' : 'bg-surface-3',
       )}
     >
+      {/*
+        `left-0` is not decoration. An absolutely positioned box with `left`
+        and `right` both auto sits at its *static* position, and a button
+        centres its content — so the knob started in the middle of the track and
+        the translate then carried it off the right-hand end.
+      */}
       <span
         className={cn(
-          'absolute top-1 size-5 rounded-full bg-white transition-transform',
+          'absolute top-1 left-0 size-5 rounded-full bg-white transition-transform',
           checked ? 'translate-x-6' : 'translate-x-1',
         )}
       />

@@ -3,11 +3,7 @@ import { useMemo, useState } from 'react';
 import { promptContainsFragment, toggleFragment } from '@latent/shared';
 import type { PromptBlock } from '@latent/shared';
 
-import {
-  useCreatePromptBlock,
-  useDeletePromptBlock,
-  usePromptBlocks,
-} from '../api/queries';
+import { useCreatePromptBlock, usePromptBlocks } from '../api/queries';
 import { Button, cn, ErrorNote, Sheet } from '../components/ui';
 
 /**
@@ -25,7 +21,22 @@ export function PromptBuilder({
   onChange: (next: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [name, setName] = useState('');
+  const [error, setError] = useState<string | null>(null);
   const blocks = usePromptBlocks();
+  const create = useCreatePromptBlock();
+
+  const saveBlock = async () => {
+    setError(null);
+    try {
+      await create.mutateAsync({ name: name.trim(), text: value.trim() });
+      setName('');
+      setSaving(false);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not save that block');
+    }
+  };
 
   const grouped = useMemo(() => {
     const map = new Map<string, PromptBlock[]>();
@@ -68,8 +79,8 @@ export function PromptBuilder({
 
           {grouped.length === 0 && (
             <p className="text-sm text-muted">
-              No blocks saved yet. Add the phrases you type over and over — they become one-tap
-              chips here.
+              No blocks saved yet. The <strong className="text-body">Blocks</strong> tab is where
+              you add the phrases you type over and over; they become one-tap chips here.
             </p>
           )}
 
@@ -107,125 +118,59 @@ export function PromptBuilder({
 
           {/* No second "Done" here: the sheet header already has one, and two
               buttons with the same label in one view is just confusing. */}
-          <div className="border-t border-line pt-3">
+          <div className="flex gap-2 border-t border-line pt-3">
             <Button
               variant="ghost"
-              className="w-full"
+              className="flex-1"
               disabled={value.trim() === ''}
               onClick={() => onChange('')}
             >
               Clear prompt
             </Button>
+            {/*
+              Making a block out of what is on screen is worth keeping here —
+              it is the fastest way a library ever gets built. Everything else
+              about managing blocks lives in the Blocks tab.
+            */}
+            <Button
+              variant="secondary"
+              className="flex-1"
+              busy={create.isPending}
+              disabled={value.trim() === ''}
+              onClick={() => setSaving(true)}
+            >
+              Save as block
+            </Button>
           </div>
 
-          <BlockManager currentPrompt={value} />
+          {saving && (
+            <div className="space-y-2 rounded-xl border border-line p-3">
+              <input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Name, e.g. Golden hour"
+                aria-label="New block name"
+                className="w-full rounded-xl border border-line bg-surface px-4 py-3 focus:border-accent focus:outline-none"
+              />
+              <ErrorNote>{error}</ErrorNote>
+              <div className="flex gap-2">
+                <Button variant="ghost" size="sm" onClick={() => setSaving(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  busy={create.isPending}
+                  disabled={name.trim() === ''}
+                  onClick={saveBlock}
+                >
+                  Save
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       </Sheet>
     </>
-  );
-}
-
-/** Create and delete blocks, without leaving the builder. */
-function BlockManager({ currentPrompt }: { currentPrompt: string }) {
-  const blocks = usePromptBlocks();
-  const create = useCreatePromptBlock();
-  const remove = useDeletePromptBlock();
-
-  const [name, setName] = useState('');
-  const [category, setCategory] = useState('');
-  const [text, setText] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [managing, setManaging] = useState(false);
-
-  const save = async () => {
-    setError(null);
-    try {
-      await create.mutateAsync({ name: name.trim(), text: text.trim(), category: category.trim() });
-      setName('');
-      setText('');
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not save that block');
-    }
-  };
-
-  return (
-    <div className="space-y-3 border-t border-line pt-4">
-      <button
-        type="button"
-        onClick={() => setManaging((current) => !current)}
-        className="flex w-full items-center justify-between text-left"
-      >
-        <span className="text-xs font-medium tracking-wide text-muted uppercase">
-          Manage blocks
-        </span>
-        <span className="text-xs text-muted">{managing ? 'Hide' : 'Show'}</span>
-      </button>
-
-      {managing && (
-        <div className="space-y-3">
-          <input
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="Name, e.g. Golden hour"
-            className="w-full rounded-xl border border-line bg-surface px-4 py-3 focus:border-accent focus:outline-none"
-          />
-          <input
-            value={category}
-            onChange={(event) => setCategory(event.target.value)}
-            placeholder="Group (optional), e.g. Lighting"
-            className="w-full rounded-xl border border-line bg-surface px-4 py-3 focus:border-accent focus:outline-none"
-          />
-          <textarea
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            rows={2}
-            placeholder="warm rim light, long shadows, low sun"
-            className="w-full resize-none rounded-xl border border-line bg-surface px-4 py-3 focus:border-accent focus:outline-none"
-          />
-
-          <div className="flex gap-2">
-            {/* Saving what is already typed is the fastest way to build a library. */}
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={currentPrompt.trim() === ''}
-              onClick={() => setText(currentPrompt.trim())}
-            >
-              Use current prompt
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              busy={create.isPending}
-              disabled={name.trim() === '' || text.trim() === ''}
-              onClick={save}
-            >
-              Save block
-            </Button>
-          </div>
-
-          <ErrorNote>{error}</ErrorNote>
-
-          <ul className="space-y-1">
-            {(blocks.data ?? []).map((block) => (
-              <li
-                key={block.id}
-                className={cn(
-                  'flex items-center justify-between gap-3 rounded-xl border border-line px-3 py-2',
-                )}
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-sm">{block.name}</p>
-                  <p className="truncate text-xs text-muted">{block.text}</p>
-                </div>
-                <Button variant="ghost" size="sm" onClick={() => remove.mutate(block.id)}>
-                  Delete
-                </Button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
   );
 }

@@ -25,6 +25,7 @@ import { RatingStars } from '../components/RatingStars';
 import { ThumbGrid, useTileStyle } from '../components/ThumbGrid';
 import { Toggle } from '../components/ParamControl';
 import { Button, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
+import { useBlur } from '../state/blur';
 import { TILE_OPTIONS, useGridSettings } from '../state/grid';
 import { usePendingStore } from '../state/pending';
 
@@ -57,6 +58,8 @@ export function GalleryScreen() {
   >(null);
   const [settings, updateSettings] = useGridSettings();
   const [showLayout, setShowLayout] = useState(false);
+  const blurred = useBlur((state) => state.blurred);
+  const toggleBlur = useBlur((state) => state.toggle);
   const sentinel = useRef<HTMLDivElement>(null);
   const firstResult = useRef<HTMLDivElement>(null);
   const scrolledOnce = useRef(false);
@@ -198,6 +201,21 @@ export function GalleryScreen() {
           onChange={(gridParams) => updateSettings({ gridParams })}
           onWithLabelsChange={(overlayLabels) => updateSettings({ overlayLabels })}
         />
+        {/* Reachable from where the pictures are, not only from Settings —
+            the moment you want it is the moment somebody sits down next to
+            you. */}
+        <button
+          type="button"
+          onClick={toggleBlur}
+          aria-label="Blur every image"
+          aria-pressed={blurred}
+          className={cn(
+            'grid size-9 shrink-0 place-items-center rounded-full active:bg-surface-2',
+            blurred ? 'bg-accent text-white' : 'bg-surface text-muted',
+          )}
+        >
+          ◌
+        </button>
         <button
           type="button"
           onClick={() => setShowLayout(true)}
@@ -631,10 +649,26 @@ function ViewerWithActions({
       onIndexChange={onIndexChange}
       onClose={onClose}
       overlay={
-        <ParamOverlayLine
-          items={overlayValues(record, grid.viewerParams)}
-          withLabels={grid.overlayLabels}
-        />
+        <div className="space-y-1">
+          <ParamOverlayLine
+            items={overlayValues(record, grid.viewerParams)}
+            withLabels={grid.overlayLabels}
+          />
+          {/*
+            Anything the graph printed rather than drew — an expanded wildcard,
+            a caption, a computed size. It belongs with the picture it explains.
+          */}
+          {record.texts.length > 0 && (
+            <div className="space-y-0.5" data-testid="viewer-texts">
+              {record.texts.map((output, index) => (
+                <p key={index} className="text-[11px] break-words text-body/90">
+                  <span className="text-muted">{output.nodeTitle}: </span>
+                  {output.text}
+                </p>
+              ))}
+            </div>
+          )}
+        </div>
       }
       footer={
         <div className="space-y-2">

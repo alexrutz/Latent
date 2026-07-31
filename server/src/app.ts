@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import fastifyCookie from '@fastify/cookie';
@@ -17,6 +17,7 @@ import { plainConnection, type ConnectionConfig } from './comfy/connection.js';
 import { loadConfig, type Config } from './config.js';
 import { Store } from './db.js';
 import { Orchestrator } from './orchestrator.js';
+import { StateFiles } from './statefile.js';
 import { registerConnectionRoutes, toConfig } from './routes/connections.js';
 import type { AppContext } from './routes/context.js';
 import { registerGalleryRoutes } from './routes/gallery.js';
@@ -83,6 +84,18 @@ export interface BuiltApp {
 export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltApp> {
   const config = { ...loadConfig(), ...overrides };
 
+  /*
+   * An explicitly placed data directory is self-contained.
+   *
+   * The settings files normally live a directory above the project so they
+   * survive it being deleted — but a caller that has pointed the database
+   * somewhere specific (a test, an embedded use) means "keep everything here",
+   * and writing outside that would leak state between runs.
+   */
+  if (overrides.dataDir && !overrides.stateDir) config.stateDir = overrides.dataDir;
+  // `loadConfig` only creates the directory it derived itself.
+  mkdirSync(config.dataDir, { recursive: true });
+
   const app = Fastify({
     logger: { level: config.logLevel },
     // Phones on a slow link uploading a 40 MB photo need generous timeouts.
@@ -95,6 +108,14 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   const archive = new Archive(config.archiveDir, store, vault);
   const importer = new Importer(store, archive);
   const inputs = new InputLibrary(store);
+  /*
+   * Before anything reads the database: a fresh install with settings files
+   * next to it should come up already configured, including the connection the
+   * orchestrator is about to be built around.
+   */
+  const stateFiles = new StateFiles(store, config.stateDir, app.log);
+  stateFiles.restore();
+
   const orchestrator = new Orchestrator(store, resolveConnection(store, config, app), app.log);
 
   // With the password fixed in the environment there is nobody to wait for, so
@@ -102,7 +123,17 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   // first sign-in.
   if (config.password) vault.unlock(config.password);
 
-  const ctx: AppContext = { config, store, orchestrator, auth, archive, vault, importer, inputs };
+  const ctx: AppContext = {
+    config,
+    store,
+    orchestrator,
+    auth,
+    archive,
+    vault,
+    importer,
+    inputs,
+    stateFiles,
+  };
 
   /*
    * Treat an empty JSON body as `{}`.
@@ -197,11 +228,13 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
 
   app.addHook('onClose', async () => {
     await orchestrator.stop();
+    stateFiles.stop();
     vault.lock();
     store.close();
   });
 
   orchestrator.start();
+  stateFiles.start();
 
   return { app, ctx, config };
 }

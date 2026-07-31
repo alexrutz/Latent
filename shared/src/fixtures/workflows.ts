@@ -192,6 +192,23 @@ export const unknownCustomNodes: ApiWorkflow = {
   '3': { class_type: 'SaveImage', inputs: { filename_prefix: 'custom', images: ['1', 0] } },
 };
 
+/**
+ * A graph that reports as well as renders.
+ *
+ * "Preview as text" nodes are how a workflow tells you what it decided — the
+ * prompt after a wildcard expanded, a caption a vision model wrote. They produce
+ * an output with no images in it, which is exactly the case a client that only
+ * looks for pictures gets wrong.
+ */
+export const withTextPreview: ApiWorkflow = {
+  ...sd15Txt2Img,
+  '10': {
+    class_type: 'PreviewAny',
+    inputs: { source: ['3', 0] },
+    _meta: { title: 'What ran' },
+  },
+};
+
 /** The wrong export format — used to test the error message. */
 export const uiFormatWorkflow = {
   last_node_id: 9,
@@ -208,4 +225,5 @@ export const workflowFixtures = {
   upscale,
   combinedConditioning,
   unknownCustomNodes,
+  withTextPreview,
 };

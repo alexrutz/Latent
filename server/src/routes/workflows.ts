@@ -62,6 +62,10 @@ export function registerWorkflowRoutes(app: FastifyInstance, ctx: AppContext): v
       lastValues: defaultValues(schema),
     });
 
+    // If a previous install arranged this workflow's form, take that back
+    // rather than making the user rebuild it after a clean start.
+    ctx.stateFiles.adopt(id, name.trim());
+
     const detail = ctx.store.getWorkflow(id);
     return reply.code(201).send(detail ? withOverrides(detail) : null);
   });

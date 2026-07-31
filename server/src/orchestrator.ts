@@ -27,6 +27,7 @@ import type { ConnectionConfig } from './comfy/connection.js';
 import { ComfySocket } from './comfy/socket.js';
 import type { Store } from './db.js';
 import { Hub } from './hub.js';
+import { Monitor } from './monitor.js';
 
 /** How often live state is pushed while a sampler is running. */
 const STATE_THROTTLE_MS = 100;
@@ -73,6 +74,32 @@ function emptyStats(): JobStats {
     nodeElapsedMs: 0,
     lastRunMs: null,
   };
+}
+
+/** Output keys that carry bytes rather than words. */
+const BINARY_OUTPUT_KEYS = new Set(['images', 'gifs', 'audio', 'video', 'latents', 'masks']);
+
+/**
+ * Every string a node produced, whatever it chose to call the field.
+ *
+ * There is no convention here: the core preview node uses `text`, others use
+ * `string` or `value`, and a custom node can use anything. Rather than keep a
+ * list of node types that will always be out of date, take any array of plain
+ * values that is not one of the known binary payloads.
+ */
+function collectTexts(output: Record<string, unknown> | undefined): string[] {
+  if (!output) return [];
+  const found: string[] = [];
+
+  for (const [key, value] of Object.entries(output)) {
+    if (BINARY_OUTPUT_KEYS.has(key) || !Array.isArray(value)) continue;
+    for (const entry of value) {
+      if (typeof entry === 'string' && entry.trim() !== '') found.push(entry);
+      else if (typeof entry === 'number' || typeof entry === 'boolean') found.push(String(entry));
+    }
+  }
+
+  return found;
 }
 
 function emptyState(): LiveState {
@@ -125,6 +152,15 @@ export class Orchestrator {
   private stateTimer: NodeJS.Timeout | null = null;
   private queueRefreshTimer: NodeJS.Timeout | null = null;
 
+  /**
+   * The resource and event history.
+   *
+   * Owned here because this is the only place that knows both what the machine
+   * is doing and what it is doing it for — a chart of VRAM with no idea which
+   * node was running is decoration.
+   */
+  readonly monitor: Monitor;
+
   constructor(
     private readonly store: Store,
     connection: ConnectionConfig,
@@ -134,6 +170,20 @@ export class Orchestrator {
     this.currentClient = new ComfyClient(connection);
     this.currentSocket = new ComfySocket(connection, this.clientId);
     this.state = emptyState();
+    this.monitor = new Monitor(
+      () => this.currentClient,
+      () => ({
+        busy: this.state.job !== null,
+        queueRemaining: this.state.queueRemaining,
+        stepsPerSecond: this.stepsPerSecond(),
+      }),
+    );
+  }
+
+  /** Sampler speed right now, for the timeline. */
+  private stepsPerSecond(): number | null {
+    const perStep = this.state.job?.stats.msPerStep ?? null;
+    return perStep !== null && perStep > 0 ? 1000 / perStep : null;
   }
 
   /** The active endpoint's REST client. Replaced wholesale when switching. */
@@ -175,6 +225,10 @@ export class Orchestrator {
 
     this.bindSocket();
     this.currentSocket.start();
+    // A different endpoint is a different machine: its VRAM curve has nothing
+    // to do with the last one's.
+    this.monitor.reset();
+    this.monitor.record('online', `Switched to ${next.name}`);
     this.pushState(true);
     this.hub.broadcast({ type: 'queue', data: this.queueState });
   }
@@ -191,6 +245,7 @@ export class Orchestrator {
 
     this.bindSocket();
     this.socket.start();
+    this.monitor.start();
   }
 
   /** Attach handlers to whichever socket is current. Re-run on every switch. */
@@ -198,14 +253,17 @@ export class Orchestrator {
     this.socket.on('open', () => {
       this.log.info('Connected to ComfyUI');
       this.client.resetPrefix();
+      const wasOffline = !this.state.comfyOnline;
       this.state.comfyOnline = true;
       this.state.lastError = null;
+      if (wasOffline) this.monitor.record('online', 'ComfyUI connected');
       this.pushState(true);
       void this.refreshQueue();
     });
 
     this.socket.on('close', () => {
       this.log.warn('Lost connection to ComfyUI — retrying');
+      if (this.state.comfyOnline) this.monitor.record('offline', 'ComfyUI unreachable');
       this.state.comfyOnline = false;
       this.pushState(true);
     });
@@ -221,6 +279,7 @@ export class Orchestrator {
 
   async stop(): Promise<void> {
     this.socket.stop();
+    this.monitor.stop();
     await this.currentClient.close();
     this.hub.closeAll();
     if (this.stateTimer) clearTimeout(this.stateTimer);
@@ -352,6 +411,8 @@ export class Orchestrator {
       params,
     });
 
+    this.monitor.record('queued', input.title, input.workflowName, response.prompt_id);
+
     // ComfyUI often starts executing before this HTTP response lands, so
     // `execution_start` can arrive while the prompt is still unknown here.
     // When that happens the job was created without a title or a generation to
@@ -438,6 +499,9 @@ export class Orchestrator {
         );
         break;
       default:
+        // Extensions publish their own message types on the same socket; the
+        // monitor takes the ones it recognises and ignores the rest.
+        this.monitor.absorb(message.type, (message as { data?: unknown }).data);
         break;
     }
   }
@@ -475,6 +539,7 @@ export class Orchestrator {
       stats: { ...emptyStats(), lastRunMs: this.lastRunMs },
     };
     this.updateStats();
+    this.monitor.record('started', this.state.job.title, undefined, promptId);
 
     this.store.setGenerationStatus(promptId, 'running');
     this.emitGeneration(promptId);
@@ -502,6 +567,7 @@ export class Orchestrator {
     const tracked = promptId ? this.tracked.get(promptId) : undefined;
     this.state.job.nodeId = node;
     this.state.job.nodeTitle = tracked?.nodeTitles.get(node) ?? node;
+    this.monitor.record('node', this.state.job.nodeTitle, undefined, promptId ?? null);
     this.state.job.progress = 0;
     this.state.job.progressMax = 0;
     // A different node samples at a different speed, so the running average
@@ -577,6 +643,25 @@ export class Orchestrator {
       this.updateGraphProgress(promptId);
     }
 
+    /*
+     * Text before images.
+     *
+     * A "preview as text" node produces an output with no pictures in it, and
+     * returning early on that — which is what this used to do — meant the one
+     * kind of output that exists purely to tell you what happened was the one
+     * kind thrown away.
+     */
+    const texts = collectTexts(output);
+    if (texts.length > 0) {
+      const nodeTitle = tracked?.nodeTitles.get(node) ?? `Node ${node}`;
+      this.store.addTextOutputs(
+        promptId,
+        texts.map((text) => ({ nodeId: node, nodeTitle, text })),
+      );
+      for (const text of texts) this.monitor.record('text', nodeTitle, text, promptId);
+      this.emitGeneration(promptId);
+    }
+
     const images = output?.images ?? [];
     if (images.length === 0) return;
 
@@ -646,6 +731,8 @@ export class Orchestrator {
     const tracked = this.tracked.get(promptId);
     if (tracked?.finished) return;
     if (tracked) tracked.finished = true;
+
+    this.monitor.record(status, tracked?.title ?? 'Run', error ?? undefined, promptId);
 
     const existing = this.store.getGenerationByPromptId(promptId);
     if (!existing) return; // Queued from ComfyUI's own UI — nothing to record.

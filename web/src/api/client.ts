@@ -9,6 +9,7 @@ import type {
   ImportResult,
   ImportScanResult,
   InputScanResult,
+  MonitorSnapshot,
   PromptBlock,
   PromptBlockInput,
   RandomPromptConfig,
@@ -195,6 +196,9 @@ export const api = {
       body: JSON.stringify({ image, rating }),
     }),
 
+  monitor: (since?: number) =>
+    request<MonitorSnapshot>(`/api/monitor${since ? `?since=${since}` : ''}`),
+
   archiveStats: () => request<ArchiveStats>('/api/archive/stats'),
 
   pruneArchive: () => request<{ removed: number }>('/api/archive/prune', { method: 'POST' }),
@@ -253,6 +257,12 @@ export const api = {
 
   deletePromptBlock: (id: string) =>
     request<void>(`/api/prompt-blocks/${id}`, { method: 'DELETE' }),
+
+  reorderPromptBlocks: (ids: string[]) =>
+    request<PromptBlock[]>('/api/prompt-blocks/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
 
   promptMode: () => request<RandomPromptConfig>('/api/prompt-mode'),
 

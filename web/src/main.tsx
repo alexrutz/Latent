@@ -4,7 +4,11 @@ import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 
 import { App } from './App';
+import { apply as applyBlur, useBlur } from './state/blur';
 import './index.css';
+
+// Before the first paint, so a blurred app never flashes its pictures.
+applyBlur(useBlur.getState().blurred);
 
 const queryClient = new QueryClient({
   defaultOptions: {

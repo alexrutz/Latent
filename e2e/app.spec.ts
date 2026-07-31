@@ -1,10 +1,10 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { expect, request as apiRequest, test, type Page } from '@playwright/test';
 
-import { img2img, sd15Txt2Img, uiFormatWorkflow } from '../shared/src/fixtures/workflows.js';
+import { img2img, sd15Txt2Img, uiFormatWorkflow, withTextPreview } from '../shared/src/fixtures/workflows.js';
 import { renderPlaceholder } from '../server/src/mock/png.js';
 
 /**
@@ -103,6 +103,16 @@ async function resetState() {
     const setups = (await (await ctx.get('/api/prompt-mode/presets')).json()) as { id: string }[];
     for (const setup of setups) await ctx.delete(`/api/prompt-mode/presets/${setup.id}`);
   });
+
+  /*
+   * The portable settings files, which are deliberately *not* part of the
+   * database: a re-imported workflow adopts the arrangement a previous install
+   * had for that name, so leaving them in place would carry one test's form
+   * layout into the next one's freshly seeded workflow.
+   */
+  for (const name of ['latent-settings.json', 'latent-prompt-blocks.json']) {
+    rmSync(join('data/e2e', name), { force: true });
+  }
 }
 
 /** Import a workflow directly, for tests whose subject isn't the import flow. */
@@ -547,15 +557,16 @@ test.describe('gallery, favourites and the prompt builder', () => {
   });
 
   test('builds a prompt from saved blocks instead of typing', async ({ page }) => {
-    await open(page, '/');
+    // Blocks are made in their own tab now; this is about using them.
+    await open(page, '/blocks');
+    await page.getByRole('button', { name: 'New block' }).click();
+    await page.getByLabel('Block name').fill('Golden hour');
+    await page.getByLabel('Block group').fill('Lighting');
+    await page.getByLabel('Block text').fill('warm rim light, long shadows');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
 
+    await page.getByRole('link', { name: 'Generate' }).click();
     await page.getByRole('button', { name: '+ Prompt blocks' }).click();
-    await page.getByRole('button', { name: 'Show' }).click();
-
-    await page.getByPlaceholder('Name, e.g. Golden hour').fill('Golden hour');
-    await page.getByPlaceholder('Group (optional), e.g. Lighting').fill('Lighting');
-    await page.getByPlaceholder('warm rim light, long shadows, low sun').fill('warm rim light, long shadows');
-    await page.getByRole('button', { name: 'Save block' }).click();
 
     await expect(page.getByRole('button', { name: 'Golden hour' })).toBeVisible();
     await page.getByRole('button', { name: 'Golden hour' }).click();
@@ -669,9 +680,7 @@ test.describe('the phone ergonomics pass', () => {
     await open(page, '/settings');
     await page.getByRole('button', { name: 'Edit form' }).click();
 
-    // The whole editor card for `steps`, reached from the line that names it —
-    // `hasText` on its own matches every ancestor div up to the page.
-    const row = page.locator('p', { hasText: '· steps · ' }).locator('xpath=ancestor::div[2]');
+    const row = page.locator('[data-field="3.steps"]');
     await row.getByRole('button', { name: 'Points' }).click();
     await row.getByRole('textbox', { name: /points from/ }).fill('20');
     await row.getByRole('textbox', { name: /points to/ }).fill('50');
@@ -752,12 +761,12 @@ test.describe('the phone ergonomics pass', () => {
     await open(page, '/settings');
     await page.getByRole('button', { name: 'Edit form' }).click();
 
-    /** The editor row for a field, found by the `node · input · control` line. */
-    const row = (input: string) => page.locator('div', { hasText: `· ${input} · ` }).last();
+    /** The editor card for a field, keyed by the id the schema gave it. */
+    const row = (id: string) => page.locator(`[data-field="${id}"]`);
 
     // Push Steps out of the way, then keep that arrangement under a name.
-    await row('steps').getByRole('button', { name: 'To Advanced' }).click();
-    await expect(row('steps').getByRole('button', { name: 'To main' })).toBeVisible();
+    await row('3.steps').getByRole('button', { name: '→ Advanced' }).click();
+    await expect(row('3.steps').getByRole('button', { name: '→ Main' })).toBeVisible();
 
     await page.getByRole('button', { name: 'Save current' }).click();
     await page.getByPlaceholder('e.g. Quick draft').fill('Sparse');
@@ -767,11 +776,11 @@ test.describe('the phone ergonomics pass', () => {
     await expect(page.getByRole('button', { name: /Sparse.*in use/ })).toBeVisible();
 
     // Undo it by hand, so activating the layout has something to restore.
-    await row('steps').getByRole('button', { name: 'To main' }).click();
-    await expect(row('steps').getByRole('button', { name: 'To Advanced' })).toBeVisible();
+    await row('3.steps').getByRole('button', { name: '→ Main' }).click();
+    await expect(row('3.steps').getByRole('button', { name: '→ Advanced' })).toBeVisible();
 
     await page.getByRole('button', { name: 'Sparse' }).click();
-    await expect(row('steps').getByRole('button', { name: 'To main' })).toBeVisible();
+    await expect(row('3.steps').getByRole('button', { name: '→ Main' })).toBeVisible();
     await page.screenshot({ path: 'test-results/15-layouts.png' });
 
     // And the arrangement is what the Generate screen actually renders.
@@ -1486,5 +1495,236 @@ test.describe('varying the parameters too', () => {
 
     await withApi((ctx) => ctx.delete('/api/queue'));
     await withApi((ctx) => ctx.post('/api/queue/interrupt'));
+  });
+});
+
+/**
+ * The things that were quietly wrong.
+ *
+ * Each of these was reported from a phone rather than found in a test, which is
+ * the point of writing them down here: the next change should not be able to put
+ * any of them back.
+ */
+test.describe('the fixes wave ten asked for', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+  });
+
+  /**
+   * Leaving the tab unmounts the form; rebuilding it from the workflow's last
+   * *submitted* values looked exactly like the app reverting settings on its own.
+   */
+  test('keeps what is set up while you go and look at something else', async ({ page }) => {
+    await open(page, '/');
+
+    await page.getByPlaceholder('Describe the image…').fill('a value that must survive');
+    await page.getByRole('button', { name: /Steps/ }).click();
+    await page.getByRole('textbox', { name: 'Steps' }).fill('37');
+    await page.getByRole('button', { name: 'Done' }).click();
+    await page.getByRole('button', { name: '4', exact: true }).click();
+
+    // The round trip that used to lose it.
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    await expect(page.getByRole('heading', { name: 'Gallery' })).toBeVisible();
+    await page.getByRole('link', { name: 'Generate' }).click();
+
+    await expect(page.getByPlaceholder('Describe the image…')).toHaveValue(
+      'a value that must survive',
+    );
+    await expect(page.getByRole('button', { name: /^Steps/ })).toContainText('37');
+    await expect(page.getByRole('button', { name: /^Generate ×4/ })).toBeVisible();
+  });
+
+  /**
+   * The knob is absolutely positioned; with no `left` it sat at the button's
+   * centred static position and the translate carried it off the right end.
+   */
+  test('draws the switch knob inside its own track', async ({ page }) => {
+    await open(page, '/settings');
+
+    const track = page.getByRole('switch', { name: 'Blur every image' });
+    const knob = track.locator('span');
+
+    for (const state of ['off', 'on']) {
+      const outer = await track.boundingBox();
+      const inner = await knob.boundingBox();
+      expect(outer, `track missing while ${state}`).not.toBeNull();
+      expect(inner, `knob missing while ${state}`).not.toBeNull();
+
+      const box = outer as { x: number; width: number };
+      const dot = inner as { x: number; width: number };
+      expect(dot.x).toBeGreaterThanOrEqual(box.x - 1);
+      expect(dot.x + dot.width).toBeLessThanOrEqual(box.x + box.width + 1);
+
+      if (state === 'off') await track.click();
+    }
+  });
+
+  /** Every phone app does this, and a long gallery is a one-way trip without it. */
+  test('goes back to the top when the active tab is tapped again', async ({ page }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('something to scroll past');
+    await page.getByRole('button', { name: '8', exact: true }).click();
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    await expect(page.locator('main img').nth(5)).toBeVisible({ timeout: 90_000 });
+
+    const scroller = page.locator('main');
+    // A page that cannot scroll would pass the assertions below without
+    // proving anything.
+    expect(
+      await scroller.evaluate((el) => el.scrollHeight - el.clientHeight),
+    ).toBeGreaterThan(50);
+
+    await scroller.evaluate((element) => element.scrollTo({ top: 400 }));
+    await expect.poll(async () => scroller.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    await expect.poll(async () => scroller.evaluate((el) => el.scrollTop)).toBe(0);
+  });
+
+  /** For looking at the queue on a train. */
+  test('blurs every picture when asked, and keeps it blurred', async ({ page }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('something to blur');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    const thumb = page.locator('main img').first();
+    await expect(thumb).toBeVisible({ timeout: 60_000 });
+    await expect(thumb).toHaveCSS('filter', 'none');
+
+    await page.getByRole('button', { name: 'Blur every image' }).click();
+    await expect(thumb).not.toHaveCSS('filter', 'none');
+    await page.screenshot({ path: 'test-results/31-blur.png' });
+
+    // A reload must not flash the pictures back.
+    await page.reload();
+    await expect(page.locator('main img').first()).not.toHaveCSS('filter', 'none');
+  });
+
+  /** Blocks are built up over time, which is not something to do mid-prompt. */
+  test('manages prompt blocks in their own tab', async ({ page }) => {
+    await open(page, '/blocks');
+
+    await page.getByRole('button', { name: 'New block' }).click();
+    await page.getByRole('textbox', { name: 'Block name' }).fill('Golden hour');
+    // `getByLabel`, not `getByRole('textbox')`: an input with a `list` is a
+    // combobox as far as the accessibility tree is concerned.
+    await page.getByLabel('Block group').fill('Lighting');
+    await page.getByRole('textbox', { name: 'Block text' }).fill('warm rim light');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+    await expect(page.getByText('LIGHTING')).toBeVisible();
+    await expect(page.getByText('warm rim light')).toBeVisible();
+    await page.screenshot({ path: 'test-results/32-blocks.png' });
+
+    // And it is usable where prompts are actually written.
+    await page.getByRole('link', { name: 'Generate' }).click();
+    await page.getByRole('button', { name: '+ Prompt blocks' }).click();
+    await expect(page.getByRole('button', { name: /Golden hour/ })).toBeVisible();
+  });
+
+  /**
+   * Reordering by dragging, and a width per field — the two things that make the
+   * editor a layout tool rather than a list of switches.
+   */
+  test('rearranges the form by dragging, and the Generate screen follows', async ({ page }) => {
+    await open(page, '/settings');
+    await page.getByRole('button', { name: 'Edit form' }).click();
+
+    // Width first: a full row is the layout choice the two-column grid needs.
+    await page
+      .locator('[data-field="3.steps"]')
+      .getByRole('button', { name: /Steps Full row/ })
+      .click();
+
+    // Then the order. The two rows have to be on screen together for a drag to
+    // be possible at all, so this moves a field past its neighbour.
+    const fields = page.locator('[data-field]');
+    const before = await fields.evaluateAll((rows) =>
+      rows.map((row) => row.getAttribute('data-field')),
+    );
+    const moved = before[2] as string;
+    const above = before[1] as string;
+
+    const handle = page.locator(`[data-field="${moved}"]`).getByRole('button', { name: /^Reorder/ });
+    const destination = page.locator(`[data-field="${above}"]`);
+    await handle.scrollIntoViewIfNeeded();
+
+    const from = await handle.boundingBox();
+    const to = await destination.boundingBox();
+    expect(from).not.toBeNull();
+    expect(to).not.toBeNull();
+
+    await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
+    await page.mouse.down();
+    /*
+     * Past the top of the target row, not onto it: what decides the new
+     * position is where the *dragged row's* middle ends up, and the row is
+     * taller than the handle you are holding it by.
+     */
+    await page.mouse.move(from!.x + from!.width / 2, to!.y - 12, { steps: 8 });
+    await page.mouse.move(from!.x + from!.width / 2, to!.y - 14);
+    await page.mouse.up();
+
+    await expect
+      .poll(async () => fields.evaluateAll((rows) => rows.map((r) => r.getAttribute('data-field'))))
+      .toEqual([before[0], moved, above, ...before.slice(3)]);
+    await page.screenshot({ path: 'test-results/33-form-layout.png' });
+
+    // The width, meanwhile, is what the Generate screen renders.
+    await page.getByRole('button', { name: 'Done' }).click();
+    await page.getByRole('link', { name: 'Generate' }).click();
+
+    const stepsBox = await page.getByRole('button', { name: /^Steps/ }).boundingBox();
+    const modelBox = await page.getByRole('button', { name: /^Model/ }).boundingBox();
+    // Full row: as wide as the form, not half of it.
+    expect(stepsBox!.width).toBeGreaterThan(modelBox!.width * 1.6);
+  });
+
+  /**
+   * A "preview as text" node is how a graph reports what it decided. Outputs
+   * without images were being dropped, which made exactly that invisible.
+   */
+  test('shows what a preview-as-text node printed', async ({ page }) => {
+    // The only workflow, so the screen opens on it rather than needing a switch.
+    await resetState();
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'talks back', graph: withTextPreview } }),
+    );
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('tell me what you did');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    await page.locator('main img').first().click({ timeout: 60_000 });
+
+    const texts = page.getByTestId('viewer-texts');
+    await expect(texts).toBeVisible();
+    await expect(texts).toContainText('What ran');
+    await expect(texts).toContainText('steps=');
+    await page.screenshot({ path: 'test-results/34-text-output.png' });
+  });
+
+  /** VRAM on its own is decoration; VRAM with "this is where it started" is not. */
+  test('charts the hardware next to the queue events', async ({ page }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('watched from the monitor');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await page.getByRole('link', { name: 'Monitor' }).click();
+    await expect(page.getByTestId('monitor-charts')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/VRAM/)).toBeVisible();
+
+    const events = page.getByTestId('monitor-events');
+    await expect(events).toContainText('watched from the monitor', { timeout: 60_000 });
+    await page.screenshot({ path: 'test-results/35-monitor.png' });
+
+    // What core ComfyUI does not report is said, not drawn as a flat zero.
+    await expect(page.getByText(/Not reported/).first()).toBeVisible();
   });
 });

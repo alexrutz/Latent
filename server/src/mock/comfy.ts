@@ -202,9 +202,12 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
 
       if (interrupted) break;
 
+      // Text previews are output nodes too, but they emit words, not pictures.
+      const isTextNode = /^(PreviewAny|ShowText)/.test(node.class_type);
       const isOutput =
-        objectInfoFixture[node.class_type]?.output_node === true ||
-        /^(SaveImage|PreviewImage)/.test(node.class_type);
+        !isTextNode &&
+        (objectInfoFixture[node.class_type]?.output_node === true ||
+          /^(SaveImage|PreviewImage)/.test(node.class_type));
 
       if (isOutput) {
         const batch = typeof findBatchSize(workflow) === 'number' ? findBatchSize(workflow) : 1;
@@ -222,6 +225,22 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
         }
         outputs[nodeId] = { images };
         send(clientId, 'executed', { prompt_id: promptId, node: nodeId, output: { images } });
+      }
+
+      /*
+       * A "preview as text" node: an output with words in it and no pictures.
+       * Real graphs use these to report what they decided, and a client that
+       * only looks for images never sees them.
+       */
+      if (isTextNode) {
+        // Reports on the *prompt*, the way a real preview node reports on
+        // whatever it is wired to — this node has no settings of its own.
+        const sampler = Object.values(workflow).find(
+          (candidate) => typeof candidate.inputs?.steps === 'number',
+        );
+        const text = `seed=${seed} steps=${sampler?.inputs?.steps ?? 0}`;
+        outputs[nodeId] = { text: [text] };
+        send(clientId, 'executed', { prompt_id: promptId, node: nodeId, output: { text: [text] } });
       }
     }
 
@@ -325,23 +344,31 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       return { [classType]: def };
     });
 
-    route('GET', '/system_stats', async () => ({
-      system: {
-        os: 'posix',
-        comfyui_version: '0.3.27-mock',
-        python_version: '3.11.0 (mock)',
-        ram_total: 32 * 1024 ** 3,
-        ram_free: 18 * 1024 ** 3,
-      },
-      devices: [
-        {
-          name: 'Mock GPU (no hardware)',
-          type: 'cuda',
-          vram_total: 24 * 1024 ** 3,
-          vram_free: 20 * 1024 ** 3,
+    /*
+     * VRAM moves with the work, as it does on a real box: a model is resident
+     * while a prompt runs and the memory comes back afterwards. A flat reading
+     * would make the monitor look like it worked without ever proving it.
+     */
+    route('GET', '/system_stats', async () => {
+      const busy = running !== null;
+      return {
+        system: {
+          os: 'posix',
+          comfyui_version: '0.3.27-mock',
+          python_version: '3.11.0 (mock)',
+          ram_total: 32 * 1024 ** 3,
+          ram_free: (busy ? 12 : 18) * 1024 ** 3,
         },
-      ],
-    }));
+        devices: [
+          {
+            name: 'Mock GPU (no hardware)',
+            type: 'cuda',
+            vram_total: 24 * 1024 ** 3,
+            vram_free: (busy ? 9 : 20) * 1024 ** 3,
+          },
+        ],
+      };
+    });
 
     route('POST', '/prompt', async (request, reply) => {
       const body = request.body as {

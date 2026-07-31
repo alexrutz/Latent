@@ -101,10 +101,26 @@ export interface GenerationRecord {
   /** A short human summary (the positive prompt) for gallery cards. */
   title: string;
   images: GenerationImage[];
+  /**
+   * Anything the graph printed rather than drew.
+   *
+   * "Preview as text" nodes exist to tell you what a workflow decided — the
+   * prompt after a wildcard expanded, a caption a vision model produced, a
+   * dimension a node computed. Dropping them, which is what a client that only
+   * looks for images does, throws away the diagnostics.
+   */
+  texts: TextOutput[];
   createdAt: number;
   completedAt: number | null;
   /** `comfy` for something generated here, `import` for a scanned folder. */
   source: 'comfy' | 'import';
+}
+
+/** One text output, kept with the node that produced it. */
+export interface TextOutput {
+  nodeId: string;
+  nodeTitle: string;
+  text: string;
 }
 
 export interface GalleryPage {
@@ -443,6 +459,68 @@ export interface UploadImageResponse {
 export interface ApiError {
   error: string;
   detail?: string;
+}
+
+/* ------------------------------------------------------------------ */
+/* Hardware and event history                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One reading of what the machine was doing.
+ *
+ * Every field is nullable because how much a ComfyUI tells you about its host
+ * varies: `/system_stats` always reports VRAM and system RAM, while utilisation
+ * and temperature only exist if a monitoring extension is installed. A missing
+ * figure is drawn as missing rather than as zero.
+ */
+export interface ResourceSample {
+  at: number;
+  vramUsed: number | null;
+  vramTotal: number | null;
+  ramUsed: number | null;
+  ramTotal: number | null;
+  gpuPercent: number | null;
+  cpuPercent: number | null;
+  gpuTempC: number | null;
+  /** Jobs waiting, so load can be read against demand. */
+  queueRemaining: number;
+  /** Sampler speed at that moment, when one was running. */
+  stepsPerSecond: number | null;
+}
+
+export type MonitorEventKind =
+  | 'queued'
+  | 'started'
+  | 'node'
+  | 'text'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'online'
+  | 'offline';
+
+/** Something that happened, placed on the same timeline as the readings. */
+export interface MonitorEvent {
+  at: number;
+  kind: MonitorEventKind;
+  label: string;
+  detail?: string;
+  promptId?: string | null;
+}
+
+export interface MonitorSnapshot {
+  samples: ResourceSample[];
+  events: MonitorEvent[];
+  /** What this ComfyUI actually reports, so the UI can say what is missing. */
+  sources: {
+    vram: boolean;
+    ram: boolean;
+    gpu: boolean;
+    cpu: boolean;
+  };
+  deviceName: string | null;
+  /** Where utilisation figures came from, when there are any. */
+  utilisationSource: string | null;
 }
 
 /** Settings persisted server-side so every device shares them. */

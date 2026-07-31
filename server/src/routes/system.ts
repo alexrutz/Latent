@@ -160,4 +160,16 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
   });
 
   app.get('/api/archive/stats', async () => ctx.store.archiveStats());
+
+  /**
+   * The resource and event history.
+   *
+   * `since` makes repeat calls cheap: the screen keeps what it already has and
+   * asks only for what happened after it, which is what makes polling every
+   * couple of seconds from a phone reasonable.
+   */
+  app.get<{ Querystring: { since?: string } }>('/api/monitor', async (request) => {
+    const since = Number(request.query.since);
+    return ctx.orchestrator.monitor.snapshot(Number.isFinite(since) ? since : undefined);
+  });
 }

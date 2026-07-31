@@ -168,6 +168,13 @@ export const objectInfoFixture: ObjectInfo = {
     output_node: true,
     input: { required: { images: ['IMAGE'] } },
   },
+  /** Reports a value as words rather than pixels — the diagnostic node. */
+  PreviewAny: {
+    display_name: 'Preview Any',
+    output: [],
+    output_node: true,
+    input: { required: { source: ['*'] } },
+  },
   LoadImage: {
     display_name: 'Load Image',
     output: ['IMAGE', 'MASK'],

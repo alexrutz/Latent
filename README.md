@@ -61,11 +61,19 @@ form. Nothing about your ComfyUI setup changes.
   between arrangements later.
 - **Prompt blocks.** Save the phrases you reuse and assemble a prompt by tapping
   chips instead of typing paragraphs on a phone keyboard. Tapping a chip again
-  takes that phrase back out.
+  takes that phrase back out. They have a **Blocks** tab of their own for making,
+  grouping and ordering them.
+- **A form you build.** Drag fields into the order you want, give each one half a
+  row or a whole one, rename or hide anything — per workflow, saved under a name.
+- **A monitor.** VRAM, GPU, CPU and sampler speed over time, with the queue's own
+  events marked on the same axis, so "why did that take so long" has an answer.
+- **Text outputs.** Whatever the graph printed rather than drew — an expanded
+  wildcard, a generated caption — kept with the run and shown with the picture.
+- **Privacy blur.** Every image in the app, heavily out of focus, in one tap.
 - **Random prompt mode.** Let the app draw the prompt from your blocks instead —
   from the whole library or a pool you narrow by hand. Every queued run gets its
   own draw, so a batch of eight is eight different pictures. It has its own
-  **🎲 Random** tab, because it is a screenful you arrange once and come back to.
+  **Random** tab, because it is a screenful you arrange once and come back to.
 - **Parameter sweeps.** Give any numeric setting a range and an interval; each
   run draws one of the resulting values. Saved together with the prompt setup as
   one named thing, because that is how it is used.
@@ -82,6 +90,9 @@ form. Nothing about your ComfyUI setup changes.
 - **Installable.** Add it to your home screen and it runs full-screen like an app.
 - **Password protected.** The first person to open a new install chooses the
   password.
+- **Settings that outlive the project folder.** Everything you arrange is
+  mirrored to two files one directory above the checkout, so a clean reinstall
+  keeps your layouts, presets and prompt library.
 - **Optional terminal** for maintaining the host, off unless you enable it.
 
 ## Requirements
@@ -114,6 +125,7 @@ All optional, set as environment variables:
 | `HOST` | `0.0.0.0` | Bind address (`0.0.0.0` so your phone can reach it) |
 | `LATENT_PASSWORD` | *unset* | Fixes the password, skipping the first-run prompt |
 | `LATENT_DATA_DIR` | `./data` | SQLite database and the image archive |
+| `LATENT_STATE_DIR` | `..` | Where the portable settings files are written |
 | `LATENT_TERMINAL` | *unset* | Set to `1` to enable the built-in shell |
 | `LOG_LEVEL` | `info` | `trace`…`silent` |
 
@@ -191,6 +203,19 @@ and tapping a saved layout puts it back — so one workflow can have a stripped
 Deleting a layout only forgets the arrangement; it never changes the form you
 are looking at.
 
+### Building the form
+
+**Settings → Edit form** is a layout tool, not a list of switches:
+
+- **Drag the handle** on any field to reorder it. The order here is the order on
+  the Generate screen.
+- **Half a row or a whole one.** The form is two columns of chips; a field set to
+  full takes the width of both. A sampler name needs the room its longest option
+  does, while four short numbers read better side by side — which is why it is a
+  per-field choice rather than a rule.
+- **Rename, hide, or move to Advanced.** A rename saves as you type: it used to
+  save on blur, which on a phone meant closing the sheet threw it away.
+
 ### Sliders, or a line of points
 
 Every numeric field has two ways of being edited, chosen per field under
@@ -212,6 +237,65 @@ rounding itself.
 Everything that stays a chip is laid out in **two even columns**, so a sampler
 block reads as a list you can scan down instead of a wrapped heap of
 differently-sized bubbles.
+
+## Where your settings live
+
+Two JSON files, **one directory above the project**:
+
+```
+latent-settings.json       every arrangement: app settings, connections,
+                           per-workflow form layouts and presets, the
+                           variation setups
+latent-prompt-blocks.json  the prompt library, on its own
+```
+
+The database inside the project stays the source of truth at runtime; these are
+mirrored from it whenever it changes, and read back on boot into whatever the
+database does not already have. The point is the clean start: delete the project
+folder, clone it again, import the same workflow — and the form you built, the
+layouts you named and the phrases you saved are all still there. Workflows are
+matched by **name**, because the id is generated at import time and a re-imported
+workflow is a different row.
+
+Two files rather than one because they are used differently: the prompt library
+is worth copying to another machine or keeping in version control on its own,
+while the rest is this installation's configuration.
+
+Restoring is additive and never overwrites: anything already in the database
+wins, so a stale file cannot undo work. Set `LATENT_STATE_DIR` to put them
+somewhere else — and note that they contain your connection secrets, so they are
+written `0600`.
+
+## What the graph printed
+
+Not every output is a picture. A **"preview as text"** node — `PreviewAny`,
+`ShowText` and the rest — is how a workflow tells you what it decided: the prompt
+after a wildcard expanded, a caption a vision model wrote, a size a node
+computed. Latent records those with the run and shows them under the picture in
+the viewer, and on the Monitor's timeline as they arrive.
+
+Any output field that is not one of the known binary payloads counts, whatever
+the node called it, because there is no convention here and a list of node types
+would be out of date within a month.
+
+## The monitor
+
+A tab with two halves that only make sense together: what the machine was doing,
+and what it was doing it for. VRAM, system RAM, sampler speed and queue depth
+over time, with the queue's own events — queued, started, each node, finished,
+failed, connection lost — marked on the same axis and listed underneath.
+
+**GPU and CPU load are not part of ComfyUI.** Core ComfyUI reports VRAM and RAM
+through `/system_stats` and nothing else, so those two charts say "not reported"
+rather than drawing a flat line at zero. Install the widely used **Crystools**
+extension on the ComfyUI box and Latent picks up its broadcasts over the socket
+it already holds — no extra configuration, and no polling of a second endpoint.
+
+Readings are taken every two seconds while something is running and every twenty
+when the box is idle, and kept **in memory**: this is the recent past, the window
+in which you are still asking why something just happened, and writing a row
+every two seconds to answer that is a poor trade against an SD card. Switching
+connection clears it, because a different endpoint is a different machine.
 
 ## Keeping images when the instance goes away
 
@@ -298,7 +382,7 @@ Once you have a library of prompt blocks, the interesting thing to do with it is
 not picking four by hand — it is letting the app pick four, over and over, and
 seeing what comes out.
 
-Open the **🎲 Random** tab and turn it on. From then on every queued run draws
+Open the **Random** tab and turn it on. From then on every queued run draws
 its own prompt. It is a tab rather than a sheet under the prompt field: pool,
 per-group limits, parameter ranges and saved setups add up to a screenful, and
 something you arrange once and then leave alone deserves a place you can find
@@ -366,6 +450,17 @@ Loading a setup deliberately does **not** switch variation on or off. That is a
 statement about what to vary, not about whether you want it right now.
 
 ## In the gallery
+
+**Tapping the tab you are already on goes back to the top**, the way every other
+phone app behaves. Without it a long gallery scroll is a one-way trip.
+
+**The blur.** The ◌ button in the gallery header — and the same switch under
+Settings → Display — puts every image in the app heavily out of focus: the grid,
+the viewer, the live preview, the queue's thumbnails. It is one attribute on the
+root element rather than something each component opts into, because a privacy
+feature that only covers what somebody remembered to wire up is not one. Kept on
+the device, applied before the first paint, so a reload does not flash the
+pictures back.
 
 **Swiping crosses runs.** The viewer holds every picture in the gallery as one
 flat list, so a flick keeps going past the end of a batch instead of stopping
@@ -498,6 +593,8 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 | --- | --- |
 | `shared/` | Types, the form-building engine (`paramSchema.ts`), LoRA tag parsing, the queue's parameter summaries and both random draws (`randomPrompt.ts`, `randomParams.ts`) — pure, no I/O |
 | `server/` | Fastify proxy, ComfyUI client, live event hub, SQLite store, archive, terminal |
+| `server/src/monitor.ts` | The resource and event history behind the Monitor tab |
+| `server/src/statefile.ts` | Mirrors the arrangement to the files above the project |
 | `server/src/vault.ts` | Archive encryption: master key, wrapping, unlock on sign-in |
 | `server/src/images/` | A dependency-free PNG decoder/resizer for thumbnails and image sizes |
 | `server/src/mock/` | The mock ComfyUI used for development and tests |

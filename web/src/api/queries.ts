@@ -368,6 +368,9 @@ export const useUpdatePromptBlock = () =>
 export const useDeletePromptBlock = () =>
   usePromptBlockMutation((id: string) => api.deletePromptBlock(id));
 
+export const useReorderPromptBlocks = () =>
+  usePromptBlockMutation((ids: string[]) => api.reorderPromptBlocks(ids));
+
 /* ------------------------------------------------------------------ */
 /* Random prompt mode                                                  */
 /* ------------------------------------------------------------------ */

@@ -10,13 +10,14 @@ import type {
   ImportResult,
   ImportScanResult,
   InputScanResult,
+  MonitorSnapshot,
   QueueEntry,
   QueueState,
   ServerEvent,
   StatusResponse,
   WorkflowDetail,
 } from '@latent/shared';
-import { sd15Txt2Img, uiFormatWorkflow } from '@latent/shared/fixtures';
+import { sd15Txt2Img, uiFormatWorkflow, withTextPreview } from '@latent/shared/fixtures';
 
 import Database from 'better-sqlite3';
 
@@ -2229,6 +2230,205 @@ describe('parameter variation', () => {
     } finally {
       await api(`/api/prompt-blocks/${block}`, { method: 'DELETE' });
       await reset();
+    }
+  }, 30_000);
+});
+
+/**
+ * The output that is words rather than pixels.
+ *
+ * A "preview as text" node is how a workflow reports what it decided, and a
+ * client that only looks for images throws that away — which is what this one
+ * used to do.
+ */
+describe('text outputs', () => {
+  it('records what a preview-as-text node printed and hands it to the gallery', async () => {
+    const created = await json<WorkflowDetail>(
+      api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'with text preview', graph: withTextPreview }),
+      }),
+    );
+
+    try {
+      const response = await api('/api/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          workflowId: created.id,
+          values: { '6.text': 'says what it did', '3.steps': 4 },
+        }),
+      });
+      const { generationIds } = await json<{ generationIds: string[] }>(response);
+      const id = generationIds[0] as string;
+
+      const record = await waitFor(async () => {
+        const current = await json<GenerationRecord>(api(`/api/gallery/${id}`));
+        return current.status === 'completed' ? current : null;
+      });
+
+      expect(record.texts.length).toBeGreaterThan(0);
+      // Kept with the node that said it, so a graph with several is readable.
+      expect(record.texts[0]?.nodeTitle).toBe('What ran');
+      expect(record.texts[0]?.text).toMatch(/steps=4/);
+      // And the pictures still arrived: text is in addition, not instead.
+      expect(record.images.length).toBeGreaterThan(0);
+    } finally {
+      await api(`/api/workflows/${created.id}`, { method: 'DELETE' });
+    }
+  }, 30_000);
+});
+
+/**
+ * The resource and event history behind the Monitor tab.
+ *
+ * The two halves have to line up in time: a VRAM curve is decoration without
+ * "this is where the run started" next to it.
+ */
+describe('monitor history', () => {
+  it('samples the hardware and marks the queue events on the same timeline', async () => {
+    const list = await json<{ id: string }[]>(api('/api/workflows'));
+    const workflowId = list[0]?.id as string;
+
+    const response = await api('/api/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        workflowId,
+        values: { '6.text': 'watched by the monitor', '3.steps': 6 },
+      }),
+    });
+    const { generationIds } = await json<{ generationIds: string[] }>(response);
+    const id = generationIds[0] as string;
+
+    await waitFor(async () => {
+      const record = await json<GenerationRecord>(api(`/api/gallery/${id}`));
+      return record.status === 'completed' ? record : null;
+    });
+
+    const snapshot = await waitFor(async () => {
+      const current = await json<MonitorSnapshot>(api('/api/monitor'));
+      return current.samples.length > 0 ? current : null;
+    });
+
+    // VRAM is the one figure every ComfyUI reports.
+    expect(snapshot.sources.vram).toBe(true);
+    expect(snapshot.deviceName).toContain('Mock GPU');
+    expect(snapshot.samples[0]?.vramUsed).toBeGreaterThan(0);
+
+    const kinds = snapshot.events.map((event) => event.kind);
+    expect(kinds).toContain('queued');
+    expect(kinds).toContain('started');
+    expect(kinds).toContain('completed');
+
+    // Named by the run: the buffer holds everything since boot, so the label is
+    // how you tell one run's marks from another's.
+    expect(
+      snapshot.events.some(
+        (event) => event.kind === 'started' && event.label === 'watched by the monitor',
+      ),
+    ).toBe(true);
+
+    // `since` is what makes polling from a phone cheap: nothing repeats.
+    const newest = Math.max(
+      ...snapshot.samples.map((sample) => sample.at),
+      ...snapshot.events.map((event) => event.at),
+    );
+    const delta = await json<MonitorSnapshot>(api(`/api/monitor?since=${newest}`));
+    expect(delta.samples.every((sample) => sample.at > newest)).toBe(true);
+    expect(delta.events.every((event) => event.at > newest)).toBe(true);
+  }, 30_000);
+});
+
+/**
+ * The settings files that live above the project.
+ *
+ * The whole point is surviving the project directory being deleted, so the test
+ * does exactly that: build one server, arrange things, throw its database away,
+ * and build another one pointed at the same files.
+ */
+describe('portable settings files', () => {
+  it('writes the arrangement beside the project and reads it back into a fresh install', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'latent-state-'));
+    const stateDir = join(root, 'above');
+    const first = join(root, 'one');
+    const second = join(root, 'two');
+
+    const boot = async (dir: string) => {
+      const built = await buildApp({
+        comfyUrl: 'http://127.0.0.1:1',
+        dbPath: join(dir, 'latent.db'),
+        dataDir: dir,
+        stateDir,
+        webDir: join(dir, 'no-web'),
+        password: 'state-password',
+        logLevel: 'silent',
+      });
+      await built.app.listen({ port: 0, host: '127.0.0.1' });
+      const address = built.app.server.address();
+      if (!address || typeof address === 'string') throw new Error('No port');
+      return { built, url: `http://127.0.0.1:${address.port}` };
+    };
+
+    const call = (url: string, path: string, init?: RequestInit) =>
+      fetch(`${url}${path}`, {
+        ...init,
+        headers: {
+          ...(init?.body ? { 'content-type': 'application/json' } : {}),
+          cookie: cookieFor(url),
+          ...(init?.headers ?? {}),
+        },
+      });
+
+    const sessions = new Map<string, string>();
+    const cookieFor = (url: string) => sessions.get(url) ?? '';
+    const signIn = async (url: string) => {
+      const response = await fetch(`${url}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: 'state-password' }),
+      });
+      sessions.set(url, response.headers.get('set-cookie')?.split(';')[0] ?? '');
+    };
+
+    const one = await boot(first);
+    try {
+      await signIn(one.url);
+      await call(one.url, '/api/prompt-blocks', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Golden hour', category: 'Lighting', text: 'warm rim light' }),
+      });
+      await call(one.url, '/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ importRoot: '/somewhere/outputs' }),
+      });
+
+      // The mirror runs on a timer; the shutdown hook flushes it.
+      one.built.ctx.stateFiles.flush();
+
+      const files = readdirSync(stateDir);
+      expect(files).toContain('latent-settings.json');
+      expect(files).toContain('latent-prompt-blocks.json');
+    } finally {
+      await one.built.app.close();
+    }
+
+    // The clean restart: a brand new database, only the files above it survive.
+    rmSync(first, { recursive: true, force: true });
+
+    const two = await boot(second);
+    try {
+      await signIn(two.url);
+      const blocks = await json<{ name: string; category: string }[]>(
+        call(two.url, '/api/prompt-blocks'),
+      );
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]?.name).toBe('Golden hour');
+      expect(blocks[0]?.category).toBe('Lighting');
+
+      const settings = await json<{ importRoot: string | null }>(call(two.url, '/api/settings'));
+      expect(settings.importRoot).toBe('/somewhere/outputs');
+    } finally {
+      await two.built.app.close();
+      rmSync(root, { recursive: true, force: true });
     }
   }, 30_000);
 });

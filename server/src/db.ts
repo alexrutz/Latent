@@ -19,6 +19,7 @@ import type {
   ParamValues,
   PromptBlock,
   PromptBlockInput,
+  TextOutput,
   TileSpan,
   VariationPreset,
   WorkflowDetail,
@@ -27,6 +28,8 @@ import type {
 } from '@latent/shared';
 import type { ApiWorkflow, RandomPromptConfig } from '@latent/shared';
 import { DEFAULT_RANDOM_PROMPT_CONFIG, normaliseRandomPromptConfig } from '@latent/shared';
+
+import type { BlockState, UiState, WorkflowUiState } from './uiState.js';
 
 /**
  * Ordered, append-only migrations.
@@ -217,6 +220,17 @@ CREATE TABLE variation_presets (
 CREATE INDEX idx_variation_presets_created ON variation_presets (created_at);
 `);
 
+/**
+ * v7: whatever the graph printed rather than drew.
+ *
+ * "Preview as text" nodes report what a workflow decided — an expanded wildcard,
+ * a generated caption, a computed size. They were being dropped on the floor,
+ * which made the one output whose entire purpose is diagnosis invisible.
+ */
+MIGRATIONS.push(`
+ALTER TABLE generations ADD COLUMN texts_json TEXT NOT NULL DEFAULT '[]';
+`);
+
 interface WorkflowRow {
   id: string;
   name: string;
@@ -238,6 +252,7 @@ interface GenerationRow {
   values_json: string;
   seeds_json: string;
   params_json: string;
+  texts_json: string;
   title: string;
   created_at: number;
   completed_at: number | null;
@@ -654,6 +669,27 @@ export class Store {
     insertAll(images);
   }
 
+  /**
+   * Append text a node produced to the run it belongs to.
+   *
+   * Appended rather than replaced: a graph can have several preview nodes, and
+   * they report one at a time as each finishes.
+   */
+  addTextOutputs(promptId: string, texts: TextOutput[]): void {
+    if (texts.length === 0) return;
+    const row = this.db
+      .prepare<[string], { id: string; texts_json: string }>(
+        'SELECT id, texts_json FROM generations WHERE prompt_id = ?',
+      )
+      .get(promptId);
+    if (!row) return;
+
+    const existing = parseJson<TextOutput[]>(row.texts_json, []);
+    this.db
+      .prepare('UPDATE generations SET texts_json = ? WHERE id = ?')
+      .run(JSON.stringify([...existing, ...texts]), row.id);
+  }
+
   getGenerationByPromptId(promptId: string): GenerationRecord | null {
     const row = this.db
       .prepare<[string], GenerationRow>('SELECT * FROM generations WHERE prompt_id = ?')
@@ -775,6 +811,7 @@ export class Store {
       params: parseJson<ParamSummaryItem[]>(row.params_json, []),
       title: row.title,
       images: images.map(toGenerationImage),
+      texts: parseJson<TextOutput[]>(row.texts_json, []),
       createdAt: row.created_at,
       completedAt: row.completed_at,
       source: (row.source as 'comfy' | 'import') ?? 'comfy',
@@ -1100,6 +1137,20 @@ export class Store {
 
   deletePromptBlock(id: string): void {
     this.db.prepare('DELETE FROM prompt_blocks WHERE id = ?').run(id);
+  }
+
+  /**
+   * Write a whole order at once.
+   *
+   * A drag produces one new sequence, not a series of individual moves, and
+   * sending it as one statement per block would leave the list half-reordered
+   * if the connection dropped in the middle.
+   */
+  reorderPromptBlocks(ids: string[]): void {
+    const update = this.db.prepare('UPDATE prompt_blocks SET position = ? WHERE id = ?');
+    this.db.transaction(() => {
+      ids.forEach((id, index) => update.run(index, id));
+    })();
   }
 
   /* ---------------------------------------------------------------- */
@@ -1440,5 +1491,151 @@ export class Store {
       upsert.run(key, value == null ? '' : String(value));
     }
     return this.getSettings();
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Portable state                                                    */
+  /* ---------------------------------------------------------------- */
+
+  /** Everything that was arranged by hand, in a form that survives this file. */
+  exportUiState(): UiState {
+    const workflows: Record<string, WorkflowUiState> = {};
+    for (const summary of this.listWorkflows()) {
+      const detail = this.getWorkflow(summary.id);
+      if (!detail) continue;
+      workflows[detail.name] = {
+        overrides: detail.overrides,
+        lastValues: detail.lastValues,
+        layouts: this.listLayouts(detail.id).map((layout) => ({
+          name: layout.name,
+          overrides: layout.overrides,
+          active: layout.isActive,
+        })),
+        presets: this.listPresets(detail.id).map((preset) => ({
+          name: preset.name,
+          values: preset.values,
+        })),
+      };
+    }
+
+    return {
+      version: 1,
+      savedAt: Date.now(),
+      settings: this.getSettings(),
+      connections: this.listConnections().map((connection) => ({
+        name: connection.name,
+        url: connection.url,
+        authMode: connection.authMode,
+        username: connection.username,
+        secret: this.getConnectionWithSecret(connection.id)?.secret ?? null,
+        allowSelfSigned: connection.allowSelfSigned,
+        active: connection.isActive,
+      })),
+      variation: {
+        config: this.getRandomPromptConfig(),
+        presets: this.listVariationPresets().map((preset) => ({
+          name: preset.name,
+          config: preset.config,
+        })),
+      },
+      workflows,
+    };
+  }
+
+  /**
+   * Take back everything the current database does not already have.
+   *
+   * Additive on purpose: this runs on every boot, and a restore that overwrote
+   * live data would turn a stale file into a way of losing work. Anything
+   * already present wins.
+   */
+  importUiState(state: UiState, makeId: () => string): void {
+    const settings = this.getSettings();
+    const missing = Object.fromEntries(
+      Object.entries(state.settings ?? {}).filter(
+        ([key, value]) =>
+          key in settings && value != null && settings[key as keyof AppSettings] == null,
+      ),
+    ) as Partial<AppSettings>;
+    if (Object.keys(missing).length > 0) this.updateSettings(missing);
+
+    if (this.countConnections() === 0) {
+      for (const connection of state.connections ?? []) {
+        const id = makeId();
+        this.insertConnection(id, {
+          name: connection.name,
+          url: connection.url,
+          authMode: connection.authMode,
+          username: connection.username,
+          secret: connection.secret,
+          allowSelfSigned: connection.allowSelfSigned,
+        });
+        if (connection.active) this.activateConnection(id);
+      }
+    }
+
+    if (state.variation?.config) this.setRandomPromptConfig(state.variation.config);
+    if (this.listVariationPresets().length === 0) {
+      for (const preset of state.variation?.presets ?? []) {
+        this.saveVariationPreset(makeId(), preset.name, preset.config);
+      }
+    }
+  }
+
+  /**
+   * Re-attach a saved arrangement to a workflow that has just been imported.
+   *
+   * The point of the whole exercise: you delete the project folder, import the
+   * same workflow JSON again, and the form is the one you built rather than the
+   * one the heuristics derive.
+   */
+  adoptWorkflowState(workflowId: string, state: WorkflowUiState, makeId: () => string): void {
+    const detail = this.getWorkflow(workflowId);
+    if (!detail) return;
+
+    if (Object.keys(detail.overrides).length === 0 && Object.keys(state.overrides).length > 0) {
+      this.updateWorkflow(workflowId, { overrides: state.overrides });
+    }
+    if (Object.keys(detail.lastValues).length === 0 && Object.keys(state.lastValues).length > 0) {
+      this.updateWorkflow(workflowId, { lastValues: state.lastValues });
+    }
+
+    if (this.listLayouts(workflowId).length === 0) {
+      for (const layout of state.layouts) {
+        const id = makeId();
+        this.upsertLayout(id, workflowId, layout.name, layout.overrides);
+        if (layout.active) this.activateLayout(workflowId, id);
+      }
+    }
+    if (this.listPresets(workflowId).length === 0) {
+      for (const preset of state.presets) {
+        this.upsertPreset(makeId(), workflowId, preset.name, preset.values);
+      }
+    }
+  }
+
+  exportPromptBlocks(): BlockState {
+    return {
+      version: 1,
+      savedAt: Date.now(),
+      blocks: this.listPromptBlocks().map(({ name, category, text, position }) => ({
+        name,
+        category,
+        text,
+        position,
+      })),
+    };
+  }
+
+  /** Only into an empty library — never merged, so nothing is duplicated. */
+  importPromptBlocks(state: BlockState, makeId: () => string): number {
+    if (this.listPromptBlocks().length > 0) return 0;
+    let restored = 0;
+    for (const block of state.blocks ?? []) {
+      if (!block?.name || !block?.text) continue;
+      this.insertPromptBlock(makeId(), block);
+      restored += 1;
+    }
+    return restored;
   }
 }

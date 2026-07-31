@@ -642,6 +642,7 @@ export function applyOverrides(schema: ParamSchema, overrides: FieldOverrides = 
       ...(o.order !== undefined ? { order: o.order } : {}),
       ...(o.inputMode !== undefined ? { inputMode: o.inputMode } : {}),
       ...(o.points !== undefined ? { points: o.points } : {}),
+      ...(o.width !== undefined ? { width: o.width } : {}),
     };
   });
 

@@ -4,14 +4,17 @@ import { useLiveCacheSync, useStatus } from './api/queries';
 import { BottomTabs } from './components/BottomTabs';
 import { LiveBar } from './components/LiveBar';
 import { Spinner } from './components/ui';
+import { BlocksScreen } from './screens/BlocksScreen';
 import { GalleryScreen } from './screens/GalleryScreen';
 import { FavoritesScreen } from './screens/FavoritesScreen';
 import { GenerateScreen } from './screens/GenerateScreen';
 import { LoginScreen } from './screens/LoginScreen';
+import { MonitorScreen } from './screens/MonitorScreen';
 import { QueueScreen } from './screens/QueueScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { SetupScreen } from './screens/SetupScreen';
 import { VariationScreen } from './screens/VariationScreen';
+import { registerScrollContainer } from './state/scroll';
 import { useLiveSocket } from './state/useLiveSocket';
 
 export function App() {
@@ -45,12 +48,17 @@ export function App() {
     // 100dvh (not vh) so the layout tracks the collapsing mobile URL bar
     // instead of hiding the tab bar behind it.
     <div className="flex h-[100dvh] flex-col overflow-hidden">
-      <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      <main
+        ref={registerScrollContainer}
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+      >
         <Routes>
           <Route path="/" element={<GenerateScreen />} />
           <Route path="/gallery" element={<GalleryScreen />} />
           <Route path="/favorites" element={<FavoritesScreen />} />
+          <Route path="/blocks" element={<BlocksScreen />} />
           <Route path="/variation" element={<VariationScreen />} />
+          <Route path="/monitor" element={<MonitorScreen />} />
           <Route path="/queue" element={<QueueScreen />} />
           <Route path="/settings" element={<SettingsScreen />} />
           <Route path="*" element={<GenerateScreen />} />

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { fieldPoints, fieldPointValues, usesPointLine } from '@latent/shared';
 import type {
@@ -28,8 +28,10 @@ import {
   useWorkflows,
 } from '../api/queries';
 import { NumericInput } from '../components/NumericInput';
+import { SortableList, type DragHandleProps } from '../components/SortableList';
 import { Toggle } from '../components/ParamControl';
 import { Button, Card, cn, ErrorNote, Row, Sheet, Spinner } from '../components/ui';
+import { useBlur } from '../state/blur';
 import { ConnectionsScreen } from './ConnectionsScreen';
 import { TerminalScreen } from './TerminalScreen';
 
@@ -42,6 +44,8 @@ export function SettingsScreen() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const archive = useArchiveStats();
+  const blurred = useBlur((state) => state.blurred);
+  const setBlurred = useBlur((state) => state.set);
 
   const [importError, setImportError] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -174,6 +178,22 @@ export function SettingsScreen() {
           </Card>
         </section>
       )}
+
+      {/* Display ---------------------------------------------------- */}
+      <section className="space-y-2">
+        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Display</h2>
+        <Card>
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-sm">Blur every image</p>
+              <p className="text-xs text-muted">
+                Thumbnails, previews and the viewer, everywhere in the app. Kept on this device.
+              </p>
+            </div>
+            <Toggle checked={blurred} onChange={setBlurred} label="Blur every image" />
+          </div>
+        </Card>
+      </section>
 
       {/* Archive ---------------------------------------------------- */}
       <section className="space-y-2">
@@ -374,13 +394,27 @@ function FormEditorSheet({ workflowId, onClose }: { workflowId: string; onClose:
   const detail = workflow.data;
   const overrides = draft ?? detail?.overrides ?? {};
 
-  const patch = (fieldId: string, change: Partial<FieldOverrides[string]>) => {
-    const next: FieldOverrides = {
-      ...overrides,
-      [fieldId]: { ...overrides[fieldId], ...change },
-    };
+  const write = (next: FieldOverrides) => {
     setDraft(next);
     update.mutate({ id: workflowId, patch: { overrides: next } });
+  };
+
+  const patch = (fieldId: string, change: Partial<FieldOverrides[string]>) =>
+    write({ ...overrides, [fieldId]: { ...overrides[fieldId], ...change } });
+
+  /**
+   * Commit a whole group's order in one write.
+   *
+   * Positions have to be stored for every field in the group, not just the one
+   * that moved: the numbers the schema was built with are not contiguous, so
+   * "this one is now third" is only meaningful alongside the rest.
+   */
+  const reorder = (ids: string[]) => {
+    const next = { ...overrides };
+    ids.forEach((id, index) => {
+      next[id] = { ...next[id], order: index };
+    });
+    write(next);
   };
 
   return (
@@ -392,8 +426,9 @@ function FormEditorSheet({ workflowId, onClose }: { workflowId: string; onClose:
       ) : (
         <div className="space-y-4">
           <p className="text-xs text-muted">
-            Choose what appears on the Generate screen. Hidden fields still use the value the
-            workflow was exported with.
+            Build the form: drag the handles to reorder, choose whether a field takes half a row or
+            all of it, and hide what you never touch. Hidden fields still use the value the workflow
+            was exported with.
           </p>
 
           <LayoutBar workflowId={workflowId} detail={detail} />
@@ -406,18 +441,26 @@ function FormEditorSheet({ workflowId, onClose }: { workflowId: string; onClose:
                 <h3 className="text-xs font-medium tracking-wide text-muted uppercase">
                   {group === 'main' ? 'On the main screen' : 'Under Advanced'}
                 </h3>
-                {fields.map((field) => (
-                  <FieldEditorRow
-                    key={field.id}
-                    field={field}
-                    onRename={(label) => patch(field.id, { label })}
-                    onToggleHidden={() => patch(field.id, { hidden: !field.hidden })}
-                    onMove={() =>
-                      patch(field.id, { group: field.group === 'main' ? 'advanced' : 'main' })
-                    }
-                    onPatch={(change) => patch(field.id, change)}
-                  />
-                ))}
+                <SortableList
+                  items={fields}
+                  idOf={(field) => field.id}
+                  onReorder={reorder}
+                  className="space-y-2"
+                >
+                  {(field, handle, dragging) => (
+                    <FieldEditorRow
+                      field={field}
+                      handle={handle}
+                      dragging={dragging}
+                      onRename={(label) => patch(field.id, { label })}
+                      onToggleHidden={() => patch(field.id, { hidden: !field.hidden })}
+                      onMove={() =>
+                        patch(field.id, { group: field.group === 'main' ? 'advanced' : 'main' })
+                      }
+                      onPatch={(change) => patch(field.id, change)}
+                    />
+                  )}
+                </SortableList>
               </div>
             );
           })}
@@ -429,12 +472,16 @@ function FormEditorSheet({ workflowId, onClose }: { workflowId: string; onClose:
 
 function FieldEditorRow({
   field,
+  handle,
+  dragging,
   onRename,
   onToggleHidden,
   onMove,
   onPatch,
 }: {
   field: ParamField;
+  handle: DragHandleProps;
+  dragging: boolean;
   onRename: (label: string) => void;
   onToggleHidden: () => void;
   onMove: () => void;
@@ -443,29 +490,103 @@ function FieldEditorRow({
   const [label, setLabel] = useState(field.label);
 
   const numeric = field.control === 'int' || field.control === 'float';
+  // Fields that get their own dedicated control on the form are always a full
+  // row; offering them a width would be a switch that does nothing.
+  const sizeable =
+    !['textarea', 'text', 'image'].includes(field.control) &&
+    !['prompt', 'negative_prompt', 'image_input', 'seed', 'lora_text'].includes(field.role);
   const points = usesPointLine(field);
   const line = fieldPoints(field);
   const preview = fieldPointValues(field);
 
+  /*
+   * A rename is saved as it is typed, not on blur.
+   *
+   * On a phone you edit the name and then close the sheet, and closing it
+   * unmounts this input without ever firing `blur` — so the change was
+   * silently thrown away, which read as "the editor does nothing".
+   */
+  useEffect(() => {
+    if (label === field.label) return;
+    const timer = window.setTimeout(() => onRename(label), 400);
+    return () => window.clearTimeout(timer);
+  }, [label, field.label, onRename]);
+
   return (
-    <div className={cn('rounded-xl border border-line p-3', field.hidden && 'opacity-50')}>
-      <div className="flex items-center gap-3">
+    <div
+      data-field={field.id}
+      className={cn(
+        'rounded-xl border p-3',
+        dragging ? 'border-accent bg-surface shadow-lg' : 'border-line',
+        field.hidden && 'opacity-50',
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <span
+          {...handle}
+          role="button"
+          aria-label={`Reorder ${field.label}`}
+          className="grid size-9 shrink-0 cursor-grab place-items-center rounded-lg bg-surface-2 text-muted"
+        >
+          ⠿
+        </span>
         <input
           value={label}
           onChange={(event) => setLabel(event.target.value)}
-          onBlur={() => label !== field.label && onRename(label)}
+          aria-label={`${field.inputName} label`}
           className="min-w-0 flex-1 rounded-lg bg-surface-2 px-3 py-2 text-sm focus:outline-none"
         />
-        <Toggle checked={!field.hidden} onChange={onToggleHidden} />
+        <Toggle checked={!field.hidden} onChange={onToggleHidden} label={`Show ${field.label}`} />
       </div>
-      <div className="mt-2 flex items-center justify-between gap-2">
-        <p className="min-w-0 truncate text-[11px] text-muted">
+      <div className="mt-1.5 flex items-center justify-between gap-2">
+        <p className="min-w-0 flex-1 truncate text-[11px] text-muted">
           {field.nodeTitle} · {field.inputName} · {field.control}
         </p>
-        <Button variant="ghost" size="sm" onClick={onMove}>
-          {field.group === 'main' ? 'To Advanced' : 'To main'}
-        </Button>
+        <button
+          type="button"
+          onClick={onMove}
+          className="shrink-0 rounded-md bg-surface-2 px-2 py-1 text-[11px] whitespace-nowrap text-muted"
+        >
+          {field.group === 'main' ? '→ Advanced' : '→ Main'}
+        </button>
       </div>
+
+      {/*
+        Width, because a two-column grid is only tidy if the things in it fit.
+        A sampler name needs the room its longest option does; four short numbers
+        read better side by side. Offered only where it means something: a prompt
+        box or an image picker has never been anything but a full row.
+      */}
+      {sizeable && (
+        <div className="mt-1.5 flex items-center justify-between gap-2">
+          <span className="text-[11px] text-muted">Width</span>
+          <div className="flex gap-1">
+            {(
+              [
+                ['half', 'Half'],
+                ['full', 'Full'],
+              ] as const
+            ).map(([value, text]) => {
+              const active = (field.width ?? 'half') === value;
+              return (
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={active}
+                  aria-label={`${field.label} ${text} row`}
+                  onClick={() => onPatch({ width: value })}
+                  className={cn(
+                    'h-7 rounded-md px-2.5 text-[11px]',
+                    active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                  )}
+                >
+                  {text}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/*
         How this value is edited. The sheet with a slider and a keyboard is right
