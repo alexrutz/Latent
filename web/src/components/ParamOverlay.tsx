@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 
-import { overlayChoices, shortLabels } from '@latent/shared';
+import { overlayChoices, shortLabels, TEXT_OVERLAY_PREFIX } from '@latent/shared';
 import type { GenerationRecord, ParamSummaryItem } from '@latent/shared';
 
 import { cn, Sheet } from './ui';
@@ -31,6 +31,19 @@ export function overlayValues(record: GenerationRecord, keys: string[]): ParamSu
     .map((key) => {
       const recorded = byKey.get(key);
       if (recorded) return recorded;
+
+      // Text a node produced, chosen by the node's title.
+      if (key.startsWith(TEXT_OVERLAY_PREFIX)) {
+        const title = key.slice(TEXT_OVERLAY_PREFIX.length);
+        const said = record.texts.filter((output) => output.nodeTitle === title);
+        if (said.length === 0) return null;
+        return {
+          key,
+          label: title,
+          value: said.map((output) => output.text).join(' · '),
+          primary: true,
+        } satisfies ParamSummaryItem;
+      }
 
       const raw = record.values[key];
       if (raw === undefined || raw === null || raw === '') return null;
@@ -76,7 +89,10 @@ export function ParamOverlayLine({
       )}
     >
       {items.map((item) => (
-        <span key={item.key} className="max-w-full truncate">
+        <span
+          key={item.key}
+          className={cn('max-w-full', item.key.startsWith(TEXT_OVERLAY_PREFIX) ? 'break-words' : 'truncate')}
+        >
           {withLabels && (
             <span className="text-white/55">{abbreviations[item.label] ?? item.label}</span>
           )}
@@ -111,7 +127,11 @@ export function ParamOverlayPicker({
   const [open, setOpen] = useState(false);
 
   const choices = useMemo(
-    () => overlayChoices(records.map((record) => record.params)),
+    () =>
+      overlayChoices(
+        records.map((record) => record.params),
+        records.flatMap((record) => record.texts),
+      ),
     [records],
   );
 

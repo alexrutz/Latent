@@ -11,6 +11,7 @@ import {
   usePromptMode,
   useSavePreset,
   useWorkflow,
+  useVisibleWorkflows,
   useWorkflows,
 } from '../api/queries';
 import { AlwaysBlocks } from '../components/AlwaysBlocks';
@@ -29,7 +30,8 @@ const LAST_WORKFLOW_KEY = 'latent.lastWorkflowId';
 
 export function GenerateScreen() {
   const navigate = useNavigate();
-  const workflows = useWorkflows();
+  const workflows = useVisibleWorkflows();
+  const allWorkflows = useWorkflows();
   const consumePending = usePendingStore((state) => state.consume);
   const pending = usePendingStore((state) => state.pending);
 
@@ -68,14 +70,21 @@ export function GenerateScreen() {
   }
 
   if (!workflows.data || workflows.data.length === 0) {
+    // Told apart deliberately: "none imported" and "all of them switched off"
+    // are different problems with different fixes.
+    const hidden = (allWorkflows.data?.length ?? 0) > 0;
     return (
       <EmptyState
         icon="✦"
-        title="No workflows yet"
-        hint="Import a workflow exported from ComfyUI with “Export (API)” to get started."
+        title={hidden ? 'No workflows switched on' : 'No workflows yet'}
+        hint={
+          hidden
+            ? 'Every workflow is hidden from this picker. Choose the ones you use in Settings.'
+            : 'Point Latent at your ComfyUI folder in Settings and it will read the workflows saved there.'
+        }
         action={
           <Button variant="primary" onClick={() => navigate('/settings')}>
-            Import a workflow
+            {hidden ? 'Choose workflows' : 'Open settings'}
           </Button>
         }
       />

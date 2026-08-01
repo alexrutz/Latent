@@ -656,27 +656,17 @@ function ViewerWithActions({
       index={index}
       onIndexChange={onIndexChange}
       onClose={onClose}
+      /*
+        Text a node produced is chosen here like any other value now, rather
+        than always being on: a node that writes the prompt is describing the
+        picture the way the seed is, but a caption several lines long is not
+        something to have permanently across the bottom of every image.
+      */
       overlay={
-        <div className="space-y-1">
-          <ParamOverlayLine
-            items={overlayValues(record, grid.viewerParams)}
-            withLabels={grid.overlayLabels}
-          />
-          {/*
-            Anything the graph printed rather than drew — an expanded wildcard,
-            a caption, a computed size. It belongs with the picture it explains.
-          */}
-          {record.texts.length > 0 && (
-            <div className="space-y-0.5" data-testid="viewer-texts">
-              {record.texts.map((output, index) => (
-                <p key={index} className="text-[11px] break-words text-body/90">
-                  <span className="text-muted">{output.nodeTitle}: </span>
-                  {output.text}
-                </p>
-              ))}
-            </div>
-          )}
-        </div>
+        <ParamOverlayLine
+          items={overlayValues(record, grid.viewerParams)}
+          withLabels={grid.overlayLabels}
+        />
       }
       footer={
         <div className="space-y-2">

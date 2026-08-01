@@ -3,6 +3,7 @@ import { extname, join, relative, resolve, sep } from 'node:path';
 
 import type { InputImage, InputScanResult } from '@latent/shared';
 
+import { inputRoot } from './comfyPaths.js';
 import type { Store } from './db.js';
 import { makeThumbnail, readImageSize } from './images/png.js';
 
@@ -29,8 +30,7 @@ export class InputLibrary {
   constructor(private readonly store: Store) {}
 
   private root(): string | null {
-    const configured = this.store.getSettings().inputRoot;
-    return configured ? resolve(configured) : null;
+    return inputRoot(this.store.getSettings());
   }
 
   /**

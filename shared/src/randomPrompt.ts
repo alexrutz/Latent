@@ -33,7 +33,15 @@ export interface RandomPromptConfig {
    * must not break a saved pool.
    */
   blockIds: string[];
-  /** How many blocks go into one prompt. Inclusive. */
+  /**
+   * How many blocks go into one prompt. Inclusive.
+   *
+   * `0` means "as many as there are" — as a maximum it lifts the ceiling to
+   * whatever the pool and the group limits allow, and as a minimum it raises
+   * the floor to that same number. Without it there is no way to say "use
+   * everything that fits", which is what a carefully narrowed pool usually
+   * wants, and no way to say it that keeps being true as the library grows.
+   */
   minBlocks: number;
   maxBlocks: number;
   /** Keep what is typed and add to it, rather than replacing it entirely. */
@@ -136,8 +144,9 @@ export function normaliseRandomPromptConfig(raw: unknown): RandomPromptConfig {
       ? [...new Set(input.blockIds.filter((id): id is string => typeof id === 'string' && id !== ''))]
       : [],
     // Swapped rather than rejected: "between 4 and 2" plainly means 2 to 4.
-    minBlocks: Math.min(min, max),
-    maxBlocks: Math.max(min, max),
+    // Unlimited stays unlimited rather than being sorted below the minimum.
+    minBlocks: max === 0 ? min : Math.min(min, max),
+    maxBlocks: max === 0 ? 0 : Math.max(min, max),
     keepTyped: input.keepTyped !== false,
     onePerGroup: input.onePerGroup !== false,
     groupLimits: normaliseGroupLimits(input.groupLimits),
@@ -209,8 +218,18 @@ export function pickRandomBlocks(
     candidates.push(block);
   }
 
-  const span = config.maxBlocks - config.minBlocks + 1;
-  const wanted = config.minBlocks + Math.floor(random() * span);
+  /*
+   * Zero means "as many as there are" on both ends.
+   *
+   * A ceiling of zero is everything the pool and the group limits left
+   * standing; a floor of zero is that same number, which is how you say "always
+   * use all of them" without having to guess a figure that stops being right
+   * the moment the library grows.
+   */
+  const ceiling = config.maxBlocks > 0 ? config.maxBlocks : candidates.length;
+  const floor = config.minBlocks > 0 ? Math.min(config.minBlocks, ceiling) : ceiling;
+  const span = Math.max(1, ceiling - floor + 1);
+  const wanted = floor + Math.floor(random() * span);
   const count = Math.min(Math.max(wanted, 0), candidates.length);
 
   /*

@@ -106,16 +106,21 @@ export function BlocksScreen() {
                 <span className="shrink-0 text-[11px] text-muted">{items.length}</span>
               </div>
 
+              {/*
+                Two across. A library worth having is dozens of blocks, and one
+                per row turns managing them into a scroll — the name and a line
+                of the text fit in half a row perfectly well.
+              */}
               <SortableList
                 items={items}
                 idOf={(block) => block.id}
                 onReorder={reorderGroup}
-                className="space-y-1.5"
+                className="grid grid-cols-2 gap-1.5"
               >
                 {(block, handle, dragging) => (
                   <div
                     className={cn(
-                      'flex items-center gap-2 rounded-xl border bg-surface px-2 py-2',
+                      'flex h-full items-center gap-1.5 rounded-xl border bg-surface px-1.5 py-1.5',
                       dragging ? 'border-accent shadow-lg' : 'border-line',
                     )}
                   >
@@ -123,7 +128,7 @@ export function BlocksScreen() {
                       {...handle}
                       role="button"
                       aria-label={`Reorder ${block.name}`}
-                      className="grid size-8 shrink-0 cursor-grab place-items-center rounded-lg bg-surface-2 text-muted"
+                      className="grid size-7 shrink-0 cursor-grab place-items-center rounded-lg bg-surface-2 text-xs text-muted"
                     >
                       ⠿
                     </span>
@@ -132,8 +137,8 @@ export function BlocksScreen() {
                       onClick={() => setEditing(block)}
                       className="min-w-0 flex-1 text-left"
                     >
-                      <p className="truncate text-sm">{block.name}</p>
-                      <p className="truncate text-[11px] text-muted">{block.text}</p>
+                      <p className="truncate text-xs">{block.name}</p>
+                      <p className="truncate text-[10px] text-muted">{block.text}</p>
                     </button>
                   </div>
                 )}

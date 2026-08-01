@@ -4,7 +4,13 @@ import { join } from 'node:path';
 
 import { expect, request as apiRequest, test, type Page } from '@playwright/test';
 
-import { img2img, sd15Txt2Img, uiFormatWorkflow, withTextPreview } from '../shared/src/fixtures/workflows.js';
+import {
+  img2img,
+  sd15Txt2Img,
+  sd15Txt2ImgUi,
+  uiFormatWorkflow,
+  withTextPreview,
+} from '../shared/src/fixtures/workflows.js';
 import { renderPlaceholder } from '../server/src/mock/png.js';
 
 /**
@@ -121,6 +127,10 @@ async function resetState() {
 
     const setups = (await (await ctx.get('/api/prompt-mode/presets')).json()) as { id: string }[];
     for (const setup of setups) await ctx.delete(`/api/prompt-mode/presets/${setup.id}`);
+
+    // The ComfyUI folder drives importing, the input picker and the workflow
+    // scan, so a test that sets one must not leave it for the next.
+    await ctx.patch('/api/settings', { data: { comfyRoot: null, importRoot: null, inputRoot: null } });
   });
 
   /*
@@ -158,7 +168,7 @@ test.describe('Latent on a phone', () => {
     await resetState();
     await open(page, '/');
     await expect(page.getByText('No workflows yet')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Import a workflow' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open settings' })).toBeVisible();
   });
 
   test('imports a workflow, generates an image and shows it in the gallery', async ({ page }) => {
@@ -219,9 +229,9 @@ test.describe('Latent on a phone', () => {
     await page.screenshot({ path: 'test-results/05-details.png' });
   });
 
-  test('rejects a UI-format export with a message that says what to do', async ({ page }) => {
-    await importViaUi(page, 'wrong-format', uiFormatWorkflow);
-    await expect(page.getByText(/Export \(API\)/)).toBeVisible();
+  test('says what is wrong with a graph that produces no image', async ({ page }) => {
+    await importViaUi(page, 'no-output', uiFormatWorkflow);
+    await expect(page.getByText(/output node/)).toBeVisible();
   });
 
   test('queues a batch and can clear it', async ({ page }) => {
@@ -1679,20 +1689,29 @@ test.describe('the fixes wave ten asked for', () => {
     const destination = page.locator(`[data-field="${above}"]`);
     await handle.scrollIntoViewIfNeeded();
 
-    const from = await handle.boundingBox();
-    const to = await destination.boundingBox();
-    expect(from).not.toBeNull();
-    expect(to).not.toBeNull();
+    const grip = await handle.boundingBox();
+    const fromRow = await page.locator(`[data-field="${moved}"]`).boundingBox();
+    const toRow = await destination.boundingBox();
+    expect(grip).not.toBeNull();
+    expect(fromRow).not.toBeNull();
+    expect(toRow).not.toBeNull();
 
-    await page.mouse.move(from!.x + from!.width / 2, from!.y + from!.height / 2);
-    await page.mouse.down();
     /*
-     * Past the top of the target row, not onto it: what decides the new
-     * position is where the *dragged row's* middle ends up, and the row is
-     * taller than the handle you are holding it by.
+     * What decides the new position is where the *dragged row's* centre ends
+     * up, not the pointer — so the pointer travels exactly the distance
+     * between the two rows' centres. Aiming at the target row's edge instead
+     * depends on how tall the rows happen to be, which is not a thing this
+     * test is about.
      */
-    await page.mouse.move(from!.x + from!.width / 2, to!.y - 12, { steps: 8 });
-    await page.mouse.move(from!.x + from!.width / 2, to!.y - 14);
+    const delta =
+      toRow!.y + toRow!.height / 2 - (fromRow!.y + fromRow!.height / 2);
+    const x = grip!.x + grip!.width / 2;
+    const y = grip!.y + grip!.height / 2;
+
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x, y + delta, { steps: 8 });
+    await page.mouse.move(x, y + delta - 1);
     await page.mouse.up();
 
     await expect
@@ -1729,10 +1748,14 @@ test.describe('the fixes wave ten asked for', () => {
     await dismissResult(page);
     await page.locator('main img').first().click({ timeout: 60_000 });
 
-    const texts = page.getByTestId('viewer-texts');
-    await expect(texts).toBeVisible();
-    await expect(texts).toContainText('What ran');
-    await expect(texts).toContainText('steps=');
+    // Chosen like any other value: a node that writes text is offered by name.
+    await page.getByRole('button', { name: 'Values on the picture' }).click();
+    await page.getByRole('button', { name: 'What ran', exact: true }).click();
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    const overlay = page.locator('div.z-60').getByTestId('param-overlay');
+    await expect(overlay).toBeVisible();
+    await expect(overlay).toContainText('steps=');
     await page.screenshot({ path: 'test-results/34-text-output.png' });
   });
 
@@ -1882,5 +1905,121 @@ test.describe('keeping, deleting and looking closely', () => {
         { timeout: 60_000 },
       )
       .toContain('muted colours, fine grain');
+  });
+});
+
+/**
+ * Wave twelve: one folder instead of three, the workflows already saved in it,
+ * and the compactness the prompt library needs once it is more than a handful
+ * of blocks.
+ */
+test.describe('the twelfth wave', () => {
+  /**
+   * The whole point of asking for the installation directory: everything that
+   * used to be a separate question is now found from it.
+   */
+  test('reads the workflows out of a ComfyUI folder and lets you choose which appear', async ({
+    page,
+  }) => {
+    await resetState();
+
+    // A stock installation, as far as anything here is concerned.
+    const root = mkdtempSync(join(tmpdir(), 'latent-e2e-comfy-'));
+    const workflows = join(root, 'user', 'default', 'workflows');
+    mkdirSync(workflows, { recursive: true });
+    // Saved by the editor, not exported — which is what is actually on disk.
+    writeFileSync(join(workflows, 'from-the-editor.json'), JSON.stringify(sd15Txt2ImgUi));
+
+    try {
+      await open(page, '/settings');
+      await page.getByLabel('ComfyUI folder').fill(root);
+      await page.getByRole('button', { name: 'Save' }).first().click();
+      await page.getByRole('button', { name: 'Read workflows' }).click();
+
+      // First: the same name is also in the two shortcut dropdowns.
+      await expect(page.getByText('from-the-editor').first()).toBeVisible({ timeout: 20_000 });
+      await expect(page.getByText('1 of 1 shown')).toHaveCount(0);
+      await expect(page.getByText('0 of 1 shown')).toBeVisible();
+      await page.screenshot({ path: 'test-results/40-workflow-scan.png' });
+
+      // Switched off on arrival, so the generate picker stays short.
+      await page.getByRole('link', { name: 'Generate' }).click();
+      await expect(page.getByText('No workflows switched on')).toBeVisible();
+
+      await page.getByRole('link', { name: 'Settings' }).click();
+      await page
+        .getByRole('switch', { name: /Show from-the-editor in the generate picker/ })
+        .click();
+      await expect(page.getByText('1 of 1 shown')).toBeVisible();
+
+      // And now it is a workflow you can actually run, converted from the
+      // editor's positional widget list on the way in.
+      await page.getByRole('link', { name: 'Generate' }).click();
+      await expect(page.getByPlaceholder('Describe the image…')).toBeVisible();
+      await expect(page.getByRole('button', { name: /Steps.*20/ })).toBeVisible();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      await resetState();
+    }
+  });
+
+  /** Settings is a long page; it must not slide sideways out of the display. */
+  test('does not pan sideways', async ({ page }) => {
+    await open(page, '/settings');
+    const widths = await page.evaluate(() => ({
+      scroll: document.documentElement.scrollWidth,
+      client: document.documentElement.clientWidth,
+    }));
+    expect(widths.scroll).toBeLessThanOrEqual(widths.client);
+  });
+
+  /**
+   * "Blocks per prompt" with no ceiling.
+   *
+   * Zero is the stored value, but nobody would type it, so there is a chip
+   * that says what it means.
+   */
+  test('offers an unlimited number of blocks per prompt', async ({ page }) => {
+    await resetState();
+    // The controls only exist once there is a library to draw from.
+    await withApi((ctx) =>
+      ctx.post('/api/prompt-blocks', {
+        data: { name: 'Rain', category: 'Weather', text: 'wet streets' },
+      }),
+    );
+
+    await open(page, '/variation');
+    await page.getByRole('button', { name: 'At most all' }).click();
+    await expect
+      .poll(async () =>
+        withApi(async (ctx) => {
+          const mode = (await (await ctx.get('/api/prompt-mode')).json()) as { maxBlocks: number };
+          return mode.maxBlocks;
+        }),
+      )
+      .toBe(0);
+    await page.screenshot({ path: 'test-results/41-unlimited-blocks.png' });
+  });
+
+  /** Two columns, because the library is long and the phone is narrow. */
+  test('lays the prompt library out two blocks to a row', async ({ page }) => {
+    await resetState();
+    await withApi(async (ctx) => {
+      for (const name of ['Golden hour', 'Blue hour', 'Overcast', 'Harsh noon']) {
+        await ctx.post('/api/prompt-blocks', {
+          data: { name, category: 'Lighting', text: name.toLowerCase() },
+        });
+      }
+    });
+
+    await open(page, '/blocks');
+    const first = await page.getByText('Golden hour', { exact: true }).boundingBox();
+    const second = await page.getByText('Blue hour', { exact: true }).boundingBox();
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    // Side by side: same row, different column.
+    expect(Math.abs(first!.y - second!.y)).toBeLessThan(first!.height);
+    expect(second!.x).toBeGreaterThan(first!.x + first!.width);
+    await page.screenshot({ path: 'test-results/42-blocks-two-columns.png' });
   });
 });

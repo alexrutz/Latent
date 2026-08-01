@@ -15,6 +15,7 @@ import type {
 } from '@latent/shared';
 
 import type { Archive } from './archive.js';
+import { outputRoot } from './comfyPaths.js';
 import type { Store } from './db.js';
 import { readImageSize, readPngText } from './images/png.js';
 
@@ -47,8 +48,7 @@ export class Importer {
   ) {}
 
   private root(): string | null {
-    const configured = this.store.getSettings().importRoot;
-    return configured ? resolve(configured) : null;
+    return outputRoot(this.store.getSettings());
   }
 
   /**

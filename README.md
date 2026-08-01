@@ -18,9 +18,10 @@ form. Nothing about your ComfyUI setup changes.
 
 ## What it does
 
-- **Any workflow you already have.** Import a ComfyUI *Export (API)* file and
-  Latent reads the graph, works out which inputs are editable, and builds a form
-  — prompt, seed, steps, CFG, sampler, dimensions, model pickers. Model and
+- **Any workflow you already have.** Point Latent at your ComfyUI folder and it
+  reads every workflow saved in it — the editor's own files, not just an
+  *Export (API)*. For each one it works out which inputs are editable and builds
+  a form: prompt, seed, steps, CFG, sampler, dimensions, model pickers. Model and
   sampler lists come from your server, so they are always the files you actually
   have installed.
 - **Remote instances, including vast.ai.** Save any number of connections and
@@ -67,7 +68,8 @@ form. Nothing about your ComfyUI setup changes.
 - **Prompt blocks.** Save the phrases you reuse and assemble a prompt by tapping
   chips instead of typing paragraphs on a phone keyboard. Tapping a chip again
   takes that phrase back out. They have a **Blocks** tab of their own for making,
-  grouping and ordering them.
+  grouping and ordering them — laid out two to a row, because a library worth
+  having is longer than one screen.
 - **A form you build.** Drag fields into the order you want, give each one half a
   row or a whole one, rename or hide anything — per workflow, saved under a name.
 - **A monitor.** VRAM, GPU, CPU and sampler speed over time, with the queue's own
@@ -88,8 +90,8 @@ form. Nothing about your ComfyUI setup changes.
 - **Edit a photo before it uploads.** Crop to an aspect ratio, rotate by quarter
   turns or a free angle, mirror and downscale on the device, so an img2img input
   is the right shape before the bytes are sent anywhere.
-- **An input folder.** Point Latent at a folder of reference shots, sketches and
-  masks and pick one straight from the image input — copied into ComfyUI
+- **An input folder.** ComfyUI's own `input` directory — reference shots,
+  sketches and masks — picked straight from the image input and copied
   server-side, so the file never travels to your phone and back.
 - **Queue.** See what is waiting, remove single jobs, clear the lot.
 - **Installable.** Add it to your home screen and it runs full-screen like an app.
@@ -183,15 +185,33 @@ docker compose up -d
 
 `docker-compose.yml` assumes ComfyUI runs on the host; adjust `COMFY_URL` if not.
 
-## Importing a workflow
+## One folder, and the workflows in it
 
-In ComfyUI, open the workflow you want and choose **Workflow → Export (API)**
-(older builds: enable *Dev mode* in settings, then **Save (API Format)**). In
-Latent, go to **Settings → Import** and pick that file.
+Latent asks for **one path**: where ComfyUI is installed. A stock install keeps
+everything in known places under it, so the rest follows —
 
-The regular "Export" format will not work — it describes the visual graph, not
-the executable one. Latent detects it and tells you so rather than failing
-obscurely.
+```
+<ComfyUI>/output                    pictures to import
+<ComfyUI>/input                     pictures to feed into workflows
+<ComfyUI>/user/default/workflows    every workflow you have ever saved
+```
+
+Enter it under **Settings → ComfyUI folder** and tap **Read workflows**. That
+imports the lot, converting the editor's own save format on the way in: the
+positional widget lists those files use are walked against `/object_info`, so
+`20` is understood to be `steps` without anybody re-exporting anything.
+
+They arrive **switched off**. A long-running install holds dozens of workflows,
+most of them experiments, and a picker listing all of them is worse than one
+listing none — so each has a switch in Settings, and only the ones you turn on
+appear when you generate.
+
+An *Export (API)* file still imports one at a time through **Settings → Import**,
+and so does an editor file if you would rather pick it by hand.
+
+If a workflow uses a node this ComfyUI does not have, or has nothing in it that
+saves an image, the import says exactly that instead of failing later at submit
+time.
 
 ### If the form isn't quite right
 
@@ -274,8 +294,16 @@ while the rest is this installation's configuration.
 
 Restoring is additive and never overwrites: anything already in the database
 wins, so a stale file cannot undo work. Set `LATENT_STATE_DIR` to put them
-somewhere else — and note that they contain your connection secrets, so they are
-written `0600`.
+somewhere else.
+
+**Both files are encrypted**, with AES-256-GCM under a key derived from your app
+password — they hold connection secrets and your whole prompt library, and they
+sit in a directory chosen precisely because it does not get deleted. They are
+readable only after somebody signs in, which has one consequence worth stating
+plainly: wiping the database and then choosing a *different* password on the way
+back up leaves them undecryptable. Latent refuses to overwrite a file it could
+not read, and says so in the log, rather than quietly destroying what it holds.
+Changing the password rewrites both files under the new key.
 
 ## What the graph printed
 
@@ -349,9 +377,9 @@ still there years later.
 
 ## An input folder
 
-**Settings → Input images.** Give it a path and its contents appear behind
-**From folder** next to any image input — reference shots, sketches, masks,
-anything a workflow should read rather than produce.
+`<ComfyUI>/input`, found from the folder you already entered. Its contents
+appear behind **From folder** next to any image input — reference shots,
+sketches, masks, anything a workflow should read rather than produce.
 
 Tapping a picture copies it into ComfyUI's input directory **server-side**. The
 bytes go from the Latent machine straight to ComfyUI; nothing travels to the
@@ -369,10 +397,10 @@ root.
 
 ## Importing an existing output folder
 
-**A folder at a time.** A ComfyUI output directory is routinely tens of
-thousands of files in dozens of dated folders, and a flat list of all of them is
-something nobody can find anything in. Settings → *Import from a folder* walks
-the tree one level at a time, with the image count on each folder, and imports
+**A folder at a time.** `<ComfyUI>/output` is routinely tens of thousands of
+files in dozens of dated folders, and a flat list of all of them is something
+nobody can find anything in. Settings → *Import from a folder* walks the tree
+one level at a time, with the image count on each folder, and imports
 a single picture, a selection, or a whole folder and everything under it in one
 request — the expansion happens on the server, so a phone never sends ten
 thousand paths.
@@ -425,7 +453,10 @@ per-group limits, parameter ranges and saved setups add up to a screenful, and
 something you arrange once and then leave alone deserves a place you can find
 rather than a button you have to remember is there. Settings:
 
-- **Blocks per prompt** — a range, so the length varies too.
+- **Blocks per prompt** — *at least* and *at most*, drawn between each time so
+  the length varies too. Both offer **all** as well as a number: *at most all*
+  puts no ceiling on it beyond the pool and the group limits, and *at least all*
+  makes the draw take everything it is allowed to.
 - **Keep what I typed** (on by default) — the draw is *added* to your prompt, so
   "photo of a lighthouse" stays the subject and the blocks supply the treatment.
   Off, the prompt is built purely from blocks.

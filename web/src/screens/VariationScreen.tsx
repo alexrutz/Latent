@@ -24,7 +24,7 @@ import {
   useVariationPresetMutations,
   useVariationPresets,
   useWorkflow,
-  useWorkflows,
+  useVisibleWorkflows,
 } from '../api/queries';
 import { NumericInput } from '../components/NumericInput';
 import { Toggle } from '../components/ParamControl';
@@ -135,6 +135,11 @@ export function VariationScreen() {
             <div className="space-y-2">
               <p className="text-xs font-medium tracking-wide text-muted uppercase">
                 Blocks per prompt
+              </p>
+              <p className="text-[11px] text-muted">
+                How many of the pool land in one prompt. A number is drawn between the two each
+                time; <strong className="text-body">all</strong> means as many as the pool and the
+                group limits allow.
               </p>
               <div className="flex items-center gap-2">
                 <CountPicker
@@ -350,7 +355,7 @@ function ParamVariation({
 }) {
   const [open, setOpen] = useState(config.params.length > 0);
   const [adding, setAdding] = useState(false);
-  const workflows = useWorkflows();
+  const workflows = useVisibleWorkflows();
   const [workflowId, setWorkflowId] = useState<string | null>(null);
   const workflow = useWorkflow(workflowId ?? workflows.data?.[0]?.id ?? null);
 
@@ -650,6 +655,14 @@ function GroupLimitPicker({
   );
 }
 
+/**
+ * How many blocks, as a row of choices rather than a number to type.
+ *
+ * The options stop at the size of the pool — offering "at least six" when six
+ * blocks do not exist would be a setting that quietly does nothing — and end
+ * with **all**, stored as zero, which keeps meaning "everything available" as
+ * the library grows.
+ */
 function CountPicker({
   label,
   value,
@@ -682,6 +695,18 @@ function CountPicker({
             {option}
           </button>
         ))}
+        <button
+          type="button"
+          aria-label={`${label} all`}
+          aria-pressed={value === 0}
+          onClick={() => onChange(0)}
+          className={cn(
+            'h-7 rounded-md px-1.5 text-xs',
+            value === 0 ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+          )}
+        >
+          all
+        </button>
       </div>
     </div>
   );

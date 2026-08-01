@@ -47,7 +47,22 @@
     font-family:
       ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
     /* Prevent the whole page from rubber-banding; panes scroll individually. */
-    overscroll-behavior-y: none;
+    overscroll-behavior: none;
+  }
+
+  /*
+   * The page itself never moves sideways.
+   *
+   * Anything can overflow for a moment — a dragged row following a finger, a
+   * long unbroken string, a chip row mid-animation — and when it does, the
+   * whole page becomes pannable and slides half off the screen with a strip of
+   * background where the app used to be. `clip` refuses that outright, and
+   * unlike `hidden` it does not turn these into scroll containers, which would
+   * break every `position: sticky` inside them.
+   */
+  html,
+  body {
+    overflow-x: clip;
   }
 
   /*

@@ -299,3 +299,53 @@ describe('rollRandomPrompt', () => {
     expect(seen.size).toBeGreaterThan(1);
   });
 });
+
+describe('an unlimited draw', () => {
+  const library = [
+    { id: '1', name: 'a', category: 'Mood', text: 'one', position: 0, createdAt: 0 },
+    { id: '2', name: 'b', category: 'Place', text: 'two', position: 1, createdAt: 0 },
+    { id: '3', name: 'c', category: 'Camera', text: 'three', position: 2, createdAt: 0 },
+  ];
+
+  it('takes everything the pool and the group limits allow', () => {
+    const config = normaliseRandomPromptConfig({
+      enabled: true,
+      minBlocks: 1,
+      maxBlocks: 0,
+      onePerGroup: true,
+    });
+    expect(config.maxBlocks).toBe(0);
+
+    // A lifted ceiling is still a range: one to all three.
+    const sizes = new Set<number>();
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      sizes.add(pickRandomBlocks(library, config, '').length);
+    }
+    expect(Math.max(...sizes)).toBe(3);
+    expect(Math.min(...sizes)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('takes all of them when the floor is unlimited too', () => {
+    const config = normaliseRandomPromptConfig({
+      enabled: true,
+      minBlocks: 0,
+      maxBlocks: 0,
+      onePerGroup: true,
+    });
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      expect(pickRandomBlocks(library, config, '')).toHaveLength(3);
+    }
+  });
+
+  it('still respects the group limits when unlimited', () => {
+    const sameGroup = library.map((block) => ({ ...block, category: 'Mood' }));
+    const config = normaliseRandomPromptConfig({
+      enabled: true,
+      minBlocks: 1,
+      maxBlocks: 0,
+      onePerGroup: true,
+    });
+    // One per group is one, however many the draw is allowed to take.
+    expect(pickRandomBlocks(sameGroup, config, '')).toHaveLength(1);
+  });
+});

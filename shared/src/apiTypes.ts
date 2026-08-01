@@ -13,6 +13,16 @@ export interface WorkflowSummary {
   updatedAt: number;
   capabilities: ParamSchema['capabilities'];
   missingNodeTypes: string[];
+  /**
+   * Whether this one appears in the Generate screen's picker.
+   *
+   * Reading a whole ComfyUI installation finds every workflow anybody ever
+   * saved, which is the right thing to import and the wrong thing to scroll
+   * through before every render.
+   */
+  visible: boolean;
+  /** Where it was read from, when it came from the ComfyUI folder. */
+  sourcePath: string | null;
 }
 
 export interface WorkflowDetail extends WorkflowSummary {
@@ -28,7 +38,7 @@ export interface WorkflowDetail extends WorkflowSummary {
 
 export interface CreateWorkflowRequest {
   name: string;
-  /** The parsed contents of a "Save (API Format)" export. */
+  /** A "Save (API Format)" export, or a workflow saved by the editor itself. */
   graph: unknown;
 }
 
@@ -36,6 +46,8 @@ export interface UpdateWorkflowRequest {
   name?: string;
   overrides?: FieldOverrides;
   lastValues?: ParamValues;
+  /** Whether this workflow appears in the generate picker. */
+  visible?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -465,6 +477,17 @@ export interface ImportBrowseResult {
   truncated: boolean;
 }
 
+/** What reading the ComfyUI workflows folder found. */
+export interface WorkflowScanResult {
+  ok: boolean;
+  message?: string;
+  /** Where it looked. */
+  directory: string;
+  imported: number;
+  skipped: number;
+  failed: { path: string; reason: string }[];
+}
+
 export interface ImportResult {
   imported: number;
   skipped: number;
@@ -580,6 +603,15 @@ export interface AppSettings {
   /** Workflow used by "Send to img2img". */
   img2imgWorkflowId: string | null;
   defaultWorkflowId: string | null;
+  /**
+   * The ComfyUI installation directory, from which everything else follows.
+   *
+   * A standard install keeps its inputs, its outputs and its saved workflows in
+   * known places under one root, so asking for three paths was asking the same
+   * question three times. The two below remain as overrides for the unusual
+   * setups — a network mount, outputs redirected elsewhere — and win when set.
+   */
+  comfyRoot: string | null;
   /** Absolute path to a ComfyUI output folder to scan for import. */
   importRoot: string | null;
   /**

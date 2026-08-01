@@ -71,8 +71,12 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
     const result = ctx.auth.setup(password);
     if (!result.ok) return reply.code(409).send({ error: result.error });
 
-    // Create the archive key under the password that was just chosen.
-    if (typeof password === 'string') ctx.vault.unlock(password);
+    // Create the archive key under the password that was just chosen, and
+    // with it the key the settings files are written under.
+    if (typeof password === 'string') {
+      ctx.vault.unlock(password);
+      ctx.stateFiles.unlock(password);
+    }
 
     app.log.info('Password set — this server is now claimed.');
     ctx.auth.setSession(reply);
@@ -99,7 +103,12 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
     // Signing in is what unseals the archive: the key is derived from the
     // password and only ever held in memory, so a restarted server stays
     // locked until somebody actually logs in.
-    if (typeof request.body?.password === 'string') ctx.vault.unlock(request.body.password);
+    if (typeof request.body?.password === 'string') {
+      ctx.vault.unlock(request.body.password);
+      // The settings files are encrypted under the same password, and this is
+      // the first moment they can be read.
+      ctx.stateFiles.unlock(request.body.password);
+    }
     ctx.auth.setSession(reply);
     return { ok: true };
   });
@@ -124,6 +133,8 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
             error: 'The password changed but the image archive could not be re-keyed.',
           });
         }
+        // Two small files, so they are simply rewritten under the new key.
+        ctx.stateFiles.rekey(newPassword);
       }
 
       // The session token is derived from the password hash, so the caller's

@@ -24,10 +24,14 @@ interface SortableListProps<T> {
  * A list you reorder by dragging, built on pointer events.
  *
  * HTML5 drag and drop does not exist on touch, so the browser's own mechanism is
- * no help on the device this app is for. This measures the rows once when a drag
- * starts and then works entirely in transforms: nothing re-flows mid-drag, the
- * rows under your finger move out of the way, and the new order is committed in
- * one call when you let go.
+ * no help on the device this app is for. This measures the items once when a
+ * drag starts and then works entirely in transforms: nothing re-flows mid-drag,
+ * the slot you are over is outlined, and the new order is committed in one call
+ * when you let go.
+ *
+ * Works for a column and for a grid, because the same component lays out both —
+ * the target is whichever item's centre is nearest the finger, which needs no
+ * assumption about how they are arranged.
  *
  * Dragging is deliberately restricted to a handle. A list whose rows are also
  * buttons cannot start a drag from anywhere without swallowing taps.
@@ -43,13 +47,13 @@ export function SortableList<T>({
   const drag = useRef<{
     id: string;
     from: number;
+    startX: number;
     startY: number;
-    tops: number[];
-    heights: number[];
+    centres: { x: number; y: number }[];
   } | null>(null);
 
   const [active, setActive] = useState<string | null>(null);
-  const [offset, setOffset] = useState(0);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [target, setTarget] = useState(0);
 
   const start = (event: ReactPointerEvent, id: string) => {
@@ -62,12 +66,15 @@ export function SortableList<T>({
     drag.current = {
       id,
       from: index,
+      startX: event.clientX,
       startY: event.clientY,
-      tops: measured.map((rect) => rect!.top),
-      heights: measured.map((rect) => rect!.height),
+      centres: measured.map((rect) => ({
+        x: rect!.left + rect!.width / 2,
+        y: rect!.top + rect!.height / 2,
+      })),
     };
     setActive(id);
-    setOffset(0);
+    setOffset({ x: 0, y: 0 });
     setTarget(index);
 
     try {
@@ -78,22 +85,30 @@ export function SortableList<T>({
     }
   };
 
-  const move = (event: { clientY: number; preventDefault: () => void }) => {
+  const move = (event: { clientX: number; clientY: number; preventDefault: () => void }) => {
     const state = drag.current;
     if (!state) return;
     event.preventDefault();
 
-    const dy = event.clientY - state.startY;
-    setOffset(dy);
+    setOffset({ x: event.clientX - state.startX, y: event.clientY - state.startY });
 
-    // Where the dragged row's middle now sits, against where every other row's
-    // middle started. The count of rows above it *is* the insertion index.
-    const centre = state.tops[state.from]! + state.heights[state.from]! / 2 + dy;
-    let next = 0;
-    for (let index = 0; index < items.length; index += 1) {
-      if (index === state.from) continue;
-      if (state.tops[index]! + state.heights[index]! / 2 < centre) next += 1;
-    }
+    /*
+     * The slot nearest the finger, measured in two dimensions.
+     *
+     * Counting how many rows sit above the dragged one only works for a single
+     * column; the same component now lays blocks out two across, where two
+     * items share a y and that rule picks the wrong one. Nearest-centre is the
+     * same answer for a list and the right one for a grid.
+     */
+    let next = state.from;
+    let best = Number.POSITIVE_INFINITY;
+    state.centres.forEach((centre, index) => {
+      const distance = (centre.x - event.clientX) ** 2 + (centre.y - event.clientY) ** 2;
+      if (distance < best) {
+        best = distance;
+        next = index;
+      }
+    });
     setTarget(next);
   };
 
@@ -101,7 +116,7 @@ export function SortableList<T>({
     const state = drag.current;
     drag.current = null;
     setActive(null);
-    setOffset(0);
+    setOffset({ x: 0, y: 0 });
 
     if (!state) return;
     if (target !== state.from) {
@@ -135,21 +150,14 @@ export function SortableList<T>({
     };
   });
 
-  const shiftFor = (index: number): number => {
-    const state = drag.current;
-    if (!state || index === state.from) return 0;
-    const height = state.heights[state.from]!;
-    if (state.from < target && index > state.from && index <= target) return -height;
-    if (target < state.from && index >= target && index < state.from) return height;
-    return 0;
-  };
-
   return (
     <ul className={className}>
       {items.map((item, index) => {
         const id = idOf(item);
         const dragging = active === id;
-        const shift = dragging ? offset : shiftFor(index);
+        // The slot this would land in, outlined rather than animated: shuffling
+        // the others out of the way has no sensible meaning in a grid.
+        const landing = active !== null && !dragging && index === target;
 
         return (
           <li
@@ -158,8 +166,9 @@ export function SortableList<T>({
               if (element) rows.current.set(id, element);
               else rows.current.delete(id);
             }}
+            className={landing ? 'rounded-xl ring-2 ring-accent' : undefined}
             style={{
-              transform: shift ? `translateY(${shift}px)` : undefined,
+              transform: dragging ? `translate(${offset.x}px, ${offset.y}px)` : undefined,
               transition: dragging ? 'none' : 'transform 0.15s ease',
               zIndex: dragging ? 10 : undefined,
               position: dragging ? 'relative' : undefined,

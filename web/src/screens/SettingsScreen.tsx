@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { fieldPoints, fieldPointValues, usesPointLine } from '@latent/shared';
 import type {
@@ -20,6 +20,7 @@ import {
   useImportWorkflow,
   useRescanWorkflow,
   useSaveLayout,
+  useScanWorkflows,
   useSettings,
   useStatus,
   useUpdateSettings,
@@ -92,6 +93,18 @@ export function SettingsScreen() {
 
   const device = status.data?.devices[0];
 
+  /*
+   * Shown workflows first: after reading a whole installation the handful you
+   * actually use should not be somewhere in the middle of forty others.
+   */
+  const orderedWorkflows = useMemo(
+    () =>
+      [...(workflows.data ?? [])].sort(
+        (a, b) => Number(b.visible) - Number(a.visible) || a.name.localeCompare(b.name),
+      ),
+    [workflows.data],
+  );
+
   return (
     <div className="safe-t space-y-6 px-4 pt-3 pb-6">
       <h1 className="text-xl font-semibold">Settings</h1>
@@ -125,6 +138,8 @@ export function SettingsScreen() {
 
       <ConnectionsScreen />
 
+      <ComfyFolderSection />
+
       {/* Workflows -------------------------------------------------- */}
       <section className="space-y-2">
         <div className="flex items-center justify-between">
@@ -156,15 +171,23 @@ export function SettingsScreen() {
         {workflows.data?.length === 0 && (
           <Card>
             <p className="text-sm text-muted">
-              No workflows yet. In ComfyUI, open the workflow you want and choose{' '}
-              <strong className="text-body">Workflow → Export (API)</strong>, then import that file
-              here.
+              No workflows yet. Set the ComfyUI folder above and tap{' '}
+              <strong className="text-body">Read workflows</strong> to pull in everything already
+              saved there — or import a single file with the button above.
             </p>
           </Card>
         )}
 
+        {(workflows.data?.length ?? 0) > 0 && (
+          <p className="text-xs text-muted">
+            The switch decides whether a workflow appears in the generate picker.{' '}
+            {workflows.data?.filter((workflow) => workflow.visible).length} of{' '}
+            {workflows.data?.length} shown.
+          </p>
+        )}
+
         <div className="space-y-2">
-          {workflows.data?.map((workflow) => (
+          {orderedWorkflows.map((workflow) => (
             <WorkflowRow key={workflow.id} workflow={workflow} onEdit={() => setEditing(workflow.id)} />
           ))}
         </div>
@@ -288,8 +311,6 @@ export function SettingsScreen() {
       </section>
 
       {/* Folder import ---------------------------------------------- */}
-      <InputFolderSection />
-
       <ImportSection />
 
       {/* Maintenance ------------------------------------------------ */}
@@ -345,6 +366,7 @@ function WorkflowRow({
 }) {
   const remove = useDeleteWorkflow();
   const rescan = useRescanWorkflow();
+  const update = useUpdateWorkflow();
   const [confirming, setConfirming] = useState(false);
 
   return (
@@ -362,8 +384,20 @@ function WorkflowRow({
             </p>
           )}
         </div>
+        {/*
+          Reading a whole installation finds every workflow anybody ever saved.
+          This is the switch that decides which of them are worth scrolling past
+          on the generate screen.
+        */}
+        <Toggle
+          checked={workflow.visible}
+          onChange={(visible) => update.mutate({ id: workflow.id, patch: { visible } })}
+          label={`Show ${workflow.name} in the generate picker`}
+        />
       </div>
 
+      {/* A workflow nobody generates with needs no buttons taking up room. */}
+      {workflow.visible && (
       <div className="flex flex-wrap gap-2">
         <Button variant="secondary" size="sm" onClick={onEdit}>
           Edit form
@@ -397,6 +431,7 @@ function WorkflowRow({
           </Button>
         )}
       </div>
+      )}
     </Card>
   );
 }
@@ -742,20 +777,32 @@ function PointNumber({
  * kept, this one is reference shots, sketches and masks going out to img2img.
  * Read-only — Latent never writes here.
  */
-function InputFolderSection() {
+/**
+ * The one path Latent asks for.
+ *
+ * A stock ComfyUI keeps its outputs, its inputs and its saved workflows in
+ * fixed places under its installation directory, so asking for each of them
+ * separately was asking the same question three times over. Enter the root and
+ * the rest follows.
+ */
+function ComfyFolderSection() {
   const settings = useSettings();
   const updateSettings = useUpdateSettings();
-  const [path, setPath] = useState(settings.data?.inputRoot ?? '');
+  const scan = useScanWorkflows();
+  const [path, setPath] = useState(settings.data?.comfyRoot ?? '');
   const [saved, setSaved] = useState(false);
+  const [scanned, setScanned] = useState<string | null>(null);
+
+  const root = settings.data?.comfyRoot ?? null;
 
   return (
     <section className="space-y-2">
-      <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Input images</h2>
+      <h2 className="text-xs font-medium tracking-wide text-muted uppercase">ComfyUI folder</h2>
       <Card className="space-y-3">
         <p className="text-xs text-muted">
-          A folder of pictures to use as workflow inputs. Anything in here shows up under “From
-          folder” next to an image input, and is copied into ComfyUI without passing through your
-          phone. Subfolders are included; nothing is ever written back.
+          Where ComfyUI is installed, on the machine running Latent. Everything else is found from
+          there: <code>output</code> to import from, <code>input</code> to feed pictures in, and{' '}
+          <code>user/default/workflows</code> to read workflows out of.
         </p>
 
         <div className="flex gap-2">
@@ -765,17 +812,18 @@ function InputFolderSection() {
               setPath(event.target.value);
               setSaved(false);
             }}
-            placeholder="/home/you/reference"
+            placeholder="/home/you/ComfyUI"
             autoCapitalize="none"
             autoCorrect="off"
             spellCheck={false}
+            aria-label="ComfyUI folder"
             className="min-w-0 flex-1 rounded-xl border border-line bg-surface px-4 py-3 text-sm focus:border-accent focus:outline-none"
           />
           <Button
             variant="secondary"
             busy={updateSettings.isPending}
             onClick={() => {
-              updateSettings.mutate({ inputRoot: path.trim() || null });
+              updateSettings.mutate({ comfyRoot: path.trim() || null });
               setSaved(true);
             }}
           >
@@ -784,6 +832,47 @@ function InputFolderSection() {
         </div>
 
         {saved && <p className="text-xs text-muted">Saved.</p>}
+
+        <div className="space-y-1.5 border-t border-line pt-3">
+          <p className="text-xs text-muted">
+            Reads every workflow saved in that installation. They arrive switched off — turn on the
+            ones you use below, so the generate picker stays short.
+          </p>
+          <Button
+            variant="secondary"
+            size="sm"
+            busy={scan.isPending}
+            onClick={async () => {
+              const result = await scan.mutateAsync();
+              setScanned(
+                result.ok
+                  ? (result.message ??
+                      `Read ${result.imported} new` +
+                        (result.skipped ? `, ${result.skipped} already here` : '') +
+                        (result.failed.length ? `, ${result.failed.length} could not be read` : ''))
+                  : (result.message ?? 'Could not read that folder.'),
+              );
+            }}
+          >
+            Read workflows
+          </Button>
+          {scanned && <p className="text-xs text-muted">{scanned}</p>}
+          {(scan.data?.failed.length ?? 0) > 0 && (
+            <ul className="space-y-0.5 text-[11px] text-warn">
+              {scan.data?.failed.slice(0, 8).map((failure) => (
+                <li key={failure.path}>
+                  {failure.path} — {failure.reason}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {!root && (
+          <p className="text-[11px] text-muted">
+            Nothing is configured yet, so importing and the input picker have nowhere to look.
+          </p>
+        )}
       </Card>
     </section>
   );
@@ -798,12 +887,18 @@ function InputFolderSection() {
  */
 function ImportSection() {
   const settings = useSettings();
-  const updateSettings = useUpdateSettings();
   const importFiles = useImportFiles();
+
+  /*
+   * Display only — the server does the real resolution, including the explicit
+   * override an unusual install may still have set.
+   */
+  const root =
+    settings.data?.importRoot ??
+    (settings.data?.comfyRoot ? `${settings.data.comfyRoot.replace(/[/\\]$/, '')}/output` : null);
 
   const [open, setOpen] = useState(false);
   const [path, setPath] = useState('');
-  const [root, setRoot] = useState(settings.data?.importRoot ?? '');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [recursive, setRecursive] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -854,27 +949,19 @@ function ImportSection() {
       </h2>
       <Card className="space-y-3">
         <p className="text-xs text-muted">
-          A path on the machine running Latent — usually ComfyUI’s <code>output</code> directory.
-          If ComfyUI runs on a remote instance its outputs are not on this filesystem; point this
-          at a local folder, a network mount, or something synced.
+          ComfyUI’s <code>output</code> directory, found from the folder above. If ComfyUI runs on
+          a remote instance its outputs are not on this filesystem, so point the folder above at a
+          local copy, a network mount, or something synced.
         </p>
 
-        <div className="flex gap-2">
-          <input
-            value={root}
-            onChange={(event) => setRoot(event.target.value)}
-            placeholder="/home/you/ComfyUI/output"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-            aria-label="Import folder"
-            className="min-w-0 flex-1 rounded-xl border border-line bg-surface px-4 py-3 text-sm focus:border-accent focus:outline-none"
-          />
+        <div className="flex items-center gap-2">
+          <code className="min-w-0 flex-1 truncate rounded-xl border border-line bg-surface px-4 py-3 text-xs text-muted">
+            {root ?? 'No ComfyUI folder set'}
+          </code>
           <Button
             variant="secondary"
-            busy={updateSettings.isPending}
+            disabled={!root}
             onClick={() => {
-              updateSettings.mutate({ importRoot: root.trim() || null });
               setOpen(true);
               go('');
             }}

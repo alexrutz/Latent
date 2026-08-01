@@ -19,6 +19,7 @@ import { Store } from './db.js';
 import { Orchestrator } from './orchestrator.js';
 import { StateFiles } from './statefile.js';
 import { Sweeper } from './sweeper.js';
+import { WorkflowScanner } from './workflowScan.js';
 import { registerConnectionRoutes, toConfig } from './routes/connections.js';
 import type { AppContext } from './routes/context.js';
 import { registerGalleryRoutes } from './routes/gallery.js';
@@ -116,9 +117,17 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
    * orchestrator is about to be built around.
    */
   const stateFiles = new StateFiles(store, config.stateDir, app.log);
-  stateFiles.restore();
+  /*
+   * With the password in the environment the files can be read straight away.
+   * Without it they stay sealed until somebody signs in — except for files
+   * written before they were encrypted, which `restore` still reads so an
+   * upgraded install comes up configured rather than blank.
+   */
+  if (config.password) stateFiles.unlock(config.password);
+  else stateFiles.restore();
 
   const orchestrator = new Orchestrator(store, resolveConnection(store, config, app), app.log);
+  const workflowScanner = new WorkflowScanner(store, orchestrator, stateFiles);
 
   // With the password fixed in the environment there is nobody to wait for, so
   // the archive can be unsealed at boot. Otherwise it stays locked until the
@@ -136,6 +145,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     inputs,
     stateFiles,
     sweeper,
+    workflowScanner,
   };
 
   /*

@@ -5,7 +5,7 @@ import {
   useQueryClient,
   type QueryClient,
 } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 
 import type {
   AppSettings,
@@ -103,6 +103,30 @@ export function useRescanWorkflow() {
   return useMutation({
     mutationFn: (id: string) => api.rescanWorkflow(id),
     onSuccess: (detail) => client.setQueryData(queryKeys.workflow(detail.id), detail),
+  });
+}
+
+/**
+ * Only the workflows chosen to appear in the generate picker.
+ *
+ * Reading a whole ComfyUI installation finds everything anybody ever saved,
+ * which is the right thing to import and the wrong thing to scroll through
+ * before every render. Settings is where the switch lives.
+ */
+export function useVisibleWorkflows() {
+  const query = useWorkflows();
+  return useMemo(
+    () => ({ ...query, data: query.data?.filter((workflow) => workflow.visible) }),
+    [query],
+  );
+}
+
+/** Import every workflow saved in the configured ComfyUI installation. */
+export function useScanWorkflows() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.scanWorkflows(),
+    onSuccess: () => void client.invalidateQueries({ queryKey: queryKeys.workflows }),
   });
 }
 

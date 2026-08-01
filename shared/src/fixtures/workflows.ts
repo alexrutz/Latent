@@ -227,3 +227,107 @@ export const workflowFixtures = {
   unknownCustomNodes,
   withTextPreview,
 };
+
+/**
+ * The same default graph as ComfyUI's own editor saves it.
+ *
+ * Not an "Export (API)" file: this is what actually sits in
+ * `user/default/workflows`, with positional widget values, a link table, and a
+ * seed that contributes two entries because of its "after generate" control.
+ */
+export const sd15Txt2ImgUi = {
+  last_node_id: 9,
+  last_link_id: 9,
+  nodes: [
+    {
+      id: 4,
+      type: 'CheckpointLoaderSimple',
+      pos: [26, 474],
+      mode: 0,
+      inputs: [],
+      outputs: [
+        { name: 'MODEL', type: 'MODEL', links: [1] },
+        { name: 'CLIP', type: 'CLIP', links: [3, 5] },
+        { name: 'VAE', type: 'VAE', links: [8] },
+      ],
+      widgets_values: ['v1-5-pruned-emaonly.safetensors'],
+    },
+    {
+      id: 6,
+      type: 'CLIPTextEncode',
+      title: 'CLIP Text Encode (Prompt)',
+      pos: [415, 186],
+      mode: 0,
+      inputs: [{ name: 'clip', type: 'CLIP', link: 3 }],
+      outputs: [{ name: 'CONDITIONING', type: 'CONDITIONING', links: [4] }],
+      widgets_values: ['beautiful scenery nature glass bottle landscape'],
+    },
+    {
+      id: 7,
+      type: 'CLIPTextEncode',
+      title: 'CLIP Text Encode (Prompt)',
+      pos: [413, 389],
+      mode: 0,
+      inputs: [{ name: 'clip', type: 'CLIP', link: 5 }],
+      outputs: [{ name: 'CONDITIONING', type: 'CONDITIONING', links: [6] }],
+      widgets_values: ['text, watermark'],
+    },
+    {
+      id: 5,
+      type: 'EmptyLatentImage',
+      pos: [473, 609],
+      mode: 0,
+      inputs: [],
+      outputs: [{ name: 'LATENT', type: 'LATENT', links: [2] }],
+      widgets_values: [512, 512, 1],
+    },
+    {
+      id: 3,
+      type: 'KSampler',
+      pos: [863, 186],
+      mode: 0,
+      inputs: [
+        { name: 'model', type: 'MODEL', link: 1 },
+        { name: 'positive', type: 'CONDITIONING', link: 4 },
+        { name: 'negative', type: 'CONDITIONING', link: 6 },
+        { name: 'latent_image', type: 'LATENT', link: 2 },
+      ],
+      outputs: [{ name: 'LATENT', type: 'LATENT', links: [7] }],
+      // seed, its control, steps, cfg, sampler, scheduler, denoise.
+      widgets_values: [156680208700286, 'randomize', 20, 8, 'euler', 'normal', 1],
+    },
+    {
+      id: 8,
+      type: 'VAEDecode',
+      pos: [1209, 188],
+      mode: 0,
+      inputs: [
+        { name: 'samples', type: 'LATENT', link: 7 },
+        { name: 'vae', type: 'VAE', link: 8 },
+      ],
+      outputs: [{ name: 'IMAGE', type: 'IMAGE', links: [9] }],
+      widgets_values: [],
+    },
+    {
+      id: 9,
+      type: 'SaveImage',
+      pos: [1451, 189],
+      mode: 0,
+      inputs: [{ name: 'images', type: 'IMAGE', link: 9 }],
+      outputs: [],
+      widgets_values: ['ComfyUI'],
+    },
+  ],
+  links: [
+    [1, 4, 0, 3, 0, 'MODEL'],
+    [2, 5, 0, 3, 3, 'LATENT'],
+    [3, 4, 1, 6, 0, 'CLIP'],
+    [4, 6, 0, 3, 1, 'CONDITIONING'],
+    [5, 4, 1, 7, 0, 'CLIP'],
+    [6, 7, 0, 3, 2, 'CONDITIONING'],
+    [7, 3, 0, 8, 0, 'LATENT'],
+    [8, 4, 2, 8, 1, 'VAE'],
+    [9, 8, 0, 9, 0, 'IMAGE'],
+  ],
+  version: 0.4,
+};

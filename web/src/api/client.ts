@@ -31,6 +31,7 @@ import type {
   UploadImageResponse,
   WorkflowDetail,
   WorkflowPreset,
+  WorkflowScanResult,
   WorkflowSummary,
 } from '@latent/shared';
 
@@ -344,6 +345,8 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(patch),
     }),
+
+  scanWorkflows: () => request<WorkflowScanResult>('/api/workflows/scan', { method: 'POST' }),
 
   rescanWorkflow: (id: string) =>
     request<WorkflowDetail>(`/api/workflows/${id}/rescan`, { method: 'POST' }),

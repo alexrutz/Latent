@@ -245,6 +245,22 @@ ALTER TABLE images ADD COLUMN kept INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX idx_images_kept ON images (kept);
 `);
 
+/**
+ * v9: workflows read from the ComfyUI folder, and which of them to offer.
+ *
+ * Reading a whole installation finds every workflow anybody ever saved. That is
+ * the right thing to have imported and the wrong thing to scroll past before
+ * every render, so each one carries whether it belongs in the picker, and where
+ * it came from — the path is what stops a second scan importing it again.
+ */
+MIGRATIONS.push(`
+ALTER TABLE workflows ADD COLUMN visible INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE workflows ADD COLUMN source_path TEXT;
+
+CREATE UNIQUE INDEX idx_workflows_source ON workflows (source_path)
+  WHERE source_path IS NOT NULL;
+`);
+
 interface WorkflowRow {
   id: string;
   name: string;
@@ -254,6 +270,8 @@ interface WorkflowRow {
   last_values_json: string;
   created_at: number;
   updated_at: number;
+  visible: number;
+  source_path: string | null;
 }
 
 interface GenerationRow {
@@ -453,6 +471,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   upscaleWorkflowId: null,
   img2imgWorkflowId: null,
   defaultWorkflowId: null,
+  comfyRoot: null,
   importRoot: null,
   inputRoot: null,
   autoDeleteHours: null,
@@ -545,13 +564,17 @@ export class Store {
     graph: ApiWorkflow;
     schema: ParamSchema;
     lastValues: ParamValues;
+    /** Where a scanned workflow came from, so a re-scan updates rather than duplicates. */
+    sourcePath?: string | null;
+    visible?: boolean;
   }): void {
     const now = Date.now();
     this.db
       .prepare(
         `INSERT INTO workflows
-           (id, name, graph_json, schema_json, overrides_json, last_values_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, '{}', ?, ?, ?)`,
+           (id, name, graph_json, schema_json, overrides_json, last_values_json,
+            created_at, updated_at, visible, source_path)
+         VALUES (?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)`,
       )
       .run(
         input.id,
@@ -561,7 +584,22 @@ export class Store {
         JSON.stringify(input.lastValues),
         now,
         now,
+        input.visible === false ? 0 : 1,
+        input.sourcePath ?? null,
       );
+  }
+
+  findWorkflowBySourcePath(sourcePath: string): WorkflowSummary | null {
+    const row = this.db
+      .prepare<[string], WorkflowRow>('SELECT * FROM workflows WHERE source_path = ?')
+      .get(sourcePath);
+    return row ? this.toWorkflowSummary(row) : null;
+  }
+
+  setWorkflowVisible(id: string, visible: boolean): void {
+    this.db
+      .prepare('UPDATE workflows SET visible = ?, updated_at = ? WHERE id = ?')
+      .run(visible ? 1 : 0, Date.now(), id);
   }
 
   updateWorkflow(
@@ -620,6 +658,8 @@ export class Store {
       updatedAt: row.updated_at,
       capabilities: schema.capabilities,
       missingNodeTypes: schema.missingNodeTypes ?? [],
+      visible: row.visible !== 0,
+      sourcePath: row.source_path,
     };
   }
 

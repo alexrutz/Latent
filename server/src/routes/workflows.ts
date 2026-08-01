@@ -6,9 +6,17 @@ import {
   assertApiWorkflow,
   buildParamSchema,
   defaultValues,
+  isUiWorkflow,
+  uiToApiWorkflow,
+  UiWorkflowError,
   WorkflowFormatError,
 } from '@latent/shared';
-import type { CreateWorkflowRequest, UpdateWorkflowRequest, WorkflowDetail } from '@latent/shared';
+import type {
+  CreateWorkflowRequest,
+  ObjectInfo,
+  UpdateWorkflowRequest,
+  WorkflowDetail,
+} from '@latent/shared';
 
 import type { AppContext } from './context.js';
 
@@ -19,6 +27,14 @@ function withOverrides(detail: WorkflowDetail): WorkflowDetail {
 
 export function registerWorkflowRoutes(app: FastifyInstance, ctx: AppContext): void {
   app.get('/api/workflows', async () => ctx.store.listWorkflows());
+
+  /**
+   * Import every workflow saved in the ComfyUI installation.
+   *
+   * Imported hidden, so the generate picker stays short; Settings is where they
+   * are switched on.
+   */
+  app.post('/api/workflows/scan', async () => ctx.workflowScanner.scan());
 
   app.get<{ Params: { id: string } }>('/api/workflows/:id', async (request, reply) => {
     const detail = ctx.store.getWorkflow(request.params.id);
@@ -33,23 +49,30 @@ export function registerWorkflowRoutes(app: FastifyInstance, ctx: AppContext): v
       return reply.code(400).send({ error: 'A workflow name is required' });
     }
 
-    let parsedGraph;
-    try {
-      parsedGraph = assertApiWorkflow(graph);
-    } catch (error) {
-      if (error instanceof WorkflowFormatError) {
-        return reply.code(400).send({ error: error.message });
-      }
-      throw error;
-    }
-
     // Without object_info we can still build a usable schema (types inferred
     // from the literal values), so an offline ComfyUI doesn't block an import.
-    let objectInfo = {};
+    let objectInfo: ObjectInfo = {};
     try {
       objectInfo = await ctx.orchestrator.objectInfo();
     } catch {
       app.log.warn('Importing a workflow without /object_info — ComfyUI is unreachable');
+    }
+
+    let parsedGraph;
+    try {
+      /*
+       * A file saved by the editor rather than exported through "Save (API)"
+       * is a different shape entirely. Converting it here means the file the
+       * user actually has on disk is the file they can import.
+       */
+      parsedGraph = isUiWorkflow(graph)
+        ? uiToApiWorkflow(graph, objectInfo)
+        : assertApiWorkflow(graph);
+    } catch (error) {
+      if (error instanceof WorkflowFormatError || error instanceof UiWorkflowError) {
+        return reply.code(400).send({ error: error.message });
+      }
+      throw error;
     }
 
     const schema = buildParamSchema(parsedGraph, objectInfo);
@@ -76,7 +99,7 @@ export function registerWorkflowRoutes(app: FastifyInstance, ctx: AppContext): v
       const existing = ctx.store.getWorkflow(request.params.id);
       if (!existing) return reply.code(404).send({ error: 'Workflow not found' });
 
-      const { name, overrides, lastValues } = request.body ?? {};
+      const { name, overrides, lastValues, visible } = request.body ?? {};
       if (name !== undefined && (typeof name !== 'string' || name.trim() === '')) {
         return reply.code(400).send({ error: 'Workflow name cannot be empty' });
       }
@@ -86,6 +109,7 @@ export function registerWorkflowRoutes(app: FastifyInstance, ctx: AppContext): v
         ...(overrides !== undefined ? { overrides } : {}),
         ...(lastValues !== undefined ? { lastValues } : {}),
       });
+      if (typeof visible === 'boolean') ctx.store.setWorkflowVisible(request.params.id, visible);
 
       const detail = ctx.store.getWorkflow(request.params.id);
       return detail ? withOverrides(detail) : reply.code(404).send({ error: 'Workflow not found' });

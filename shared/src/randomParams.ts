@@ -266,14 +266,32 @@ function format(cleaned: string, length: number): string {
  * results from several workflows at once, and the useful list is the union of
  * what those runs actually recorded.
  */
-export function overlayChoices(summaries: ParamSummaryItem[][]): { key: string; label: string }[] {
+export function overlayChoices(
+  summaries: ParamSummaryItem[][],
+  texts: { nodeTitle: string }[] = [],
+): { key: string; label: string }[] {
   const byKey = new Map<string, string>();
   for (const summary of summaries) {
     for (const item of summary) {
       if (!byKey.has(item.key)) byKey.set(item.key, item.label);
     }
   }
+  /*
+   * What the graph said counts as a value you can put on the picture.
+   *
+   * A node that writes the prompt — a vision model captioning an input, an LLM
+   * expanding a few words — is describing the picture as surely as the seed is,
+   * and it was the one thing shown whether you asked for it or not. One choice
+   * per node that produced text, so several such nodes stay separable.
+   */
+  for (const output of texts) {
+    const key = `${TEXT_OVERLAY_PREFIX}${output.nodeTitle}`;
+    if (!byKey.has(key)) byKey.set(key, output.nodeTitle);
+  }
   return [...byKey.entries()]
     .map(([key, label]) => ({ key, label }))
     .sort((a, b) => a.label.localeCompare(b.label));
 }
+
+/** Marks an overlay key as naming a text output rather than a parameter. */
+export const TEXT_OVERLAY_PREFIX = 'text:';

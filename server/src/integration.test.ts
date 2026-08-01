@@ -18,7 +18,12 @@ import type {
   StatusResponse,
   WorkflowDetail,
 } from '@latent/shared';
-import { sd15Txt2Img, uiFormatWorkflow, withTextPreview } from '@latent/shared/fixtures';
+import {
+  sd15Txt2Img,
+  sd15Txt2ImgUi,
+  uiFormatWorkflow,
+  withTextPreview,
+} from '@latent/shared/fixtures';
 
 import Database from 'better-sqlite3';
 
@@ -133,13 +138,37 @@ describe('status', () => {
 });
 
 describe('workflow import', () => {
-  it('rejects a UI-format export with an actionable message', async () => {
+  /**
+   * The file ComfyUI saves by itself, rather than an "Export (API)".
+   *
+   * That is what is sitting in `user/default/workflows`, so it is what an
+   * import has to accept — the alternative was asking the user to re-export
+   * every workflow they already had.
+   */
+  it('converts a workflow saved in the editor format', async () => {
     const response = await api('/api/workflows', {
       method: 'POST',
-      body: JSON.stringify({ name: 'Wrong format', graph: uiFormatWorkflow }),
+      body: JSON.stringify({ name: 'Editor format', graph: sd15Txt2ImgUi }),
+    });
+    expect(response.status).toBe(201);
+
+    const detail = await json<WorkflowDetail>(response);
+    expect(detail.graph['3']?.class_type).toBe('KSampler');
+    // Positional widget values walked against /object_info, with the seed's
+    // "after generate" control skipped.
+    expect(detail.graph['3']?.inputs.steps).toBe(20);
+    expect(detail.graph['3']?.inputs.cfg).toBe(8);
+    expect(detail.graph['3']?.inputs.sampler_name).toBe('euler');
+    expect(detail.graph['3']?.inputs.model).toEqual(['4', 0]);
+  });
+
+  it('rejects an editor-format graph that produces no image', async () => {
+    const response = await api('/api/workflows', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'No output', graph: uiFormatWorkflow }),
     });
     expect(response.status).toBe(400);
-    expect((await json<{ error: string }>(response)).error).toMatch(/Export \(API\)/);
+    expect((await json<{ error: string }>(response)).error).toMatch(/output node/);
   });
 
   it('rejects an unnamed workflow', async () => {
@@ -2688,4 +2717,166 @@ describe('browsing an output folder', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 40_000);
+});
+
+/**
+ * One folder for the whole installation.
+ *
+ * Asking for the output directory, the input directory and every workflow file
+ * separately was asking the same question three times. This is the shape a
+ * stock ComfyUI actually has, so the test builds one.
+ */
+describe('reading a ComfyUI installation', () => {
+  it('finds the workflows, imports them hidden, and derives the output folder', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-comfy-'));
+    const workflows = join(dir, 'user', 'default', 'workflows');
+    mkdirSync(workflows, { recursive: true });
+    mkdirSync(join(dir, 'output'), { recursive: true });
+
+    // What the editor saves, what "Export (API)" saves, and something broken.
+    writeFileSync(join(workflows, 'editor.json'), JSON.stringify(sd15Txt2ImgUi));
+    writeFileSync(join(workflows, 'api-export.json'), JSON.stringify(sd15Txt2Img));
+    writeFileSync(join(workflows, 'broken.json'), '{ not json');
+    writeFileSync(join(dir, 'output', 'old.png'), renderPlaceholder(32, 32, 'old'));
+
+    const before = await json<WorkflowDetail[]>(api('/api/workflows'));
+
+    try {
+      await api('/api/settings', { method: 'PATCH', body: JSON.stringify({ comfyRoot: dir }) });
+
+      const result = await json<{
+        ok: boolean;
+        imported: number;
+        skipped: number;
+        failed: { path: string; reason: string }[];
+      }>(api('/api/workflows/scan', { method: 'POST' }));
+
+      expect(result.ok).toBe(true);
+      expect(result.imported).toBe(2);
+      expect(result.failed.map((failure) => failure.path)).toEqual(['broken.json']);
+
+      const after = await json<WorkflowDetail[]>(api('/api/workflows'));
+      const found = after.filter((workflow) => !before.some((old) => old.id === workflow.id));
+      expect(found.map((workflow) => workflow.name).sort()).toEqual(['api-export', 'editor']);
+
+      // Hidden on arrival: a whole installation's worth of workflows is the
+      // right thing to import and the wrong thing to scroll through.
+      expect(found.every((workflow) => workflow.visible === false)).toBe(true);
+      expect(found.every((workflow) => workflow.sourcePath?.startsWith(workflows))).toBe(true);
+
+      // Running it again finds the same files and imports nothing twice.
+      const again = await json<{ imported: number; skipped: number }>(
+        api('/api/workflows/scan', { method: 'POST' }),
+      );
+      expect(again.imported).toBe(0);
+      expect(again.skipped).toBe(2);
+
+      const chosen = found[0]!;
+      const updated = await json<WorkflowDetail>(
+        api(`/api/workflows/${chosen.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ visible: true }),
+        }),
+      );
+      expect(updated.visible).toBe(true);
+
+      // The output folder follows from the root, with nothing else entered.
+      const scan = await json<ImportScanResult>(api('/api/import/scan'));
+      expect(scan.ok).toBe(true);
+      expect(scan.files.map((file) => file.name)).toEqual(['old.png']);
+    } finally {
+      await api('/api/settings', { method: 'PATCH', body: JSON.stringify({ comfyRoot: null }) });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 40_000);
+});
+
+/**
+ * The settings files hold connection secrets and the whole prompt library, in a
+ * directory chosen because it does not get deleted. So they are encrypted, and
+ * this checks that what lands on disk really is unreadable — and that it still
+ * survives the clean restart the files exist for.
+ */
+describe('encrypted settings files', () => {
+  it('writes ciphertext and reads it back after a restart', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'latent-crypt-'));
+    const stateDir = join(root, 'above');
+
+    const boot = async (dir: string, password: string) => {
+      const instance = await buildApp({
+        comfyUrl: 'http://127.0.0.1:1',
+        dbPath: join(dir, 'latent.db'),
+        dataDir: dir,
+        stateDir,
+        webDir: join(dir, 'no-web'),
+        password,
+        logLevel: 'silent',
+      });
+      await instance.app.listen({ port: 0, host: '127.0.0.1' });
+      const address = instance.app.server.address();
+      if (!address || typeof address === 'string') throw new Error('No port');
+      return { instance, url: `http://127.0.0.1:${address.port}` };
+    };
+
+    const signIn = async (url: string, password: string) => {
+      const response = await fetch(`${url}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      return response.headers.get('set-cookie')?.split(';')[0] ?? '';
+    };
+
+    const one = await boot(join(root, 'one'), 'file-password');
+    try {
+      const session = await signIn(one.url, 'file-password');
+      await fetch(`${one.url}/api/prompt-blocks`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: session },
+        body: JSON.stringify({ name: 'Secret block', category: 'Style', text: 'unmistakable' }),
+      });
+      one.instance.ctx.stateFiles.flush();
+
+      const raw = readFileSync(join(stateDir, 'latent-prompt-blocks.json'), 'utf8');
+      expect(raw).not.toContain('unmistakable');
+      expect(raw).not.toContain('Secret block');
+
+      const envelope = JSON.parse(raw) as { latent: string; kdf: { name: string } };
+      expect(envelope.latent).toBe('encrypted');
+      expect(envelope.kdf.name).toBe('scrypt');
+    } finally {
+      await one.instance.app.close();
+    }
+
+    // The clean restart the files exist for: a new database, same password.
+    rmSync(join(root, 'one'), { recursive: true, force: true });
+
+    const two = await boot(join(root, 'two'), 'file-password');
+    try {
+      const session = await signIn(two.url, 'file-password');
+      const blocks = await json<{ name: string }[]>(
+        fetch(`${two.url}/api/prompt-blocks`, { headers: { cookie: session } }),
+      );
+      expect(blocks.map((block) => block.name)).toContain('Secret block');
+    } finally {
+      await two.instance.app.close();
+    }
+
+    // And with the wrong password the file stays sealed — and, crucially, is
+    // not overwritten, so the right password still recovers it later.
+    const beforeBytes = readFileSync(join(stateDir, 'latent-prompt-blocks.json'));
+    const three = await boot(join(root, 'three'), 'a-different-password');
+    try {
+      const session = await signIn(three.url, 'a-different-password');
+      const blocks = await json<{ name: string }[]>(
+        fetch(`${three.url}/api/prompt-blocks`, { headers: { cookie: session } }),
+      );
+      expect(blocks).toHaveLength(0);
+      three.instance.ctx.stateFiles.flush();
+      expect(readFileSync(join(stateDir, 'latent-prompt-blocks.json'))).toEqual(beforeBytes);
+    } finally {
+      await three.instance.app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

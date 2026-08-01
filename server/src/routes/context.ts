@@ -10,6 +10,7 @@ import type { Orchestrator } from '../orchestrator.js';
 import type { StateFiles } from '../statefile.js';
 import type { Sweeper } from '../sweeper.js';
 import type { Vault } from '../vault.js';
+import type { WorkflowScanner } from '../workflowScan.js';
 
 export interface AppContext {
   config: Config;
@@ -25,6 +26,8 @@ export interface AppContext {
   stateFiles: StateFiles;
   /** Deletes generations nobody kept, once they are old enough. */
   sweeper: Sweeper;
+  /** Reads every workflow saved in the ComfyUI installation. */
+  workflowScanner: WorkflowScanner;
 }
 
 /**

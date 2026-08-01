@@ -50,7 +50,7 @@ export function App() {
     <div className="flex h-[100dvh] flex-col overflow-hidden">
       <main
         ref={registerScrollContainer}
-        className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+        className="min-h-0 flex-1 overflow-x-clip overflow-y-auto overscroll-contain"
       >
         <Routes>
           <Route path="/" element={<GenerateScreen />} />

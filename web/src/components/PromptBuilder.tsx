@@ -87,7 +87,7 @@ export function PromptBuilder({
           {grouped.map(([category, items]) => (
             <div key={category} className="space-y-2">
               <p className="text-xs font-medium tracking-wide text-muted uppercase">{category}</p>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-1.5">
                 {items.map((block) => {
                   const active = promptContainsFragment(value, block.text);
                   return (
@@ -98,7 +98,13 @@ export function PromptBuilder({
                       title={block.text}
                       aria-pressed={active}
                       className={cn(
-                        'flex max-w-full items-center gap-1.5 rounded-full border px-3 py-2 text-sm',
+                        /*
+                          The same size as the pool chips in the Random tab. A
+                          library of any size is the normal case, and full-size
+                          chips turned "pick four phrases" into a page of
+                          scrolling.
+                        */
+                        'flex max-w-full items-center gap-1 rounded-full border px-2.5 py-1 text-xs',
                         active
                           ? 'border-accent bg-accent/20 text-accent'
                           : 'border-line bg-surface active:bg-surface-2',
@@ -106,7 +112,7 @@ export function PromptBuilder({
                     >
                       <span className="truncate">{block.name}</span>
                       {/* Says which way the next tap goes. */}
-                      <span aria-hidden className="shrink-0 text-xs opacity-70">
+                      <span aria-hidden className="shrink-0 opacity-70">
                         {active ? '✓' : '+'}
                       </span>
                     </button>
