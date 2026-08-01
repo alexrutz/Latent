@@ -231,6 +231,20 @@ MIGRATIONS.push(`
 ALTER TABLE generations ADD COLUMN texts_json TEXT NOT NULL DEFAULT '[]';
 `);
 
+/**
+ * v8: "keep this" without having to rate it.
+ *
+ * Ratings are a judgement, and being made to pass one on every picture you want
+ * to survive the cleanup is the wrong tax. Keeping is the same promise —
+ * archived locally, never swept — with nothing said about whether it is any
+ * good.
+ */
+MIGRATIONS.push(`
+ALTER TABLE images ADD COLUMN kept INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX idx_images_kept ON images (kept);
+`);
+
 interface WorkflowRow {
   id: string;
   name: string;
@@ -267,6 +281,7 @@ export interface ImageRow {
   subfolder: string;
   type: string;
   rating: number;
+  kept: number;
   archived_path: string | null;
   archived_bytes: number | null;
   thumb_path: string | null;
@@ -374,6 +389,7 @@ export function toGenerationImage(row: ImageRow): GenerationImage {
     subfolder: row.subfolder,
     type: row.type,
     rating: row.rating ?? 0,
+    kept: Boolean(row.kept),
     archived: Boolean(row.archived_path),
     hasThumbnail: Boolean(row.thumb_path),
     width: row.width,
@@ -439,6 +455,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   defaultWorkflowId: null,
   importRoot: null,
   inputRoot: null,
+  autoDeleteHours: null,
 };
 
 export class Store {
@@ -770,6 +787,10 @@ export class Store {
     };
   }
 
+  deleteImage(imageId: number): void {
+    this.db.prepare('DELETE FROM images WHERE id = ?').run(imageId);
+  }
+
   deleteGeneration(id: string): void {
     this.db.prepare('DELETE FROM images WHERE generation_id = ?').run(id);
     this.db.prepare('DELETE FROM generations WHERE id = ?').run(id);
@@ -779,6 +800,24 @@ export class Store {
    * Generations left "running" when the process died can never complete — the
    * upstream events that would finish them are long gone. Reconciled at boot.
    */
+  /**
+   * Runs this app still believes are in flight.
+   *
+   * `olderThanMs` keeps a submit that is seconds old out of it: ComfyUI can take
+   * a moment to admit a prompt exists, and reconciling against a queue that has
+   * not caught up yet would cancel the job you just started.
+   */
+  listUnfinished(olderThanMs = 0): GenerationRecord[] {
+    return this.db
+      .prepare<[number], GenerationRow>(
+        `SELECT * FROM generations
+          WHERE status IN ('queued', 'running') AND created_at <= ?
+          ORDER BY created_at ASC`,
+      )
+      .all(Date.now() - olderThanMs)
+      .map((row) => this.hydrateGeneration(row));
+  }
+
   failStaleGenerations(): number {
     const result = this.db
       .prepare(
@@ -835,6 +874,39 @@ export class Store {
       )
       .get(ref.filename, ref.subfolder ?? '', ref.type ?? 'output');
     return row ? { ...row, generationId: row.generation_id } : null;
+  }
+
+  setImageKept(imageId: number, kept: boolean): void {
+    this.db.prepare('UPDATE images SET kept = ? WHERE id = ?').run(kept ? 1 : 0, imageId);
+  }
+
+  /**
+   * Generations old enough to sweep, and worth nobody's attention.
+   *
+   * "Worth attention" is deliberately generous: a star, a keep, or a favourite
+   * anywhere in the run protects the whole run. Deleting three of four pictures
+   * from a batch because only one was rated would lose the comparison that made
+   * the rating meaningful.
+   */
+  listSweepable(olderThanMs: number, limit = 200): GenerationRecord[] {
+    return this.db
+      .prepare<[number, number], GenerationRow>(
+        `SELECT g.* FROM generations g
+          WHERE g.created_at < ?
+            AND g.status IN ('completed', 'failed', 'cancelled')
+            AND g.source = 'comfy'
+            AND NOT EXISTS (
+              SELECT 1 FROM images i
+               WHERE i.generation_id = g.id AND (i.rating > 0 OR i.kept = 1)
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM favorites f WHERE f.generation_id = g.id
+            )
+          ORDER BY g.created_at ASC
+          LIMIT ?`,
+      )
+      .all(Date.now() - olderThanMs, limit)
+      .map((row) => this.hydrateGeneration(row));
   }
 
   setImageRating(imageId: number, rating: number): void {
@@ -1170,14 +1242,34 @@ export class Store {
     filename: string;
     subfolder: string;
     modifiedAt: number;
+    /**
+     * Recovered from the image's own metadata, when it had any.
+     *
+     * This is what makes "use these settings again" work for a picture Latent
+     * never generated — without it an imported image is a dead end.
+     */
+    workflowId?: string | null;
+    workflowName?: string;
+    values?: ParamValues;
+    params?: ParamSummaryItem[];
   }): number {
     this.db
       .prepare(
         `INSERT INTO generations
-           (id, prompt_id, workflow_id, workflow_name, status, error, values_json, seeds_json, title, created_at, completed_at, source)
-         VALUES (?, ?, NULL, 'Imported', 'completed', NULL, '{}', '{}', ?, ?, ?, 'import')`,
+           (id, prompt_id, workflow_id, workflow_name, status, error, values_json, seeds_json, title, created_at, completed_at, source, params_json)
+         VALUES (?, ?, ?, ?, 'completed', NULL, ?, '{}', ?, ?, ?, 'import', ?)`,
       )
-      .run(input.generationId, input.promptId, input.title, input.modifiedAt, input.modifiedAt);
+      .run(
+        input.generationId,
+        input.promptId,
+        input.workflowId ?? null,
+        input.workflowName ?? 'Imported',
+        JSON.stringify(input.values ?? {}),
+        input.title,
+        input.modifiedAt,
+        input.modifiedAt,
+        JSON.stringify(input.params ?? []),
+      );
 
     const result = this.db
       .prepare(
@@ -1474,10 +1566,14 @@ export class Store {
 
   getSettings(): AppSettings {
     const rows = this.db.prepare<[], { key: string; value: string }>('SELECT * FROM settings').all();
-    const settings: Record<string, string | null> = { ...DEFAULT_SETTINGS };
+    const settings: Record<string, string | number | null> = { ...DEFAULT_SETTINGS };
     for (const row of rows) {
       if (row.key in DEFAULT_SETTINGS) settings[row.key] = row.value === '' ? null : row.value;
     }
+    // Settings are stored as text; the one number among them has to come back
+    // as a number or every comparison against it is a string comparison.
+    const hours = Number(settings.autoDeleteHours);
+    settings.autoDeleteHours = Number.isFinite(hours) && hours > 0 ? hours : null;
     return settings as unknown as AppSettings;
   }
 

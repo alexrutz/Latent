@@ -128,15 +128,98 @@ export function registerGalleryRoutes(app: FastifyInstance, ctx: AppContext): vo
   );
 
   /**
+   * Keep a picture without passing judgement on it.
+   *
+   * Rating is an opinion, and requiring one for every image you want to survive
+   * the automatic cleanup is the wrong price. This makes the same promise a
+   * rating does — copied into the local archive, never swept — and says nothing
+   * about quality.
+   */
+  app.put<{ Params: { id: string }; Body: { image?: ComfyImageRef; kept?: boolean } }>(
+    '/api/gallery/:id/keep',
+    async (request, reply) => {
+      const record = ctx.store.getGeneration(request.params.id);
+      if (!record) return reply.code(404).send({ error: 'Generation not found' });
+
+      const { image, kept = true } = request.body ?? {};
+      if (!image?.filename) return reply.code(400).send({ error: 'Which image?' });
+
+      const row = ctx.store.findImage(image);
+      if (!row) return reply.code(404).send({ error: 'That image is not in the gallery' });
+
+      ctx.store.setImageKept(row.id, kept);
+
+      if (kept && !row.archived_path) {
+        if (!ctx.vault.isUnlocked) {
+          return reply.code(423).send({ error: new VaultLockedError().message, locked: true });
+        }
+        try {
+          await ctx.archive.capture(ctx.orchestrator.client, row.id, image);
+        } catch (error) {
+          app.log.warn({ err: error }, 'Could not archive a kept image');
+          return reply.code(207).send({
+            ...ctx.store.getGeneration(request.params.id),
+            warning:
+              'Kept, but the image could not be copied locally — ComfyUI did not answer. ' +
+              'It will not survive that instance being destroyed.',
+          });
+        }
+      }
+
+      return ctx.store.getGeneration(request.params.id);
+    },
+  );
+
+  /**
    * Removes the record from Latent's history only. The image files stay in
    * ComfyUI's output directory — deleting a user's files from a phone tap is
    * not this app's call to make.
    */
   app.delete<{ Params: { id: string } }>('/api/gallery/:id', async (request, reply) => {
-    if (!ctx.store.getGeneration(request.params.id)) {
-      return reply.code(404).send({ error: 'Generation not found' });
+    const record = ctx.store.getGeneration(request.params.id);
+    if (!record) return reply.code(404).send({ error: 'Generation not found' });
+
+    // The local copies are ours, though, and leaving them behind would be a
+    // slow leak of exactly the bytes the user just said they did not want.
+    for (const image of record.images) {
+      const row = ctx.store.findImage(image);
+      if (row) await ctx.archive.forget(row.id, row);
     }
+
     ctx.store.deleteGeneration(request.params.id);
     return reply.code(204).send();
   });
+
+  /**
+   * Delete one picture out of a run rather than the whole thing.
+   *
+   * A batch of four with one good frame is the normal case; being able to
+   * remove only the three misses is what keeps the gallery worth scrolling.
+   */
+  app.delete<{ Params: { id: string }; Querystring: { filename?: string; subfolder?: string; type?: string } }>(
+    '/api/gallery/:id/image',
+    async (request, reply) => {
+      const record = ctx.store.getGeneration(request.params.id);
+      if (!record) return reply.code(404).send({ error: 'Generation not found' });
+
+      const { filename, subfolder = '', type = 'output' } = request.query ?? {};
+      if (!filename) return reply.code(400).send({ error: 'Which image?' });
+
+      const row = ctx.store.findImage({ filename, subfolder, type });
+      if (!row || row.generation_id !== record.id) {
+        return reply.code(404).send({ error: 'That image is not in this run' });
+      }
+
+      await ctx.archive.forget(row.id, row);
+      ctx.store.deleteImage(row.id);
+
+      // A run with nothing left in it is not a gallery entry any more.
+      const remaining = ctx.store.getGeneration(record.id);
+      if (remaining && remaining.images.length === 0) {
+        ctx.store.deleteGeneration(record.id);
+        return reply.code(204).send();
+      }
+      return remaining;
+    },
+  );
 }

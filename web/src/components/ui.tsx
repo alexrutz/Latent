@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import {
   useEffect,
   useRef,
@@ -149,8 +150,23 @@ export function Sheet({
 
   if (!open) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 flex flex-col justify-end">
+  /*
+   * Rendered into the body, not where it was declared.
+   *
+   * `position: sticky` establishes a stacking context, so a sheet opened from
+   * the Generate screen's pinned footer was trapped inside it — and the tab
+   * bar, which comes later in the document, painted straight over the bottom of
+   * the panel. Everything down there, including "Dismiss", became untappable. A
+   * modal has no business being confined by whichever element happens to own
+   * the button that opened it.
+   */
+  return createPortal(
+    /*
+     * Above everything, including the image viewer and the terminal, which are
+     * full-screen layers of their own. A sheet is only ever open because
+     * something asked for it, so it is always the thing on top.
+     */
+    <div className="fixed inset-0 z-70 flex flex-col justify-end">
       <div
         className="animate-fade absolute inset-0 bg-black/60"
         onClick={onClose}
@@ -164,7 +180,17 @@ export function Sheet({
         className={cn(
           'animate-rise safe-b relative flex flex-col rounded-t-[var(--radius-sheet)]',
           'border-t border-line bg-surface',
-          full ? 'h-[92dvh]' : 'max-h-[85dvh]',
+          /*
+           * `svh`, not `dvh`.
+           *
+           * The dynamic viewport unit measures the space available with the
+           * browser's own UI hidden, which is not the space there is while it
+           * is showing — so a sheet sized in `dvh` hangs off the bottom of the
+           * screen, and its last row of buttons ends up under the tab bar where
+           * nothing can reach it. The small viewport is the one that is always
+           * true.
+           */
+          full ? 'h-[92svh]' : 'max-h-[85svh]',
         )}
       >
         <div className="flex shrink-0 items-center justify-between px-4 pt-2 pb-1">
@@ -185,7 +211,8 @@ export function Sheet({
         )}
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-4">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

@@ -6,6 +6,8 @@ import type {
   FavoriteSort,
   FieldOverrides,
   FormLayout,
+  ImportBrowseResult,
+  ImportRequest,
   ImportResult,
   ImportScanResult,
   InputScanResult,
@@ -318,11 +320,14 @@ export const api = {
       body: JSON.stringify({ path }),
     }),
 
-  importFiles: (paths: string[], rating = 0) =>
-    request<ImportResult>('/api/import', {
-      method: 'POST',
-      body: JSON.stringify({ paths, rating }),
-    }),
+  /** One level of the import tree, which is how an output folder is organised. */
+  browseImport: (path = '') =>
+    request<ImportBrowseResult>(
+      `/api/import/browse${path ? `?path=${encodeURIComponent(path)}` : ''}`,
+    ),
+
+  importFiles: (body: ImportRequest) =>
+    request<ImportResult>('/api/import', { method: 'POST', body: JSON.stringify(body) }),
 
   listWorkflows: () => request<WorkflowSummary[]>('/api/workflows'),
 
@@ -377,6 +382,26 @@ export const api = {
   generation: (id: string) => request<GenerationRecord>(`/api/gallery/${id}`),
 
   deleteGeneration: (id: string) => request<void>(`/api/gallery/${id}`, { method: 'DELETE' }),
+
+  /** Keep one picture indefinitely without rating it. */
+  keepImage: (generationId: string, image: ComfyImageRef, kept: boolean) =>
+    request<GenerationRecord>(`/api/gallery/${generationId}/keep`, {
+      method: 'PUT',
+      body: JSON.stringify({ image, kept }),
+    }),
+
+  /** Remove a single picture; the run goes too when it was the last one. */
+  deleteImage: (generationId: string, image: ComfyImageRef) => {
+    const params = new URLSearchParams({
+      filename: image.filename,
+      subfolder: image.subfolder ?? '',
+      type: image.type ?? 'output',
+    });
+    return request<GenerationRecord | void>(
+      `/api/gallery/${generationId}/image?${params.toString()}`,
+      { method: 'DELETE' },
+    );
+  },
 
   upload: (file: File) => {
     const form = new FormData();

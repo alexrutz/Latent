@@ -66,8 +66,17 @@ export function ImageViewer({
     setOffset({ x: 0, y: 0 });
   }, []);
 
-  // A new image always starts unzoomed.
-  useEffect(reset, [index, reset]);
+  /*
+   * A new *picture* starts unzoomed — not a new index.
+   *
+   * The list grows underneath the viewer: finishing a render inserts an entry
+   * at the top, which shifts the index of the image you are looking at without
+   * changing the image at all. Resetting on the index therefore threw away a
+   * zoom you had just set up, seconds after you set it up, for no visible
+   * reason. Keyed on the entry's own identity, that cannot happen.
+   */
+  const entryKey = entry ? `${entry.record.id}/${entry.image.subfolder}/${entry.image.filename}` : '';
+  useEffect(reset, [entryKey, reset]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

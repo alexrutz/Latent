@@ -66,6 +66,25 @@ async function open(page: Page, path = '/') {
 }
 
 /**
+ * Put away the result sheet.
+ *
+ * A finished run now presents its picture rather than waiting to be tapped, so
+ * anything that generates and then goes on to use the app has to close it
+ * first — exactly as a person would.
+ */
+async function dismissResult(page: Page) {
+  const dismiss = page.getByRole('button', { name: 'Dismiss' });
+  try {
+    // Tolerant on purpose: a reload clears the result, so whether the sheet is
+    // up depends on when the last picture landed relative to the navigation.
+    await dismiss.waitFor({ state: 'visible', timeout: 10_000 });
+  } catch {
+    return;
+  }
+  await dismiss.click();
+}
+
+/**
  * Wipe everything a test could observe, so a run never depends on what a
  * previous one left behind. The dev server is reused between runs, so this has
  * to cover every user-visible collection — not just the obvious two.
@@ -175,6 +194,9 @@ test.describe('Latent on a phone', () => {
     await expect(page.getByText(/a red fox asleep/).first()).toBeVisible();
     await expect(page.getByText(/%/).first()).toBeVisible({ timeout: 20_000 });
     await page.screenshot({ path: 'test-results/02-progress.png' });
+
+    // The result opens itself the moment the queue drains; put it away again.
+    await dismissResult(page);
 
     // …and the finished image must land in the gallery.
     await page.getByRole('link', { name: 'Gallery' }).click();
@@ -297,11 +319,11 @@ test.describe('the phone-specific fixes', () => {
     await page.getByPlaceholder('Describe the image…').fill('a result that stays put');
     await page.getByRole('button', { name: /^Generate/ }).click();
 
-    // The bar must switch to a result rather than disappearing.
-    await expect(page.getByText('Done').first()).toBeVisible({ timeout: 40_000 });
-    await page.getByText('Done').first().click();
-
-    await expect(page.getByRole('button', { name: 'Open gallery' })).toBeVisible();
+    // The result now presents itself rather than waiting to be tapped: the
+    // picture is the thing that was being waited for.
+    await expect(page.getByRole('button', { name: 'Open gallery' })).toBeVisible({
+      timeout: 60_000,
+    });
     await expect(page.getByRole('group', { name: 'Rating' })).toBeVisible();
     await page.screenshot({ path: 'test-results/07-result.png' });
 
@@ -1407,6 +1429,7 @@ test.describe('living in the gallery', () => {
   test('draws chosen parameters on thumbnails and on the big picture', async ({ page }) => {
     await generateBatch(page, 'overlay check', 2);
     await open(page, '/gallery');
+    await dismissResult(page);
 
     // Nothing overlaid until asked.
     await expect(page.getByTestId('param-overlay')).toHaveCount(0);
@@ -1592,6 +1615,8 @@ test.describe('the fixes wave ten asked for', () => {
     await page.getByRole('button', { name: /^Generate/ }).click();
 
     await page.getByRole('link', { name: 'Gallery' }).click();
+    await dismissResult(page);
+
     const thumb = page.locator('main img').first();
     await expect(thumb).toBeVisible({ timeout: 60_000 });
     await expect(thumb).toHaveCSS('filter', 'none');
@@ -1701,6 +1726,7 @@ test.describe('the fixes wave ten asked for', () => {
     await page.getByRole('button', { name: /^Generate/ }).click();
 
     await page.getByRole('link', { name: 'Gallery' }).click();
+    await dismissResult(page);
     await page.locator('main img').first().click({ timeout: 60_000 });
 
     const texts = page.getByTestId('viewer-texts');
@@ -1726,5 +1752,135 @@ test.describe('the fixes wave ten asked for', () => {
 
     // What core ComfyUI does not report is said, not drawn as a flat zero.
     await expect(page.getByText(/Not reported/).first()).toBeVisible();
+  });
+});
+
+/**
+ * Wave eleven: keeping what matters, throwing the rest away, and the several
+ * ways the app used to mislead you about what it was doing.
+ */
+test.describe('keeping, deleting and looking closely', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+  });
+
+  /** Generate one picture and open it in the viewer. */
+  async function generateAndOpen(page: Page, prompt: string) {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill(prompt);
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    // The result opens itself now, and it sits over everything else.
+    await dismissResult(page);
+
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    await page.locator('main img').first().click({ timeout: 60_000 });
+  }
+
+  /**
+   * Waiting for a render and then being handed a one-line bar you have to tap
+   * is the wrong end of the interaction. The picture is the point.
+   */
+  test('opens the finished picture without being asked', async ({ page }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('show me straight away');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    // The result sheet, not the collapsed bar.
+    await expect(page.getByRole('dialog').getByText('Rate it')).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole('dialog').getByRole('img')).toBeVisible();
+    await page.screenshot({ path: 'test-results/36-result-opens.png' });
+  });
+
+  /** A rating is a judgement; being made to pass one to save a file is a tax. */
+  test('keeps a picture without rating it, and deletes one for good', async ({ page }) => {
+    await generateAndOpen(page, 'keep this one');
+
+    const keep = page.getByRole('button', { name: /Keep/ });
+    await expect(keep).toHaveAttribute('aria-pressed', 'false');
+    await keep.click();
+    await expect(page.getByRole('button', { name: /Kept/ })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    // Kept means copied locally — the same promise a rating makes.
+    await expect(page.getByText('Stored on this device')).toBeVisible();
+    await page.screenshot({ path: 'test-results/37-keep.png' });
+
+    // And deleting takes two taps, then the picture is gone.
+    await page.getByRole('button', { name: 'Delete', exact: true }).click();
+    await page.getByRole('button', { name: 'Really delete' }).click();
+
+    await expect(page.locator('main img')).toHaveCount(0, { timeout: 30_000 });
+  });
+
+  /**
+   * The list grows underneath the viewer, which used to reset a zoom seconds
+   * after it was set up — the index of the picture changed, the picture did not.
+   */
+  test('holds a zoom while the gallery changes underneath it', async ({ page }) => {
+    await generateAndOpen(page, 'look closely');
+
+    // The viewer's copy, not the thumbnail behind it.
+    const stage = page.getByRole('img', { name: 'look closely' }).last();
+    const box = await stage.boundingBox();
+    expect(box).not.toBeNull();
+
+    const centre = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
+    await page.mouse.dblclick(centre.x, centre.y);
+
+    const zoomed = await stage.evaluate((element) => element.style.transform);
+    expect(zoomed).toMatch(/scale\(([2-9]|1\.[5-9])/);
+
+    // Something finishing elsewhere must not disturb it.
+    await withApi(async (ctx) => {
+      const workflows = (await (await ctx.get('/api/workflows')).json()) as { id: string }[];
+      await ctx.post('/api/generate', {
+        data: { workflowId: workflows[0]?.id, values: { '6.text': 'a new arrival' } },
+      });
+    });
+
+    await page.waitForTimeout(4_000);
+    expect(await stage.evaluate((element) => element.style.transform)).toBe(zoomed);
+    await page.screenshot({ path: 'test-results/38-zoom-held.png' });
+
+    await withApi((ctx) => ctx.post('/api/queue/interrupt'));
+  });
+
+  /** The phrases that go on everything, chosen once rather than tapped each time. */
+  test('appends the chosen blocks to every prompt', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/prompt-blocks', {
+        data: { name: 'House style', category: 'Style', text: 'muted colours, fine grain' },
+      }),
+    );
+
+    await open(page, '/');
+    await page.getByRole('button', { name: '+ Always append' }).click();
+    await page.getByRole('button', { name: /House style/ }).click();
+    await expect(page.getByText('muted colours, fine grain')).toBeVisible();
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    // The chip says what will happen without opening anything.
+    await expect(page.getByRole('button', { name: /Always: House style/ })).toBeVisible();
+    await page.screenshot({ path: 'test-results/39-always-blocks.png' });
+
+    await page.getByPlaceholder('Describe the image…').fill('a quiet street');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    // Appended on the server, so it lands whatever the prompt came from.
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const gallery = (await (await ctx.get('/api/gallery?limit=10')).json()) as {
+              items: { title: string }[];
+            };
+            return gallery.items[0]?.title ?? '';
+          }),
+        { timeout: 60_000 },
+      )
+      .toContain('muted colours, fine grain');
   });
 });

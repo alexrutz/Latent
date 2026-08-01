@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import type { GenerationRecord, JobStats, LiveJob } from '@latent/shared';
@@ -32,9 +32,25 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
   const [expanded, setExpanded] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const openedFor = useRef<string | null>(null);
 
   // Only ticks while something is running, so an idle app repaints never.
   const now = useTicker(Boolean(job));
+
+  /*
+   * Show the picture without being asked.
+   *
+   * Waiting for a render and then being handed a one-line bar you have to tap
+   * is the wrong end of the interaction — the image is the entire point. Only
+   * when the queue has drained, though: popping a sheet after every item of a
+   * batch of eight would be unusable.
+   */
+  useEffect(() => {
+    if (!finished || job || queueRemaining > 0) return;
+    if (openedFor.current === finished.id) return;
+    openedFor.current = finished.id;
+    if (finished.images.length > 0) setExpanded(true);
+  }, [finished, job, queueRemaining]);
 
   if (!job && !finished) return null;
 
@@ -75,6 +91,15 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
   const eta = remainingEta(job.stats, now, liveAt);
 
   /*
+   * While the next item of a batch warms up there is nothing to show — no
+   * preview frame yet, and the result that just landed has been superseded as
+   * "current". Holding the last picture until the new one has something of its
+   * own is the difference between watching a batch and watching an empty box.
+   */
+  const lastImage = finished?.images[0];
+  const holdover = !previewUrl && lastImage ? imageUrl(lastImage) : null;
+
+  /*
    * The full detail, shared by both shapes. Whichever bar you tapped, the same
    * preview, progress and statistics open — the inline form is a summary of
    * this, not a cut-down version of it.
@@ -85,12 +110,19 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
           <div className="overflow-hidden rounded-2xl border border-line bg-surface-2">
             {previewUrl ? (
               <img src={previewUrl} alt="Live preview" className="w-full object-contain" />
+            ) : holdover ? (
+              <img src={holdover} alt="The previous result" className="w-full object-contain" />
             ) : (
               <div className="grid aspect-square place-items-center text-sm text-muted">
                 Waiting for the first preview…
               </div>
             )}
           </div>
+          {!previewUrl && holdover && (
+            <p className="-mt-2 text-center text-[11px] text-muted">
+              The run before this one — the new preview replaces it.
+            </p>
+          )}
 
           <div>
             <p className="text-sm font-medium">{job.title}</p>
@@ -166,8 +198,8 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
         >
           <div className="flex items-center gap-3">
             <div className="size-9 shrink-0 overflow-hidden rounded-lg bg-surface-2">
-              {previewUrl ? (
-                <img src={previewUrl} alt="" className="size-full object-cover" />
+              {previewUrl ?? holdover ? (
+                <img src={previewUrl ?? (holdover as string)} alt="" className="size-full object-cover" />
               ) : (
                 <div className="grid size-full animate-pulse place-items-center text-xs opacity-40">
                   ●

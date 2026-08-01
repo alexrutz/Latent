@@ -69,6 +69,14 @@ export interface GenerationImage extends ComfyImageRef {
   /** 0 = unrated, 1–5 stars. */
   rating: number;
   /**
+   * Kept without a judgement.
+   *
+   * Same promise as a rating — archived locally, never swept by the automatic
+   * cleanup — with nothing said about whether the picture is any good. Being
+   * made to rate everything you want to survive is the wrong tax.
+   */
+  kept: boolean;
+  /**
    * True once the bytes have been copied into Latent's own archive, which is
    * what lets a rated image outlive the ComfyUI instance that produced it.
    */
@@ -410,9 +418,51 @@ export interface ImportScanResult {
 }
 
 export interface ImportRequest {
-  paths: string[];
+  paths?: string[];
+  /**
+   * Import a whole folder instead of naming every file.
+   *
+   * An output directory holds thousands of images in dozens of folders, and
+   * picking them one at a time on a phone is not a workflow — it is a punishment.
+   */
+  folder?: string;
+  /** Whether a folder import descends into its subfolders. */
+  recursive?: boolean;
   /** Rating applied to everything imported in this batch. */
   rating?: number;
+}
+
+/** One subfolder of the import root, with enough detail to decide to open it. */
+export interface ImportFolder {
+  /** Path relative to the import root. */
+  path: string;
+  name: string;
+  /** Images directly inside, not counting subfolders. */
+  images: number;
+  /** How many of those are already in the gallery. */
+  imported: number;
+  folders: number;
+}
+
+/**
+ * One level of the import tree.
+ *
+ * A level at a time, rather than a flat scan of everything: a ComfyUI output
+ * directory is routinely tens of thousands of files, and the useful unit is the
+ * folder — a day, a project, a model — not the individual picture.
+ */
+export interface ImportBrowseResult {
+  root: string;
+  ok: boolean;
+  message?: string;
+  /** Relative path of the folder being shown; empty string at the root. */
+  path: string;
+  /** The folder above this one, or null at the root. */
+  parent: string | null;
+  folders: ImportFolder[];
+  files: ImportCandidate[];
+  /** True when this folder holds more files than were listed. */
+  truncated: boolean;
 }
 
 export interface ImportResult {
@@ -532,6 +582,14 @@ export interface AppSettings {
   defaultWorkflowId: string | null;
   /** Absolute path to a ComfyUI output folder to scan for import. */
   importRoot: string | null;
+  /**
+   * Hours after which an unrated, unkept generation is deleted. `null` is off.
+   *
+   * Generating is cheap and most of what comes out is not worth keeping; without
+   * this the gallery fills with thousands of near-misses and the good ones get
+   * harder to find, not easier.
+   */
+  autoDeleteHours: number | null;
   /**
    * Absolute path to a folder of pictures to feed *into* workflows.
    *

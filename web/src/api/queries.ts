@@ -13,6 +13,7 @@ import type {
   FavoriteSort,
   FieldOverrides,
   GenerateRequest,
+  ImportRequest,
   ParamValues,
   PromptBlockInput,
   RandomPromptConfig,
@@ -34,6 +35,7 @@ export const queryKeys = {
   promptMode: ['prompt-mode'] as const,
   variationPresets: ['variation-presets'] as const,
   importScan: ['import-scan'] as const,
+  importBrowse: (path: string) => ['import-browse', path] as const,
   presets: (workflowId: string) => ['presets', workflowId] as const,
   layouts: (workflowId: string) => ['layouts', workflowId] as const,
   archiveStats: ['archive-stats'] as const,
@@ -306,6 +308,37 @@ export function reportImageDimensions(image: ComfyImageRef, width: number, heigh
   });
 }
 
+export function useKeepImage() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      generationId,
+      image,
+      kept,
+    }: {
+      generationId: string;
+      image: ComfyImageRef;
+      kept: boolean;
+    }) => api.keepImage(generationId, image, kept),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['gallery'] });
+      void client.invalidateQueries({ queryKey: queryKeys.archiveStats });
+    },
+  });
+}
+
+export function useDeleteImage() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ generationId, image }: { generationId: string; image: ComfyImageRef }) =>
+      api.deleteImage(generationId, image),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ['gallery'] });
+      void client.invalidateQueries({ queryKey: queryKeys.archiveStats });
+    },
+  });
+}
+
 /* ------------------------------------------------------------------ */
 /* Favourites                                                          */
 /* ------------------------------------------------------------------ */
@@ -433,13 +466,23 @@ export function useImportScan(enabled: boolean) {
   });
 }
 
+/** One folder of the import tree. Cheap enough to re-read on every step. */
+export function useImportBrowse(path: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.importBrowse(path),
+    queryFn: () => api.browseImport(path),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
 export function useImportFiles() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: ({ paths, rating }: { paths: string[]; rating?: number }) =>
-      api.importFiles(paths, rating ?? 0),
+    mutationFn: (body: ImportRequest) => api.importFiles(body),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: queryKeys.importScan });
+      void client.invalidateQueries({ queryKey: ['import-browse'] });
       void client.invalidateQueries({ queryKey: ['gallery'] });
       void client.invalidateQueries({ queryKey: queryKeys.archiveStats });
     },

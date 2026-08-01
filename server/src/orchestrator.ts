@@ -33,6 +33,22 @@ import { Monitor } from './monitor.js';
 const STATE_THROTTLE_MS = 100;
 /** How long a cached `/object_info` response stays fresh. */
 const OBJECT_INFO_TTL_MS = 60_000;
+/**
+ * How long ComfyUI may be unreachable before its jobs are declared lost.
+ *
+ * Long enough to ride out a reconnect, short enough that the queue badge and
+ * the progress bar stop describing a machine that is no longer there.
+ */
+const OFFLINE_GRACE_MS = 25_000;
+/** How often to check that outstanding jobs still exist upstream. */
+const RECONCILE_INTERVAL_MS = 60_000;
+/**
+ * How long a submitted prompt gets before it may be declared missing.
+ *
+ * ComfyUI can take a moment to admit a prompt exists; judging one younger than
+ * this would cancel the job that was just started.
+ */
+const SETTLE_MS = 10_000;
 
 interface TrackedPrompt {
   generationId: string;
@@ -102,6 +118,32 @@ function collectTexts(output: Record<string, unknown> | undefined): string[] {
   return found;
 }
 
+/**
+ * The images a finished prompt left in ComfyUI's history, by node.
+ *
+ * Used when a run completed while this app was not listening: the WebSocket
+ * events are gone, but the history still knows what was produced.
+ */
+function collectHistoryImages(entry: {
+  outputs?: Record<string, { images?: ComfyImageRef[] }>;
+}): [string, ComfyImageRef[]][] {
+  const found: [string, ComfyImageRef[]][] = [];
+
+  for (const [nodeId, output] of Object.entries(entry.outputs ?? {})) {
+    const images = (output?.images ?? [])
+      // `temp` is a live preview, not a result.
+      .filter((image) => image.type !== 'temp')
+      .map((image) => ({
+        filename: image.filename,
+        subfolder: image.subfolder ?? '',
+        type: image.type ?? 'output',
+      }));
+    if (images.length > 0) found.push([nodeId, images]);
+  }
+
+  return found;
+}
+
 function emptyState(): LiveState {
   return {
     connected: true,
@@ -147,6 +189,15 @@ export class Orchestrator {
   private nodeStartedAt = 0;
   /** Duration of the last run that finished, so the next one has a yardstick. */
   private lastRunMs: number | null = null;
+
+  private offlineTimer: NodeJS.Timeout | null = null;
+  private reconcileTimer: NodeJS.Timeout | null = null;
+  private settleTimer: NodeJS.Timeout | null = null;
+  /**
+   * Set by `stop()`. Reconciliation is asynchronous, so a shutdown can land
+   * between the queue request and the database write that follows it.
+   */
+  private stopped = false;
 
   private stateDirty = false;
   private stateTimer: NodeJS.Timeout | null = null;
@@ -246,6 +297,20 @@ export class Orchestrator {
     this.bindSocket();
     this.socket.start();
     this.monitor.start();
+
+    /*
+     * A slow sweep for anything the events missed.
+     *
+     * The socket can stay up while individual messages are lost — ComfyUI
+     * restarting behind a proxy that keeps the connection open, for one — and
+     * the query is free when nothing is outstanding.
+     */
+    this.reconcileTimer = setInterval(() => {
+      if (this.stopped || !this.state.comfyOnline) return;
+      if (this.store.listUnfinished(10_000).length === 0) return;
+      void this.refreshQueue().then(() => this.reconcile());
+    }, RECONCILE_INTERVAL_MS);
+    this.reconcileTimer.unref?.();
   }
 
   /** Attach handlers to whichever socket is current. Re-run on every switch. */
@@ -256,9 +321,13 @@ export class Orchestrator {
       const wasOffline = !this.state.comfyOnline;
       this.state.comfyOnline = true;
       this.state.lastError = null;
+      if (this.offlineTimer) clearTimeout(this.offlineTimer);
+      this.offlineTimer = null;
       if (wasOffline) this.monitor.record('online', 'ComfyUI connected');
       this.pushState(true);
-      void this.refreshQueue();
+      // Whatever happened while we were not listening has to be worked out from
+      // the queue and the history, not assumed.
+      void this.refreshQueue().then(() => this.reconcile());
     });
 
     this.socket.on('close', () => {
@@ -266,6 +335,7 @@ export class Orchestrator {
       if (this.state.comfyOnline) this.monitor.record('offline', 'ComfyUI unreachable');
       this.state.comfyOnline = false;
       this.pushState(true);
+      this.startOfflineCountdown();
     });
 
     this.socket.on('error', (error) => {
@@ -278,12 +348,16 @@ export class Orchestrator {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
     this.socket.stop();
     this.monitor.stop();
     await this.currentClient.close();
     this.hub.closeAll();
     if (this.stateTimer) clearTimeout(this.stateTimer);
     if (this.queueRefreshTimer) clearTimeout(this.queueRefreshTimer);
+    if (this.offlineTimer) clearTimeout(this.offlineTimer);
+    if (this.reconcileTimer) clearInterval(this.reconcileTimer);
+    if (this.settleTimer) clearTimeout(this.settleTimer);
   }
 
   /* ---------------------------------------------------------------- */
@@ -760,6 +834,141 @@ export class Orchestrator {
       void this.refreshQueue();
     }, 200);
     this.queueRefreshTimer.unref?.();
+  }
+
+  /**
+   * Work out what actually happened to jobs we lost sight of.
+   *
+   * A dropped connection is the normal case, not an edge case: the box is
+   * rented, the wifi moves, ComfyUI gets restarted to install a node. Whatever
+   * the reason, this app is left believing several runs are still queued, and
+   * neither the queue badge nor the gallery placeholders go away on their own —
+   * they used to sit there forever.
+   *
+   * The queue and the history between them are the truth. Still queued: leave
+   * it. Finished while we were away: take the images. Neither: it is gone, and
+   * saying so is what makes the placeholder disappear.
+   */
+  async reconcile(): Promise<void> {
+    if (this.stopped) return;
+    // A prompt submitted seconds ago may not be in the queue yet; cancelling it
+    // here would be this bug in reverse.
+    const unfinished = this.store.listUnfinished(SETTLE_MS);
+    if (unfinished.length === 0) {
+      /*
+       * Something is outstanding, it is just too new to judge. Come back when it
+       * is old enough rather than leaving it for the slow sweep — this is the
+       * common case, because a connection usually drops seconds after a submit,
+       * not minutes.
+       */
+      const youngest = this.store.listUnfinished()[0];
+      if (youngest) this.scheduleSettledReconcile(youngest.createdAt);
+      return;
+    }
+
+    const live = new Set<string>();
+    for (const entry of [...this.queueState.running, ...this.queueState.pending]) {
+      live.add(entry.promptId);
+    }
+
+    let history: Awaited<ReturnType<ComfyClient['history']>> = {};
+    try {
+      history = await this.client.history(200);
+    } catch (error) {
+      // Without the history we cannot tell "finished" from "gone", and guessing
+      // would throw away images. Try again on the next reconnect.
+      this.log.debug({ err: error }, 'Could not read the ComfyUI history');
+      return;
+    }
+
+    if (this.stopped) return;
+
+    for (const record of unfinished) {
+      if (live.has(record.promptId)) continue;
+
+      const entry = history[record.promptId];
+      if (entry) {
+        const images = collectHistoryImages(entry);
+        if (images.length > 0) {
+          for (const [nodeId, refs] of images) this.store.addImages(record.promptId, nodeId, refs);
+        }
+        const failed = entry.status?.status_str === 'error';
+        this.store.setGenerationStatus(
+          record.promptId,
+          failed ? 'failed' : 'completed',
+          failed ? 'ComfyUI reported an error while this app was disconnected.' : null,
+        );
+        this.log.info(`Recovered ${record.promptId} from the ComfyUI history`);
+      } else {
+        this.store.setGenerationStatus(
+          record.promptId,
+          'cancelled',
+          'Lost when the connection to ComfyUI dropped.',
+        );
+      }
+
+      this.emitGeneration(record.promptId);
+      this.tracked.delete(record.promptId);
+    }
+
+    // The badge counts what ComfyUI says is waiting, which after all that is
+    // whatever the refreshed queue holds.
+    const remaining = this.queueState.running.length + this.queueState.pending.length;
+    if (remaining !== this.state.queueRemaining) {
+      this.state.queueRemaining = remaining;
+      this.pushState(true);
+    }
+  }
+
+  /** Come back to a job that was too new to judge, once it is old enough. */
+  private scheduleSettledReconcile(createdAt: number): void {
+    if (this.settleTimer || this.stopped) return;
+    const wait = Math.max(1_000, createdAt + SETTLE_MS - Date.now() + 500);
+    this.settleTimer = setTimeout(() => {
+      this.settleTimer = null;
+      if (this.stopped) return;
+      void this.refreshQueue().then(() => this.reconcile());
+    }, wait);
+    this.settleTimer.unref?.();
+  }
+
+  /**
+   * Give up on the run in progress once the connection has been gone a while.
+   *
+   * Not immediately: a socket blip during a render is common and reconnects in
+   * a second or two, and blanking the bar every time would be worse than the
+   * bug. But a bar that says "sampling, 40% done" twenty seconds after the box
+   * stopped existing is a lie.
+   */
+  private startOfflineCountdown(): void {
+    if (this.offlineTimer) return;
+    this.offlineTimer = setTimeout(() => {
+      this.offlineTimer = null;
+      if (this.stopped || this.state.comfyOnline) return;
+
+      const stale = this.store.listUnfinished();
+      for (const record of stale) {
+        this.store.setGenerationStatus(
+          record.promptId,
+          'cancelled',
+          'ComfyUI became unreachable while this was queued.',
+        );
+        this.emitGeneration(record.promptId);
+        this.tracked.delete(record.promptId);
+      }
+      if (stale.length > 0) {
+        this.log.warn(`Gave up on ${stale.length} job(s) after losing ComfyUI`);
+      }
+
+      this.state.job = null;
+      this.state.queueRemaining = 0;
+      this.queueState = { running: [], pending: [] };
+      this.stepTiming = null;
+      this.nodeStartedAt = 0;
+      this.hub.broadcast({ type: 'queue', data: this.queueState });
+      this.pushState(true);
+    }, OFFLINE_GRACE_MS);
+    this.offlineTimer.unref?.();
   }
 
   async refreshQueue(): Promise<QueueState> {

@@ -8,6 +8,7 @@ import type { Importer } from '../importer.js';
 import type { InputLibrary } from '../inputLibrary.js';
 import type { Orchestrator } from '../orchestrator.js';
 import type { StateFiles } from '../statefile.js';
+import type { Sweeper } from '../sweeper.js';
 import type { Vault } from '../vault.js';
 
 export interface AppContext {
@@ -22,6 +23,8 @@ export interface AppContext {
   inputs: InputLibrary;
   /** Mirrors the arrangement of the app to files outside the project. */
   stateFiles: StateFiles;
+  /** Deletes generations nobody kept, once they are old enough. */
+  sweeper: Sweeper;
 }
 
 /**

@@ -44,14 +44,19 @@ form. Nothing about your ComfyUI setup changes.
 - **Ratings that outlive the GPU.** Rating an image copies it onto the machine
   running Latent — **encrypted**, so it survives the rented instance being
   destroyed without leaving your pictures readable on disk.
+- **Keep, delete, and a cleanup that runs itself.** Keeping stores a picture
+  without passing judgement on it; anything nobody rated, kept or favourited is
+  deleted after a period you choose, so the gallery stays worth scrolling.
 - **Favourites.** Keep an image together with the settings that made it, rate
   those separately, and generate more like it in one tap.
 - **A grid that fits the pictures.** Adjustable column count; each tile takes its
   shape from the image's aspect ratio so nothing is cropped square, with a
   per-image override. Only thumbnails are ever downloaded.
 - **Import an existing output folder.** Point Latent at a ComfyUI output
-  directory and pull in whatever is worth keeping, through the same rating
-  system.
+  directory and walk it a folder at a time — a day, a project, a model — with
+  image counts on each. Import a picture, a selection, or a whole folder tree in
+  one tap, and **imported pictures keep the settings ComfyUI wrote into them**,
+  so "reuse these settings" works on work made long before Latent existed.
 - **LoRA editor.** `<lora:name:0.8>` tags become compact rows with a strength
   slider and a picker, instead of something you type by hand on a phone keyboard.
 - **Parameter presets.** Save a whole set of settings per workflow and re-apply
@@ -91,8 +96,9 @@ form. Nothing about your ComfyUI setup changes.
 - **Password protected.** The first person to open a new install chooses the
   password.
 - **Settings that outlive the project folder.** Everything you arrange is
-  mirrored to two files one directory above the checkout, so a clean reinstall
-  keeps your layouts, presets and prompt library.
+  mirrored to two files one directory above the checkout, and the database and
+  image archive live there too — so a clean reinstall keeps your gallery, your
+  layouts, your presets and your prompt library.
 - **Optional terminal** for maintaining the host, off unless you enable it.
 
 ## Requirements
@@ -124,7 +130,7 @@ All optional, set as environment variables:
 | `PORT` | `6173` | Port Latent serves on |
 | `HOST` | `0.0.0.0` | Bind address (`0.0.0.0` so your phone can reach it) |
 | `LATENT_PASSWORD` | *unset* | Fixes the password, skipping the first-run prompt |
-| `LATENT_DATA_DIR` | `./data` | SQLite database and the image archive |
+| `LATENT_DATA_DIR` | `../latent-data` | SQLite database and the image archive |
 | `LATENT_STATE_DIR` | `..` | Where the portable settings files are written |
 | `LATENT_TERMINAL` | *unset* | Set to `1` to enable the built-in shell |
 | `LOG_LEVEL` | `info` | `trace`…`silent` |
@@ -238,18 +244,23 @@ Everything that stays a chip is laid out in **two even columns**, so a sampler
 block reads as a list you can scan down instead of a wrapped heap of
 differently-sized bubbles.
 
-## Where your settings live
+## Where your data lives
 
-Two JSON files, **one directory above the project**:
+**Everything is outside the project directory**, which is the one you delete
+when you want a clean reinstall:
 
 ```
-latent-settings.json       every arrangement: app settings, connections,
+../latent-data/            the database, and the encrypted image archive
+../latent-settings.json    every arrangement: app settings, connections,
                            per-workflow form layouts and presets, the
                            variation setups
-latent-prompt-blocks.json  the prompt library, on its own
+../latent-prompt-blocks.json   the prompt library, on its own
 ```
 
-The database inside the project stays the source of truth at runtime; these are
+An install made when the database lived in `./data` moves itself the first time
+it starts, so there is nothing to do about it.
+
+The database stays the source of truth at runtime; the two JSON files are
 mirrored from it whenever it changes, and read back on boot into whatever the
 database does not already have. The point is the clean start: delete the project
 folder, clone it again, import the same workflow — and the form you built, the
@@ -358,6 +369,23 @@ root.
 
 ## Importing an existing output folder
 
+**A folder at a time.** A ComfyUI output directory is routinely tens of
+thousands of files in dozens of dated folders, and a flat list of all of them is
+something nobody can find anything in. Settings → *Import from a folder* walks
+the tree one level at a time, with the image count on each folder, and imports
+a single picture, a selection, or a whole folder and everything under it in one
+request — the expansion happens on the server, so a phone never sends ten
+thousand paths.
+
+**Imported pictures remember how they were made.** ComfyUI writes the graph it
+ran into every PNG it saves. Latent reads it back, matches it against the
+workflows you have imported here — by node id *and* class, so a graph that
+merely numbers its nodes the same way is not mistaken for yours — and stores the
+settings with the picture. "Reuse settings" then works on work made long before
+Latent existed. Pictures with no metadata, or from a workflow you do not have,
+come in as before.
+
+
 **Settings → Import from a folder.** Give it a path, and Latent walks it
 recursively, lists every image, and marks the ones already in your library.
 Select what you want and import — the files are copied into the same encrypted
@@ -375,6 +403,15 @@ them. Everything that reads an image — the grid, the viewer, "send to img2img"
 therefore serves them from the archive directly, and says so plainly if the
 archive is locked or was encrypted under a different password, rather than
 showing a broken tile.
+
+## Always-on prompt blocks
+
+Under the prompt field, **Always append** picks blocks that go on the end of
+every prompt. A quality tail or a house style is not part of *this* picture's
+description — it is part of every request you make, and re-tapping it each time
+is exactly the tedium the block library exists to remove. It is applied on the
+server at submit time, so it lands on a drawn prompt as surely as a typed one,
+and text that is already there is never doubled.
 
 ## Random prompt mode
 
@@ -462,6 +499,23 @@ feature that only covers what somebody remembered to wire up is not one. Kept on
 the device, applied before the first paint, so a reload does not flash the
 pictures back.
 
+**Keep, or delete.** A rating is an opinion, and being made to pass one on every
+picture you want to survive the cleanup is the wrong price — so **Keep** makes
+the same promise a rating does (copied into the local archive, never swept)
+while saying nothing about quality. **Delete** takes two taps and removes the
+picture and its local copy; when it was the last one in a run, the run goes too.
+
+**The cleanup.** Settings → *Saved images* sets how long an unkept run survives.
+Anything rated, kept or favourited stays, and one of those anywhere in a run
+keeps the whole run — deleting three of four frames from a batch would throw
+away the comparison that made the fourth worth keeping. Imported folders are
+never touched: that is somebody's existing library, not scratch space.
+
+**A zoom stays put.** The list grows underneath the viewer while a queue drains,
+and the viewer used to reset your zoom whenever it did — the *index* of the
+picture had changed, not the picture. It is keyed on the picture's own identity
+now, so a double-tap and a pan survive whatever arrives next.
+
 **Swiping crosses runs.** The viewer holds every picture in the gallery as one
 flat list, so a flick keeps going past the end of a batch instead of stopping
 dead at a boundary that means nothing while you are browsing.
@@ -485,6 +539,21 @@ The values come from what each run recorded when it was queued, so they describe
 what actually ran even after the workflow has changed.
 
 ## Timings and the queue
+
+**The result presents itself.** When the queue drains, the finished picture opens
+rather than waiting to be tapped — it is the thing you were waiting for. During a
+batch it does not: what happens instead is that the *last* picture stays on screen
+until the next one has a preview frame of its own, so a batch of eight is
+something you can watch rather than an empty box between renders.
+
+**A lost connection resolves itself.** ComfyUI going away mid-queue used to leave
+this app describing a machine that no longer existed: a queue badge that never
+cleared, and gallery placeholders for pictures that were never going to arrive.
+On reconnect, the queue and the history are compared against what Latent still
+believes is running — anything that finished while it was not listening is
+recovered with its images, anything that vanished is marked as lost, and the
+placeholders go with it. If the box stays unreachable, the same thing happens
+after half a minute rather than waiting for it to come back.
 
 On the Generate screen the progress bar and the **Generate** button share one
 row: they are two things you look at together, and stacked they cost two rows of
@@ -595,6 +664,8 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 | `server/` | Fastify proxy, ComfyUI client, live event hub, SQLite store, archive, terminal |
 | `server/src/monitor.ts` | The resource and event history behind the Monitor tab |
 | `server/src/statefile.ts` | Mirrors the arrangement to the files above the project |
+| `server/src/sweeper.ts` | Deletes runs nobody kept, once they are old enough |
+| `shared/src/promptMatch.ts` | Matches an image's embedded graph to a stored workflow |
 | `server/src/vault.ts` | Archive encryption: master key, wrapping, unlock on sign-in |
 | `server/src/images/` | A dependency-free PNG decoder/resizer for thumbnails and image sizes |
 | `server/src/mock/` | The mock ComfyUI used for development and tests |

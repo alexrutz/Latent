@@ -13,6 +13,7 @@ import {
   useWorkflow,
   useWorkflows,
 } from '../api/queries';
+import { AlwaysBlocks } from '../components/AlwaysBlocks';
 import { LiveBar } from '../components/LiveBar';
 import { LoraEditor } from '../components/LoraEditor';
 import { PointLine } from '../components/PointLine';
@@ -302,6 +303,8 @@ function GenerateForm({
               value={String(values[field.id] ?? '')}
               onChange={(next) => setValue(field.id, next)}
             />
+            {/* The phrases that go on everything, chosen once. */}
+            <AlwaysBlocks />
             {/* LoRA tags live inside the prompt text; edit them structurally. */}
             <LoraEditor
               value={String(values[field.id] ?? '')}

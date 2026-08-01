@@ -4,6 +4,7 @@ export * from './paramSchema.js';
 export * from './loraTags.js';
 export * from './promptFragments.js';
 export * from './paramSummary.js';
+export * from './promptMatch.js';
 export * from './randomParams.js';
 export * from './randomPrompt.js';
 export * from './apiTypes.js';

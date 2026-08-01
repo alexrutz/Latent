@@ -8,7 +8,9 @@ import {
   useAddFavorite,
   useDeleteFavorite,
   useFavorites,
+  useDeleteImage,
   useGallery,
+  useKeepImage,
   useRateImage,
   reportImageDimensions,
   useSetTileSpan,
@@ -528,9 +530,15 @@ function ViewerWithActions({
   const [error, setError] = useState<string | null>(null);
 
   const rateImage = useRateImage();
+  const keepImage = useKeepImage();
+  const deleteImage = useDeleteImage();
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const addFavorite = useAddFavorite();
   const removeFavorite = useDeleteFavorite();
   const favorites = useFavorites();
+
+  // Swiping to the next picture must not leave a primed delete button behind.
+  useEffect(() => setConfirmDelete(false), [index]);
 
   // Every hook above runs unconditionally; only then is it safe to bail. The
   // gallery only renders this once it has found the entry, so a miss means the
@@ -687,9 +695,9 @@ function ViewerWithActions({
               <span className="text-[11px] text-muted">
                 {image.archived
                   ? 'Stored on this device'
-                  : image.rating > 0
+                  : image.rating > 0 || image.kept
                     ? 'Not copied locally'
-                    : 'Rate to keep a local copy'}
+                    : 'Rate or keep it to store a copy'}
               </span>
             </div>
           )}
@@ -717,6 +725,35 @@ function ViewerWithActions({
             </Button>
             <Button variant="secondary" size="sm" onClick={share}>
               Save
+            </Button>
+            {/*
+              Keeping is the promise a rating makes, without the judgement.
+              With automatic cleanup switched on this is the difference between
+              a picture surviving and not, and being made to award it stars
+              first is a tax on saying "not sure yet, but don't bin it".
+            */}
+            <Button
+              variant={image?.kept ? 'primary' : 'secondary'}
+              size="sm"
+              busy={keepImage.isPending}
+              aria-pressed={Boolean(image?.kept)}
+              onClick={() => {
+                if (!image) return;
+                keepImage.mutate(
+                  { generationId: record.id, image, kept: !image.kept },
+                  {
+                    onError: (cause) =>
+                      setError(cause instanceof Error ? cause.message : 'Could not keep that'),
+                  },
+                );
+              }}
+              title={
+                image?.kept
+                  ? 'Kept — the cleanup will leave it alone'
+                  : 'Keep this picture without rating it'
+              }
+            >
+              {image?.kept ? '⌾ Kept' : '⌾ Keep'}
             </Button>
             <Button
               variant="secondary"
@@ -753,6 +790,26 @@ function ViewerWithActions({
             </Button>
             <Button variant="ghost" size="sm" onClick={() => setShowDetails(true)}>
               Details
+            </Button>
+            {/* Two taps, because it cannot be undone. */}
+            <Button
+              variant={confirmDelete ? 'danger' : 'ghost'}
+              size="sm"
+              busy={deleteImage.isPending}
+              onClick={() => {
+                if (!confirmDelete) return setConfirmDelete(true);
+                if (!image) return;
+                deleteImage.mutate(
+                  { generationId: record.id, image },
+                  {
+                    onSuccess: () => onClose(),
+                    onError: (cause) =>
+                      setError(cause instanceof Error ? cause.message : 'Could not delete that'),
+                  },
+                );
+              }}
+            >
+              {confirmDelete ? 'Really delete' : 'Delete'}
             </Button>
             {/* Which values are drawn over the picture. Its own choice, separate
                 from the grid's — there is room for more here. */}

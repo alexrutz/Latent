@@ -15,8 +15,8 @@ import {
   useArchiveStats,
   useDeleteLayout,
   useDeleteWorkflow,
+  useImportBrowse,
   useImportFiles,
-  useImportScan,
   useImportWorkflow,
   useRescanWorkflow,
   useSaveLayout,
@@ -34,6 +34,24 @@ import { Button, Card, cn, ErrorNote, Row, Sheet, Spinner } from '../components/
 import { useBlur } from '../state/blur';
 import { ConnectionsScreen } from './ConnectionsScreen';
 import { TerminalScreen } from './TerminalScreen';
+
+/** Sensible periods rather than a free number: this is a decision, not a dial. */
+const AUTO_DELETE_OPTIONS: { label: string; hours: number | null }[] = [
+  { label: 'Never', hours: null },
+  { label: '6 hours', hours: 6 },
+  { label: '1 day', hours: 24 },
+  { label: '3 days', hours: 72 },
+  { label: '1 week', hours: 168 },
+  { label: '1 month', hours: 720 },
+];
+
+function describeHours(hours: number): string {
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'}`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days} day${days === 1 ? '' : 's'}`;
+  const weeks = Math.round(days / 7);
+  return weeks < 5 ? `${weeks} week${weeks === 1 ? '' : 's'}` : `${Math.round(days / 30)} months`;
+}
 
 export function SettingsScreen() {
   const status = useStatus();
@@ -201,8 +219,47 @@ export function SettingsScreen() {
         <Card className="space-y-3">
           <p className="text-xs text-muted">
             Rating an image copies it onto this device, so it stays available after the ComfyUI
-            instance that produced it is gone.
+            instance that produced it is gone. Keeping one does the same without the stars.
           </p>
+
+          {/*
+            The counterweight to how cheap generating is: without a cleanup the
+            gallery becomes thousands of near-misses you scrolled past once,
+            which makes the good ones harder to find rather than easier.
+          */}
+          <div className="space-y-1.5">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-sm">Delete unkept runs after</span>
+              <span className="text-xs text-muted">
+                {settings.data?.autoDeleteHours
+                  ? describeHours(settings.data.autoDeleteHours)
+                  : 'never'}
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {AUTO_DELETE_OPTIONS.map((option) => {
+                const active = (settings.data?.autoDeleteHours ?? null) === option.hours;
+                return (
+                  <button
+                    key={option.label}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => updateSettings.mutate({ autoDeleteHours: option.hours })}
+                    className={cn(
+                      'rounded-lg px-2.5 py-1.5 text-xs',
+                      active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-muted">
+              Anything rated, kept or favourited stays — and one of those anywhere in a run keeps
+              the whole run, so a batch is never half-deleted. Imported folders are never touched.
+            </p>
+          </div>
           <Row
             label={`${archive.data?.images ?? 0} images stored`}
             hint={formatBytes(archive.data?.bytes ?? 0)}
@@ -742,17 +799,26 @@ function InputFolderSection() {
 function ImportSection() {
   const settings = useSettings();
   const updateSettings = useUpdateSettings();
-  const [expanded, setExpanded] = useState(false);
-  const scan = useImportScan(expanded);
   const importFiles = useImportFiles();
 
-  const [path, setPath] = useState(settings.data?.importRoot ?? '');
+  const [open, setOpen] = useState(false);
+  const [path, setPath] = useState('');
+  const [root, setRoot] = useState(settings.data?.importRoot ?? '');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [recursive, setRecursive] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
 
-  const files = scan.data?.files ?? [];
+  const browse = useImportBrowse(path, open);
+  const folders = browse.data?.folders ?? [];
+  const files = browse.data?.files ?? [];
   const pending = files.filter((file) => !file.imported);
+
+  const go = (next: string) => {
+    setPath(next);
+    setSelected(new Set());
+    setResult(null);
+  };
 
   const toggle = (candidate: string) =>
     setSelected((current) => {
@@ -762,14 +828,14 @@ function ImportSection() {
       return next;
     });
 
-  const runImport = async (rating: number) => {
+  const run = async (body: Parameters<typeof importFiles.mutateAsync>[0], label: string) => {
     setError(null);
     setResult(null);
     try {
-      const outcome = await importFiles.mutateAsync({ paths: [...selected], rating });
+      const outcome = await importFiles.mutateAsync(body);
       setSelected(new Set());
       setResult(
-        `Imported ${outcome.imported}` +
+        `${label}: imported ${outcome.imported}` +
           (outcome.skipped ? `, skipped ${outcome.skipped} already there` : '') +
           (outcome.failed.length ? `, ${outcome.failed.length} failed` : ''),
       );
@@ -778,6 +844,9 @@ function ImportSection() {
     }
   };
 
+  /** Where we are, as something tappable. */
+  const crumbs = path ? path.split('/') : [];
+
   return (
     <section className="space-y-2">
       <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
@@ -785,128 +854,204 @@ function ImportSection() {
       </h2>
       <Card className="space-y-3">
         <p className="text-xs text-muted">
-          A path on the machine running Latent. Subfolders are included. If ComfyUI runs on a
-          remote instance, its outputs are not on this filesystem — point this at a local folder,
-          a network mount, or something synced.
+          A path on the machine running Latent — usually ComfyUI’s <code>output</code> directory.
+          If ComfyUI runs on a remote instance its outputs are not on this filesystem; point this
+          at a local folder, a network mount, or something synced.
         </p>
 
         <div className="flex gap-2">
           <input
-            value={path}
-            onChange={(event) => setPath(event.target.value)}
+            value={root}
+            onChange={(event) => setRoot(event.target.value)}
             placeholder="/home/you/ComfyUI/output"
             autoCapitalize="none"
             autoCorrect="off"
             spellCheck={false}
+            aria-label="Import folder"
             className="min-w-0 flex-1 rounded-xl border border-line bg-surface px-4 py-3 text-sm focus:border-accent focus:outline-none"
           />
           <Button
             variant="secondary"
             busy={updateSettings.isPending}
             onClick={() => {
-              updateSettings.mutate({ importRoot: path.trim() || null });
-              setExpanded(true);
-              void scan.refetch();
+              updateSettings.mutate({ importRoot: root.trim() || null });
+              setOpen(true);
+              go('');
             }}
           >
-            Scan
+            Open
           </Button>
         </div>
 
-        {expanded && scan.data && !scan.data.ok && (
-          <p className="text-xs text-warn">{scan.data.message}</p>
+        {open && browse.data && !browse.data.ok && (
+          <p className="text-xs text-warn">{browse.data.message}</p>
         )}
 
-        {expanded && scan.isFetching && (
-          <div className="grid place-items-center py-3">
-            <Spinner className="size-5 text-muted" />
-          </div>
-        )}
-
-        {expanded && scan.data?.ok && (
+        {open && browse.data?.ok && (
           <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs text-muted">
-              <span>
-                {files.length} image{files.length === 1 ? '' : 's'} found
-                {scan.data.truncated && ' (showing the first 2000)'}
-              </span>
-              {pending.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    setSelected(
-                      selected.size === pending.length
-                        ? new Set()
-                        : new Set(pending.map((file) => file.path)),
-                    )
-                  }
-                  className="text-accent"
-                >
-                  {selected.size === pending.length ? 'Select none' : 'Select all new'}
-                </button>
-              )}
-            </div>
-
-            <ul className="max-h-72 space-y-1 overflow-y-auto">
-              {files.map((file) => (
-                <li key={file.path}>
+            {/*
+              A breadcrumb, because an output directory is a tree of days and
+              projects and the folder *is* the unit you think in — not the
+              individual file.
+            */}
+            <div className="flex flex-wrap items-center gap-1 text-xs">
+              <button type="button" onClick={() => go('')} className="text-accent">
+                root
+              </button>
+              {crumbs.map((crumb, index) => (
+                <span key={index} className="flex items-center gap-1">
+                  <span className="text-muted">/</span>
                   <button
                     type="button"
-                    disabled={file.imported}
-                    onClick={() => toggle(file.path)}
-                    className={cn(
-                      'flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm',
-                      file.imported
-                        ? 'text-muted opacity-50'
-                        : selected.has(file.path)
-                          ? 'bg-accent/15 text-accent'
-                          : 'active:bg-surface-2',
-                    )}
+                    onClick={() => go(crumbs.slice(0, index + 1).join('/'))}
+                    className={index === crumbs.length - 1 ? 'text-body' : 'text-accent'}
                   >
-                    <span className="min-w-0 truncate">{file.path}</span>
-                    <span className="shrink-0 text-xs">
-                      {file.imported
-                        ? 'in library'
-                        : file.width
-                          ? `${file.width}×${file.height}`
-                          : ''}
-                    </span>
+                    {crumb}
                   </button>
-                </li>
+                </span>
               ))}
-            </ul>
+            </div>
 
-            {selected.size > 0 && (
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="primary"
-                  size="sm"
-                  busy={importFiles.isPending}
-                  onClick={() => runImport(0)}
-                >
-                  Import {selected.size}
-                </Button>
+            {browse.isFetching && (
+              <div className="grid place-items-center py-3">
+                <Spinner className="size-5 text-muted" />
+              </div>
+            )}
+
+            <label className="flex items-center justify-between gap-2 rounded-lg bg-surface-2 px-3 py-2 text-xs">
+              <span className="text-muted">Include subfolders when importing a folder</span>
+              <Toggle checked={recursive} onChange={setRecursive} label="Include subfolders" />
+            </label>
+
+            {folders.length > 0 && (
+              <ul className="space-y-1">
+                {folders.map((folder) => (
+                  <li key={folder.path} className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => go(folder.path)}
+                      className="min-w-0 flex-1 rounded-lg px-2 py-2 text-left active:bg-surface-2"
+                    >
+                      <span className="block truncate text-sm">▸ {folder.name}</span>
+                      <span className="block text-[11px] text-muted">
+                        {folder.images} image{folder.images === 1 ? '' : 's'}
+                        {folder.imported > 0 && `, ${folder.imported} in library`}
+                        {folder.folders > 0 && ` · ${folder.folders} folder${folder.folders === 1 ? '' : 's'}`}
+                      </span>
+                    </button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      busy={importFiles.isPending}
+                      onClick={() =>
+                        void run({ folder: folder.path, recursive }, folder.name)
+                      }
+                    >
+                      Import
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {files.length > 0 && (
+              <>
+                <div className="flex items-center justify-between text-xs text-muted">
+                  <span>
+                    {files.length} image{files.length === 1 ? '' : 's'} here
+                    {browse.data.truncated && ' (first 300)'}
+                  </span>
+                  {pending.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelected(
+                          selected.size === pending.length
+                            ? new Set()
+                            : new Set(pending.map((file) => file.path)),
+                        )
+                      }
+                      className="text-accent"
+                    >
+                      {selected.size === pending.length ? 'Select none' : 'Select all new'}
+                    </button>
+                  )}
+                </div>
+
+                <ul className="max-h-64 space-y-1 overflow-y-auto">
+                  {files.map((file) => (
+                    <li key={file.path}>
+                      <button
+                        type="button"
+                        disabled={file.imported}
+                        onClick={() => toggle(file.path)}
+                        className={cn(
+                          'flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm',
+                          file.imported
+                            ? 'text-muted opacity-50'
+                            : selected.has(file.path)
+                              ? 'bg-accent/15 text-accent'
+                              : 'active:bg-surface-2',
+                        )}
+                      >
+                        <span className="min-w-0 truncate">{file.name}</span>
+                        <span className="shrink-0 text-xs">
+                          {file.imported ? 'in library' : formatBytes(file.bytes)}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+
+            {folders.length === 0 && files.length === 0 && !browse.isFetching && (
+              <p className="text-xs text-muted">This folder is empty.</p>
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              {selected.size > 0 && (
+                <>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    busy={importFiles.isPending}
+                    onClick={() => void run({ paths: [...selected] }, `${selected.size} selected`)}
+                  >
+                    Import {selected.size}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    busy={importFiles.isPending}
+                    onClick={() =>
+                      void run({ paths: [...selected], rating: 5 }, `${selected.size} selected`)
+                    }
+                  >
+                    Import as ★5
+                  </Button>
+                </>
+              )}
+              {pending.length > 0 && selected.size === 0 && (
                 <Button
                   variant="secondary"
                   size="sm"
                   busy={importFiles.isPending}
-                  onClick={() => runImport(5)}
+                  onClick={() => void run({ folder: path, recursive }, 'This folder')}
                 >
-                  Import as ★5
+                  Import this folder{recursive ? ' and below' : ''}
                 </Button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         )}
 
-        {!expanded && settings.data?.importRoot && (
-          <Button variant="ghost" size="sm" onClick={() => setExpanded(true)}>
-            Show {settings.data.importRoot}
-          </Button>
-        )}
-
         <ErrorNote>{error}</ErrorNote>
-        {result && <p className="text-xs text-muted">{result}</p>}
+        {result && <p className="text-xs text-success">{result}</p>}
+        <p className="text-[11px] text-muted">
+          Imported pictures keep the settings ComfyUI wrote into them, so “Reuse settings” works on
+          anything made with a workflow you have here.
+        </p>
       </Card>
     </section>
   );
@@ -1074,5 +1219,8 @@ function PasswordSheet({ onClose }: { onClose: () => void }) {
 function formatBytes(bytes: number): string {
   if (!bytes) return '—';
   const gb = bytes / 1024 ** 3;
-  return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
+  if (gb >= 1) return `${gb.toFixed(1)} GB`;
+  const mb = bytes / 1024 ** 2;
+  // A single PNG is often well under a megabyte, and "0 MB" is not a size.
+  return mb >= 1 ? `${Math.round(mb)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }

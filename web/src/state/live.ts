@@ -62,8 +62,15 @@ export const useLiveStore = create<LiveStore>((set, get) => ({
         const jobChanged = previous.job?.promptId !== event.data.job?.promptId;
         // A new job (or no job) invalidates the preview from the last one.
         if (jobChanged) get().clearPreview();
-        // A new run supersedes the previous result on screen.
-        if (event.data.job && jobChanged) set({ finished: null });
+        /*
+         * The finished result deliberately survives the next job starting.
+         *
+         * Clearing it here is what made a batch unwatchable: item one finished,
+         * item two started in the same breath, and the picture was replaced by
+         * an empty frame before anyone could look at it. It stays until
+         * something better replaces it — the next finished run, or a preview
+         * frame from the one now sampling.
+         */
         set({ live: event.data, liveAt: Date.now() });
         break;
       }

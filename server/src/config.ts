@@ -1,5 +1,5 @@
-import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -59,8 +59,18 @@ function flag(name: string, fallback = false): boolean {
 }
 
 export function loadConfig(): Config {
-  const dataDir = resolve(projectRoot, env('LATENT_DATA_DIR', 'data'));
+  /*
+   * Outside the project by default.
+   *
+   * The database holds the gallery, the ratings and the encrypted archive —
+   * everything you would be most upset to lose — and it used to live in
+   * `./data`, inside the directory you delete when you want a clean reinstall.
+   * A sibling directory keeps it, alongside the settings files, and an explicit
+   * `LATENT_DATA_DIR` still wins for anyone who wants it somewhere specific.
+   */
+  const dataDir = resolve(projectRoot, env('LATENT_DATA_DIR', '../latent-data'));
   mkdirSync(dataDir, { recursive: true });
+  if (process.env.LATENT_DATA_DIR === undefined) adoptLegacyDataDir(dataDir);
 
   const password = process.env.LATENT_PASSWORD?.trim();
 
@@ -77,6 +87,33 @@ export function loadConfig(): Config {
     terminalEnabled: flag('LATENT_TERMINAL'),
     logLevel: env('LOG_LEVEL', 'info'),
   };
+}
+
+/**
+ * Move an existing `./data` up next to the project.
+ *
+ * Installs made before the move keep their gallery, ratings and archive without
+ * anybody having to know the directory changed. Only ever runs when the new
+ * location is empty, so it cannot overwrite a database that is already there,
+ * and only when the location was not chosen explicitly.
+ */
+function adoptLegacyDataDir(dataDir: string): void {
+  const legacy = resolve(projectRoot, 'data');
+  if (legacy === dataDir) return;
+  if (!existsSync(join(legacy, 'latent.db')) || existsSync(join(dataDir, 'latent.db'))) return;
+
+  for (const entry of readdirSync(legacy)) {
+    const from = join(legacy, entry);
+    const to = join(dataDir, entry);
+    if (existsSync(to)) continue;
+    try {
+      renameSync(from, to);
+    } catch {
+      // A different filesystem (a bind-mounted volume, say): copy instead.
+      cpSync(from, to, { recursive: true });
+      rmSync(from, { recursive: true, force: true });
+    }
+  }
 }
 
 /** `http://host:8188` -> `ws://host:8188`, preserving TLS. */

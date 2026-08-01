@@ -63,6 +63,15 @@ export interface RandomPromptConfig {
    * would only create a way for them to disagree.
    */
   params: RandomParamRule[];
+  /**
+   * Blocks appended to every prompt, drawn or typed.
+   *
+   * The phrases that improve more or less any picture — a quality tail, a
+   * house style — are not variation, they are part of what you always ask for,
+   * and retyping or re-tapping them every time is exactly the tedium blocks
+   * exist to remove. Applied whether or not the random draw is switched on.
+   */
+  alwaysBlockIds: string[];
 }
 
 export const DEFAULT_RANDOM_PROMPT_CONFIG: RandomPromptConfig = {
@@ -74,6 +83,7 @@ export const DEFAULT_RANDOM_PROMPT_CONFIG: RandomPromptConfig = {
   onePerGroup: true,
   groupLimits: {},
   params: [],
+  alwaysBlockIds: [],
 };
 
 /** Blocks with no group at all, which never exclude one another by default. */
@@ -115,6 +125,13 @@ export function normaliseRandomPromptConfig(raw: unknown): RandomPromptConfig {
 
   return {
     enabled: input.enabled === true,
+    alwaysBlockIds: Array.isArray(input.alwaysBlockIds)
+      ? [
+          ...new Set(
+            input.alwaysBlockIds.filter((id): id is string => typeof id === 'string' && id !== ''),
+          ),
+        ]
+      : DEFAULT_RANDOM_PROMPT_CONFIG.alwaysBlockIds,
     blockIds: Array.isArray(input.blockIds)
       ? [...new Set(input.blockIds.filter((id): id is string => typeof id === 'string' && id !== ''))]
       : [],
@@ -226,6 +243,29 @@ export function composeRandomPrompt(
   let prompt = keepTyped ? base : '';
   for (const block of drawn) prompt = addFragment(prompt, block.text);
   return prompt;
+}
+
+/**
+ * Append the blocks that go on every prompt.
+ *
+ * Separate from the draw and applied after it: these are not variation, they
+ * are the part of the request that never changes, and they have to land whether
+ * the prompt was typed by hand or drawn. Already-present text is left alone, so
+ * running twice cannot double a phrase.
+ */
+export function appendAlwaysBlocks(
+  prompt: string,
+  blocks: PromptBlock[],
+  config: RandomPromptConfig,
+): string {
+  if (config.alwaysBlockIds.length === 0) return prompt;
+  const wanted = new Set(config.alwaysBlockIds);
+
+  let next = prompt;
+  for (const block of blocks) {
+    if (wanted.has(block.id)) next = addFragment(next, block.text);
+  }
+  return next;
 }
 
 export interface RandomPromptRoll {

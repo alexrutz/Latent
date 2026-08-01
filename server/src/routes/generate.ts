@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 
 import {
+  appendAlwaysBlocks,
   applyOverrides,
   applyParams,
   buildParamSummary,
@@ -54,6 +55,25 @@ export function registerGenerateRoutes(app: FastifyInstance, ctx: AppContext): v
      * picture, and giving them different modifiers would pull the render in two
      * directions. Each field keeps its own typed text as the base.
      */
+    /*
+     * The phrases that go on everything, applied whether or not the draw is on.
+     *
+     * A quality tail or a house style is not variation — it is part of what you
+     * always ask for, and having to re-tap it before every render is exactly the
+     * tedium prompt blocks exist to remove.
+     */
+    const applyAlways = (base: ParamValues): ParamValues => {
+      if (randomConfig.alwaysBlockIds.length === 0 || promptFields.length === 0) return base;
+      const library = blocks.length > 0 ? blocks : ctx.store.listPromptBlocks();
+
+      const next: ParamValues = { ...base };
+      for (const field of promptFields) {
+        const current = String(base[field.id] ?? field.defaultValue ?? '');
+        next[field.id] = appendAlwaysBlocks(current, library, randomConfig);
+      }
+      return next;
+    };
+
     const drawPrompts = (base: ParamValues): ParamValues => {
       const first = promptFields[0];
       const primaryText = first ? String(base[first.id] ?? first.defaultValue ?? '') : '';
@@ -74,7 +94,7 @@ export function registerGenerateRoutes(app: FastifyInstance, ctx: AppContext): v
     const promptIds: string[] = [];
 
     for (let i = 0; i < batchCount; i += 1) {
-      let itemValues = drawingPrompt ? drawPrompts(values) : values;
+      let itemValues = applyAlways(drawingPrompt ? drawPrompts(values) : values);
 
       /*
        * Parameter variation, drawn per item like the prompt. Applied after the

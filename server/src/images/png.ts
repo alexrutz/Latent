@@ -37,6 +37,21 @@ function chunk(type: string, data: Buffer): Buffer {
   return Buffer.concat([length, body, crc]);
 }
 
+/**
+ * Insert a text chunk into an existing PNG, right after the header.
+ *
+ * Used to write the graph into a rendered image the way ComfyUI does, which is
+ * what the import path reads back — a round trip that is only worth trusting if
+ * both halves are exercised.
+ */
+export function withPngText(buffer: Buffer, key: string, value: string): Buffer {
+  if (!isPng(buffer)) return buffer;
+  // Signature (8) + IHDR length (4) + type (4) + data (13) + CRC (4).
+  const afterHeader = 8 + 4 + 4 + 13 + 4;
+  const text = chunk('tEXt', Buffer.concat([Buffer.from(key, 'latin1'), Buffer.from([0]), Buffer.from(value, 'latin1')]));
+  return Buffer.concat([buffer.subarray(0, afterHeader), text, buffer.subarray(afterHeader)]);
+}
+
 export interface Dimensions {
   width: number;
   height: number;
@@ -106,6 +121,61 @@ function paeth(a: number, b: number, c: number): number {
   const pc = Math.abs(p - c);
   if (pa <= pb && pa <= pc) return a;
   return pb <= pc ? b : c;
+}
+
+/**
+ * The text ComfyUI writes beside the pixels.
+ *
+ * Every image ComfyUI saves carries the graph that produced it in PNG text
+ * chunks: `prompt` is the API-format graph, `workflow` the editor's own. That is
+ * what makes an imported picture more than a picture — without reading it, "use
+ * these settings again" has nothing to work with.
+ *
+ * Both `tEXt` (Latin-1, uncompressed) and `iTXt` (UTF-8) are handled;
+ * compressed variants are skipped rather than guessed at, since ComfyUI does
+ * not produce them.
+ */
+export function readPngText(buffer: Buffer): Record<string, string> {
+  const found: Record<string, string> = {};
+  if (!isPng(buffer)) return found;
+
+  let offset = 8;
+  while (offset + 8 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.toString('ascii', offset + 4, offset + 8);
+    const start = offset + 8;
+    const end = start + length;
+    if (end > buffer.length) break;
+    if (type === 'IEND') break;
+
+    if (type === 'tEXt' || type === 'iTXt') {
+      const chunk = buffer.subarray(start, end);
+      const split = chunk.indexOf(0);
+      if (split > 0) {
+        const key = chunk.toString('latin1', 0, split);
+        if (type === 'tEXt') {
+          found[key] = chunk.toString('latin1', split + 1);
+        } else {
+          /*
+           * iTXt: keyword \0 compressionFlag compressionMethod language \0
+           * translatedKeyword \0 text. Only the uncompressed form is read.
+           */
+          const compressed = chunk[split + 1];
+          if (compressed === 0) {
+            const afterLanguage = chunk.indexOf(0, split + 3);
+            const afterTranslated = chunk.indexOf(0, afterLanguage + 1);
+            if (afterLanguage > 0 && afterTranslated > 0) {
+              found[key] = chunk.toString('utf8', afterTranslated + 1);
+            }
+          }
+        }
+      }
+    }
+
+    offset = end + 4;
+  }
+
+  return found;
 }
 
 /**

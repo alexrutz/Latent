@@ -18,6 +18,7 @@ import { loadConfig, type Config } from './config.js';
 import { Store } from './db.js';
 import { Orchestrator } from './orchestrator.js';
 import { StateFiles } from './statefile.js';
+import { Sweeper } from './sweeper.js';
 import { registerConnectionRoutes, toConfig } from './routes/connections.js';
 import type { AppContext } from './routes/context.js';
 import { registerGalleryRoutes } from './routes/gallery.js';
@@ -108,6 +109,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   const archive = new Archive(config.archiveDir, store, vault);
   const importer = new Importer(store, archive);
   const inputs = new InputLibrary(store);
+  const sweeper = new Sweeper(store, archive, app.log);
   /*
    * Before anything reads the database: a fresh install with settings files
    * next to it should come up already configured, including the connection the
@@ -133,6 +135,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     importer,
     inputs,
     stateFiles,
+    sweeper,
   };
 
   /*
@@ -229,12 +232,14 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   app.addHook('onClose', async () => {
     await orchestrator.stop();
     stateFiles.stop();
+    sweeper.stop();
     vault.lock();
     store.close();
   });
 
   orchestrator.start();
   stateFiles.start();
+  sweeper.start();
 
   return { app, ctx, config };
 }

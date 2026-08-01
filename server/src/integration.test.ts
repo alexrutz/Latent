@@ -9,6 +9,7 @@ import type {
   GenerationRecord,
   ImportResult,
   ImportScanResult,
+  ImportBrowseResult,
   InputScanResult,
   MonitorSnapshot,
   QueueEntry,
@@ -26,6 +27,7 @@ import { Store } from './db.js';
 import { Vault } from './vault.js';
 import { createMockComfy } from './mock/comfy.js';
 import { renderPlaceholder } from './mock/png.js';
+import { withPngText } from './images/png.js';
 
 /**
  * End-to-end coverage of the server against the mock ComfyUI: import a
@@ -34,6 +36,7 @@ import { renderPlaceholder } from './mock/png.js';
  */
 
 let mock: ReturnType<typeof createMockComfy>;
+let built: Awaited<ReturnType<typeof buildApp>>;
 let app: Awaited<ReturnType<typeof buildApp>>['app'];
 let baseUrl: string;
 let dataDir: string;
@@ -80,7 +83,7 @@ beforeAll(async () => {
 
   dataDir = mkdtempSync(join(tmpdir(), 'latent-test-'));
 
-  const built = await buildApp({
+  built = await buildApp({
     comfyUrl: mockAddress,
     dbPath: join(dataDir, 'test.db'),
     dataDir,
@@ -2431,4 +2434,258 @@ describe('portable settings files', () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+/**
+ * Losing ComfyUI mid-queue.
+ *
+ * The normal case on a rented box, and the one that used to leave the app
+ * describing a machine that no longer existed: a queue badge that never cleared
+ * and gallery placeholders for pictures that were never going to arrive.
+ */
+describe('losing the connection with work outstanding', () => {
+  it('resolves jobs that vanished while ComfyUI was away', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-drop-'));
+    const stray = createMockComfy({ stepDelayMs: 5, logLevel: 'silent' });
+    const strayAddress = await stray.listen(0);
+
+    const built = await buildApp({
+      comfyUrl: strayAddress,
+      dbPath: join(dir, 'latent.db'),
+      dataDir: dir,
+      webDir: join(dir, 'no-web'),
+      password: 'drop-password',
+      logLevel: 'silent',
+    });
+    await built.app.listen({ port: 0, host: '127.0.0.1' });
+    const address = built.app.server.address();
+    if (!address || typeof address === 'string') throw new Error('No port');
+    const url = `http://127.0.0.1:${address.port}`;
+
+    const login = await fetch(`${url}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'drop-password' }),
+    });
+    const session = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+    const call = (path: string, init?: RequestInit) =>
+      fetch(`${url}${path}`, {
+        ...init,
+        headers: {
+          ...(init?.body ? { 'content-type': 'application/json' } : {}),
+          cookie: session,
+          ...(init?.headers ?? {}),
+        },
+      });
+
+    try {
+      const workflow = await json<WorkflowDetail>(
+        call('/api/workflows', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'dropped', graph: sd15Txt2Img }),
+        }),
+      );
+
+      const queued = await json<{ generationIds: string[] }>(
+        call('/api/generate', {
+          method: 'POST',
+          body: JSON.stringify({
+            workflowId: workflow.id,
+            values: { '6.text': 'about to be orphaned', '3.steps': 4 },
+          }),
+        }),
+      );
+      const id = queued.generationIds[0] as string;
+
+      /*
+       * Pull the box out from under it, and take the history with it — this is
+       * an instance being destroyed, not a process being restarted.
+       */
+      await stray.close();
+      const replacement = createMockComfy({ stepDelayMs: 5, logLevel: 'silent' });
+      await replacement.listen(Number(new URL(strayAddress).port));
+
+      try {
+        const resolved = await waitFor(
+          async () => {
+            const record = await json<GenerationRecord>(call(`/api/gallery/${id}`));
+            return record.status !== 'queued' && record.status !== 'running' ? record : null;
+          },
+          40_000,
+        );
+
+        // Nothing to recover, so it is gone — and a run that is gone must not
+        // sit in the gallery as a placeholder forever.
+        expect(resolved.status).toBe('cancelled');
+        expect(resolved.error).toMatch(/connection|unreachable/i);
+
+        const gallery = await json<GalleryPage>(call('/api/gallery?limit=50'));
+        expect(gallery.items.some((item) => item.id === id)).toBe(false);
+      } finally {
+        await replacement.close();
+      }
+    } finally {
+      await built.app.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+/**
+ * Keeping, deleting, and the cleanup that makes both worth having.
+ */
+describe('keeping and sweeping', () => {
+  it('keeps what was asked for and deletes the rest once it is old enough', async () => {
+    const list = await json<{ id: string }[]>(api('/api/workflows'));
+    const workflowId = list[0]?.id as string;
+
+    const ids: string[] = [];
+    for (const prompt of ['keep me', 'bin me']) {
+      const response = await json<{ generationIds: string[] }>(
+        api('/api/generate', {
+          method: 'POST',
+          body: JSON.stringify({ workflowId, values: { '6.text': prompt, '3.steps': 3 } }),
+        }),
+      );
+      ids.push(response.generationIds[0] as string);
+    }
+
+    const records = [] as GenerationRecord[];
+    for (const id of ids) {
+      records.push(
+        await waitFor(async () => {
+          const record = await json<GenerationRecord>(api(`/api/gallery/${id}`));
+          return record.status === 'completed' && record.images.length > 0 ? record : null;
+        }),
+      );
+    }
+
+    // Kept without a rating: the point of the button.
+    const kept = await json<GenerationRecord>(
+      api(`/api/gallery/${records[0]!.id}/keep`, {
+        method: 'PUT',
+        body: JSON.stringify({ image: records[0]!.images[0], kept: true }),
+      }),
+    );
+    expect(kept.images[0]?.kept).toBe(true);
+    expect(kept.images[0]?.rating).toBe(0);
+    // Keeping copies the bytes locally, exactly as rating does.
+    expect(kept.images[0]?.archived).toBe(true);
+
+    // Sweep everything older than nothing at all, so both are candidates.
+    await api('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ autoDeleteHours: 0.0001 }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const removed = built.ctx.sweeper.run();
+    expect(removed).toBeGreaterThan(0);
+
+    expect((await api(`/api/gallery/${records[0]!.id}`)).status).toBe(200);
+    expect((await api(`/api/gallery/${records[1]!.id}`)).status).toBe(404);
+
+    await api('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ autoDeleteHours: null }),
+    });
+  }, 40_000);
+
+  it('deletes a single picture, and the run with it when it was the last one', async () => {
+    const list = await json<{ id: string }[]>(api('/api/workflows'));
+    const workflowId = list[0]?.id as string;
+
+    const response = await json<{ generationIds: string[] }>(
+      api('/api/generate', {
+        method: 'POST',
+        body: JSON.stringify({ workflowId, values: { '6.text': 'delete me', '3.steps': 3 } }),
+      }),
+    );
+    const id = response.generationIds[0] as string;
+
+    const record = await waitFor(async () => {
+      const current = await json<GenerationRecord>(api(`/api/gallery/${id}`));
+      return current.status === 'completed' && current.images.length > 0 ? current : null;
+    });
+
+    const image = record.images[0]!;
+    const params = new URLSearchParams({
+      filename: image.filename,
+      subfolder: image.subfolder,
+      type: image.type,
+    });
+    const deleted = await api(`/api/gallery/${id}/image?${params.toString()}`, {
+      method: 'DELETE',
+    });
+    expect(deleted.status).toBe(204);
+    expect((await api(`/api/gallery/${id}`)).status).toBe(404);
+  }, 40_000);
+});
+
+/**
+ * The import browser, and the settings an image carries with it.
+ */
+describe('browsing an output folder', () => {
+  it('walks it a level at a time and recovers the workflow from the metadata', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-browse-'));
+    const outputs = join(dir, 'outputs');
+    mkdirSync(join(outputs, '2026-07-30'), { recursive: true });
+
+    // One plain picture, and one with the graph ComfyUI would have written.
+    writeFileSync(join(outputs, 'loose.png'), renderPlaceholder(64, 64, 'loose'));
+    const withGraph = withPngText(
+      renderPlaceholder(64, 64, 'graph'),
+      'prompt',
+      JSON.stringify({
+        ...sd15Txt2Img,
+        '3': { ...sd15Txt2Img['3'], inputs: { ...sd15Txt2Img['3']!.inputs, steps: 27 } },
+        '6': { ...sd15Txt2Img['6'], inputs: { ...sd15Txt2Img['6']!.inputs, text: 'recovered prompt' } },
+      }),
+    );
+    writeFileSync(join(outputs, '2026-07-30', 'made-here.png'), withGraph);
+
+    await api('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ importRoot: outputs }),
+    });
+
+    try {
+      const root = await json<ImportBrowseResult>(api('/api/import/browse'));
+      expect(root.ok).toBe(true);
+      expect(root.parent).toBeNull();
+      expect(root.files.map((file) => file.name)).toEqual(['loose.png']);
+      expect(root.folders).toHaveLength(1);
+      expect(root.folders[0]?.name).toBe('2026-07-30');
+      // The count is what makes a folder worth opening — or not.
+      expect(root.folders[0]?.images).toBe(1);
+
+      const inside = await json<ImportBrowseResult>(
+        api('/api/import/browse?path=2026-07-30'),
+      );
+      expect(inside.parent).toBe('');
+      expect(inside.files.map((file) => file.name)).toEqual(['made-here.png']);
+
+      // A whole folder in one request rather than a list of paths from a phone.
+      const outcome = await json<ImportResult>(
+        api('/api/import', {
+          method: 'POST',
+          body: JSON.stringify({ folder: '2026-07-30', recursive: true }),
+        }),
+      );
+      expect(outcome.imported).toBe(1);
+
+      const gallery = await json<GalleryPage>(api('/api/gallery?limit=50'));
+      const imported = gallery.items.find((item) => item.source === 'import');
+      expect(imported).toBeDefined();
+
+      // The whole point: an imported picture knows what made it, so "reuse
+      // these settings" has something to reuse.
+      expect(imported?.workflowId).toBeTruthy();
+      expect(imported?.title).toBe('recovered prompt');
+      expect(imported?.values['3.steps']).toBe(27);
+      expect(imported?.values['6.text']).toBe('recovered prompt');
+    } finally {
+      await api('/api/settings', { method: 'PATCH', body: JSON.stringify({ importRoot: null }) });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 40_000);
 });
