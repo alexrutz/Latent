@@ -1,12 +1,33 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { InputImage, ParamField, WidgetValue } from '@latent/shared';
 
 import { api, imageUrl, inputImageUrl } from '../api/client';
+import { useOllamaModels } from '../api/queries';
 import { ImageEditor } from './ImageEditor';
 import { InputImagePicker } from './InputImagePicker';
 import { NumericInput } from './NumericInput';
 import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
+
+/**
+ * Which workflow the surrounding form belongs to.
+ *
+ * A context rather than a prop because only one control needs it — an empty
+ * combo, which has to ask the server what its options are — and threading it
+ * through every chip and sheet to reach that one place would be noise
+ * everywhere else.
+ */
+const WorkflowContext = createContext<string | null>(null);
+
+export function WorkflowScope({
+  workflowId,
+  children,
+}: {
+  workflowId: string | null;
+  children: React.ReactNode;
+}) {
+  return <WorkflowContext.Provider value={workflowId}>{children}</WorkflowContext.Provider>;
+}
 
 interface ControlProps {
   field: ParamField;
@@ -429,7 +450,22 @@ function trim(value: number): string {
 
 function ComboEditor({ field, value, onChange }: ControlProps) {
   const [filter, setFilter] = useState('');
-  const options = field.options ?? [];
+  const workflowId = useContext(WorkflowContext);
+  const declared = field.options ?? [];
+
+  /*
+   * A combo `/object_info` declares with *no* options is not a dropdown at all
+   * — it is a node that fills its own list in from the browser, which is how
+   * the Ollama nodes publish their model picker. Latent never loads those
+   * extensions, so the list arrives empty and the picker becomes a dead end
+   * saying "nothing matches" about a list that was never populated.
+   *
+   * Two answers, in order of preference: ask the source, and failing that let
+   * the name be typed. The node takes a plain string either way.
+   */
+  const dynamic = declared.length === 0;
+  const fetched = useOllamaModels(workflowId, field.nodeId, dynamic);
+  const options = dynamic ? (fetched.data?.models ?? []) : declared;
 
   const filtered = useMemo(() => {
     const needle = filter.trim().toLowerCase();
@@ -439,6 +475,32 @@ function ComboEditor({ field, value, onChange }: ControlProps) {
 
   return (
     <div className="space-y-3">
+      {dynamic && (
+        <div className="space-y-2">
+          <label className="block text-xs text-muted">
+            This node names its own choices, so they are read from the server rather than from the
+            workflow. Type one if it is not listed.
+          </label>
+          <input
+            type="text"
+            value={typeof value === 'string' ? value : String(value ?? '')}
+            onChange={(event) => onChange(event.target.value)}
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            aria-label={field.label}
+            className="w-full rounded-xl border border-line bg-surface px-4 py-3 focus:border-accent focus:outline-none"
+          />
+          {fetched.isLoading && <p className="text-xs text-muted">Looking…</p>}
+          {fetched.data && !fetched.data.ok && (
+            <p className="text-xs text-warn">{fetched.data.message}</p>
+          )}
+          {fetched.isError && (
+            <p className="text-xs text-warn">Could not reach that node’s server.</p>
+          )}
+        </div>
+      )}
+
       {/* Model lists on a well-stocked server run to hundreds of entries. */}
       {options.length > 8 && (
         <input
@@ -469,7 +531,7 @@ function ComboEditor({ field, value, onChange }: ControlProps) {
             </li>
           );
         })}
-        {filtered.length === 0 && (
+        {filtered.length === 0 && !dynamic && (
           <li className="px-4 py-6 text-center text-sm text-muted">Nothing matches “{filter}”.</li>
         )}
       </ul>

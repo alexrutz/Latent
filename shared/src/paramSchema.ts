@@ -177,9 +177,12 @@ function findTextSources(workflow: ApiWorkflow, startNodeId: string, maxDepth = 
     const node = workflow[current.id];
     if (!node) continue;
 
-    const hasEditableText = Object.entries(node.inputs ?? {}).some(
-      ([name, value]) => typeof value === 'string' && (name === 'text' || name === 'prompt'),
-    );
+    const hasEditableText =
+      // A LoRA loader in the conditioning chain is wiring, not a prompt source.
+      !isLoraNodeClass(node.class_type) &&
+      Object.entries(node.inputs ?? {}).some(
+        ([name, value]) => typeof value === 'string' && (name === 'text' || name === 'prompt'),
+      );
     if (hasEditableText) {
       found.push(current.id);
       // Keep walking: ConditioningCombine can merge two prompt nodes.
@@ -261,6 +264,19 @@ function classifyPrompts(workflow: ApiWorkflow): PromptClassification {
 }
 
 /**
+ * A node whose job is loading LoRAs.
+ *
+ * It matters because several of them carry a *text* input — trigger words, a
+ * tag string, a note about what the LoRA expects — and that text is not the
+ * description of the picture. Treating it as the prompt put it under the prompt
+ * box and, worse, handed it to the random draw, which would then overwrite a
+ * LoRA's trigger words with a landscape.
+ */
+function isLoraNodeClass(classType: string): boolean {
+  return /lora/i.test(classType);
+}
+
+/**
  * A text field that carries `<lora:name:0.8>` tags, or is named for LoRAs.
  *
  * These get a structured editor instead of a text box — typing tags by hand on a
@@ -280,6 +296,13 @@ function detectRole(
   prompts: PromptClassification,
   literal: WidgetValue,
 ): ParamRole {
+  // Before either prompt check: a LoRA loader's own text is trigger words or a
+  // tag string, not the description of the picture. Deliberately only `text`
+  // and `prompt` — `lora_name` is a combo of installed files and stays one.
+  if (isLoraNodeClass(classType) && (inputName === 'text' || inputName === 'prompt')) {
+    return 'lora_text';
+  }
+
   if ((inputName === 'text' || inputName === 'prompt') && prompts.negative.has(nodeId)) {
     return 'negative_prompt';
   }

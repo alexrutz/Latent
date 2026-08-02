@@ -80,6 +80,17 @@ export interface RandomPromptConfig {
    * exist to remove. Applied whether or not the random draw is switched on.
    */
   alwaysBlockIds: string[];
+  /**
+   * Prompt fields the draw must leave alone, as `nodeId.inputName`.
+   *
+   * The role heuristics decide which text inputs are *the* prompt, and no
+   * heuristic gets that right for every custom node — a loader with its own
+   * text, a second encoder feeding something unrelated. Overwriting one of
+   * those with a drawn landscape is not a small mistake, so there is a list to
+   * say so outright rather than only a rule to hope about. Empty is the normal
+   * case: every prompt field is drawn into.
+   */
+  excludedPromptFields: string[];
 }
 
 export const DEFAULT_RANDOM_PROMPT_CONFIG: RandomPromptConfig = {
@@ -92,6 +103,7 @@ export const DEFAULT_RANDOM_PROMPT_CONFIG: RandomPromptConfig = {
   groupLimits: {},
   params: [],
   alwaysBlockIds: [],
+  excludedPromptFields: [],
 };
 
 /** Blocks with no group at all, which never exclude one another by default. */
@@ -143,6 +155,15 @@ export function normaliseRandomPromptConfig(raw: unknown): RandomPromptConfig {
     blockIds: Array.isArray(input.blockIds)
       ? [...new Set(input.blockIds.filter((id): id is string => typeof id === 'string' && id !== ''))]
       : [],
+    excludedPromptFields: Array.isArray(input.excludedPromptFields)
+      ? [
+          ...new Set(
+            input.excludedPromptFields.filter(
+              (id): id is string => typeof id === 'string' && id !== '',
+            ),
+          ),
+        ]
+      : DEFAULT_RANDOM_PROMPT_CONFIG.excludedPromptFields,
     // Swapped rather than rejected: "between 4 and 2" plainly means 2 to 4.
     // Unlimited stays unlimited rather than being sorted below the minimum.
     minBlocks: max === 0 ? min : Math.min(min, max),

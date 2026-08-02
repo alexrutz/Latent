@@ -402,6 +402,7 @@ function parseTileSpan(raw: string | null): TileSpan | null {
 
 export function toGenerationImage(row: ImageRow): GenerationImage {
   return {
+    id: row.id,
     nodeId: row.node_id,
     filename: row.filename,
     subfolder: row.subfolder,
@@ -905,14 +906,50 @@ export class Store {
    * Find an image row by the reference the client has (a ComfyUI filename).
    * Used by both the rating endpoint and the archive-first image proxy.
    */
-  findImage(ref: ComfyImageRef): (ImageRow & { generationId: string }) | null {
-    const row = this.db
-      .prepare<[string, string, string], ImageRow>(
-        `SELECT * FROM images
-          WHERE filename = ? AND subfolder = ? AND type = ?
-          ORDER BY id DESC LIMIT 1`,
-      )
-      .get(ref.filename, ref.subfolder ?? '', ref.type ?? 'output');
+  /**
+   * The stored row for an image.
+   *
+   * Name, subfolder and type are **not** a key. ComfyUI restarts its counter
+   * when an output folder is emptied, and two imported folders routinely hold
+   * the same file name, so the same triple can name several rows — and picking
+   * the newest of them is how a thumbnail comes to belong to a different
+   * picture than the one it opens.
+   *
+   * So there are three ways in, best first: the row id, which the client sends
+   * whenever it has one; the generation it belongs to, which *is* a key
+   * (`UNIQUE (generation_id, filename, subfolder, type)`); and only failing
+   * both, the old guess — kept because a live preview arriving over the socket
+   * has no row yet.
+   */
+  findImage(
+    ref: ComfyImageRef & { id?: number },
+    generationId?: string,
+  ): (ImageRow & { generationId: string }) | null {
+    let row: ImageRow | undefined;
+
+    if (typeof ref.id === 'number') {
+      row = this.db.prepare<[number], ImageRow>('SELECT * FROM images WHERE id = ?').get(ref.id);
+    }
+
+    if (!row && generationId) {
+      row = this.db
+        .prepare<[string, string, string, string], ImageRow>(
+          `SELECT * FROM images
+            WHERE generation_id = ? AND filename = ? AND subfolder = ? AND type = ?`,
+        )
+        .get(generationId, ref.filename, ref.subfolder ?? '', ref.type ?? 'output');
+    }
+
+    if (!row) {
+      row = this.db
+        .prepare<[string, string, string], ImageRow>(
+          `SELECT * FROM images
+            WHERE filename = ? AND subfolder = ? AND type = ?
+            ORDER BY id DESC LIMIT 1`,
+        )
+        .get(ref.filename, ref.subfolder ?? '', ref.type ?? 'output');
+    }
+
     return row ? { ...row, generationId: row.generation_id } : null;
   }
 

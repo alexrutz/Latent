@@ -461,3 +461,51 @@ describe('buildParamSchema without object_info', () => {
     expect(schema.missingNodeTypes.length).toBeGreaterThan(0);
   });
 });
+
+/**
+ * A LoRA loader's own text is not the prompt.
+ *
+ * Several of them carry one — trigger words, a tag string — and it sits in the
+ * conditioning chain, so walking back from the sampler's `positive` input finds
+ * it. Calling it a prompt put it under the prompt box and, far worse, handed it
+ * to the random draw, which would then overwrite a LoRA's trigger words with a
+ * landscape.
+ */
+describe('text on a LoRA loader', () => {
+  const graph = {
+    '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'sd15.safetensors' } },
+    '2': {
+      class_type: 'LoraTagLoader',
+      inputs: { text: 'ohwx style, masterpiece', model: ['1', 0], clip: ['1', 1] },
+    },
+    '3': { class_type: 'CLIPTextEncode', inputs: { text: 'a lighthouse', clip: ['2', 1] } },
+    '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 1] } },
+    '5': {
+      class_type: 'KSampler',
+      inputs: {
+        seed: 1,
+        steps: 20,
+        cfg: 8,
+        sampler_name: 'euler',
+        scheduler: 'normal',
+        denoise: 1,
+        model: ['2', 0],
+        positive: ['3', 0],
+        negative: ['4', 0],
+        latent_image: ['6', 0],
+      },
+    },
+    '6': { class_type: 'EmptyLatentImage', inputs: { width: 512, height: 512, batch_size: 1 } },
+    '7': { class_type: 'SaveImage', inputs: { filename_prefix: 'out', images: ['5', 0] } },
+  };
+
+  it('is a LoRA field, not a prompt the draw may overwrite', () => {
+    const schema = buildParamSchema(graph, {});
+
+    expect(byId(schema.fields, '2.text')).toMatchObject({ role: 'lora_text' });
+    // The actual prompt is still found, and it is the only one.
+    expect(schema.fields.filter((field) => field.role === 'prompt').map((f) => f.id)).toEqual([
+      '3.text',
+    ]);
+  });
+});

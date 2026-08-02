@@ -74,19 +74,32 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await response.json()) as T;
 }
 
-/** Build the proxied URL for an image held by ComfyUI. */
-export function imageUrl(image: ComfyImageRef, preview?: string): string {
+/**
+ * Build the proxied URL for an image.
+ *
+ * `id` is passed whenever the caller has one, and it is what actually resolves
+ * the picture: name, subfolder and type do not identify a stored image — two
+ * imported folders can hold the same file name, and ComfyUI restarts its
+ * counter when an output folder is emptied. Without the id the server has to
+ * guess, and guessing is how a thumbnail comes to belong to a different picture
+ * than the one it opens.
+ *
+ * The name is still sent, because a live preview arriving over the socket has
+ * no row yet and can only be fetched upstream.
+ */
+export function imageUrl(image: ComfyImageRef & { id?: number }, preview?: string): string {
   const params = new URLSearchParams({
     filename: image.filename,
     subfolder: image.subfolder ?? '',
     type: image.type ?? 'output',
   });
+  if (typeof image.id === 'number') params.set('id', String(image.id));
   if (preview) params.set('preview', preview);
   return `/api/view?${params.toString()}`;
 }
 
 /** A downscaled variant, so a gallery grid doesn't pull full-size PNGs. */
-export function thumbnailUrl(image: ComfyImageRef): string {
+export function thumbnailUrl(image: ComfyImageRef & { id?: number }): string {
   return imageUrl(image, 'webp;70');
 }
 
@@ -201,6 +214,15 @@ export const api = {
 
   monitor: (since?: number) =>
     request<MonitorSnapshot>(`/api/monitor${since ? `?since=${since}` : ''}`),
+
+  /**
+   * The models an Ollama node offers. Fetched from Ollama itself, because the
+   * nodes that talk to it publish an empty combo and fill it in client-side.
+   */
+  ollamaModels: (workflowId: string, nodeId: string) =>
+    request<{ ok: boolean; url: string; models: string[]; message?: string }>(
+      `/api/models/ollama?workflowId=${encodeURIComponent(workflowId)}&nodeId=${encodeURIComponent(nodeId)}`,
+    ),
 
   archiveStats: () => request<ArchiveStats>('/api/archive/stats'),
 
@@ -413,7 +435,7 @@ export const api = {
   },
 
   /** Copy an output image into ComfyUI's input directory (img2img / upscale). */
-  toInput: (image: ComfyImageRef) =>
+  toInput: (image: ComfyImageRef & { id?: number }) =>
     request<UploadImageResponse>('/api/images/to-input', {
       method: 'POST',
       body: JSON.stringify(image),

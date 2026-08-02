@@ -99,6 +99,31 @@ export class Archive {
     }
   }
 
+  /**
+   * Whether a file is already there *and* this install can read it.
+   *
+   * Archive paths are content-addressed, so the same picture always lands at
+   * the same path and identical bytes are stored once. That shortcut assumed
+   * an existing file belongs to us, and after a clean start it does not: the
+   * archive is deliberately kept while the database is thrown away, so the new
+   * database has a new master key and every file already there was encrypted
+   * under the old one. Keeping such a file and recording a row that points at
+   * it produces an image that can never be decrypted — for a picture the user
+   * has right there on disk and is importing precisely to keep.
+   *
+   * So the existence check is a *readability* check, and anything we cannot
+   * read is written over with the copy we were just handed.
+   */
+  private async readable(relativePath: string): Promise<boolean> {
+    try {
+      return (await this.read(relativePath)) !== null;
+    } catch {
+      // Locked or undecryptable. Locked never gets here — the caller checks
+      // first — so this is the stale-ciphertext case, and it must be rewritten.
+      return false;
+    }
+  }
+
   private async writeEncrypted(relativePath: string, plaintext: Buffer): Promise<void> {
     const absolute = this.resolvePath(relativePath);
     if (!absolute) throw new Error('Refusing to write outside the archive directory');
@@ -135,7 +160,7 @@ export class Archive {
     const extension = (extname(filename) || '.png').toLowerCase();
     const path = this.pathFor(hash, extension);
 
-    if (!(await this.exists(path))) {
+    if (!(await this.readable(path))) {
       await this.writeEncrypted(path, data);
     }
 
@@ -156,7 +181,7 @@ export class Archive {
     let thumbBytes: number | null = null;
     if (thumbnail && thumbnail.length > 0 && thumbnail.length < data.length) {
       thumbPath = this.pathFor(hash, thumbExtension, '_t');
-      if (!(await this.exists(thumbPath))) {
+      if (!(await this.readable(thumbPath))) {
         await this.writeEncrypted(thumbPath, thumbnail);
       }
       thumbBytes = thumbnail.length;

@@ -41,7 +41,12 @@ export function registerGenerateRoutes(app: FastifyInstance, ctx: AppContext): v
      */
     const randomConfig = ctx.store.getRandomPromptConfig();
     const promptFields = schema.fields.filter(
-      (field) => field.role === 'prompt' && !field.hidden,
+      (field) =>
+        field.role === 'prompt' &&
+        !field.hidden &&
+        // Explicitly held back in the Random tab. The heuristics decide what
+        // counts as a prompt, and this is how the user overrules them.
+        !randomConfig.excludedPromptFields.includes(field.id),
     );
     const drawingPrompt = randomConfig.enabled && promptFields.length > 0;
     const drawingParams = randomConfig.enabled && randomConfig.params.length > 0;

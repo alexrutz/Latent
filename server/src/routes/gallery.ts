@@ -34,7 +34,7 @@ export function registerGalleryRoutes(app: FastifyInstance, ctx: AppContext): vo
    * image is one the user wants to keep, and keeping it means holding the bytes
    * locally rather than a reference into a rented machine's filesystem.
    */
-  app.put<{ Params: { id: string }; Body: { image?: ComfyImageRef; rating?: number } }>(
+  app.put<{ Params: { id: string }; Body: { image?: ComfyImageRef & { id?: number }; rating?: number } }>(
     '/api/gallery/:id/rating',
     async (request, reply) => {
       const record = ctx.store.getGeneration(request.params.id);
@@ -46,7 +46,7 @@ export function registerGalleryRoutes(app: FastifyInstance, ctx: AppContext): vo
         return reply.code(400).send({ error: 'Rating must be between 0 and 5' });
       }
 
-      const row = ctx.store.findImage(image);
+      const row = ctx.store.findImage(image, record.id);
       if (!row) return reply.code(404).send({ error: 'That image is not in the gallery' });
 
       ctx.store.setImageRating(row.id, rating);
@@ -85,12 +85,12 @@ export function registerGalleryRoutes(app: FastifyInstance, ctx: AppContext): vo
    */
   app.put<{
     Params: { id: string };
-    Body: { image?: ComfyImageRef; span?: { cols: number; rows: number } | null };
+    Body: { image?: ComfyImageRef & { id?: number }; span?: { cols: number; rows: number } | null };
   }>('/api/gallery/:id/tile', async (request, reply) => {
     const { image, span } = request.body ?? {};
     if (!image?.filename) return reply.code(400).send({ error: 'Which image?' });
 
-    const row = ctx.store.findImage(image);
+    const row = ctx.store.findImage(image, request.params.id);
     if (!row) return reply.code(404).send({ error: 'That image is not in the gallery' });
 
     if (span && (span.cols < 1 || span.cols > 4 || span.rows < 1 || span.rows > 4)) {
@@ -108,7 +108,7 @@ export function registerGalleryRoutes(app: FastifyInstance, ctx: AppContext): vo
    * or the layout jumps as each thumbnail loads. ComfyUI never tells us the
    * size, so the first client to see an image reports it back.
    */
-  app.put<{ Body: { image?: ComfyImageRef; width?: number; height?: number } }>(
+  app.put<{ Body: { image?: ComfyImageRef & { id?: number }; width?: number; height?: number } }>(
     '/api/images/dimensions',
     async (request, reply) => {
       const { image, width, height } = request.body ?? {};
@@ -135,7 +135,7 @@ export function registerGalleryRoutes(app: FastifyInstance, ctx: AppContext): vo
    * rating does — copied into the local archive, never swept — and says nothing
    * about quality.
    */
-  app.put<{ Params: { id: string }; Body: { image?: ComfyImageRef; kept?: boolean } }>(
+  app.put<{ Params: { id: string }; Body: { image?: ComfyImageRef & { id?: number }; kept?: boolean } }>(
     '/api/gallery/:id/keep',
     async (request, reply) => {
       const record = ctx.store.getGeneration(request.params.id);
@@ -144,7 +144,7 @@ export function registerGalleryRoutes(app: FastifyInstance, ctx: AppContext): vo
       const { image, kept = true } = request.body ?? {};
       if (!image?.filename) return reply.code(400).send({ error: 'Which image?' });
 
-      const row = ctx.store.findImage(image);
+      const row = ctx.store.findImage(image, record.id);
       if (!row) return reply.code(404).send({ error: 'That image is not in the gallery' });
 
       ctx.store.setImageKept(row.id, kept);
@@ -182,7 +182,7 @@ export function registerGalleryRoutes(app: FastifyInstance, ctx: AppContext): vo
     // The local copies are ours, though, and leaving them behind would be a
     // slow leak of exactly the bytes the user just said they did not want.
     for (const image of record.images) {
-      const row = ctx.store.findImage(image);
+      const row = ctx.store.findImage(image, record.id);
       if (row) await ctx.archive.forget(row.id, row);
     }
 
@@ -205,7 +205,7 @@ export function registerGalleryRoutes(app: FastifyInstance, ctx: AppContext): vo
       const { filename, subfolder = '', type = 'output' } = request.query ?? {};
       if (!filename) return reply.code(400).send({ error: 'Which image?' });
 
-      const row = ctx.store.findImage({ filename, subfolder, type });
+      const row = ctx.store.findImage({ filename, subfolder, type }, record.id);
       if (!row || row.generation_id !== record.id) {
         return reply.code(404).send({ error: 'That image is not in this run' });
       }

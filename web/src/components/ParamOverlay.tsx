@@ -84,14 +84,25 @@ export function ParamOverlayLine({
     <p
       data-testid="param-overlay"
       className={cn(
-        'flex flex-wrap gap-x-1.5 gap-y-0.5 tabular-nums',
+        'flex max-w-full flex-wrap gap-x-1.5 gap-y-0.5 tabular-nums',
         compact ? 'text-[9px] leading-tight' : 'text-[11px]',
       )}
     >
       {items.map((item) => (
         <span
           key={item.key}
-          className={cn('max-w-full', item.key.startsWith(TEXT_OVERLAY_PREFIX) ? 'break-words' : 'truncate')}
+          /*
+           * `min-w-0` is the one that matters: a flex item defaults to
+           * `min-width: auto`, so a single long token — which is exactly what a
+           * model's answer or a file path is — pushes the line wider than the
+           * screen and the whole page starts panning sideways.
+           */
+          className={cn(
+            'min-w-0 max-w-full',
+            item.key.startsWith(TEXT_OVERLAY_PREFIX)
+              ? 'break-words [overflow-wrap:anywhere]'
+              : 'truncate',
+          )}
         >
           {withLabels && (
             <span className="text-white/55">{abbreviations[item.label] ?? item.label}</span>
@@ -116,6 +127,7 @@ export function ParamOverlayPicker({
   withLabels,
   onChange,
   onWithLabelsChange,
+  className,
 }: {
   label: string;
   records: GenerationRecord[];
@@ -123,6 +135,8 @@ export function ParamOverlayPicker({
   withLabels: boolean;
   onChange: (keys: string[]) => void;
   onWithLabelsChange: (value: boolean) => void;
+  /** Lets a caller size it like the buttons it sits among. */
+  className?: string;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -147,6 +161,7 @@ export function ParamOverlayPicker({
         className={cn(
           'flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[11px]',
           selected.length > 0 ? 'bg-accent/20 text-accent' : 'bg-surface text-muted',
+          className,
         )}
       >
         <span aria-hidden>ⓘ</span>
@@ -169,24 +184,26 @@ export function ParamOverlayPicker({
             </p>
           ) : (
             <>
-              <ul className="space-y-1">
+              {/* Two columns: this list is as long as the workflow has knobs,
+                  and one name per row turns a choice into a scroll. */}
+              <ul data-testid="overlay-choices" className="grid grid-cols-2 gap-1">
                 {choices.map((choice) => {
                   const position = selected.indexOf(choice.key);
                   const picked = position >= 0;
                   return (
-                    <li key={choice.key}>
+                    <li key={choice.key} className="min-w-0">
                       <button
                         type="button"
                         onClick={() => toggle(choice.key)}
                         aria-pressed={picked}
                         className={cn(
-                          'flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm',
-                          picked ? 'bg-accent/15 text-accent' : 'active:bg-surface-2',
+                          'flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-xs',
+                          picked ? 'bg-accent/15 text-accent' : 'bg-surface-2/60 active:bg-surface-2',
                         )}
                       >
                         <span className="min-w-0 truncate">{choice.label}</span>
                         {picked && (
-                          <span className="shrink-0 text-xs tabular-nums">#{position + 1}</span>
+                          <span className="shrink-0 text-[10px] tabular-nums">#{position + 1}</span>
                         )}
                       </button>
                     </li>

@@ -256,8 +256,18 @@ export function ImageViewer({
             already carrying the actions. Hidden while zoomed, where it would
             just be in the way of what you are inspecting. */}
         {overlay && scale === 1 && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-3 pt-6 pb-2">
-            {overlay}
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 overflow-hidden bg-gradient-to-t from-black/70 to-transparent px-3 pt-6 pb-2">
+            {/*
+              Capped and scrollable rather than as tall as it likes. What a
+              node prints can be a paragraph — a model's reasoning, an expanded
+              wildcard — and at full height that paragraph covers the picture
+              it is describing. `pointer-events-auto` is what lets it be
+              scrolled at all; `touch-pan-y` keeps that gesture from being read
+              as a swipe to the next image.
+            */}
+            <div className="pointer-events-auto max-h-[35svh] touch-pan-y overflow-x-hidden overflow-y-auto overscroll-contain">
+              {overlay}
+            </div>
           </div>
         )}
       </div>

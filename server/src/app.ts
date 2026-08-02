@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import fastifyCookie from '@fastify/cookie';
 import fastifyMultipart from '@fastify/multipart';
@@ -95,6 +95,17 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
    * and writing outside that would leak state between runs.
    */
   if (overrides.dataDir && !overrides.stateDir) config.stateDir = overrides.dataDir;
+  /*
+   * …and that has to include the archive, which `loadConfig` derived from the
+   * *default* data directory before the override was seen. Leaving it behind
+   * put every caller's images in one shared folder — and because archive paths
+   * are content-addressed, one run would then find another run's file already
+   * at its path, keep it, and store a row pointing at bytes encrypted under a
+   * key it does not have.
+   */
+  if (overrides.dataDir && !overrides.archiveDir) {
+    config.archiveDir = resolve(overrides.dataDir, 'archive');
+  }
   // `loadConfig` only creates the directory it derived itself.
   mkdirSync(config.dataDir, { recursive: true });
 

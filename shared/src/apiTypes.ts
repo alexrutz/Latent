@@ -77,6 +77,18 @@ export interface TileSpan {
 }
 
 export interface GenerationImage extends ComfyImageRef {
+  /**
+   * The stored row, and the only unambiguous way to ask for these bytes.
+   *
+   * Name, subfolder and type are not a key: ComfyUI restarts its counter when
+   * an output folder is emptied, and two imported folders can hold the same
+   * file name. Looking an image up by those three served whichever row happened
+   * to be newest — which is exactly how a thumbnail ends up belonging to a
+   * different picture than the one it opens.
+   *
+   * Absent on a favourite recorded before this existed.
+   */
+  id?: number;
   nodeId: string;
   /** 0 = unrated, 1–5 stars. */
   rating: number;

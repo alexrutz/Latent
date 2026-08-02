@@ -352,6 +352,14 @@ This is why it matters where Latent runs: put it on a machine that stays up (a
 PC, a NAS, a small always-on box), and point it at whatever GPU you are renting
 today.
 
+Files are content-addressed, so the same picture is stored once however many
+times it is rated or imported. One consequence is worth stating: after a clean
+start the archive survives but its master key does not, so files already there
+were encrypted under a key the new install has never seen. Latent checks that it
+can actually *read* a file before treating it as already stored, and rewrites it
+if not — otherwise re-importing a picture would record a row pointing at bytes
+nobody can ever decrypt.
+
 ### The archive is encrypted
 
 Those copies then sit on a disk indefinitely, so they are encrypted:
@@ -457,6 +465,12 @@ rather than a button you have to remember is there. Settings:
   the length varies too. Both offer **all** as well as a number: *at most all*
   puts no ceiling on it beyond the pool and the group limits, and *at least all*
   makes the draw take everything it is allowed to.
+- **Which prompt fields** — shown whenever a workflow has more than one text
+  input Latent reads as a prompt, with a switch each. The role heuristics are
+  right for a stock workflow and cannot be right for every custom node, and a
+  drawn landscape landing in a LoRA loader's trigger words is not a small
+  mistake — so what the draw will touch is listed rather than assumed. (A LoRA
+  loader's own text is never treated as a prompt in the first place.)
 - **Keep what I typed** (on by default) — the draw is *added* to your prompt, so
   "photo of a lighthouse" stays the subject and the blocks supply the treatment.
   Off, the prompt is built purely from blocks.
@@ -541,6 +555,19 @@ Anything rated, kept or favourited stays, and one of those anywhere in a run
 keeps the whole run — deleting three of four frames from a batch would throw
 away the comparison that made the fourth worth keeping. Imported folders are
 never touched: that is somebody's existing library, not scratch space.
+
+**Details open when you tap them.** The parameter list cuts each value to a
+line — a prompt is both the value you most want to read here and the one least
+likely to fit — and tapping a row shows the whole thing, tapping again puts it
+back. The action row underneath is a three-column grid, so both edges are flush
+and every button is the same size to hit.
+
+**Values drawn over the picture.** The ⓘ button chooses what appears on the
+image itself, two choices to a row, and the selection order is the order on
+screen. Anything a node *printed* is a choice like any other, which is how a
+model's caption or its reasoning gets shown — and because that can be a
+paragraph rather than a number, the strip is capped in height and scrolls
+instead of covering the picture it describes.
 
 **A zoom stays put.** The list grows underneath the viewer while a queue drains,
 and the viewer used to reset your zoom whenever it did — the *index* of the
@@ -634,6 +661,21 @@ what anyone means by "straighten".
 
 Output is capped at 2048px on the longest edge, and **Original** skips the canvas
 entirely when the picture was already right.
+
+## Nodes that name their own choices
+
+Some custom nodes publish a dropdown with **nothing in it** and fill the list in
+from the browser, using a JavaScript extension of their own. The Ollama nodes do
+this for their model picker. Latent is not that browser, so the list arrived
+empty and the picker reported, quite correctly and quite uselessly, that nothing
+matched.
+
+An empty dropdown is now treated as what it is — a value the node names for
+itself, not a choice with no options. It can always be typed, and for an Ollama
+node Latent also asks Ollama directly, at the address on that node's own `url`
+widget. A workflow saying `127.0.0.1` means "the Ollama next to ComfyUI", so
+when ComfyUI is somewhere else that host is substituted; if nothing answers, the
+field says so and stays typeable.
 
 ## The terminal
 

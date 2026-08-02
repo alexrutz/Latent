@@ -693,11 +693,15 @@ function ViewerWithActions({
           )}
 
           {/*
-            Wraps rather than scrolling sideways. The row used to run off the
-            right edge with no scrollbar to say so, which just looked broken —
-            and half of these are actions you reach for constantly.
+            A three-column grid rather than a wrapped row.
+
+            Wrapping left every row ending somewhere different, so the block had
+            a ragged right edge and the buttons never lined up with each other
+            between rows. Even columns make both edges flush and give every
+            action the same target size — which matters more than fitting a long
+            label, so labels truncate.
           */}
-          <div className="flex flex-wrap gap-1.5 [&>button]:whitespace-nowrap">
+          <div className="grid grid-cols-3 gap-1.5 [&>*]:w-full [&>button]:truncate">
             <Button
               // Says which state it is in, and which way the next tap goes.
               variant={existingFavorite ? 'primary' : 'secondary'}
@@ -810,6 +814,8 @@ function ViewerWithActions({
               withLabels={grid.overlayLabels}
               onChange={(viewerParams) => onGridChange({ viewerParams })}
               onWithLabelsChange={(overlayLabels) => onGridChange({ overlayLabels })}
+              // Sized like the buttons it now shares a grid with.
+              className="h-8 justify-center rounded-lg text-sm"
             />
           </div>
 
@@ -852,13 +858,43 @@ function DetailsList({ record }: { record: GenerationRecord }) {
         <p className="mb-2 text-xs tracking-wide text-muted uppercase">All parameters</p>
         <dl className="space-y-1.5 text-xs">
           {entries.map(([id, value]) => (
-            <div key={id} className="flex justify-between gap-4 border-b border-line/50 pb-1.5">
-              <dt className="shrink-0 text-muted">{id}</dt>
-              <dd className="min-w-0 truncate text-right">{String(value)}</dd>
-            </div>
+            <DetailRow key={id} name={id} value={String(value)} />
           ))}
         </dl>
       </div>
+    </div>
+  );
+}
+
+/**
+ * One parameter, cut to a line until you tap it.
+ *
+ * A prompt is the value people most often want to read here and the one least
+ * likely to fit, so truncating it permanently hides exactly what the list is
+ * for. Tapping opens the whole thing; tapping again puts it back, so a long
+ * value does not push everything below it off the screen for good.
+ */
+function DetailRow({ name, value }: { name: string; value: string }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="border-b border-line/50 pb-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        className="flex w-full items-start justify-between gap-4 text-left"
+      >
+        <dt className="shrink-0 text-muted">{name}</dt>
+        <dd
+          className={cn(
+            'min-w-0 text-right',
+            open ? 'break-words [overflow-wrap:anywhere]' : 'truncate',
+          )}
+        >
+          {value}
+        </dd>
+      </button>
     </div>
   );
 }

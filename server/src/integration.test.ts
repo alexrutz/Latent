@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -2879,4 +2880,174 @@ describe('encrypted settings files', () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 60_000);
+});
+
+/**
+ * The picture a thumbnail belongs to.
+ *
+ * `/api/view` used to resolve an image by filename, subfolder and type and take
+ * whichever row was newest. Those three are not a key — ComfyUI restarts its
+ * counter when an output folder is emptied, and two imported folders routinely
+ * hold the same name — so two rows sharing a name meant both of them served the
+ * newer one's bytes. That is how a thumbnail comes to open a different picture
+ * than the one it showed.
+ *
+ * Its own server and its own archive: the shared fixture is written to by tests
+ * that build their own `Vault` over it, and an image encrypted under one key and
+ * read under another fails for a reason that has nothing to do with this.
+ */
+describe('images with the same name', () => {
+  it('serves each one its own bytes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-collide-'));
+    const instance = await buildApp({
+      comfyUrl: 'http://127.0.0.1:1',
+      dbPath: join(dir, 'latent.db'),
+      dataDir: dir,
+      stateDir: join(dir, 'state'),
+      webDir: join(dir, 'no-web'),
+      password: 'collide-password',
+      logLevel: 'silent',
+    });
+    await instance.app.listen({ port: 0, host: '127.0.0.1' });
+    const address = instance.app.server.address();
+    if (!address || typeof address === 'string') throw new Error('No port');
+    const url = `http://127.0.0.1:${address.port}`;
+
+    const login = await fetch(`${url}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'collide-password' }),
+    });
+    const session = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+    try {
+      // Same name, same (empty) subfolder, same type — the collision itself.
+      const first = instance.ctx.store.insertImportedImage({
+        generationId: randomUUID(),
+        promptId: 'import:one',
+        title: 'the older one',
+        filename: 'ComfyUI_00001_.png',
+        subfolder: '',
+        modifiedAt: Date.now(),
+      });
+      const second = instance.ctx.store.insertImportedImage({
+        generationId: randomUUID(),
+        promptId: 'import:two',
+        title: 'the newer one',
+        filename: 'ComfyUI_00001_.png',
+        subfolder: '',
+        modifiedAt: Date.now(),
+      });
+
+      // Visibly different pictures, so a mix-up cannot pass by looking similar.
+      const olderBytes = renderPlaceholder(64, 64, 'older');
+      const newerBytes = renderPlaceholder(64, 64, 'newer');
+      await instance.ctx.archive.storeBytes(first, 'ComfyUI_00001_.png', olderBytes);
+      await instance.ctx.archive.storeBytes(second, 'ComfyUI_00001_.png', newerBytes);
+
+      const fetchOne = async (id: number) => {
+        const response = await fetch(
+          `${url}/api/view?filename=ComfyUI_00001_.png&subfolder=&type=import&id=${id}`,
+          { headers: { cookie: session } },
+        );
+        expect(response.status).toBe(200);
+        return Buffer.from(await response.arrayBuffer());
+      };
+
+      expect(await fetchOne(first)).toEqual(olderBytes);
+      expect(await fetchOne(second)).toEqual(newerBytes);
+
+      // And the gallery hands the client the id that makes that possible.
+      const gallery = await json<GalleryPage>(
+        fetch(`${url}/api/gallery?limit=100`, { headers: { cookie: session } }),
+      );
+      const older = gallery.items.find((item) => item.title === 'the older one');
+      expect(older?.images[0]?.id).toBe(first);
+    } finally {
+      await instance.app.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+/**
+ * A clean start with the archive kept.
+ *
+ * The whole reason the archive lives outside the project is that you can delete
+ * the project. Doing so takes the database — and with it the master key — so
+ * every file already in the archive was encrypted under a key the new install
+ * does not have. Archive paths are content-addressed, so re-importing the same
+ * picture lands on the same path, and "the file is already there" used to be
+ * treated as "nothing to do": the row was stored pointing at bytes nobody could
+ * ever decrypt again.
+ */
+describe('re-importing after the database is thrown away', () => {
+  it('rewrites archive files it can no longer read', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'latent-restart-'));
+    const archiveDir = join(root, 'archive');
+    const picture = renderPlaceholder(64, 64, 'kept across the restart');
+
+    const boot = async (dir: string, password: string) => {
+      const instance = await buildApp({
+        comfyUrl: 'http://127.0.0.1:1',
+        dbPath: join(dir, 'latent.db'),
+        dataDir: dir,
+        // Deliberately shared, which is the situation being tested.
+        archiveDir,
+        stateDir: join(dir, 'state'),
+        webDir: join(dir, 'no-web'),
+        password,
+        logLevel: 'silent',
+      });
+      await instance.app.listen({ port: 0, host: '127.0.0.1' });
+      const address = instance.app.server.address();
+      if (!address || typeof address === 'string') throw new Error('No port');
+      return { instance, url: `http://127.0.0.1:${address.port}` };
+    };
+
+    const store = async (built: Awaited<ReturnType<typeof boot>>, title: string) => {
+      const imageId = built.instance.ctx.store.insertImportedImage({
+        generationId: randomUUID(),
+        promptId: `import:${title}`,
+        title,
+        filename: 'keeper.png',
+        subfolder: '',
+        modifiedAt: Date.now(),
+      });
+      await built.instance.ctx.archive.storeBytes(imageId, 'keeper.png', picture);
+      return imageId;
+    };
+
+    const one = await boot(join(root, 'one'), 'first-password');
+    try {
+      await store(one, 'before');
+    } finally {
+      await one.instance.app.close();
+    }
+
+    // The clean start: the project's database is gone, the archive is not.
+    rmSync(join(root, 'one'), { recursive: true, force: true });
+
+    const two = await boot(join(root, 'two'), 'second-password');
+    try {
+      const imageId = await store(two, 'after');
+
+      const login = await fetch(`${two.url}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: 'second-password' }),
+      });
+      const session = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      const response = await fetch(
+        `${two.url}/api/view?filename=keeper.png&subfolder=&type=import&id=${imageId}`,
+        { headers: { cookie: session } },
+      );
+      expect(response.status).toBe(200);
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(picture);
+    } finally {
+      await two.instance.app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 40_000);
 });

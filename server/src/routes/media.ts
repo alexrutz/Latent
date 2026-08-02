@@ -36,9 +36,15 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
    * is too old to support it.
    */
   app.get<{
-    Querystring: { filename?: string; subfolder?: string; type?: string; preview?: string };
+    Querystring: {
+      filename?: string;
+      subfolder?: string;
+      type?: string;
+      preview?: string;
+      id?: string;
+    };
   }>('/api/view', async (request, reply) => {
-    const { filename, subfolder = '', type = 'output', preview } = request.query;
+    const { filename, subfolder = '', type = 'output', preview, id } = request.query;
 
     if (!filename || !isSafePathPart(filename) || !isSafePathPart(subfolder)) {
       return reply.code(400).send({ error: 'Invalid image path' });
@@ -48,6 +54,12 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
     }
 
     const params = { filename, subfolder, type };
+    /*
+     * The row the client meant, when it knows. The name alone does not identify
+     * a stored image — see `Store.findImage` — and resolving by name is how a
+     * thumbnail ends up showing bytes from a different picture.
+     */
+    const rowId = Number(id);
 
     /*
      * Archive first. This single check is what makes a rated image keep working
@@ -55,7 +67,9 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
      * gallery would be a wall of broken thumbnails the moment a vast.ai
      * instance is torn down.
      */
-    const known = ctx.store.findImage(params);
+    const known = ctx.store.findImage(
+      Number.isFinite(rowId) && rowId > 0 ? { ...params, id: rowId } : params,
+    );
     if (known?.archived_path) {
       // A `preview` request must never fall back to the full-size file: the
       // gallery grid asks for previews specifically to avoid pulling megabytes
@@ -168,8 +182,8 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
    * gallery: a LoadImage node can only read from the input directory, so the
    * output file has to be round-tripped through the server first.
    */
-  app.post<{ Body: ComfyImageRef }>('/api/images/to-input', async (request, reply) => {
-    const { filename, subfolder = '', type = 'output' } = request.body ?? {};
+  app.post<{ Body: ComfyImageRef & { id?: number } }>('/api/images/to-input', async (request, reply) => {
+    const { filename, subfolder = '', type = 'output', id } = request.body ?? {};
 
     if (!filename || !isSafePathPart(filename) || !isSafePathPart(subfolder)) {
       return reply.code(400).send({ error: 'Invalid image path' });
@@ -187,7 +201,7 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
        * ComfyUI has never seen it — and for a rated one it saves a round trip
        * and still works when the instance that produced it is long gone.
        */
-      const known = ctx.store.findImage({ filename, subfolder, type });
+      const known = ctx.store.findImage({ filename, subfolder, type, ...(id ? { id } : {}) });
       const local = known?.archived_path ? await ctx.archive.read(known.archived_path) : null;
 
       if (local) {

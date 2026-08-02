@@ -121,6 +121,23 @@ export function useVisibleWorkflows() {
   );
 }
 
+/**
+ * The models an Ollama node can pick from.
+ *
+ * Only asked for when a combo turns out to be empty, which is how those nodes
+ * declare themselves — they fill the list in from the browser, and Latent is
+ * not that browser.
+ */
+export function useOllamaModels(workflowId: string | null, nodeId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['ollama-models', workflowId, nodeId] as const,
+    queryFn: () => api.ollamaModels(workflowId as string, nodeId),
+    enabled: enabled && Boolean(workflowId),
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
 /** Import every workflow saved in the configured ComfyUI installation. */
 export function useScanWorkflows() {
   const client = useQueryClient();

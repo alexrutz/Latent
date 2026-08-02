@@ -19,7 +19,13 @@ import { LiveBar } from '../components/LiveBar';
 import { LoraEditor } from '../components/LoraEditor';
 import { PointLine } from '../components/PointLine';
 import { PromptBuilder } from '../components/PromptBuilder';
-import { FieldChip, ImageField, PromptField, SeedField } from '../components/ParamControl';
+import {
+  FieldChip,
+  ImageField,
+  PromptField,
+  SeedField,
+  WorkflowScope,
+} from '../components/ParamControl';
 import { Button, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { pruneDrafts, useFormDrafts } from '../state/formDraft';
 import { useLiveStore } from '../state/live';
@@ -261,9 +267,11 @@ function GenerateForm({
   }
 
   return (
-    // min-h-full so `mt-auto` on the pinned footer has something to push
-    // against on a form too short to scroll.
-    <div className="safe-t flex min-h-full flex-col gap-3 px-4 pt-2 pb-2">
+    // The scope an empty combo needs in order to ask the server what its
+    // options actually are. min-h-full so `mt-auto` on the pinned footer has
+    // something to push against on a form too short to scroll.
+    <WorkflowScope workflowId={detail.id}>
+      <div className="safe-t flex min-h-full flex-col gap-3 px-4 pt-2 pb-2">
       {/* Workflow selector + connection state */}
       <div className="flex items-center gap-2">
         <button
@@ -563,7 +571,8 @@ function GenerateForm({
           ))}
         </ul>
       </Sheet>
-    </div>
+      </div>
+    </WorkflowScope>
   );
 }
 

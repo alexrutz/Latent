@@ -265,6 +265,8 @@ export function VariationScreen() {
           whether a picture is interesting — so this stays out of the way until
           it is asked for.
         */}
+        <PromptTargets config={config} onChange={patch} />
+
         <ParamVariation config={config} onChange={patch} />
 
         <VariationPresets />
@@ -346,6 +348,97 @@ function toggleId(config: RandomPromptConfig, library: PromptBlock[], id: string
  * Collapsed by default and one line per rule: the prompt is the thing that
  * decides whether a picture is interesting, and this must not push it off screen.
  */
+/**
+ * Which text fields the draw actually writes into.
+ *
+ * Latent works out for itself which inputs are prompts, and for a stock
+ * workflow it is right. Custom nodes are where it stops being right: a LoRA
+ * loader carrying trigger words, a second encoder feeding something that is not
+ * the picture. Having a drawn landscape land in one of those is not a small
+ * mistake, so this lists what the draw will touch and lets any of it be taken
+ * back out — a rule you can see beats a rule you have to trust.
+ */
+function PromptTargets({
+  config,
+  onChange,
+}: {
+  config: RandomPromptConfig;
+  onChange: (patch: Partial<RandomPromptConfig>) => void;
+}) {
+  const workflows = useVisibleWorkflows();
+  const [workflowId, setWorkflowId] = useState<string | null>(null);
+  const workflow = useWorkflow(workflowId ?? workflows.data?.[0]?.id ?? null);
+
+  const fields = useMemo(
+    () =>
+      (workflow.data?.schema.fields ?? []).filter(
+        (field) => field.role === 'prompt' && !field.hidden,
+      ),
+    [workflow.data],
+  );
+
+  // Nothing to decide when there is only one prompt: it is the prompt.
+  if (fields.length < 2) return null;
+
+  const toggle = (id: string) =>
+    onChange({
+      excludedPromptFields: config.excludedPromptFields.includes(id)
+        ? config.excludedPromptFields.filter((key) => key !== id)
+        : [...config.excludedPromptFields, id],
+    });
+
+  return (
+    <div className="space-y-2 border-t border-line pt-3">
+      <p className="text-xs font-medium tracking-wide text-muted uppercase">Which prompt fields</p>
+      <p className="text-[11px] text-muted">
+        This workflow has more than one text field Latent reads as a prompt. Switch off anything the
+        draw should leave exactly as you typed it.
+      </p>
+
+      {(workflows.data?.length ?? 0) > 1 && (
+        <select
+          value={workflowId ?? workflows.data?.[0]?.id ?? ''}
+          onChange={(event) => setWorkflowId(event.target.value)}
+          className="w-full rounded-lg border border-line bg-surface-2 px-3 py-2 text-xs"
+        >
+          {workflows.data?.map((candidate) => (
+            <option key={candidate.id} value={candidate.id}>
+              {candidate.name}
+            </option>
+          ))}
+        </select>
+      )}
+
+      <div className="space-y-1">
+        {fields.map((field) => {
+          const drawn = !config.excludedPromptFields.includes(field.id);
+          return (
+            <button
+              key={field.id}
+              type="button"
+              aria-pressed={drawn}
+              aria-label={`Draw into ${field.label}`}
+              onClick={() => toggle(field.id)}
+              className={cn(
+                'flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-xs',
+                drawn ? 'bg-accent/15 text-accent' : 'bg-surface-2 text-muted',
+              )}
+            >
+              <span className="min-w-0">
+                <span className="block truncate">{field.label}</span>
+                <span className="block truncate text-[10px] opacity-70">{field.nodeTitle}</span>
+              </span>
+              <span aria-hidden className="shrink-0">
+                {drawn ? 'drawn' : 'left alone'}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ParamVariation({
   config,
   onChange,

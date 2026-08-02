@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 
 import type { AppSettings, StatusResponse } from '@latent/shared';
 
+import { fetchOllamaModels, ollamaUrlFor } from '../ollama.js';
 import type { AppContext } from './context.js';
 
 export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): void {
@@ -169,6 +170,31 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
       }
     }
   });
+
+  /**
+   * The models an Ollama node can choose from.
+   *
+   * Not in `/object_info`: those nodes publish an empty combo and fill it in
+   * from the browser, so the list has to be fetched from Ollama itself. Keyed
+   * by workflow and node because the address is a widget on that node.
+   */
+  app.get<{ Querystring: { workflowId?: string; nodeId?: string } }>(
+    '/api/models/ollama',
+    async (request, reply) => {
+      const { workflowId, nodeId } = request.query;
+      if (!workflowId || !nodeId) {
+        return reply.code(400).send({ error: 'Which node?' });
+      }
+
+      const workflow = ctx.store.getWorkflow(workflowId);
+      if (!workflow) return reply.code(404).send({ error: 'Workflow not found' });
+
+      return fetchOllamaModels(
+        ollamaUrlFor(workflow.graph, nodeId),
+        ctx.orchestrator.client.baseUrl,
+      );
+    },
+  );
 
   app.get('/api/archive/stats', async () => ctx.store.archiveStats());
 

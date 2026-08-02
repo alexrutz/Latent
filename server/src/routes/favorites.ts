@@ -29,7 +29,7 @@ export function registerFavoriteRoutes(app: FastifyInstance, ctx: AppContext): v
     const generation = ctx.store.getGeneration(generationId);
     if (!generation) return reply.code(404).send({ error: 'Generation not found' });
 
-    const row = ctx.store.findImage(image);
+    const row = ctx.store.findImage(image, generationId ?? undefined);
     if (!row) return reply.code(404).send({ error: 'That image is not in the gallery' });
 
     const existing = ctx.store.findFavoriteByImage(row.id);

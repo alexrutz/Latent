@@ -2023,3 +2023,106 @@ test.describe('the twelfth wave', () => {
     await page.screenshot({ path: 'test-results/42-blocks-two-columns.png' });
   });
 });
+
+/**
+ * Wave thirteen: the gallery's detail surfaces, and the two things that were
+ * quietly wrong underneath them.
+ */
+test.describe('the thirteenth wave', () => {
+  /** Get one finished picture into the gallery and open it. */
+  const openFirstImage = async (page: import('@playwright/test').Page) => {
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    const thumb = page.locator('main img').first();
+    await expect(thumb).toBeVisible({ timeout: 60_000 });
+    await thumb.click();
+    await expect(page.getByRole('button', { name: 'Details' })).toBeVisible();
+  };
+
+  test.beforeEach(async ({ page }) => {
+    await resetState();
+    await seedWorkflow();
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a heron on a jetty');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await dismissResult(page);
+  });
+
+  /**
+   * A long value is the one you most want to read and the one least likely to
+   * fit, so cutting it off permanently hides exactly what the list is for.
+   */
+  test('opens a long detail line on a tap and closes it again', async ({ page }) => {
+    await openFirstImage(page);
+    await page.getByRole('button', { name: 'Details' }).click();
+
+    const row = page.locator('dd', { hasText: 'a heron on a jetty' }).first();
+    await expect(row).toHaveClass(/truncate/);
+
+    await row.click();
+    await expect(row).not.toHaveClass(/truncate/);
+    await page.screenshot({ path: 'test-results/43-detail-expanded.png' });
+
+    await row.click();
+    await expect(row).toHaveClass(/truncate/);
+  });
+
+  /** Both edges flush, and every action the same size. */
+  test('sets the viewer actions in even columns', async ({ page }) => {
+    await openFirstImage(page);
+
+    const favourite = await page.getByRole('button', { name: /Favourite/ }).boundingBox();
+    const save = await page.getByRole('button', { name: 'Save', exact: true }).boundingBox();
+    const keep = await page.getByRole('button', { name: /Keep$/ }).boundingBox();
+    expect(favourite).not.toBeNull();
+
+    // Three to a row, so the first three share a top edge and equal widths.
+    expect(Math.abs(favourite!.y - save!.y)).toBeLessThan(2);
+    expect(Math.abs(save!.y - keep!.y)).toBeLessThan(2);
+    expect(Math.abs(favourite!.width - save!.width)).toBeLessThan(2);
+    await page.screenshot({ path: 'test-results/44-viewer-actions.png' });
+  });
+
+  /** Two columns, because a workflow has more knobs than a phone has rows. */
+  test('lists the drawable values two to a row', async ({ page }) => {
+    await openFirstImage(page);
+    await page.getByRole('button', { name: 'Values on the picture' }).click();
+
+    /*
+     * The computed track list, not the geometry of two elements picked out of
+     * it: a portalled sheet leaves an older one in the tree, and "these two
+     * boxes share a top edge" then quietly compares rows of different lists.
+     */
+    const list = page.getByTestId('overlay-choices').last();
+    await expect(list).toBeVisible();
+    const columns = await list.evaluate(
+      (element) => getComputedStyle(element).gridTemplateColumns.split(' ').length,
+    );
+    expect(columns).toBe(2);
+    await page.screenshot({ path: 'test-results/45-overlay-picker.png' });
+  });
+
+  /**
+   * The viewer must not pan sideways however long a chosen value turns out to
+   * be — a model's answer is a paragraph, not a number.
+   */
+  test('never lets the drawn values push the page sideways', async ({ page }) => {
+    await openFirstImage(page);
+    await page.getByRole('button', { name: 'Values on the picture' }).click();
+
+    // Everything on at once: the widest the overlay can possibly get.
+    for (const choice of await page.getByTestId('overlay-choices').last().locator('button').all()) {
+      await choice.click();
+    }
+    // The backdrop, not the Close button: with every value chosen the sheet is
+    // tall enough that its own header can sit under the overlay.
+    await page.locator('div[role="presentation"]').last().click({ force: true });
+    await expect(page.getByRole('button', { name: 'Values on the picture' })).toBeVisible();
+
+    const widths = await page.evaluate(() => ({
+      scroll: document.documentElement.scrollWidth,
+      client: document.documentElement.clientWidth,
+    }));
+    expect(widths.scroll).toBeLessThanOrEqual(widths.client);
+    await page.screenshot({ path: 'test-results/46-overlay-wide.png' });
+  });
+});
