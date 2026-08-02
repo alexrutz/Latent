@@ -32,6 +32,8 @@ const MAX_SCALE = 5;
 const DOUBLE_TAP_SCALE = 2.5;
 /** How long to wait for a second tap before treating one as a single tap. */
 const DOUBLE_TAP_MS = 280;
+/** Movement a finger is allowed while still counting as a tap rather than a drag. */
+const TAP_SLOP = 10;
 
 /**
  * Full-screen image viewer with pinch-zoom, pan, and swipe between results.
@@ -60,6 +62,16 @@ export function ImageViewer({
   const lastTap = useRef(0);
   const tapTimer = useRef<number | undefined>(undefined);
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
+  /**
+   * Where the finger went down, for *every* gesture.
+   *
+   * `swipeStart` is only set when unzoomed, because that is when a flick pages
+   * through the gallery. That left a zoomed pan with nothing recording that it
+   * had moved at all, so it fell through to the tap branch — and a single tap
+   * while zoomed means "zoom back out". Panning a zoomed picture therefore
+   * scheduled its own reset, a fifth of a second later, every time.
+   */
+  const pressStart = useRef<{ x: number; y: number } | null>(null);
 
   const reset = useCallback(() => {
     setScale(1);
@@ -123,6 +135,7 @@ export function ImageViewer({
       };
     } else if (pointers.current.size === 1) {
       setDragging(true);
+      pressStart.current = { x: event.clientX, y: event.clientY };
       gestureStart.current = {
         ...gestureStart.current,
         x: event.clientX,
@@ -183,6 +196,22 @@ export function ImageViewer({
           swipeStart.current = null;
           return;
         }
+      }
+
+      /*
+       * A gesture that travelled is not a tap, zoomed or not. Pinching also
+       * lands here when the second finger lifts first, and that must not be
+       * read as a tap either.
+       */
+      const pressed = pressStart.current;
+      pressStart.current = null;
+      if (
+        pressed &&
+        (Math.abs(event.clientX - pressed.x) > TAP_SLOP ||
+          Math.abs(event.clientY - pressed.y) > TAP_SLOP)
+      ) {
+        swipeStart.current = null;
+        return;
       }
 
       const now = Date.now();

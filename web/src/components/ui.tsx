@@ -209,7 +209,16 @@ export function Sheet({
             </Button>
           </div>
         )}
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-4">{children}</div>
+        {/*
+          Scrolls up and down only. Without the horizontal clamp a single long
+          value — a file path, a model's answer — makes the whole panel wider
+          than the screen and the sheet can be dragged sideways off it, which
+          reads as the app coming apart. `touch-pan-y` says the same thing to
+          the browser's gesture handling, so the drag never starts.
+        */}
+        <div className="min-h-0 flex-1 touch-pan-y overflow-x-hidden overflow-y-auto overscroll-contain px-4 pb-4">
+          {children}
+        </div>
       </div>
     </div>,
     document.body,

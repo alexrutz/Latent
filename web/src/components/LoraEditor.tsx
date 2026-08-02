@@ -140,15 +140,17 @@ export function LoraEditor({
       )}
 
       {/*
-        The exact string that goes to ComfyUI.
+        The exact string that goes to ComfyUI, and editable.
 
-        This is a verification readout, not an editor: its whole job is letting
-        you confirm the tags came out right, so it is one line by default and
-        opens to the full text on tap. Only for a field that exists purely to
-        hold LoRAs — under a prompt the textarea above already shows the text,
-        and repeating it would be clutter.
+        It used to be a readout only, which was fine while the assumption held
+        that a field like this contains `<lora:name:0.8>` tags. It does not:
+        the LoRA manager nodes have a syntax of their own, and for those the
+        structured rows above find nothing and there was then no way to type
+        anything at all — the field simply had no input. The text is the source
+        of truth, so it gets to be edited. Collapsed to a line by default;
+        tapping opens it.
       */}
-      {alwaysShow && value.trim() !== '' && <RawValue value={value} />}
+      {alwaysShow && <RawField value={value} onChange={onChange} />}
 
       {picker}
     </div>
@@ -160,26 +162,45 @@ function prettyName(name: string): string {
 }
 
 /** One line of the field's literal contents, expandable when you need all of it. */
-function RawValue({ value }: { value: string }) {
+function RawField({ value, onChange }: { value: string; onChange: (next: string) => void }) {
   const [open, setOpen] = useState(false);
 
-  return (
-    <button
-      type="button"
-      onClick={() => setOpen((current) => !current)}
-      aria-expanded={open}
-      aria-label="Raw field value"
-      className="block w-full text-left"
-    >
-      <span
-        className={cn(
-          'block rounded-md bg-surface-2 px-2 py-1 font-mono text-[10px] leading-snug text-muted',
-          open ? 'break-all whitespace-pre-wrap' : 'truncate',
-        )}
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-expanded={false}
+        aria-label="Raw field value"
+        className="block w-full text-left"
       >
-        {value}
-      </span>
-    </button>
+        <span className="block truncate rounded-md bg-surface-2 px-2 py-1 font-mono text-[10px] leading-snug text-muted">
+          {value.trim() === '' ? 'empty — tap to type' : value}
+        </span>
+      </button>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <textarea
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        rows={3}
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck={false}
+        aria-label="Raw field value"
+        className="w-full resize-none rounded-md border border-line bg-surface px-2 py-1 font-mono text-[11px] leading-snug focus:border-accent focus:outline-none"
+      />
+      <button
+        type="button"
+        onClick={() => setOpen(false)}
+        className="text-[11px] text-accent"
+      >
+        Done
+      </button>
+    </div>
   );
 }
 

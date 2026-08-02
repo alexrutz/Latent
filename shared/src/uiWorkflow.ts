@@ -200,11 +200,31 @@ function assignWidgets(
   for (const [name, spec] of Object.entries(specs)) {
     if (!isWidgetInput(spec)) continue;
     if (connected.has(name)) continue;
-    if (index >= values.length) break;
+
+    /*
+     * The positional list can be shorter than the node's declared widgets.
+     *
+     * It happens whenever a node keeps a widget its own JavaScript manages —
+     * the LoRA managers and the Ollama nodes both do — and the editor stores
+     * that value somewhere other than `widgets_values`. Stopping there left the
+     * remaining inputs out of the graph altogether, and ComfyUI rejects a
+     * prompt with a required input missing. The declared default is not
+     * necessarily what the user had, but it is a value, and the alternative is
+     * a workflow that cannot run at all.
+     */
+    if (index >= values.length) {
+      const fallback = declaredDefault(spec);
+      if (fallback !== undefined) inputs[name] = fallback;
+      continue;
+    }
 
     const value = values[index];
     index += 1;
     if (isWidgetValue(value)) inputs[name] = value;
+    else {
+      const fallback = declaredDefault(spec);
+      if (fallback !== undefined) inputs[name] = fallback;
+    }
 
     // The control that follows a seed: consume it so the next widget lines up.
     const options = Array.isArray(spec) ? (spec[1] as Record<string, unknown> | undefined) : undefined;
@@ -213,6 +233,30 @@ function assignWidgets(
       index += 1;
     }
   }
+}
+
+/**
+ * The value `/object_info` says an input takes when nothing else says otherwise.
+ *
+ * A combo without an explicit default takes its first option, which is what
+ * ComfyUI's own editor shows when it places the node.
+ */
+function declaredDefault(spec: unknown): WidgetValue | undefined {
+  if (!Array.isArray(spec)) return undefined;
+  const type = spec[0];
+  const options = spec[1] as Record<string, unknown> | undefined;
+
+  const declared = options?.default;
+  if (isWidgetValue(declared)) return declared;
+
+  if (Array.isArray(type)) {
+    const first = type[0];
+    return isWidgetValue(first) ? first : undefined;
+  }
+  if (type === 'STRING') return '';
+  if (type === 'INT' || type === 'FLOAT') return 0;
+  if (type === 'BOOLEAN') return false;
+  return undefined;
 }
 
 /**

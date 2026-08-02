@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import { overlayChoices, shortLabels, TEXT_OVERLAY_PREFIX } from '@latent/shared';
 import type { GenerationRecord, ParamSummaryItem } from '@latent/shared';
 
+import { Toggle } from './ParamControl';
 import { cn, Sheet } from './ui';
 
 /**
@@ -211,31 +212,25 @@ export function ParamOverlayPicker({
                 })}
               </ul>
 
+              {/*
+                The shared switch, not one of its own.
+
+                This used to be a hand-rolled copy, and its knob sat outside the
+                track — which made the sheet wider than the screen and left the
+                whole panel draggable sideways. One switch, fixed once.
+              */}
               <div className="flex items-center justify-between gap-3 border-t border-line pt-3">
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <p className="text-sm">Short labels</p>
                   <p className="text-[11px] text-muted">
                     Off: bare numbers only, for the tightest fit.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={withLabels}
-                  aria-label="Short labels"
-                  onClick={() => onWithLabelsChange(!withLabels)}
-                  className={cn(
-                    'relative h-7 w-12 shrink-0 rounded-full transition-colors',
-                    withLabels ? 'bg-accent' : 'bg-surface-3',
-                  )}
-                >
-                  <span
-                    className={cn(
-                      'absolute top-1 size-5 rounded-full bg-white transition-transform',
-                      withLabels ? 'translate-x-6' : 'translate-x-1',
-                    )}
-                  />
-                </button>
+                <Toggle
+                  checked={withLabels}
+                  onChange={onWithLabelsChange}
+                  label="Short labels"
+                />
               </div>
 
               {selected.length > 0 && (

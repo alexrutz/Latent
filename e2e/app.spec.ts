@@ -216,7 +216,7 @@ test.describe('Latent on a phone', () => {
 
     // Opening a result offers the actions that make it reusable.
     await thumb.click();
-    await expect(page.getByRole('button', { name: 'Reuse settings' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Reuse' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Upscale' })).toBeVisible();
     await page.screenshot({ path: 'test-results/04-viewer.png' });
 
@@ -1391,19 +1391,20 @@ test.describe('living in the gallery', () => {
     await open(page, '/gallery');
     await page.locator('img[alt*="a keeper too"]').first().click();
 
-    const button = page.getByRole('button', { name: /Favourite/ });
+    const button = page.getByRole('button', { name: 'Favourite', exact: true });
     await expect(button).toHaveAttribute('aria-pressed', 'false');
 
     await button.click();
-    await expect(page.getByRole('button', { name: '★ Favourited' })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Favourite/ })).toHaveAttribute(
+    // The label carries the state, so it reads correctly as well as looking it.
+    await expect(page.getByRole('button', { name: 'Favourited' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Favourited' })).toHaveAttribute(
       'aria-pressed',
       'true',
     );
 
     // Tapping again removes it rather than saving a second copy.
-    await page.getByRole('button', { name: '★ Favourited' }).click();
-    await expect(page.getByRole('button', { name: '☆ Favourite' })).toBeVisible();
+    await page.getByRole('button', { name: 'Favourited' }).click();
+    await expect(page.getByRole('button', { name: 'Favourite', exact: true })).toBeVisible();
 
     const favourites = await withApi(async (ctx) =>
       (await (await ctx.get('/api/favorites')).json()) as unknown[],
@@ -1420,7 +1421,7 @@ test.describe('living in the gallery', () => {
     const width = page.viewportSize()?.width ?? 0;
     expect(width).toBeGreaterThan(0);
 
-    for (const name of ['Favourite', 'Save', 'New seed', 'Reuse settings', 'Upscale', 'Details']) {
+    for (const name of ['Favourite', 'Save', 'Reseed', 'Reuse', 'Upscale', 'Details']) {
       const button = page.getByRole('button', { name: new RegExp(name) }).first();
       await expect(button).toBeVisible();
       const box = await button.boundingBox();
@@ -1833,7 +1834,7 @@ test.describe('keeping, deleting and looking closely', () => {
 
     // And deleting takes two taps, then the picture is gone.
     await page.getByRole('button', { name: 'Delete', exact: true }).click();
-    await page.getByRole('button', { name: 'Really delete' }).click();
+    await page.getByRole('button', { name: 'Sure?' }).click();
 
     await expect(page.locator('main img')).toHaveCount(0, { timeout: 30_000 });
   });
@@ -2124,5 +2125,98 @@ test.describe('the thirteenth wave', () => {
     }));
     expect(widths.scroll).toBeLessThanOrEqual(widths.client);
     await page.screenshot({ path: 'test-results/46-overlay-wide.png' });
+  });
+});
+
+/**
+ * Wave fourteen: the footer had grown taller than the picture it belongs to,
+ * and panning a zoomed image quietly undid the zoom.
+ */
+test.describe('the fourteenth wave', () => {
+  const openFirst = async (page: import('@playwright/test').Page) => {
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    const thumb = page.locator('main img').first();
+    await expect(thumb).toBeVisible({ timeout: 60_000 });
+    await thumb.click();
+    await expect(page.getByRole('button', { name: 'Details' })).toBeVisible();
+  };
+
+  test.beforeEach(async ({ page }) => {
+    await resetState();
+    await seedWorkflow();
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a kestrel over a field');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await dismissResult(page);
+  });
+
+  /** The picture is what the screen is for; the actions are not. */
+  test('keeps the viewer actions to two short rows', async ({ page }) => {
+    await openFirst(page);
+
+    const first = await page.getByRole('button', { name: 'Favourite' }).boundingBox();
+    const last = await page.getByRole('button', { name: 'Delete' }).boundingBox();
+    expect(first).not.toBeNull();
+    expect(last).not.toBeNull();
+
+    // Top of the first row to the bottom of the last: two rows, not four.
+    const height = last!.y + last!.height - first!.y;
+    expect(height).toBeLessThan(110);
+    await page.screenshot({ path: 'test-results/47-viewer-actions-compact.png' });
+  });
+
+  /**
+   * Panning used to fall through to the tap branch, and a single tap while
+   * zoomed means "zoom back out" — so moving a zoomed picture scheduled its own
+   * reset a fifth of a second later, every time.
+   */
+  test('holds the zoom while the picture is panned', async ({ page }) => {
+    await openFirst(page);
+
+    // The viewer's own copy, not the thumbnail behind it.
+    const stage = page.getByRole('img', { name: /kestrel/ }).last();
+    const box = await stage.boundingBox();
+    expect(box).not.toBeNull();
+    const centre = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
+
+    await page.mouse.dblclick(centre.x, centre.y);
+    const zoomed = await stage.evaluate((element) => element.style.transform);
+    expect(zoomed).toMatch(/scale\(([2-9]|1\.[5-9])/);
+
+    // Drag it, the way you would to look at a corner.
+    await page.mouse.move(centre.x, centre.y);
+    await page.mouse.down();
+    await page.mouse.move(centre.x - 70, centre.y - 40, { steps: 10 });
+    await page.mouse.up();
+
+    // Well past the double-tap window that used to fire the reset.
+    await page.waitForTimeout(900);
+    const after = await stage.evaluate((element) => element.style.transform);
+    expect(after).toMatch(/scale\(([2-9]|1\.[5-9])/);
+    // …and it stayed where it was put.
+    expect(after).not.toBe(zoomed);
+    await page.screenshot({ path: 'test-results/48-zoom-panned.png' });
+  });
+
+  /** A sheet must not be draggable sideways off the screen. */
+  test('does not pan the details picker sideways', async ({ page }) => {
+    await openFirst(page);
+    await page.getByRole('button', { name: 'Values on the picture' }).click();
+
+    // Nothing inside the sheet may reach past its right edge — that overflow is
+    // what made the whole panel draggable off the screen.
+    const overflow = await page
+      .getByTestId('overlay-choices')
+      .last()
+      .evaluate((element) => {
+        const panel = element.parentElement as HTMLElement;
+        const right = panel.getBoundingClientRect().right;
+        let worst = 0;
+        for (const node of panel.querySelectorAll('*')) {
+          worst = Math.max(worst, node.getBoundingClientRect().right - right);
+        }
+        return worst;
+      });
+    expect(overflow).toBeLessThanOrEqual(1);
   });
 });

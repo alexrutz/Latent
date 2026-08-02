@@ -559,8 +559,14 @@ never touched: that is somebody's existing library, not scratch space.
 **Details open when you tap them.** The parameter list cuts each value to a
 line — a prompt is both the value you most want to read here and the one least
 likely to fit — and tapping a row shows the whole thing, tapping again puts it
-back. The action row underneath is a three-column grid, so both edges are flush
-and every button is the same size to hit.
+back.
+
+**The actions are two short rows** of icon-led cells rather than a stack of
+full-width buttons. Ten actions belong on that screen and none of them is worth
+a row of its own: the picture is what you opened, and a footer taller than the
+image is the wrong trade. Each cell keeps a label under the glyph, and the two
+that have a state — Favourite and Keep — say which one they are in rather than
+only showing it.
 
 **Values drawn over the picture.** The ⓘ button chooses what appears on the
 image itself, two choices to a row, and the selection order is the order on
@@ -569,10 +575,13 @@ model's caption or its reasoning gets shown — and because that can be a
 paragraph rather than a number, the strip is capped in height and scrolls
 instead of covering the picture it describes.
 
-**A zoom stays put.** The list grows underneath the viewer while a queue drains,
-and the viewer used to reset your zoom whenever it did — the *index* of the
-picture had changed, not the picture. It is keyed on the picture's own identity
-now, so a double-tap and a pan survive whatever arrives next.
+**A zoom stays put.** Two different things used to throw it away. The list grows
+underneath the viewer while a queue drains, and the viewer reset on that — the
+*index* of the picture had changed, not the picture; it is keyed on the
+picture's own identity now. And a pan is a pan: a drag fell through to the tap
+handler, where a single tap means "zoom back out", so moving a zoomed picture
+scheduled its own reset a fifth of a second later. A gesture that travelled is
+no longer read as a tap.
 
 **Swiping crosses runs.** The viewer holds every picture in the gallery as one
 flat list, so a flick keeps going past the end of a batch instead of stopping

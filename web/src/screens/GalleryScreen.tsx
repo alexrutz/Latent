@@ -26,7 +26,7 @@ import {
 import { RatingStars } from '../components/RatingStars';
 import { ThumbGrid, useTileStyle } from '../components/ThumbGrid';
 import { Toggle } from '../components/ParamControl';
-import { Button, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
+import { cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { useBlur } from '../state/blur';
 import { TILE_OPTIONS, useGridSettings } from '../state/grid';
 import { usePendingStore } from '../state/pending';
@@ -693,44 +693,42 @@ function ViewerWithActions({
           )}
 
           {/*
-            A three-column grid rather than a wrapped row.
+            Five columns of icon-led cells, two rows.
 
-            Wrapping left every row ending somewhere different, so the block had
-            a ragged right edge and the buttons never lined up with each other
-            between rows. Even columns make both edges flush and give every
-            action the same target size — which matters more than fitting a long
-            label, so labels truncate.
+            Three columns of full-width buttons was flush at both edges and far
+            too tall: ten actions became four rows of text that ate the bottom
+            of the picture, which is the thing you opened. An icon with a small
+            label underneath says the same in a fifth of the width, so
+            everything stays reachable without a sheet and the image keeps the
+            room.
           */}
-          <div className="grid grid-cols-3 gap-1.5 [&>*]:w-full [&>button]:truncate">
-            <Button
-              // Says which state it is in, and which way the next tap goes.
-              variant={existingFavorite ? 'primary' : 'secondary'}
-              size="sm"
+          <div className="grid grid-cols-5 gap-1">
+            <ViewerAction
+              glyph={existingFavorite ? '★' : '☆'}
+              // The label carries the state as well as the colour: "on or off"
+              // has to survive being read rather than looked at.
+              label={existingFavorite ? 'Favourited' : 'Favourite'}
+              active={Boolean(existingFavorite)}
               busy={addFavorite.isPending || removeFavorite.isPending}
               onClick={favorite}
-              aria-pressed={Boolean(existingFavorite)}
               title={
                 existingFavorite
                   ? 'In Favourites — tap to remove'
                   : 'Keep this image and its settings in Favourites'
               }
-            >
-              {existingFavorite ? '★ Favourited' : '☆ Favourite'}
-            </Button>
-            <Button variant="secondary" size="sm" onClick={share}>
-              Save
-            </Button>
+            />
+            <ViewerAction glyph="⤓" label="Save" onClick={share} />
             {/*
               Keeping is the promise a rating makes, without the judgement.
               With automatic cleanup switched on this is the difference between
               a picture surviving and not, and being made to award it stars
               first is a tax on saying "not sure yet, but don't bin it".
             */}
-            <Button
-              variant={image?.kept ? 'primary' : 'secondary'}
-              size="sm"
+            <ViewerAction
+              glyph="⌾"
+              label={image?.kept ? 'Kept' : 'Keep'}
+              active={Boolean(image?.kept)}
               busy={keepImage.isPending}
-              aria-pressed={Boolean(image?.kept)}
               onClick={() => {
                 if (!image) return;
                 keepImage.mutate(
@@ -746,49 +744,51 @@ function ViewerWithActions({
                   ? 'Kept — the cleanup will leave it alone'
                   : 'Keep this picture without rating it'
               }
-            >
-              {image?.kept ? '⌾ Kept' : '⌾ Keep'}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
+            />
+            <ViewerAction
+              glyph="⟳"
+              label="Reseed"
               disabled={!workflowExists}
               onClick={() => rerun(true)}
-              title={workflowExists ? undefined : 'That workflow has been deleted'}
-            >
-              New seed
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
+              title={workflowExists ? 'Run again with a new seed' : 'That workflow has been deleted'}
+            />
+            <ViewerAction
+              glyph="⇥"
+              label="Reuse"
               disabled={!workflowExists}
               onClick={() => rerun(false)}
-            >
-              Reuse settings
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
+              title="Load these settings into the form"
+            />
+            <ViewerAction
+              glyph="◨"
+              label="img2img"
               busy={busy === 'img2img'}
               onClick={() => void sendTo('img2img')}
-            >
-              img2img
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
+            />
+            <ViewerAction
+              glyph="⤢"
+              label="Upscale"
               busy={busy === 'upscale'}
               onClick={() => void sendTo('upscale')}
-            >
-              Upscale
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setShowDetails(true)}>
-              Details
-            </Button>
+            />
+            <ViewerAction glyph="≡" label="Details" onClick={() => setShowDetails(true)} />
+            {/* Which values are drawn over the picture. Its own choice, separate
+                from the grid's — there is room for more here. */}
+            <ParamOverlayPicker
+              label="Values on the picture"
+              records={entries.map((candidate) => candidate.record)}
+              selected={grid.viewerParams}
+              withLabels={grid.overlayLabels}
+              onChange={(viewerParams) => onGridChange({ viewerParams })}
+              onWithLabelsChange={(overlayLabels) => onGridChange({ overlayLabels })}
+              // Shaped like the cells it shares a row with.
+              className="h-auto w-full flex-col justify-center gap-0 rounded-lg py-1"
+            />
             {/* Two taps, because it cannot be undone. */}
-            <Button
-              variant={confirmDelete ? 'danger' : 'ghost'}
-              size="sm"
+            <ViewerAction
+              glyph="⌫"
+              label={confirmDelete ? 'Sure?' : 'Delete'}
+              danger={confirmDelete}
               busy={deleteImage.isPending}
               onClick={() => {
                 if (!confirmDelete) return setConfirmDelete(true);
@@ -802,20 +802,6 @@ function ViewerWithActions({
                   },
                 );
               }}
-            >
-              {confirmDelete ? 'Really delete' : 'Delete'}
-            </Button>
-            {/* Which values are drawn over the picture. Its own choice, separate
-                from the grid's — there is room for more here. */}
-            <ParamOverlayPicker
-              label="Values on the picture"
-              records={entries.map((candidate) => candidate.record)}
-              selected={grid.viewerParams}
-              withLabels={grid.overlayLabels}
-              onChange={(viewerParams) => onGridChange({ viewerParams })}
-              onWithLabelsChange={(overlayLabels) => onGridChange({ overlayLabels })}
-              // Sized like the buttons it now shares a grid with.
-              className="h-8 justify-center rounded-lg text-sm"
             />
           </div>
 
@@ -863,6 +849,59 @@ function DetailsList({ record }: { record: GenerationRecord }) {
         </dl>
       </div>
     </div>
+  );
+}
+
+/**
+ * One action in the viewer's footer: a glyph with a small label under it.
+ *
+ * Ten actions belong on that screen and none of them is worth a row of its own
+ * — the picture is what the screen is for. A 44px cell is still a comfortable
+ * target, and the label means the glyph never has to be guessed at.
+ */
+function ViewerAction({
+  glyph,
+  label,
+  onClick,
+  active = false,
+  danger = false,
+  disabled = false,
+  busy = false,
+  title,
+}: {
+  glyph: string;
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+  danger?: boolean;
+  disabled?: boolean;
+  busy?: boolean;
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled || busy}
+      aria-pressed={active}
+      aria-label={label}
+      title={title}
+      className={cn(
+        'flex flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1 disabled:opacity-40',
+        danger
+          ? 'bg-danger/20 text-danger'
+          : active
+            ? 'bg-accent/20 text-accent'
+            : 'bg-surface text-body active:bg-surface-2',
+      )}
+    >
+      <span aria-hidden className="text-base leading-none">
+        {busy ? <Spinner className="size-4" /> : glyph}
+      </span>
+      <span className="w-full truncate text-center text-[9px] leading-none text-muted">
+        {label}
+      </span>
+    </button>
   );
 }
 
