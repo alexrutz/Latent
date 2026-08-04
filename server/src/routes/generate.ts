@@ -207,6 +207,24 @@ export function registerGenerateRoutes(app: FastifyInstance, ctx: AppContext): v
     const detail = ctx.store.getWorkflow(body.workflowId);
     if (!detail) return reply.code(404).send({ error: 'Workflow not found' });
 
+    /*
+     * Make room first, when that is what Generate is set to do.
+     *
+     * Before submitting, not after: clearing afterwards would race the new
+     * items into the same queue it is about to empty. `replace` also stops the
+     * one in flight, because waiting out a picture you already know is wrong is
+     * exactly the complaint this setting answers.
+     */
+    const policy = ctx.store.getSettings().queuePolicy;
+    if (policy !== 'append') {
+      try {
+        await ctx.orchestrator.clearQueue();
+        if (policy === 'replace') await ctx.orchestrator.interrupt();
+      } catch (error) {
+        app.log.warn({ err: error }, 'Could not clear the queue before generating');
+      }
+    }
+
     const outcome = await runBatch(ctx, detail, body);
 
     if (outcome.error) {

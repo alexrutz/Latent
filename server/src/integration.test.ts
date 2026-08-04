@@ -7,6 +7,7 @@ import WebSocket from 'ws';
 
 import type {
   GalleryPage,
+  GenerateResponse,
   GenerationRecord,
   ImportResult,
   ImportScanResult,
@@ -3132,4 +3133,82 @@ describe('endless generation', () => {
     expect(stopped.enabled).toBe(false);
     expect(before.items.length).toBeGreaterThanOrEqual(0);
   }, 120_000);
+});
+
+/**
+ * What Generate does about work already queued.
+ *
+ * Which one is right depends on how you are working, so it is a setting rather
+ * than a decision made for you: building a batch up to compare later wants the
+ * queue kept, iterating on a prompt wants it gone.
+ */
+describe('the queue policy', () => {
+  it('appends, clears what is waiting, or starts over', async () => {
+    const summaries = await json<{ id: string }[]>(api('/api/workflows'));
+    let workflow: WorkflowDetail | undefined;
+    for (const summary of summaries) {
+      const detail = await json<WorkflowDetail>(api(`/api/workflows/${summary.id}`));
+      if (detail.graph['6']) {
+        workflow = detail;
+        break;
+      }
+    }
+    expect(workflow).toBeDefined();
+
+    const queue = async (title: string, batchCount = 4) =>
+      json<GenerateResponse>(
+        api('/api/generate', {
+          method: 'POST',
+          body: JSON.stringify({
+            workflowId: workflow!.id,
+            values: { '6.text': title },
+            randomizeSeeds: true,
+            batchCount,
+          }),
+        }),
+      );
+
+    const pendingCount = async () => {
+      const state = await json<QueueState>(api('/api/queue'));
+      return state.pending.length + state.running.length;
+    };
+
+    try {
+      // Appending is the default: the second batch lines up behind the first.
+      await api('/api/settings', { method: 'PATCH', body: JSON.stringify({ queuePolicy: 'append' }) });
+      await queue('policy append a');
+      const afterFirst = await pendingCount();
+      await queue('policy append b');
+      expect(await pendingCount()).toBeGreaterThan(afterFirst);
+
+      // Clearing drops what was waiting, so the queue does not keep growing.
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ queuePolicy: 'clear-pending' }),
+      });
+      await queue('policy clear');
+      const afterClear = await waitFor(async () => {
+        const count = await pendingCount();
+        return count <= 5 ? count : null;
+      }, 20_000);
+      expect(afterClear).toBeLessThanOrEqual(5);
+
+      /*
+       * Nothing from before survives in the queue. Deliberately not asserting
+       * how *many* were cancelled: against a mock that renders in milliseconds
+       * the earlier batches may legitimately have finished on their own, and a
+       * count would then be measuring the mock's speed rather than the policy.
+       */
+      // `pending` only: the picture being rendered is exactly what this policy
+      // promises to leave alone — stopping that one is what `replace` is for.
+      const state = await json<QueueState>(api('/api/queue'));
+      expect(state.pending.every((entry) => entry.title.startsWith('policy clear'))).toBe(true);
+    } finally {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ queuePolicy: 'append' }),
+      });
+      await api('/api/queue/interrupt', { method: 'POST' });
+    }
+  }, 60_000);
 });

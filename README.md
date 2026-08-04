@@ -324,6 +324,19 @@ and what it was doing it for. VRAM, system RAM, sampler speed and queue depth
 over time, with the queue's own events — queued, started, each node, finished,
 failed, connection lost — marked on the same axis and listed underneath.
 
+**Choose what is on screen.** Six charts on a phone are six unreadable charts,
+so the chips above them switch each reading on and off — VRAM for a model that
+will not fit, sampler speed for one that has gone slow. The choice is kept on
+the device, because it is about this screen rather than about the installation.
+
+**With one or two charts, the events stand on the line.** Each one is named at
+its own tick, turned a quarter clockwise so a label takes a few pixels of width
+rather than a few dozen — which is what lets several inside one render sit next
+to each other instead of overprinting. With more charts than that there is no
+room for it and the ticks are enough to line the curves up against each other.
+The window is adjustable down to a minute for the same reason: half a dozen
+events inside one render are one smudge at half an hour to the screen.
+
 **GPU and CPU load are not part of ComfyUI.** Core ComfyUI reports VRAM and RAM
 through `/system_stats` and nothing else, so those two charts say "not reported"
 rather than drawing a flat line at zero. Install the widely used **Crystools**
@@ -335,6 +348,19 @@ when the box is idle, and kept **in memory**: this is the recent past, the windo
 in which you are still asking why something just happened, and writing a row
 every two seconds to answer that is a poor trade against an SD card. Switching
 connection clears it, because a different endpoint is a different machine.
+
+## Coming back to the app
+
+The socket is the source of truth **while it is connected**. It is not a record
+of what it missed, and that distinction was a real fault: a phone that locks its
+screen drops the connection, the runs in flight finish without anybody hearing
+about it, and on reconnect the server sends a snapshot of the *live* state — the
+job, the queue — with no events for work that ended in the meantime. The gallery
+kept its placeholders and went on saying "rendering" about pictures already on
+disk, until some other screen happened to refetch it.
+
+Reconnecting and becoming visible are exactly the two moments the client may
+have missed something, so both now refetch the history.
 
 ## Keeping images when the instance goes away
 
@@ -455,6 +481,25 @@ description — it is part of every request you make, and re-tapping it each tim
 is exactly the tedium the block library exists to remove. It is applied on the
 server at submit time, so it lands on a drawn prompt as surely as a typed one,
 and text that is already there is never doubled.
+
+## What Generate does about the queue
+
+**Settings → Generating.** Three choices, because which one is right depends
+entirely on how you are working:
+
+| | |
+| --- | --- |
+| **Add to the queue** | Everything already waiting runs first. |
+| **Clear what is waiting** | The picture being rendered finishes; the rest is dropped. |
+| **Start over** | Stops the render in progress too. |
+
+Building a batch up to compare later wants the first. Iterating on a prompt
+wants one of the others: eight renders of wording you have just changed your
+mind about are eight renders of nothing, and waiting out a picture you already
+know is wrong is the reason for the third.
+
+Endless generation ignores this — there Generate queues nothing at all, it hands
+over the settings for the next run.
 
 ## Endless generation
 

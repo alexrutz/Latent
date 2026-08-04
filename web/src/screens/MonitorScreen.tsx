@@ -10,11 +10,108 @@ const POLL_MS = 2_000;
 const MAX_SAMPLES = 600;
 const MAX_EVENTS = 400;
 
+/**
+ * How much of the timeline is on screen.
+ *
+ * Finer at the short end than it used to be, because that is where the events
+ * are: half a dozen of them inside one render land within a few seconds of each
+ * other, and at half an hour to the screen they are one smudge. A minute across
+ * the width pulls them apart.
+ */
 const RANGES = [
+  { label: '1 min', ms: 60_000 },
+  { label: '2 min', ms: 2 * 60_000 },
   { label: '5 min', ms: 5 * 60_000 },
+  { label: '15 min', ms: 15 * 60_000 },
   { label: '30 min', ms: 30 * 60_000 },
   { label: 'All', ms: Number.POSITIVE_INFINITY },
 ] as const;
+
+/**
+ * Every reading the monitor can draw, and how.
+ *
+ * A list rather than six calls in the markup, so which ones are on screen can
+ * be a choice: a phone shows two charts at a readable height, not six, and
+ * which two matter depends on what you are chasing — VRAM for a model that will
+ * not fit, steps per second for a sampler that has gone slow.
+ */
+const TRACES = [
+  {
+    key: 'vram',
+    label: 'VRAM',
+    valueOf: (sample: ResourceSample) =>
+      sample.vramUsed !== null && sample.vramTotal
+        ? (sample.vramUsed / sample.vramTotal) * 100
+        : null,
+    format: (latest?: ResourceSample) =>
+      latest?.vramUsed != null && latest.vramTotal
+        ? `${gib(latest.vramUsed)} / ${gib(latest.vramTotal)} GB`
+        : '—',
+    source: 'vram' as const,
+  },
+  {
+    key: 'gpu',
+    label: 'GPU',
+    valueOf: (sample: ResourceSample) => sample.gpuPercent,
+    format: (latest?: ResourceSample) =>
+      latest?.gpuPercent != null ? `${Math.round(latest.gpuPercent)}%` : '—',
+    source: 'gpu' as const,
+    /* Said plainly rather than drawn as a flat zero: ComfyUI core does not
+       report utilisation, and pretending otherwise would look like an idle GPU
+       mid-render. */
+    hint: 'Install a monitoring extension (Crystools) on the ComfyUI box for this.',
+  },
+  {
+    key: 'cpu',
+    label: 'CPU',
+    valueOf: (sample: ResourceSample) => sample.cpuPercent,
+    format: (latest?: ResourceSample) =>
+      latest?.cpuPercent != null ? `${Math.round(latest.cpuPercent)}%` : '—',
+    source: 'cpu' as const,
+    hint: 'Install a monitoring extension (Crystools) on the ComfyUI box for this.',
+  },
+  {
+    key: 'ram',
+    label: 'System RAM',
+    valueOf: (sample: ResourceSample) =>
+      sample.ramUsed !== null && sample.ramTotal ? (sample.ramUsed / sample.ramTotal) * 100 : null,
+    format: (latest?: ResourceSample) =>
+      latest?.ramUsed != null && latest.ramTotal
+        ? `${gib(latest.ramUsed)} / ${gib(latest.ramTotal)} GB`
+        : '—',
+    source: 'ram' as const,
+  },
+  {
+    key: 'sampler',
+    label: 'Sampler',
+    valueOf: (sample: ResourceSample) => sample.stepsPerSecond,
+    format: (latest?: ResourceSample) =>
+      latest?.stepsPerSecond != null ? `${latest.stepsPerSecond.toFixed(2)} steps/s` : 'idle',
+    /** Not a percentage: scaled to the fastest reading in the window. */
+    scale: 'auto' as const,
+  },
+  {
+    key: 'queue',
+    label: 'Queue',
+    valueOf: (sample: ResourceSample) => sample.queueRemaining,
+    format: (latest?: ResourceSample) => `${latest?.queueRemaining ?? 0} waiting`,
+    scale: 'auto' as const,
+  },
+];
+
+const TRACE_KEYS = TRACES.map((trace) => trace.key);
+const SHOWN_KEY = 'latent.monitorTraces';
+
+/**
+ * Below this many charts, each event is named on the line rather than only
+ * ticked.
+ *
+ * With six charts there is no room for it and the ticks are enough to line the
+ * curves up against each other. With one or two there is room, and a tick you
+ * have to match against a list underneath is a worse way to read a timeline
+ * than a label standing on it.
+ */
+const LABELLED_AT_MOST = 2;
 
 /**
  * What the machine was doing, and what it was doing it for.
@@ -30,6 +127,34 @@ export function MonitorScreen() {
   // Five minutes by default: with a reading every couple of seconds that is a
   // chart with shape in it, where half an hour of an idle box is a flat line.
   const [range, setRange] = useState<number>(RANGES[0]!.ms);
+
+  /**
+   * Which readings are on screen, kept on the device.
+   *
+   * A choice about this phone and this screen, not about the installation, so
+   * it lives beside the blur setting rather than in the database.
+   */
+  const [shown, setShown] = useState<string[]>(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(SHOWN_KEY) ?? 'null') as unknown;
+      if (Array.isArray(stored)) {
+        const kept = stored.filter((key): key is string => TRACE_KEYS.includes(String(key)));
+        if (kept.length > 0) return kept;
+      }
+    } catch {
+      // A hand-edited value must not stop the screen rendering.
+    }
+    return TRACE_KEYS;
+  });
+
+  useEffect(() => {
+    localStorage.setItem(SHOWN_KEY, JSON.stringify(shown));
+  }, [shown]);
+
+  const shownTraces = useMemo(
+    () => TRACES.filter((trace) => shown.includes(trace.key)),
+    [shown],
+  );
 
   const now = Date.now();
   const from = Number.isFinite(range) ? now - range : (snapshot?.samples[0]?.at ?? now - 60_000);
@@ -75,10 +200,41 @@ export function MonitorScreen() {
         </div>
       </div>
 
-      <p className="mb-3 truncate text-xs text-muted">
+      <p className="mb-2 truncate text-xs text-muted">
         {snapshot.deviceName ?? 'No device reported'}
         {snapshot.utilisationSource && ` · load via ${snapshot.utilisationSource}`}
       </p>
+
+      {/* Which readings to draw. Fewer of them is what makes room for the
+          event labels on the line. */}
+      <div className="mb-3 flex flex-wrap gap-1" data-testid="monitor-picker">
+        {TRACES.map((trace) => {
+          const on = shown.includes(trace.key);
+          return (
+            <button
+              key={trace.key}
+              type="button"
+              aria-pressed={on}
+              aria-label={`Show ${trace.label}`}
+              onClick={() =>
+                setShown((current) =>
+                  current.includes(trace.key)
+                    ? current.filter((key) => key !== trace.key)
+                    : [...TRACE_KEYS.filter((key) => current.includes(key) || key === trace.key)],
+                )
+              }
+              className={cn(
+                'rounded-full border px-2.5 py-1 text-[11px]',
+                on
+                  ? 'border-accent bg-accent/15 text-accent'
+                  : 'border-line bg-surface text-muted',
+              )}
+            >
+              {trace.label}
+            </button>
+          );
+        })}
+      </div>
 
       {samples.length === 0 ? (
         <p className="text-sm text-muted">
@@ -93,89 +249,27 @@ export function MonitorScreen() {
             <span>now</span>
           </div>
 
-          <Trace
-            label="VRAM"
-            samples={samples}
-            events={events}
-            window={window}
-            valueOf={(sample) =>
-              sample.vramUsed !== null && sample.vramTotal
-                ? (sample.vramUsed / sample.vramTotal) * 100
-                : null
-            }
-            format={() =>
-              latest?.vramUsed != null && latest.vramTotal
-                ? `${gib(latest.vramUsed)} / ${gib(latest.vramTotal)} GB`
-                : '—'
-            }
-            missing={!snapshot.sources.vram}
-          />
+          {shownTraces.map((trace) => (
+            <Trace
+              key={trace.key}
+              label={trace.label}
+              samples={samples}
+              events={events}
+              window={window}
+              valueOf={trace.valueOf}
+              format={() => trace.format(latest)}
+              missing={trace.source ? !snapshot.sources[trace.source] : false}
+              missingHint={trace.hint}
+              scale={trace.scale ?? 'percent'}
+              labelEvents={shownTraces.length <= LABELLED_AT_MOST}
+            />
+          ))}
 
-          <Trace
-            label="GPU"
-            samples={samples}
-            events={events}
-            window={window}
-            valueOf={(sample) => sample.gpuPercent}
-            format={() => (latest?.gpuPercent != null ? `${Math.round(latest.gpuPercent)}%` : '—')}
-            missing={!snapshot.sources.gpu}
-            /* Said plainly rather than drawn as a flat zero: ComfyUI core does
-               not report utilisation, and pretending otherwise would look like
-               an idle GPU mid-render. */
-            missingHint="Install a monitoring extension (Crystools) on the ComfyUI box for this."
-          />
-
-          <Trace
-            label="CPU"
-            samples={samples}
-            events={events}
-            window={window}
-            valueOf={(sample) => sample.cpuPercent}
-            format={() => (latest?.cpuPercent != null ? `${Math.round(latest.cpuPercent)}%` : '—')}
-            missing={!snapshot.sources.cpu}
-            missingHint="Install a monitoring extension (Crystools) on the ComfyUI box for this."
-          />
-
-          <Trace
-            label="System RAM"
-            samples={samples}
-            events={events}
-            window={window}
-            valueOf={(sample) =>
-              sample.ramUsed !== null && sample.ramTotal
-                ? (sample.ramUsed / sample.ramTotal) * 100
-                : null
-            }
-            format={() =>
-              latest?.ramUsed != null && latest.ramTotal
-                ? `${gib(latest.ramUsed)} / ${gib(latest.ramTotal)} GB`
-                : '—'
-            }
-            missing={!snapshot.sources.ram}
-          />
-
-          <Trace
-            label="Sampler"
-            samples={samples}
-            events={events}
-            window={window}
-            valueOf={(sample) => sample.stepsPerSecond}
-            format={() =>
-              latest?.stepsPerSecond != null ? `${latest.stepsPerSecond.toFixed(2)} steps/s` : 'idle'
-            }
-            /* Not a percentage: scaled to the fastest reading in the window. */
-            scale="auto"
-          />
-
-          <Trace
-            label="Queue"
-            samples={samples}
-            events={events}
-            window={window}
-            valueOf={(sample) => sample.queueRemaining}
-            format={() => `${latest?.queueRemaining ?? 0} waiting`}
-            scale="auto"
-          />
+          {shownTraces.length === 0 && (
+            <p className="text-sm text-muted">
+              No readings chosen. Pick some above.
+            </p>
+          )}
         </div>
       )}
 
@@ -257,6 +351,7 @@ function Trace({
   missing,
   missingHint,
   scale = 'percent',
+  labelEvents = false,
 }: {
   label: string;
   samples: ResourceSample[];
@@ -267,6 +362,8 @@ function Trace({
   missing?: boolean;
   missingHint?: string;
   scale?: 'percent' | 'auto';
+  /** Name each event on its tick, rather than only drawing the tick. */
+  labelEvents?: boolean;
 }) {
   const points = samples
     .map((sample) => ({ at: sample.at, value: valueOf(sample) }))
@@ -279,6 +376,7 @@ function Trace({
   const y = (value: number) => 100 - Math.min(100, (value / peak) * 100);
 
   const line = points.map((point) => `${x(point.at).toFixed(2)},${y(point.value).toFixed(2)}`);
+  const marked = events.filter((event) => MARKED.includes(event.kind));
 
   return (
     <div className="rounded-xl border border-line bg-surface px-2.5 py-2">
@@ -290,6 +388,7 @@ function Trace({
       {missing && points.length === 0 ? (
         <p className="pt-1 text-[11px] text-muted">Not reported. {missingHint}</p>
       ) : (
+        <div className={cn('relative', labelEvents && 'pb-14')}>
         <svg
           viewBox="0 0 100 100"
           preserveAspectRatio="none"
@@ -298,9 +397,7 @@ function Trace({
           aria-label={`${label} over time`}
         >
           {/* Event ticks first, so the trace draws over them. */}
-          {events
-            .filter((event) => MARKED.includes(event.kind))
-            .map((event, index) => (
+          {marked.map((event, index) => (
               <line
                 key={`${event.at}-${index}`}
                 x1={x(event.at)}
@@ -334,6 +431,34 @@ function Trace({
             <circle cx={line[0]!.split(',')[0]} cy={line[0]!.split(',')[1]} r={1.5} className="fill-accent" />
           )}
         </svg>
+
+        {/*
+          The events, standing on their own ticks.
+
+          Turned a quarter clockwise so a name takes a few pixels of width
+          rather than a few dozen — which is what lets several inside one render
+          stand next to each other instead of overprinting. HTML rather than
+          SVG `<text>`: the chart is drawn with `preserveAspectRatio="none"`, so
+          anything inside it is stretched horizontally by whatever the aspect
+          happens to be, and stretched type is unreadable type.
+        */}
+        {labelEvents &&
+          marked.map((event, index) => (
+            <span
+              key={`${event.at}-${index}`}
+              className={cn(
+                'pointer-events-none absolute top-full origin-top-left rotate-90 text-[10px] whitespace-nowrap',
+                KIND_COLOUR[event.kind],
+              )}
+              style={{ left: `${x(event.at)}%` }}
+            >
+              <span aria-hidden className="mr-0.5">
+                {KIND_MARK[event.kind]}
+              </span>
+              {event.label}
+            </span>
+          ))}
+        </div>
       )}
     </div>
   );

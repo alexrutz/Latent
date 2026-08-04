@@ -473,6 +473,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   img2imgWorkflowId: null,
   defaultWorkflowId: null,
   comfyRoot: null,
+  queuePolicy: 'append',
   importRoot: null,
   inputRoot: null,
   autoDeleteHours: null,

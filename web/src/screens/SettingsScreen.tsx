@@ -5,6 +5,7 @@ import type {
   FieldOverride,
   FieldOverrides,
   ParamField,
+  QueuePolicy,
   WorkflowDetail,
   WorkflowSummary,
 } from '@latent/shared';
@@ -35,6 +36,24 @@ import { Button, Card, cn, ErrorNote, Row, Sheet, Spinner } from '../components/
 import { useBlur } from '../state/blur';
 import { ConnectionsScreen } from './ConnectionsScreen';
 import { TerminalScreen } from './TerminalScreen';
+
+const QUEUE_POLICIES: { value: QueuePolicy; label: string; hint: string }[] = [
+  {
+    value: 'append',
+    label: 'Add to the queue',
+    hint: 'Everything already waiting runs first.',
+  },
+  {
+    value: 'clear-pending',
+    label: 'Clear what is waiting',
+    hint: 'The picture being rendered finishes; the rest is dropped.',
+  },
+  {
+    value: 'replace',
+    label: 'Start over',
+    hint: 'Stops the render in progress too.',
+  },
+];
 
 /** Sensible periods rather than a free number: this is a decision, not a dial. */
 const AUTO_DELETE_OPTIONS: { label: string; hours: number | null }[] = [
@@ -219,6 +238,43 @@ export function SettingsScreen() {
           </Card>
         </section>
       )}
+
+      {/* Generating -------------------------------------------------- */}
+      <section className="space-y-2">
+        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Generating</h2>
+        <Card className="space-y-3">
+          <p className="text-xs text-muted">
+            What <strong className="text-body">Generate</strong> does about work already queued.
+            Building a batch up to compare later wants the first; iterating on a prompt wants one
+            of the others, because eight renders of wording you have just changed your mind about
+            are eight renders of nothing.
+          </p>
+          <div className="space-y-1">
+            {QUEUE_POLICIES.map((option) => {
+              const active = (settings.data?.queuePolicy ?? 'append') === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => updateSettings.mutate({ queuePolicy: option.value })}
+                  className={cn(
+                    'flex w-full flex-col items-start gap-0.5 rounded-lg px-3 py-2 text-left',
+                    active ? 'bg-accent/15 text-accent' : 'bg-surface-2 active:bg-surface-3',
+                  )}
+                >
+                  <span className="text-sm">{option.label}</span>
+                  <span className="text-[11px] text-muted">{option.hint}</span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-[11px] text-muted">
+            Endless generation ignores this: there, Generate queues nothing at all — it hands over
+            the settings for the next run.
+          </p>
+        </Card>
+      </section>
 
       {/* Display ---------------------------------------------------- */}
       <section className="space-y-2">

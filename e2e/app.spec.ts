@@ -129,9 +129,18 @@ async function resetState() {
     const setups = (await (await ctx.get('/api/prompt-mode/presets')).json()) as { id: string }[];
     for (const setup of setups) await ctx.delete(`/api/prompt-mode/presets/${setup.id}`);
 
-    // The ComfyUI folder drives importing, the input picker and the workflow
-    // scan, so a test that sets one must not leave it for the next.
-    await ctx.patch('/api/settings', { data: { comfyRoot: null, importRoot: null, inputRoot: null } });
+    /*
+     * The ComfyUI folder drives importing, the input picker and the workflow
+     * scan, so a test that sets one must not leave it for the next — and the
+     * queue policy decides whether Generate keeps or drops what is already
+     * waiting, which quietly breaks any later test that queues a batch.
+     */
+    await ctx.patch('/api/settings', {
+      data: { comfyRoot: null, importRoot: null, inputRoot: null, queuePolicy: 'append' },
+    });
+
+    // Endless generation is server-side and survives a reload, let alone a test.
+    await ctx.put('/api/generate/endless', { data: { workflowId: '', values: {}, enabled: false } });
   });
 
   /*
@@ -1787,7 +1796,8 @@ test.describe('the fixes wave ten asked for', () => {
 
     await page.getByRole('link', { name: 'Monitor' }).click();
     await expect(page.getByTestId('monitor-charts')).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText(/VRAM/)).toBeVisible();
+    // The chart's own label, not the picker chip that switches it on.
+    await expect(page.getByTestId('monitor-charts').getByText('VRAM')).toBeVisible();
 
     const events = page.getByTestId('monitor-events');
     await expect(events).toContainText('watched from the monitor', { timeout: 60_000 });
@@ -2389,5 +2399,120 @@ test.describe('the fifteenth wave', () => {
       { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 },
     );
     expect(onTop).toMatch(/Generate/);
+  });
+});
+
+/** Wave sixteen: catching up after being away, and reading the timeline. */
+test.describe('the sixteenth wave', () => {
+  /**
+   * The socket is the source of truth while it is connected. It is not a record
+   * of what it missed.
+   *
+   * A phone that locks its screen drops the connection; the runs in flight
+   * finish without anybody hearing about it; on reconnect the server sends a
+   * snapshot of the *live* state and no `generation` events for what ended in
+   * the meantime. So the gallery kept its placeholders and went on saying
+   * "rendering" about pictures already on disk.
+   *
+   * Asserted as the mechanism rather than by staging a locked phone: what the
+   * fix adds is a refetch of the history at the two moments the client may have
+   * missed something, and that is exactly what this checks. Staging it in a
+   * browser is unreliable — Playwright's own network handling makes React Query
+   * reconnect and refetch for reasons a backgrounded phone never has.
+   */
+  test('refetches the history when the app comes back to the foreground', async ({ page }) => {
+    await resetState();
+    await seedWorkflow();
+    await open(page, '/gallery');
+
+    const requests: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/api/gallery')) requests.push(request.url());
+    });
+
+    // Settle, so anything the first paint asked for is already counted.
+    await page.waitForTimeout(1_000);
+    const before = requests.length;
+
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+
+    await expect.poll(() => requests.length).toBeGreaterThan(before);
+    await page.screenshot({ path: 'test-results/52-caught-up.png' });
+  });
+
+  /** Iterating on a prompt wants the queue gone, not eight more of the old one. */
+  test('clears the queue before generating when told to', async ({ page }) => {
+    await resetState();
+    await seedWorkflow();
+
+    await open(page, '/settings');
+    await page.getByRole('button', { name: 'Clear what is waiting' }).click();
+    await expect(page.getByRole('button', { name: 'Clear what is waiting' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await page.screenshot({ path: 'test-results/53-queue-policy.png' });
+
+    await page.getByRole('link', { name: 'Generate' }).click();
+    await page.getByRole('button', { name: '8', exact: true }).click();
+    await page.getByPlaceholder('Describe the image…').fill('first batch');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    // A finished run presents itself over everything; put it away first.
+    await dismissResult(page);
+    await page.getByPlaceholder('Describe the image…').fill('second batch');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    // Nothing from the first batch is left waiting.
+    await expect
+      .poll(async () =>
+        withApi(async (ctx) => {
+          const state = (await (await ctx.get('/api/queue')).json()) as {
+            pending: { title: string }[];
+          };
+          return state.pending.filter((entry) => entry.title === 'first batch').length;
+        }),
+      )
+      .toBe(0);
+
+    await withApi(async (ctx) => {
+      await ctx.post('/api/queue/interrupt');
+      await ctx.patch('/api/settings', { data: { queuePolicy: 'append' } });
+    });
+  });
+
+  /** Six charts on a phone is six unreadable charts. */
+  test('draws only the chosen readings, and names events on the line', async ({ page }) => {
+    await resetState();
+    await seedWorkflow();
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('for the timeline');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await dismissResult(page);
+
+    await page.getByRole('link', { name: 'Monitor' }).click();
+    await expect(page.getByTestId('monitor-picker')).toBeVisible({ timeout: 30_000 });
+
+    // Turn everything off but VRAM.
+    for (const name of ['GPU', 'CPU', 'System RAM', 'Sampler', 'Queue']) {
+      await page.getByRole('button', { name: `Show ${name}` }).click();
+    }
+    await expect(page.getByTestId('monitor-charts').locator('svg')).toHaveCount(1);
+
+    // A finer window, so events inside one render are not one smudge.
+    await page.getByRole('button', { name: '1 min' }).click();
+
+    // The events stand on the line, turned a quarter clockwise.
+    const label = page.getByTestId('monitor-charts').locator('span.rotate-90').first();
+    await expect(label).toBeVisible({ timeout: 30_000 });
+    // Tailwind v4 uses the standalone `rotate` property, not a `transform`.
+    const rotation = await label.evaluate((element) => getComputedStyle(element).rotate);
+    expect(rotation).toBe('90deg');
+    await page.screenshot({ path: 'test-results/54-monitor-events.png' });
+
+    // The choice survives leaving the tab, because it is about this screen.
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    await page.getByRole('link', { name: 'Monitor' }).click();
+    await expect(page.getByTestId('monitor-charts').locator('svg')).toHaveCount(1);
   });
 });

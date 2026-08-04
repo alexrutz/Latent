@@ -299,11 +299,41 @@ export function useArchiveStats() {
 export function useLiveCacheSync(): void {
   const client = useQueryClient();
   const lastGeneration = useLiveStore((state) => state.lastGeneration);
+  const socketConnected = useLiveStore((state) => state.socketConnected);
 
   useEffect(() => {
     if (!lastGeneration) return;
     void client.invalidateQueries({ queryKey: ['gallery'] });
   }, [lastGeneration, client]);
+
+  /*
+   * Catch up on everything that happened while nobody was watching.
+   *
+   * The socket is the source of truth *while it is connected*. It is not a
+   * record of what it missed: a phone that locks its screen drops the
+   * connection, the runs in flight finish without anybody hearing about it, and
+   * on reconnect the server sends a snapshot of the live state — the job, the
+   * queue — but no `generation` events for work that ended in the meantime. So
+   * the gallery kept its placeholders and went on saying "rendering" about
+   * pictures that were finished and sitting on disk, until some other screen
+   * happened to refetch it.
+   *
+   * Reconnecting and becoming visible are exactly the two moments the client
+   * may have missed something, so both refetch the history.
+   */
+  useEffect(() => {
+    // The queue comes over the socket and the snapshot carries it, so only the
+    // history — which the snapshot does not include — needs asking for.
+    const refresh = () => void client.invalidateQueries({ queryKey: ['gallery'] });
+
+    if (socketConnected) refresh();
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [socketConnected, client]);
 }
 
 /** Used after login so every screen refetches with the new session. */

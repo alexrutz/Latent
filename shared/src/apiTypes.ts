@@ -63,6 +63,17 @@ export interface GenerateRequest {
   batchCount?: number;
 }
 
+/**
+ * What Generate does about work already queued.
+ *
+ * Which one is right depends entirely on how you are working. Building up a
+ * batch to compare later wants `append`; iterating on a prompt wants the queue
+ * gone, because eight renders of the wording you have just changed your mind
+ * about are eight renders of nothing. And `replace` stops the one in flight too
+ * — waiting out a picture you already know is wrong is the whole complaint.
+ */
+export type QueuePolicy = 'append' | 'clear-pending' | 'replace';
+
 export interface GenerateResponse {
   generationIds: string[];
   promptIds: string[];
@@ -624,6 +635,13 @@ export interface AppSettings {
    * setups — a network mount, outputs redirected elsewhere — and win when set.
    */
   comfyRoot: string | null;
+  /**
+   * What Generate does about work already queued. See `QueuePolicy`.
+   *
+   * Ignored while endless generation is running: there, Generate does not queue
+   * anything at all — it hands over the settings for the next run.
+   */
+  queuePolicy: QueuePolicy;
   /** Absolute path to a ComfyUI output folder to scan for import. */
   importRoot: string | null;
   /**
