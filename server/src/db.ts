@@ -3,6 +3,10 @@ import Database from 'better-sqlite3';
 import type {
   AppSettings,
   ArchiveStats,
+  ChatConversation,
+  ChatConversationDetail,
+  ChatMessage,
+  ChatToolResult,
   ComfyImageRef,
   ConnectionAuthMode,
   ConnectionInput,
@@ -261,6 +265,93 @@ CREATE UNIQUE INDEX idx_workflows_source ON workflows (source_path)
   WHERE source_path IS NOT NULL;
 `);
 
+/**
+ * v10: conversations with the local language model.
+ *
+ * Kept in the database rather than in the browser because a conversation is the
+ * working record of how a prompt came about — the tool that builds one reads
+ * back over it — and because the phone that started it is rarely the only thing
+ * that will want to see it.
+ */
+MIGRATIONS.push(`
+CREATE TABLE chats (
+  id         TEXT PRIMARY KEY,
+  title      TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX idx_chats_updated ON chats (updated_at DESC);
+
+CREATE TABLE chat_messages (
+  id          TEXT PRIMARY KEY,
+  chat_id     TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+  role        TEXT NOT NULL,
+  content     TEXT NOT NULL DEFAULT '',
+  -- The model's reasoning, apart from its answer: shown collapsed, and never
+  -- sent back as context, which is what the models themselves ask for.
+  thinking    TEXT,
+  -- Images, as data URIs, so a conversation carries its own attachments.
+  attachments_json TEXT NOT NULL DEFAULT '[]',
+  tool_call_json   TEXT,
+  tool_result_json TEXT,
+  created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX idx_chat_messages_chat ON chat_messages (chat_id, created_at);
+`);
+
+interface ChatRow {
+  id: string;
+  title: string;
+  created_at: number;
+  updated_at: number;
+}
+
+interface ChatMessageRow {
+  id: string;
+  chat_id: string;
+  role: string;
+  content: string;
+  thinking: string | null;
+  attachments_json: string;
+  tool_call_json: string | null;
+  tool_result_json: string | null;
+  created_at: number;
+}
+
+/** Settings held as a group under one key rather than as a single value. */
+function isObjectSetting(key: string): boolean {
+  const value = (DEFAULT_SETTINGS as unknown as Record<string, unknown>)[key];
+  return typeof value === 'object' && value !== null;
+}
+
+function toChat(row: ChatRow): ChatConversation {
+  return {
+    id: row.id,
+    title: row.title,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function toChatMessage(row: ChatMessageRow): ChatMessage {
+  return {
+    id: row.id,
+    role: row.role as ChatMessage['role'],
+    content: row.content,
+    ...(row.thinking ? { thinking: row.thinking } : {}),
+    attachments: parseJson<ChatMessage['attachments']>(row.attachments_json, []),
+    ...(row.tool_call_json
+      ? { toolCall: parseJson<ChatMessage['toolCall']>(row.tool_call_json, undefined) }
+      : {}),
+    ...(row.tool_result_json
+      ? { toolResult: parseJson<ChatMessage['toolResult']>(row.tool_result_json, undefined) }
+      : {}),
+    createdAt: row.created_at,
+  };
+}
+
 interface WorkflowRow {
   id: string;
   name: string;
@@ -474,6 +565,15 @@ const DEFAULT_SETTINGS: AppSettings = {
   defaultWorkflowId: null,
   comfyRoot: null,
   queuePolicy: 'append',
+  chat: {
+    // Where `llama-server` listens unless told otherwise.
+    baseUrl: 'http://127.0.0.1:8080',
+    model: '',
+    temperature: 0.8,
+    maxTokens: 0,
+    thinking: true,
+    systemPrompt: '',
+  },
   importRoot: null,
   inputRoot: null,
   autoDeleteHours: null,
@@ -521,6 +621,81 @@ export class Store {
 
   get schemaVersion(): number {
     return Number(this.db.pragma('user_version', { simple: true }) ?? 0);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Chat                                                              */
+  /* ---------------------------------------------------------------- */
+
+  listChats(limit = 50): ChatConversation[] {
+    return this.db
+      .prepare<[number], ChatRow>('SELECT * FROM chats ORDER BY updated_at DESC LIMIT ?')
+      .all(limit)
+      .map(toChat);
+  }
+
+  createChat(id: string, title = ''): ChatConversation {
+    const now = Date.now();
+    this.db
+      .prepare('INSERT INTO chats (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)')
+      .run(id, title, now, now);
+    return { id, title, createdAt: now, updatedAt: now };
+  }
+
+  getChat(id: string): ChatConversationDetail | null {
+    const row = this.db.prepare<[string], ChatRow>('SELECT * FROM chats WHERE id = ?').get(id);
+    if (!row) return null;
+
+    const messages = this.db
+      .prepare<[string], ChatMessageRow>(
+        'SELECT * FROM chat_messages WHERE chat_id = ? ORDER BY created_at, rowid',
+      )
+      .all(id)
+      .map(toChatMessage);
+
+    return { ...toChat(row), messages };
+  }
+
+  /** Only ever set from the first thing the user said, so a list is scannable. */
+  renameChat(id: string, title: string): void {
+    this.db.prepare('UPDATE chats SET title = ?, updated_at = ? WHERE id = ?').run(
+      title.slice(0, 120),
+      Date.now(),
+      id,
+    );
+  }
+
+  deleteChat(id: string): void {
+    this.db.prepare('DELETE FROM chat_messages WHERE chat_id = ?').run(id);
+    this.db.prepare('DELETE FROM chats WHERE id = ?').run(id);
+  }
+
+  insertChatMessage(chatId: string, message: ChatMessage): void {
+    this.db
+      .prepare(
+        `INSERT INTO chat_messages
+           (id, chat_id, role, content, thinking, attachments_json, tool_call_json, tool_result_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        message.id,
+        chatId,
+        message.role,
+        message.content,
+        message.thinking ?? null,
+        JSON.stringify(message.attachments ?? []),
+        message.toolCall ? JSON.stringify(message.toolCall) : null,
+        message.toolResult ? JSON.stringify(message.toolResult) : null,
+        message.createdAt,
+      );
+    this.db.prepare('UPDATE chats SET updated_at = ? WHERE id = ?').run(Date.now(), chatId);
+  }
+
+  /** Record what the user decided about a tool call, on the message that asked. */
+  setChatToolResult(messageId: string, result: ChatToolResult): void {
+    this.db
+      .prepare('UPDATE chat_messages SET tool_result_json = ? WHERE id = ?')
+      .run(JSON.stringify(result), messageId);
   }
 
   close(): void {
@@ -1644,9 +1819,25 @@ export class Store {
 
   getSettings(): AppSettings {
     const rows = this.db.prepare<[], { key: string; value: string }>('SELECT * FROM settings').all();
-    const settings: Record<string, string | number | null> = { ...DEFAULT_SETTINGS };
+    const settings: Record<string, unknown> = { ...DEFAULT_SETTINGS };
     for (const row of rows) {
-      if (row.key in DEFAULT_SETTINGS) settings[row.key] = row.value === '' ? null : row.value;
+      if (!(row.key in DEFAULT_SETTINGS)) continue;
+
+      /*
+       * Most settings are a single value and are stored as text. A couple are
+       * a group of related ones — the chat's address, model and temperature
+       * belong together and are always set together — and those are stored as
+       * JSON under one key, merged over the defaults so a value added in a
+       * later version appears rather than being undefined.
+       */
+      if (isObjectSetting(row.key)) {
+        settings[row.key] = {
+          ...((DEFAULT_SETTINGS as unknown as Record<string, object>)[row.key] ?? {}),
+          ...parseJson<object>(row.value, {}),
+        };
+        continue;
+      }
+      settings[row.key] = row.value === '' ? null : row.value;
     }
     // Settings are stored as text; the one number among them has to come back
     // as a number or every comparison against it is a string comparison.
@@ -1660,8 +1851,21 @@ export class Store {
       `INSERT INTO settings (key, value) VALUES (?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
     );
+    const current = this.getSettings() as unknown as Record<string, unknown>;
+
+
     for (const [key, value] of Object.entries(patch)) {
       if (!(key in DEFAULT_SETTINGS)) continue;
+
+      // Patched a field at a time, so setting the chat's temperature does not
+      // silently reset its address.
+      if (isObjectSetting(key)) {
+        upsert.run(
+          key,
+          JSON.stringify({ ...(current[key] as object), ...(value as object) }),
+        );
+        continue;
+      }
       upsert.run(key, value == null ? '' : String(value));
     }
     return this.getSettings();

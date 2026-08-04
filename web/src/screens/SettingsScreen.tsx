@@ -239,6 +239,8 @@ export function SettingsScreen() {
         </section>
       )}
 
+      <ChatSection />
+
       {/* Generating -------------------------------------------------- */}
       <section className="space-y-2">
         <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Generating</h2>
@@ -833,6 +835,142 @@ function PointNumber({
  * kept, this one is reference shots, sketches and masks going out to img2img.
  * Read-only — Latent never writes here.
  */
+/**
+ * How the chat module reaches the local model.
+ *
+ * A separate address from ComfyUI's on purpose: the two are different servers
+ * doing different work, and on the usual setup only one of them is on a rented
+ * box. `llama-server` listens on 8080 unless told otherwise.
+ */
+function ChatSection() {
+  const settings = useSettings();
+  const updateSettings = useUpdateSettings();
+  const chat = settings.data?.chat;
+
+  const [baseUrl, setBaseUrl] = useState('');
+  const [systemPrompt, setSystemPrompt] = useState('');
+  const [probe, setProbe] = useState<{ ok: boolean; models: string[]; message?: string } | null>(
+    null,
+  );
+  const [checking, setChecking] = useState(false);
+
+  // Seeded once the settings arrive, and not overwritten while being typed in.
+  useEffect(() => {
+    if (!chat) return;
+    setBaseUrl((current) => (current === '' ? chat.baseUrl : current));
+    setSystemPrompt((current) => (current === '' ? chat.systemPrompt : current));
+  }, [chat]);
+
+  if (!chat) return null;
+
+  const patch = (change: Partial<typeof chat>) =>
+    updateSettings.mutate({ chat: { ...chat, ...change } });
+
+  return (
+    <section className="space-y-2">
+      <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Chat</h2>
+      <Card className="space-y-3">
+        <p className="text-xs text-muted">
+          A local model to talk to about what to make. Anything offering llama.cpp’s
+          OpenAI-compatible routes works; the tools need a model that can call them, and images
+          need a multimodal one.
+        </p>
+
+        <div className="flex gap-2">
+          <input
+            value={baseUrl}
+            onChange={(event) => setBaseUrl(event.target.value)}
+            placeholder="http://127.0.0.1:8080"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            aria-label="Model server"
+            className="min-w-0 flex-1 rounded-xl border border-line bg-surface px-4 py-3 text-sm focus:border-accent focus:outline-none"
+          />
+          <Button
+            variant="secondary"
+            busy={checking}
+            onClick={async () => {
+              patch({ baseUrl: baseUrl.trim() });
+              setChecking(true);
+              try {
+                setProbe(await api.chatStatus());
+              } finally {
+                setChecking(false);
+              }
+            }}
+          >
+            Check
+          </Button>
+        </div>
+
+        {probe && (
+          <p className={cn('text-xs', probe.ok ? 'text-success' : 'text-warn')}>
+            {probe.ok
+              ? `Reachable${probe.models.length > 0 ? ` — ${probe.models.join(', ')}` : ''}`
+              : probe.message}
+          </p>
+        )}
+
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm">Show its thinking</p>
+            <p className="text-[11px] text-muted">
+              On by default: the tools ask it to make judgements, and one that has reasoned first
+              is better at them.
+            </p>
+          </div>
+          <Toggle
+            checked={chat.thinking}
+            onChange={(thinking) => patch({ thinking })}
+            label="Show its thinking"
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <label className="space-y-1">
+            <span className="block text-[11px] text-muted">Temperature</span>
+            <NumericInput
+              value={chat.temperature}
+              onChange={(temperature) => patch({ temperature })}
+              min={0}
+              max={2}
+              step={0.05}
+              aria-label="Temperature"
+              className="w-full rounded-lg border border-line bg-surface px-2 py-1.5 text-sm"
+            />
+          </label>
+          <label className="space-y-1">
+            <span className="block text-[11px] text-muted">Reply limit (0 = server’s)</span>
+            <NumericInput
+              value={chat.maxTokens}
+              onChange={(maxTokens) => patch({ maxTokens })}
+              integer
+              min={0}
+              max={32768}
+              aria-label="Reply limit"
+              className="w-full rounded-lg border border-line bg-surface px-2 py-1.5 text-sm"
+            />
+          </label>
+        </div>
+
+        <label className="block space-y-1">
+          <span className="block text-[11px] text-muted">
+            Instructions (empty uses Latent’s own)
+          </span>
+          <textarea
+            value={systemPrompt}
+            onChange={(event) => setSystemPrompt(event.target.value)}
+            onBlur={() => patch({ systemPrompt })}
+            rows={3}
+            className="w-full resize-none rounded-xl border border-line bg-surface px-3 py-2 text-sm focus:border-accent focus:outline-none"
+          />
+        </label>
+      </Card>
+    </section>
+  );
+}
+
 /**
  * The one path Latent asks for.
  *

@@ -92,6 +92,17 @@ async function dismissResult(page: Page) {
 }
 
 /**
+ * Blocks, Random and Monitor live behind the "More" tab now, so getting to one
+ * is two taps rather than one. In its own helper because every test that uses
+ * those screens would otherwise repeat it.
+ */
+async function openModule(page: Page, label: 'Blocks' | 'Random' | 'Monitor') {
+  await page.getByRole('button', { name: 'More modules' }).click();
+  await page.getByTestId('more-menu').getByRole('button', { name: label }).click();
+  await expect(page.getByTestId('more-menu')).toHaveCount(0);
+}
+
+/**
  * Wipe everything a test could observe, so a run never depends on what a
  * previous one left behind. The dev server is reused between runs, so this has
  * to cover every user-visible collection — not just the obvious two.
@@ -1100,7 +1111,7 @@ test.describe('random prompt mode', () => {
     await open(page, '/');
 
     await page.getByPlaceholder('Describe the image…').fill('a lighthouse');
-    await page.getByRole('link', { name: 'Random' }).click();
+    await openModule(page, 'Random');
 
     await expect(page.getByRole('heading', { name: 'Random' })).toBeVisible();
     await page.getByRole('switch', { name: 'Draw the prompt' }).click();
@@ -1124,7 +1135,7 @@ test.describe('random prompt mode', () => {
   test('narrows the pool to hand-picked blocks', async ({ page }) => {
     await seedBlocks();
     await open(page, '/');
-    await page.getByRole('link', { name: 'Random' }).click();
+    await openModule(page, 'Random');
     await page.getByRole('switch', { name: 'Draw the prompt' }).click();
 
     // Tapping a selected chip removes just that one — the pool was "everything".
@@ -1182,7 +1193,7 @@ test.describe('random prompt mode', () => {
 
   test('says plainly that there is nothing to draw from', async ({ page }) => {
     await open(page, '/');
-    await page.getByRole('link', { name: 'Random' }).click();
+    await openModule(page, 'Random');
     await expect(page.getByText(/No prompt blocks saved yet/)).toBeVisible();
     await expect(page.getByRole('button', { name: 'Draw three examples' })).toHaveCount(0);
   });
@@ -1518,7 +1529,7 @@ test.describe('varying the parameters too', () => {
     );
 
     await open(page, '/');
-    await page.getByRole('link', { name: 'Random' }).click();
+    await openModule(page, 'Random');
     await page.getByRole('switch', { name: 'Draw the prompt' }).click();
 
     // The parameters section is collapsed by default — prompts come first.
@@ -1794,7 +1805,7 @@ test.describe('the fixes wave ten asked for', () => {
     await page.getByPlaceholder('Describe the image…').fill('watched from the monitor');
     await page.getByRole('button', { name: /^Generate/ }).click();
 
-    await page.getByRole('link', { name: 'Monitor' }).click();
+    await openModule(page, 'Monitor');
     await expect(page.getByTestId('monitor-charts')).toBeVisible({ timeout: 30_000 });
     // The chart's own label, not the picker chip that switches it on.
     await expect(page.getByTestId('monitor-charts').getByText('VRAM')).toBeVisible();
@@ -2490,7 +2501,7 @@ test.describe('the sixteenth wave', () => {
     await page.getByRole('button', { name: /^Generate/ }).click();
     await dismissResult(page);
 
-    await page.getByRole('link', { name: 'Monitor' }).click();
+    await openModule(page, 'Monitor');
     await expect(page.getByTestId('monitor-picker')).toBeVisible({ timeout: 30_000 });
 
     // Turn everything off but VRAM.
@@ -2512,7 +2523,218 @@ test.describe('the sixteenth wave', () => {
 
     // The choice survives leaving the tab, because it is about this screen.
     await page.getByRole('link', { name: 'Gallery' }).click();
-    await page.getByRole('link', { name: 'Monitor' }).click();
+    await openModule(page, 'Monitor');
     await expect(page.getByTestId('monitor-charts').locator('svg')).toHaveCount(1);
+  });
+});
+
+/**
+ * Wave seventeen: the chat module.
+ *
+ * Driven against a stand-in for llama.cpp whose replies are scripted, because
+ * what these tests are about is the plumbing around the model — the stream, the
+ * tool dialogs, and what accepting one actually does — rather than the model.
+ */
+test.describe('the chat module', () => {
+  const LLAMA = 'http://127.0.0.1:8189';
+
+  /** Queue what the mock model will say next. */
+  const script = async (...replies: unknown[]) => {
+    const context = await apiRequest.newContext({ baseURL: LLAMA });
+    try {
+      await context.post('/__script', { data: replies });
+    } finally {
+      await context.dispose();
+    }
+  };
+
+  test.beforeEach(async () => {
+    await resetState();
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', { data: { chat: { baseUrl: LLAMA, thinking: true } } }),
+    );
+    // A conversation carries over between tests otherwise, and the transcript
+    // is what most of these assert on.
+    await withApi(async (ctx) => {
+      const chats = (await (await ctx.get('/api/chat/conversations')).json()) as { id: string }[];
+      for (const chat of chats) await ctx.delete(`/api/chat/conversations/${chat.id}`);
+    });
+  });
+
+  /** Chat is the middle tab, and the three set-up modules are behind one more. */
+  test('puts Chat in the middle and the rest behind More', async ({ page }) => {
+    await open(page, '/');
+
+    const tabs = page.locator('nav li');
+    await expect(tabs).toHaveCount(7);
+
+    // Fourth of seven is the middle.
+    const labels = await tabs.evaluateAll((all) =>
+      all.map((tab) => tab.textContent?.replace(/[^A-Za-z]/g, '') ?? ''),
+    );
+    expect(labels[3]).toBe('Chat');
+
+    // Blocks, Random and Monitor are not tabs any more.
+    expect(labels.join(' ')).not.toContain('Blocks');
+
+    await page.getByRole('button', { name: 'More modules' }).click();
+    await expect(page.getByTestId('more-menu')).toBeVisible();
+    await page.screenshot({ path: 'test-results/55-tabs.png' });
+
+    await page.getByRole('button', { name: 'Blocks' }).click();
+    await expect(page.getByRole('heading', { name: 'Blocks', exact: true })).toBeVisible();
+    await expect(page.getByTestId('more-menu')).toHaveCount(0);
+  });
+
+  test('streams a reply and folds the reasoning away', async ({ page }) => {
+    await script({
+      reasoning: 'They want something calm.',
+      content: 'How about a harbour at dawn?',
+    });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('suggest something');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    await expect(page.getByText('How about a harbour at dawn?')).toBeVisible({ timeout: 30_000 });
+
+    // The reasoning is there, and closed.
+    const thinking = page.getByRole('button', { name: /Thinking/ });
+    await expect(thinking).toBeVisible();
+    await expect(page.getByText('They want something calm.')).toHaveCount(0);
+    await thinking.click();
+    await expect(page.getByText('They want something calm.')).toBeVisible();
+    await page.screenshot({ path: 'test-results/56-chat.png' });
+  });
+
+  /**
+   * The tool this module exists for: a prompt you can send straight to ComfyUI
+   * with the settings you already have.
+   */
+  test('offers a built prompt, and generating it uses the Generate settings', async ({ page }) => {
+    await seedWorkflow();
+    await script({
+      content: 'Here is one.',
+      toolCall: {
+        name: 'build_prompt',
+        arguments: {
+          prompt: 'a harbour at dawn, soft light, muted colours',
+          reason: 'Calm, blue, early.',
+        },
+      },
+    });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('build me a prompt');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    // The dialog floats over the transcript, which is blurred behind it.
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    await expect(dialog.getByRole('textbox', { name: 'The prompt' })).toHaveValue(
+      'a harbour at dawn, soft light, muted colours',
+    );
+    // …and it says what generating would actually do.
+    await expect(dialog.getByText(/Generating with/)).toBeVisible();
+    await expect(dialog.getByText(WORKFLOW_NAME)).toBeVisible();
+    await page.screenshot({ path: 'test-results/57-build-prompt.png' });
+
+    await dialog.getByRole('button', { name: 'Generate' }).click();
+
+    // It queued with the same workflow the Generate screen would have used.
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const gallery = (await (await ctx.get('/api/gallery?limit=10')).json()) as {
+              items: { title: string }[];
+            };
+            return gallery.items[0]?.title ?? '';
+          }),
+        { timeout: 60_000 },
+      )
+      .toContain('a harbour at dawn');
+  });
+
+  /** Rejecting leaves the conversation exactly where it was. */
+  test('carries on chatting when a prompt is rejected', async ({ page }) => {
+    await seedWorkflow();
+    await script(
+      {
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+        },
+      },
+      { content: 'Fair enough — what would you change?' },
+    );
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('build me a prompt');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    await dialog.getByRole('button', { name: 'Reject' }).click();
+
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByText('Fair enough — what would you change?')).toBeVisible({
+      timeout: 30_000,
+    });
+    // Nothing was queued.
+    expect(
+      await withApi(async (ctx) => {
+        const gallery = (await (await ctx.get('/api/gallery?limit=10')).json()) as {
+          items: unknown[];
+        };
+        return gallery.items.length;
+      }),
+    ).toBe(0);
+  });
+
+  /** Blocks arrive one at a time, and only what you keep is saved. */
+  test('keeps the proposed blocks you choose, as edited', async ({ page }) => {
+    await script(
+      {
+        content: 'Three ideas.',
+        toolCall: {
+          name: 'prompt_blocks',
+          arguments: {
+            reason: 'Lighting you keep asking for.',
+            blocks: [
+              { action: 'add', name: 'Golden hour', category: 'Lighting', text: 'warm rim light' },
+              { action: 'add', name: 'Overcast', category: 'Lighting', text: 'flat grey sky' },
+              { action: 'add', name: 'Nonsense', category: 'Lighting', text: 'ignore me' },
+            ],
+          },
+        },
+      },
+      { content: 'Saved.' },
+    );
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('block ideas please');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    await expect(dialog.getByRole('button', { name: 'Keep 3' })).toBeVisible();
+
+    // Drop one, and correct another before keeping it.
+    await dialog.getByRole('button', { name: 'Keep Nonsense' }).click();
+    await expect(dialog.getByRole('button', { name: 'Keep 2' })).toBeVisible();
+
+    await dialog.getByRole('button', { name: 'Edit Overcast' }).click();
+    await dialog.getByRole('textbox', { name: 'Block text' }).fill('flat grey daylight');
+    await page.screenshot({ path: 'test-results/58-blocks-tool.png' });
+
+    await dialog.getByRole('button', { name: 'Keep 2' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    const blocks = await withApi(async (ctx) =>
+      (await (await ctx.get('/api/prompt-blocks')).json()) as { name: string; text: string }[],
+    );
+    expect(blocks.map((block) => block.name).sort()).toEqual(['Golden hour', 'Overcast']);
+    expect(blocks.find((block) => block.name === 'Overcast')?.text).toBe('flat grey daylight');
   });
 });

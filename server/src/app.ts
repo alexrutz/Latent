@@ -21,6 +21,7 @@ import { StateFiles } from './statefile.js';
 import { Endless } from './endless.js';
 import { Sweeper } from './sweeper.js';
 import { WorkflowScanner } from './workflowScan.js';
+import { registerChatRoutes } from './routes/chat.js';
 import { registerConnectionRoutes, toConfig } from './routes/connections.js';
 import type { AppContext } from './routes/context.js';
 import { registerGalleryRoutes } from './routes/gallery.js';
@@ -201,6 +202,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     await auth.guard(request, reply);
   });
 
+  registerChatRoutes(app, ctx);
   registerSystemRoutes(app, ctx);
   registerConnectionRoutes(app, ctx);
   registerWorkflowRoutes(app, ctx);

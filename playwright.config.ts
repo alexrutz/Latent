@@ -2,6 +2,8 @@ import { defineConfig, devices } from '@playwright/test';
 
 const SERVER_PORT = 6173;
 const MOCK_PORT = 8188;
+/** The stand-in for llama.cpp, started alongside the mock ComfyUI. */
+const MOCK_LLAMA_PORT = 8189;
 const BASE_URL = `http://127.0.0.1:${SERVER_PORT}`;
 const CHROMIUM_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE;
 
@@ -47,7 +49,11 @@ export default defineConfig({
       command: 'npm run mock',
       url: `http://127.0.0.1:${MOCK_PORT}/system_stats`,
       reuseExistingServer: !process.env.CI,
-      env: { MOCK_PORT: String(MOCK_PORT), MOCK_STEP_MS: '40' },
+      env: {
+        MOCK_PORT: String(MOCK_PORT),
+        MOCK_LLAMA_PORT: String(MOCK_LLAMA_PORT),
+        MOCK_STEP_MS: '40',
+      },
       stdout: 'ignore',
     },
     {

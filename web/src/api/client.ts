@@ -21,7 +21,10 @@ import type {
   ConnectionInput,
   ConnectionSummary,
   ConnectionTestResult,
+  ChatConversation,
+  ChatConversationDetail,
   EndlessState,
+  ProposedBlock,
   GalleryPage,
   GenerateRequest,
   GenerateResponse,
@@ -385,6 +388,39 @@ export const api = {
   setEndless: (body: GenerateRequest & { enabled: boolean }) =>
     request<EndlessState>('/api/generate/endless', {
       method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  /* ---------------------------------------------------------------- */
+  /* Chat                                                              */
+  /* ---------------------------------------------------------------- */
+
+  chatStatus: () =>
+    request<{ ok: boolean; baseUrl: string; models: string[]; message?: string }>(
+      '/api/chat/status',
+    ),
+
+  chats: () => request<ChatConversation[]>('/api/chat/conversations'),
+
+  createChat: () =>
+    request<ChatConversation>('/api/chat/conversations', { method: 'POST' }),
+
+  chat: (id: string) => request<ChatConversationDetail>(`/api/chat/conversations/${id}`),
+
+  deleteChat: (id: string) =>
+    request<void>(`/api/chat/conversations/${id}`, { method: 'DELETE' }),
+
+  resolveTool: (
+    id: string,
+    body: {
+      messageId: string;
+      decision: 'accepted' | 'rejected';
+      blocks?: ProposedBlock[];
+      note?: string;
+    },
+  ) =>
+    request<{ ok: true; summary: string }>(`/api/chat/conversations/${id}/tool`, {
+      method: 'POST',
       body: JSON.stringify(body),
     }),
 

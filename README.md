@@ -81,6 +81,12 @@ form. Nothing about your ComfyUI setup changes.
   from the whole library or a pool you narrow by hand. Every queued run gets its
   own draw, so a batch of eight is eight different pictures. It has its own
   **Random** tab, because it is a screenful you arrange once and come back to.
+- **A model to talk to.** Point Latent at a local `llama-server` and the **Chat**
+  tab becomes the place you work out what to make: describe a picture in prose,
+  argue about it, show it a photo you like, and then ask for a prompt. Every
+  tool it wants to use is a dialog you approve or refuse — and when it hands you
+  a prompt, **Generate** on that dialog queues it with the settings the Generate
+  screen is holding, so the good idea does not have to be copied anywhere.
 - **Parameter sweeps.** Give any numeric setting a range and an interval; each
   run draws one of the resulting values. Saved together with the prompt setup as
   one named thing, because that is how it is used.
@@ -107,6 +113,8 @@ form. Nothing about your ComfyUI setup changes.
 
 - Node.js 20.11 or newer
 - A running ComfyUI instance the Latent server can reach
+- Optional: a `llama-server` (llama.cpp) the Latent server can reach, for the
+  [Chat](#chatting-with-a-model) tab
 
 ## Quick start
 
@@ -628,10 +636,78 @@ them is one tap rather than eight.
 Loading a setup deliberately does **not** switch variation on or off. That is a
 statement about what to vary, not about whether you want it right now.
 
-## In the gallery
+## Chatting with a model
+
+Deciding *what* to generate is most of the work, and it is the part a phone
+keyboard is worst at. The **Chat** tab connects Latent to a local
+[llama.cpp](https://github.com/ggml-org/llama.cpp) server — `llama-server`, or
+anything else speaking its OpenAI-compatible API — so you can describe what you
+are after in prose, be talked out of it, and end up with a prompt.
+
+Set the address under **Settings → Chat** (the default is
+`http://127.0.0.1:8080`) and press Check; it reports the model it found. Nothing
+else is required — no key, no account, and the conversation never leaves your
+network.
+
+**Thinking is on by default.** Reasoning models are what this is worth doing
+with, and a model that thinks before answering gives noticeably better prompts.
+It arrives folded up under a *Thinking* line you can open, because the answer is
+what you asked for and the working out is not — and it is deliberately left out
+of what gets sent back on the next turn, which is both what the model expects
+and what keeps a long conversation from filling the context with its own
+deliberation. Turn it off in Settings if your model does not do it.
+
+**Show it a picture.** If the model is multimodal — most worth running are —
+the ⊕ button attaches a photo from the device and you can ask what is in it,
+what makes it work, or for a prompt that would produce something like it.
+Images are downscaled to 1024px in the browser before they are sent, because a
+12-megapixel phone photo is minutes of prefill for no gain.
+
+### Tools are dialogs, not actions
+
+The model does not get to do things to your installation quietly. When it wants
+to use a tool the reply stops, the conversation behind it goes out of focus, and
+**one dialog per call** floats over it showing exactly what would happen. You
+accept or you refuse, and refusing is an ordinary turn in the conversation —
+the model is told, and you carry on refining.
+
+**Build a prompt** is the one this module exists for. Ask for a prompt from what
+you have been discussing and you get it in an editable box — with **Reject** and
+**Generate** at the very top, and the settings it would run with listed small
+underneath: workflow, steps, CFG, sampler, size, batch. Generate submits it
+through exactly the path the Generate screen uses, with exactly the values that
+screen is holding, so there is no second set of settings to keep in sync and no
+copying a prompt between two tabs. Reject just continues the conversation.
+
+**Edit the prompt blocks** is the other. Writing a block library by hand is the
+tedious part of [random prompt mode](#random-prompt-mode), so the model can
+propose them: a list arrives with a checkbox each, an **Edit** on every row, and
+a count on the accept button. What gets written is the list *as you edited it* —
+not what was proposed — and anything you unchecked is never touched. It adds,
+updates and removes, so "these four are near-duplicates" is a thing it can fix.
+
+**Saved conversations** are a side effect rather than a feature: every chat is
+kept, listed by its first line, and renameable — but the model has no memory
+across them, and the point of the module is the prompt at the end, not the
+transcript.
+
+## Getting around
+
+Six tabs across the bottom — Generate, Gallery, Favourites, **Chat**, Queue,
+Settings — with Chat fourth of the seven positions, which is the middle, and its
+mark inside a ring so it is findable without reading anything. It is the middle
+because it is the easiest place on a phone to hit one-handed and because it is
+increasingly where a session starts.
+
+Blocks, Random and Monitor sit behind the **⋯** tab, which opens a small menu
+above the bar. They are screens you *set up* and then leave alone for weeks;
+spending an eighth of the bar's width on each of them permanently, and shrinking
+the labels on the ones you use every minute to pay for it, was the wrong trade.
 
 **Tapping the tab you are already on goes back to the top**, the way every other
 phone app behaves. Without it a long gallery scroll is a one-way trip.
+
+## In the gallery
 
 **The blur.** The ◌ button in the gallery header — and the same switch under
 Settings → Display — puts every image in the app heavily out of focus: the grid,
@@ -853,12 +929,14 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 | `shared/` | Types, the form-building engine (`paramSchema.ts`), LoRA tag parsing, the queue's parameter summaries and both random draws (`randomPrompt.ts`, `randomParams.ts`) — pure, no I/O |
 | `server/` | Fastify proxy, ComfyUI client, live event hub, SQLite store, archive, terminal |
 | `server/src/monitor.ts` | The resource and event history behind the Monitor tab |
+| `server/src/chat/llama.ts` | The llama.cpp client: streaming, reasoning, tool schemas |
+| `server/src/routes/chat.ts` | Conversations, the SSE reply stream, and tool decisions |
 | `server/src/statefile.ts` | Mirrors the arrangement to the files above the project |
 | `server/src/sweeper.ts` | Deletes runs nobody kept, once they are old enough |
 | `shared/src/promptMatch.ts` | Matches an image's embedded graph to a stored workflow |
 | `server/src/vault.ts` | Archive encryption: master key, wrapping, unlock on sign-in |
 | `server/src/images/` | A dependency-free PNG decoder/resizer for thumbnails and image sizes |
-| `server/src/mock/` | The mock ComfyUI used for development and tests |
+| `server/src/mock/` | The mock ComfyUI — and a scriptable stand-in for `llama-server` — used for development and tests |
 | `web/` | React + Vite PWA |
 | `e2e/` | Playwright tests |
 

@@ -642,6 +642,8 @@ export interface AppSettings {
    * anything at all — it hands over the settings for the next run.
    */
   queuePolicy: QueuePolicy;
+  /** How the chat module talks to the local language model. */
+  chat: ChatSettings;
   /** Absolute path to a ComfyUI output folder to scan for import. */
   importRoot: string | null;
   /**
@@ -749,3 +751,120 @@ export interface EndlessState {
   /** Why it stopped by itself, when it did. */
   message?: string;
 }
+
+/* ------------------------------------------------------------------ */
+/* Chat                                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Talking to a local llama.cpp server about what to make.
+ *
+ * The reason this is a module rather than a text box: thinking up prompt blocks
+ * by hand takes forever, and describing a picture in words is a conversation
+ * — you say a thing, look at it, say a different thing. The chat is where that
+ * conversation happens, and the tools are how it turns into something the rest
+ * of the app can use.
+ */
+export interface ChatSettings {
+  /** Where llama.cpp is listening. Its OpenAI-compatible routes hang off this. */
+  baseUrl: string;
+  /** Empty means "whatever the server has loaded", which is the usual case. */
+  model: string;
+  temperature: number;
+  /** Ceiling on one reply. 0 leaves it to the server. */
+  maxTokens: number;
+  /**
+   * Ask the model to reason before answering, and show that reasoning.
+   *
+   * On by default: the tools here are asked to make judgements — what belongs
+   * in a prompt, which blocks are worth having — and a model that has thought
+   * about it first is measurably better at both.
+   */
+  thinking: boolean;
+  /** Prepended to every conversation. Empty uses Latent's own. */
+  systemPrompt: string;
+}
+
+export type ChatRole = 'user' | 'assistant' | 'tool';
+
+/** One image on a message, held as a data URI so a conversation is self-contained. */
+export interface ChatAttachment {
+  /** `data:image/png;base64,…` */
+  dataUrl: string;
+  name: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: ChatRole;
+  content: string;
+  /** The model's reasoning, kept apart from the answer. */
+  thinking?: string;
+  attachments?: ChatAttachment[];
+  /** Present on an assistant message that asked for a tool to be run. */
+  toolCall?: ChatToolCall;
+  /** What the user decided about that tool call, once they have. */
+  toolResult?: ChatToolResult;
+  createdAt: number;
+}
+
+export interface ChatConversation {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ChatConversationDetail extends ChatConversation {
+  messages: ChatMessage[];
+}
+
+/* ------------------------------------------------------------------ */
+/* Chat tools                                                          */
+/* ------------------------------------------------------------------ */
+
+export type ChatToolName = 'prompt_blocks' | 'build_prompt';
+
+/** A block the model proposes adding, changing or removing. */
+export interface ProposedBlock {
+  /** Set when changing or removing one that already exists. */
+  id?: string;
+  name: string;
+  category: string;
+  text: string;
+  action: 'add' | 'update' | 'remove';
+}
+
+export interface PromptBlocksCall {
+  tool: 'prompt_blocks';
+  /** Why the model thinks these are worth having. */
+  reason: string;
+  blocks: ProposedBlock[];
+}
+
+export interface BuildPromptCall {
+  tool: 'build_prompt';
+  prompt: string;
+  negativePrompt?: string;
+  /** What the model was going for, in a sentence. */
+  reason: string;
+}
+
+export type ChatToolCall = (PromptBlocksCall | BuildPromptCall) & {
+  /** The id llama.cpp gave it, needed to answer the model. */
+  callId: string;
+};
+
+export interface ChatToolResult {
+  decision: 'accepted' | 'rejected';
+  /** What actually happened, in a sentence the model can read. */
+  summary: string;
+}
+
+/** One frame of a streamed reply. */
+export type ChatStreamEvent =
+  | { type: 'thinking'; text: string }
+  | { type: 'content'; text: string }
+  | { type: 'tool'; call: ChatToolCall }
+  | { type: 'done'; messageId: string }
+  | { type: 'error'; message: string };

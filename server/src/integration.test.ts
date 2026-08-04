@@ -6,6 +6,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
 import type {
+  ChatMessage,
+  ChatStreamEvent,
+  ChatToolCall,
   GalleryPage,
   GenerateResponse,
   GenerationRecord,
@@ -33,6 +36,7 @@ import { buildApp } from './app.js';
 import { Store } from './db.js';
 import { Vault } from './vault.js';
 import { createMockComfy } from './mock/comfy.js';
+import { createMockLlama } from './mock/llama.js';
 import { renderPlaceholder } from './mock/png.js';
 import { withPngText } from './images/png.js';
 
@@ -3211,4 +3215,238 @@ describe('the queue policy', () => {
       await api('/api/queue/interrupt', { method: 'POST' });
     }
   }, 60_000);
+});
+
+/**
+ * The chat module, against a stand-in for llama.cpp.
+ *
+ * Three things are worth pinning down and none of them is the model: that a
+ * reply streams and is stored, that a tool call reaches the client as something
+ * to decide about, and that accepting one actually does the thing — writes the
+ * blocks, or queues the prompt.
+ */
+describe('chat', () => {
+  /** Read a server-sent stream to the end and hand back the events. */
+  const readStream = async (response: Response): Promise<ChatStreamEvent[]> => {
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    return text
+      .split('\n\n')
+      .filter((frame) => frame.startsWith('data:'))
+      .map((frame) => JSON.parse(frame.slice(5).trim()) as ChatStreamEvent);
+  };
+
+  it('streams a reply, keeps the reasoning apart, and stores both', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { baseUrl: url, thinking: true } }),
+      });
+
+      const chat = await json<{ id: string }>(
+        api('/api/chat/conversations', { method: 'POST' }),
+      );
+
+      // Both ways a real build sends reasoning, in one reply.
+      llama.script({
+        reasoning: 'They want something calm.',
+        inlineThinking: ' And blue.',
+        content: 'How about a harbour at dawn?',
+      });
+
+      const events = await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'suggest something' }),
+        }),
+      );
+
+      const said = events
+        .filter((event): event is { type: 'content'; text: string } => event.type === 'content')
+        .map((event) => event.text)
+        .join('');
+      const thought = events
+        .filter((event): event is { type: 'thinking'; text: string } => event.type === 'thinking')
+        .map((event) => event.text)
+        .join('');
+
+      expect(said).toBe('How about a harbour at dawn?');
+      expect(thought).toBe('They want something calm. And blue.');
+      // The `<think>` tags themselves never reach the answer.
+      expect(said).not.toContain('think');
+
+      const stored = await json<{ title: string; messages: ChatMessage[] }>(
+        api(`/api/chat/conversations/${chat.id}`),
+      );
+      expect(stored.title).toBe('suggest something');
+      expect(stored.messages.map((message) => message.role)).toEqual(['user', 'assistant']);
+      expect(stored.messages[1]?.content).toBe('How about a harbour at dawn?');
+      expect(stored.messages[1]?.thinking).toContain('calm');
+
+      // Reasoning is deliberately not fed back — it is working, not record.
+      llama.script({ content: 'Sure.' });
+      await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'again' }),
+        }),
+      );
+      const sent = llama.requests[1] as { messages: { role: string; content: unknown }[] };
+      expect(JSON.stringify(sent.messages)).not.toContain('calm');
+      expect(sent.messages[0]?.role).toBe('system');
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
+  it('turns a block proposal into blocks, keeping only what was kept', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { baseUrl: url } }),
+      });
+      const chat = await json<{ id: string }>(
+        api('/api/chat/conversations', { method: 'POST' }),
+      );
+
+      llama.script({
+        content: 'Here are three.',
+        toolCall: {
+          name: 'prompt_blocks',
+          arguments: {
+            reason: 'Lighting you keep asking for.',
+            blocks: [
+              { action: 'add', name: 'Golden hour', category: 'Lighting', text: 'warm rim light' },
+              { action: 'add', name: 'Overcast', category: 'Lighting', text: 'flat grey sky' },
+              { action: 'add', name: 'Nonsense', category: '', text: 'ignore me' },
+            ],
+          },
+        },
+      });
+
+      const events = await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'block ideas please' }),
+        }),
+      );
+
+      const call = events.find(
+        (event): event is { type: 'tool'; call: ChatToolCall } => event.type === 'tool',
+      );
+      expect(call?.call.tool).toBe('prompt_blocks');
+      const messageId = events.find(
+        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
+      )?.messageId;
+      expect(messageId).toBeTruthy();
+
+      const before = await json<{ id: string }[]>(api('/api/prompt-blocks'));
+
+      // Two of the three, and one of them corrected on the way through.
+      await api(`/api/chat/conversations/${chat.id}/tool`, {
+        method: 'POST',
+        body: JSON.stringify({
+          messageId,
+          decision: 'accepted',
+          blocks: [
+            { action: 'add', name: 'Golden hour', category: 'Lighting', text: 'warm rim light' },
+            { action: 'add', name: 'Overcast', category: 'Lighting', text: 'flat grey daylight' },
+          ],
+        }),
+      });
+
+      const after = await json<{ name: string; text: string }[]>(api('/api/prompt-blocks'));
+      expect(after.length).toBe(before.length + 2);
+      // The edited text is what was saved, not what the model proposed.
+      expect(after.find((block) => block.name === 'Overcast')?.text).toBe('flat grey daylight');
+      expect(after.some((block) => block.name === 'Nonsense')).toBe(false);
+
+      // And the model is told, as a `tool` message it can read.
+      const stored = await json<{ messages: ChatMessage[] }>(
+        api(`/api/chat/conversations/${chat.id}`),
+      );
+      const toolMessage = stored.messages.find((message) => message.role === 'tool');
+      expect(toolMessage?.content).toContain('2 added');
+      expect(
+        stored.messages.find((message) => message.id === messageId)?.toolResult?.decision,
+      ).toBe('accepted');
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
+  it('refuses to decide the same tool call twice', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { baseUrl: url } }),
+      });
+      const chat = await json<{ id: string }>(
+        api('/api/chat/conversations', { method: 'POST' }),
+      );
+
+      llama.script({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a harbour at dawn, soft light', reason: 'Calm and blue.' },
+        },
+      });
+
+      const events = await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'build me a prompt' }),
+        }),
+      );
+      const messageId = events.find(
+        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
+      )?.messageId;
+
+      const first = await api(`/api/chat/conversations/${chat.id}/tool`, {
+        method: 'POST',
+        body: JSON.stringify({ messageId, decision: 'rejected' }),
+      });
+      expect(first.status).toBe(200);
+
+      // A double tap, or two phones, must not queue the same thing twice.
+      const second = await api(`/api/chat/conversations/${chat.id}/tool`, {
+        method: 'POST',
+        body: JSON.stringify({ messageId, decision: 'accepted' }),
+      });
+      expect(second.status).toBe(409);
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
+  it('says plainly when the model server is not there', async () => {
+    await api('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ chat: { baseUrl: 'http://127.0.0.1:1' } }),
+    });
+
+    const status = await json<{ ok: boolean; message?: string }>(api('/api/chat/status'));
+    expect(status.ok).toBe(false);
+    expect(status.message).toBeTruthy();
+
+    const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+    const response = await api(`/api/chat/conversations/${chat.id}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ content: 'hello' }),
+    });
+
+    // The stream opens and reports the failure inside it, rather than a bare
+    // 502 the chat screen would have to translate.
+    const events = await readStream(response);
+    expect(events.some((event) => event.type === 'error')).toBe(true);
+  }, 30_000);
 });
