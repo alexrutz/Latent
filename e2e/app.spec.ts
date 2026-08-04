@@ -716,6 +716,9 @@ test.describe('the phone ergonomics pass', () => {
     await open(page, '/');
 
     const chips = page.getByRole('button', { name: /^(Steps|CFG|Sampler|Scheduler|Denoise)/ });
+    // `count()` does not wait, and the form arrives after the tab bar does.
+    await chips.first().waitFor({ state: 'visible', timeout: 20_000 });
+
     const boxes = [];
     for (let index = 0; index < (await chips.count()); index += 1) {
       const box = await chips.nth(index).boundingBox();
