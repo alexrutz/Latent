@@ -714,3 +714,20 @@ export const DEFAULT_GRID_SETTINGS: GridSettings = {
   viewerParams: [],
   overlayLabels: true,
 };
+
+/**
+ * Endless generation: keep going until told to stop.
+ *
+ * Held on the server rather than driven from the browser, because a phone locks
+ * its screen inside a minute and a suspended tab cannot top up a queue. See
+ * `server/src/endless.ts`.
+ */
+export interface EndlessState {
+  enabled: boolean;
+  /** The settings the next run will use. */
+  request: GenerateRequest | null;
+  /** How many runs it has queued since it was switched on. */
+  queued: number;
+  /** Why it stopped by itself, when it did. */
+  message?: string;
+}

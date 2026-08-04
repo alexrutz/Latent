@@ -218,6 +218,29 @@ export const uiFormatWorkflow = {
   version: 0.4,
 };
 
+/**
+ * A workflow that names its nodes by the convention.
+ *
+ * `Prompt` is the description of the picture and `Lora Input` is the field that
+ * holds `<lora:…>` tags — stated outright rather than left to be inferred from
+ * class names and wiring, which is what the convention is for.
+ */
+export const sd15WithLoraInput = {
+  ...sd15Txt2Img,
+  '6': {
+    ...sd15Txt2Img['6'],
+    _meta: { title: 'Prompt' },
+  },
+  '11': {
+    class_type: 'CLIPTextEncode',
+    inputs: {
+      text: '<lora:pixel_art_xl.safetensors:0.8>',
+      clip: ['4', 1],
+    },
+    _meta: { title: 'Lora Input' },
+  },
+};
+
 export const workflowFixtures = {
   sd15Txt2Img,
   sdxlBaseRefiner,

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { FastifyInstance } from 'fastify';
 
 import type { UploadImageResponse } from '@latent/shared';
@@ -58,7 +60,7 @@ export function registerInputImageRoutes(app: FastifyInstance, ctx: AppContext):
     }
 
     try {
-      const result = await ctx.orchestrator.client.uploadImage(file.data, uniqueName(file.name), {
+      const result = await ctx.orchestrator.client.uploadImage(file.data, stableName(file.data, file.name), {
         contentType: contentTypeFor(file.name),
         type: 'input',
       });
@@ -87,10 +89,17 @@ function contentTypeFor(filename: string): string {
 }
 
 /**
- * Prefix with a timestamp so two folders holding `photo.png` do not overwrite
- * each other inside ComfyUI's input directory.
+ * A name derived from the bytes, not from the clock.
+ *
+ * It used to carry a timestamp, so choosing the same picture twice put two
+ * copies in ComfyUI's input directory — and since that directory *is* the
+ * folder being browsed, they showed up in the picker as duplicates of what you
+ * had just chosen. Naming by content means picking the same image again
+ * resolves to the same file, and the upload (which already overwrites) is a
+ * no-op rather than another copy.
  */
-function uniqueName(original: string): string {
+function stableName(data: Buffer, original: string): string {
   const safe = (original || 'input.png').replace(/[^\w.-]+/g, '_').slice(-80);
-  return `latent_${Date.now().toString(36)}_${safe}`;
+  const digest = createHash('sha256').update(data).digest('hex').slice(0, 12);
+  return `latent_${digest}_${safe}`;
 }

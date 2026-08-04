@@ -130,3 +130,41 @@ function formatValue(value: WidgetValue | undefined): string {
 export function primaryParams(params: ParamSummaryItem[]): ParamSummaryItem[] {
   return params.filter((item) => item.primary);
 }
+
+/**
+ * The naming convention for "preview as text" nodes.
+ *
+ * A workflow can print several things — a rewritten prompt, a caption, the
+ * reasoning that produced either — and until the node says which is which they
+ * are an undifferentiated list of paragraphs. Titling one
+ * `rewrite prompt [thinking]` says both what it is and which half of a model's
+ * output it carries, so the gallery can label it rather than dumping it.
+ */
+export type TextOutputKind = 'thinking' | 'answer';
+
+export interface TextOutputName {
+  /** The part before the bracket, e.g. `rewrite prompt`. */
+  name: string;
+  /** `null` when the title follows no convention, which is fine. */
+  kind: TextOutputKind | null;
+}
+
+export function parseTextOutputName(title: string): TextOutputName {
+  const match = /^(.*?)\s*\[(thinking|answer)\]\s*$/i.exec(title.trim());
+  if (!match) return { name: title.trim(), kind: null };
+  return {
+    name: (match[1] ?? '').trim() || title.trim(),
+    kind: match[2]!.toLowerCase() as TextOutputKind,
+  };
+}
+
+/**
+ * A label for one text output: the name, with the kind only when there is one.
+ *
+ * `rewrite prompt [thinking]` reads as "rewrite prompt · thinking" — the same
+ * information without the punctuation of a filename.
+ */
+export function textOutputLabel(title: string): string {
+  const parsed = parseTextOutputName(title);
+  return parsed.kind ? `${parsed.name} · ${parsed.kind}` : parsed.name;
+}

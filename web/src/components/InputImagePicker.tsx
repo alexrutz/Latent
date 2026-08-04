@@ -33,15 +33,57 @@ export function InputImagePicker({
   const [filter, setFilter] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Which folder is open, as a relative path. Empty is the root.
+   *
+   * A reference library is not a heap: sketches, masks, photographs of the same
+   * subject belong apart, and the folders they are already in on disk are the
+   * categorisation — there is no reason to invent a second one inside Latent.
+   */
+  const [folder, setFolder] = useState('');
 
   // Only scanned when the sheet is actually open — the folder can be large.
   const scan = useQuery({ queryKey: ['input-images'], queryFn: api.inputImages, enabled: open });
 
+  /*
+   * Filtering searches the whole tree, browsing shows one level.
+   *
+   * Those are different questions — "where is the picture called sketch-3" and
+   * "what is in this folder" — and answering the first one inside the current
+   * folder only would mean navigating to find something you already named.
+   */
+  const searching = filter.trim() !== '';
+
   const files = useMemo(() => {
     const needle = filter.trim().toLowerCase();
     const all = scan.data?.files ?? [];
-    return needle ? all.filter((file: InputImage) => file.path.toLowerCase().includes(needle)) : all;
-  }, [filter, scan.data]);
+    if (needle) return all.filter((file: InputImage) => file.path.toLowerCase().includes(needle));
+    const prefix = folder ? `${folder}/` : '';
+    return all.filter(
+      (file: InputImage) =>
+        file.path.startsWith(prefix) && !file.path.slice(prefix.length).includes('/'),
+    );
+  }, [filter, folder, scan.data]);
+
+  /** Immediate subfolders of the open one, with how much is under each. */
+  const folders = useMemo(() => {
+    if (searching) return [];
+    const prefix = folder ? `${folder}/` : '';
+    const counts = new Map<string, number>();
+    for (const file of scan.data?.files ?? []) {
+      if (!file.path.startsWith(prefix)) continue;
+      const rest = file.path.slice(prefix.length);
+      const slash = rest.indexOf('/');
+      if (slash < 0) continue;
+      const name = rest.slice(0, slash);
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([name, images]) => ({ name, images }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [folder, scan.data, searching]);
+
+  const crumbs = folder ? folder.split('/') : [];
 
   const use = async (file: InputImage) => {
     setBusy(file.path);
@@ -80,6 +122,7 @@ export function InputImagePicker({
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-muted">
                 {files.length} image{files.length === 1 ? '' : 's'}
+                {searching ? ' matching' : folder ? ` in ${folder}` : ''}
                 {scan.data.truncated && ' (first 2000)'}
               </span>
             </div>
@@ -93,6 +136,48 @@ export function InputImagePicker({
             />
 
             <ErrorNote>{error}</ErrorNote>
+
+            {/* Where you are, as something tappable. */}
+            {!searching && crumbs.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1 text-xs">
+                <button type="button" onClick={() => setFolder('')} className="text-accent">
+                  all
+                </button>
+                {crumbs.map((crumb, index) => (
+                  <span key={`${crumb}-${index}`} className="flex items-center gap-1">
+                    <span aria-hidden className="text-muted">
+                      ›
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setFolder(crumbs.slice(0, index + 1).join('/'))}
+                      className={index === crumbs.length - 1 ? 'text-body' : 'text-accent'}
+                    >
+                      {crumb}
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {folders.length > 0 && (
+              <ul className="grid grid-cols-2 gap-1.5">
+                {folders.map((entry) => (
+                  <li key={entry.name}>
+                    <button
+                      type="button"
+                      onClick={() => setFolder(folder ? `${folder}/${entry.name}` : entry.name)}
+                      className="flex w-full items-center justify-between gap-2 rounded-lg border border-line bg-surface px-2.5 py-2 text-left text-xs active:bg-surface-2"
+                    >
+                      <span className="min-w-0 truncate">{entry.name}</span>
+                      <span className="shrink-0 text-[10px] text-muted tabular-nums">
+                        {entry.images}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
 
             <ul className="grid grid-cols-3 gap-2">
               {files.map((file: InputImage) => (
@@ -141,7 +226,11 @@ export function InputImagePicker({
               <p className="py-6 text-center text-sm text-muted">
                 {scan.data.files.length === 0
                   ? 'That folder holds no images.'
-                  : `Nothing matches “${filter}”.`}
+                  : searching
+                    ? `Nothing matches “${filter}”.`
+                    : folders.length > 0
+                      ? 'Nothing here directly — open one of the folders above.'
+                      : 'This folder is empty.'}
               </p>
             )}
           </>

@@ -8,6 +8,7 @@ import {
   img2img,
   sd15Txt2Img,
   sd15Txt2ImgUi,
+  sd15WithLoraInput,
   uiFormatWorkflow,
   withTextPreview,
 } from '../shared/src/fixtures/workflows.js';
@@ -365,28 +366,37 @@ test.describe('the phone-specific fixes', () => {
     await page.screenshot({ path: 'test-results/08-presets.png' });
   });
 
-  test('edits LoRA tags structurally instead of by hand', async ({ page }) => {
+  /**
+   * LoRA tags belong to the field that exists to hold them.
+   *
+   * They used to be offered under the prompt as well, which put them somewhere
+   * the workflow may not read and made two controls responsible for one value.
+   */
+  test('edits LoRA tags in the LoRA field, and nowhere else', async ({ page }) => {
+    await resetState();
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'with loras', graph: sd15WithLoraInput } }),
+    );
+
     await open(page, '/');
 
-    const prompt = page.getByPlaceholder('Describe the image…');
-    await prompt.fill('a castle <lora:pixel_art_xl.safetensors:0.8>');
+    // Not under the prompt.
+    await expect(page.getByPlaceholder('Describe the image…')).toBeVisible();
+    await expect(page.getByRole('button', { name: '+ Add a LoRA' })).toHaveCount(0);
 
-    // The tag is lifted out of the text into a real control, and the prompt
-    // textarea still shows the literal text so nothing looks swallowed.
+    // The node titled `Lora Input` is the LoRA field, whatever its class.
     await expect(page.getByText('pixel_art_xl', { exact: true })).toBeVisible();
-    await expect(prompt).toHaveValue('a castle <lora:pixel_art_xl.safetensors:0.8>');
 
-    // Adjusting the strength rewrites the tag, leaving the prose intact.
+    // Adjusting the strength rewrites the tag it holds.
     const strength = page.getByRole('textbox', { name: 'pixel_art_xl.safetensors strength' });
     await strength.fill('0,45');
     await strength.blur();
-    await expect(prompt).toHaveValue('a castle <lora:pixel_art_xl.safetensors:0.45>');
+    await expect(page.getByText('<lora:pixel_art_xl.safetensors:0.45>')).toBeVisible();
 
     await page.screenshot({ path: 'test-results/09-loras.png' });
 
-    // Removing it takes the tag back out and leaves the prose.
     await page.getByRole('button', { name: 'Remove pixel_art_xl.safetensors' }).click();
-    await expect(prompt).toHaveValue('a castle');
+    await expect(page.getByRole('button', { name: 'No LoRAs — tap to add one' })).toBeVisible();
   });
 
   test('lists connections and offers vast.ai-shaped authentication', async ({ page }) => {
@@ -1204,12 +1214,18 @@ test.describe('picking inputs and straightening them', () => {
 
     await page.getByRole('button', { name: 'From folder' }).click();
     await expect(page.getByRole('heading', { name: 'From the input folder' })).toBeVisible();
-    await expect(page.getByText('2 images')).toBeVisible();
 
-    // Subfolders are included, and the grid loads previews only.
+    // One level at a time: the root holds one picture and one folder.
+    await expect(page.getByText('1 image')).toBeVisible();
+    await expect(page.getByRole('img', { name: 'harbour.png' })).toBeVisible();
+    await expect(page.getByRole('img', { name: 'sketch.png' })).toHaveCount(0);
+
+    await page.getByRole('button', { name: /^nested/ }).click();
     await expect(page.getByRole('img', { name: 'sketch.png' })).toBeVisible();
     await page.screenshot({ path: 'test-results/23-input-folder.png' });
 
+    // Back up, and take the one at the top.
+    await page.getByRole('button', { name: 'all', exact: true }).click();
     await page.getByRole('img', { name: 'harbour.png' }).click();
 
     // The chosen file lands in ComfyUI's input directory under its own name.
@@ -1375,8 +1391,11 @@ test.describe('living in the gallery', () => {
     await page.locator('img[alt*="tap to close"]').first().click();
     await expect(page.getByRole('button', { name: 'Details' })).toBeVisible();
 
+    // The middle of the picture: the top-left corner is the close button now
+    // that the chrome floats over a full-bleed image.
     const stage = page.locator('div.touch-none').first();
-    await stage.click({ position: { x: 40, y: 40 } });
+    const box = await stage.boundingBox();
+    await page.mouse.click(box!.x + box!.width / 2, box!.y + box!.height / 2);
 
     // Deferred by the double-tap window, so give it a moment.
     await expect(page.getByRole('button', { name: 'Details' })).toBeHidden({ timeout: 5_000 });
@@ -2218,5 +2237,157 @@ test.describe('the fourteenth wave', () => {
         return worst;
       });
     expect(overflow).toBeLessThanOrEqual(1);
+  });
+});
+
+/**
+ * Wave fifteen: the picture gets the whole screen, generation can be left
+ * running, and the form editor's order finally reaches the form.
+ */
+test.describe('the fifteenth wave', () => {
+  test('gives the picture the whole screen with the actions floating on it', async ({ page }) => {
+    await resetState();
+    await seedWorkflow();
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a pier at dawn');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await dismissResult(page);
+
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    const thumb = page.locator('main img').first();
+    await expect(thumb).toBeVisible({ timeout: 60_000 });
+    await thumb.click();
+
+    const viewport = page.viewportSize()!;
+    const stage = page.locator('div.touch-none').first();
+    const box = await stage.boundingBox();
+
+    // The image area is the display, not what is left between two bars.
+    expect(box!.height).toBeGreaterThan(viewport.height * 0.95);
+
+    // …and the actions sit on top of it rather than below.
+    const favourite = await page.getByRole('button', { name: 'Favourite' }).boundingBox();
+    expect(favourite!.y).toBeGreaterThan(box!.y);
+    expect(favourite!.y).toBeLessThan(box!.y + box!.height);
+    await page.screenshot({ path: 'test-results/49-viewer-full-bleed.png' });
+  });
+
+  /**
+   * The point of the mode: the queue keeps refilling itself, and Generate
+   * becomes a dial rather than a button.
+   */
+  test('keeps generating until stopped', async ({ page }) => {
+    await resetState();
+    await seedWorkflow();
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('endless from the phone');
+
+    await page.getByRole('button', { name: 'Endless generation' }).click();
+    await expect(page.getByText(/Generating until stopped/)).toBeVisible();
+    // Generate stops queueing and starts updating.
+    await expect(page.getByRole('button', { name: 'Update' })).toBeVisible();
+    await page.screenshot({ path: 'test-results/50-endless.png' });
+
+    // Nobody taps anything, and pictures keep arriving.
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const gallery = (await (await ctx.get('/api/gallery?limit=50')).json()) as {
+              items: unknown[];
+            };
+            return gallery.items.length;
+          }),
+        { timeout: 90_000 },
+      )
+      .toBeGreaterThanOrEqual(2);
+
+    // A finished run presents itself over everything, as it should — put it
+    // away before reaching for the switch underneath.
+    await dismissResult(page);
+    await page.getByRole('button', { name: 'Endless generation' }).click();
+    await expect(page.getByText(/Generating until stopped/)).toHaveCount(0);
+    await withApi((ctx) => ctx.post('/api/queue/interrupt'));
+  });
+
+  /** Dragging in the editor has to move the field on the screen it edits. */
+  test('rearranges the generation section, not only the editor list', async ({ page }) => {
+    await resetState();
+    await seedWorkflow();
+
+    await open(page, '/settings');
+    await page.getByRole('button', { name: 'Edit form' }).click();
+
+    // Move the prompt below its neighbour and check the Generate screen agrees.
+    const rows = page.locator('[data-field]');
+    const before = await rows.evaluateAll((all) =>
+      all.map((row) => row.getAttribute('data-field')),
+    );
+    const moved = before[0] as string;
+    const target = before[1] as string;
+
+    const handle = page.locator(`[data-field="${moved}"]`).getByRole('button', { name: /^Reorder/ });
+    await handle.scrollIntoViewIfNeeded();
+    const grip = await handle.boundingBox();
+    const fromRow = await page.locator(`[data-field="${moved}"]`).boundingBox();
+    const toRow = await page.locator(`[data-field="${target}"]`).boundingBox();
+
+    const delta = toRow!.y + toRow!.height / 2 - (fromRow!.y + fromRow!.height / 2);
+    const x = grip!.x + grip!.width / 2;
+    const y = grip!.y + grip!.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x, y + delta, { steps: 8 });
+    await page.mouse.move(x, y + delta + 1);
+    await page.mouse.up();
+
+    await expect
+      .poll(async () => rows.evaluateAll((all) => all.map((r) => r.getAttribute('data-field'))))
+      .toEqual([target, moved, ...before.slice(2)]);
+
+    await page.getByRole('button', { name: 'Done' }).click();
+    await page.getByRole('link', { name: 'Generate' }).click();
+
+    /*
+     * The two fields, on the Generate screen, in the order just set. This is
+     * the assertion the old bucketing-by-role rendering could never satisfy:
+     * it kept its own fixed sequence whatever the editor said.
+     */
+    const promptBox = await page.getByPlaceholder('Describe the image…').boundingBox();
+    const negativeBox = await page.getByPlaceholder('What to avoid…').boundingBox();
+    expect(promptBox!.y).toBeGreaterThan(negativeBox!.y);
+    await page.screenshot({ path: 'test-results/51-form-order.png' });
+  });
+
+  /** Squares read as one scale; circles read as a scatter of beads. */
+  test('draws the point line as boxes under the Generate button', async ({ page }) => {
+    await resetState();
+    await seedWorkflow();
+    await open(page, '/settings');
+
+    await page.getByRole('button', { name: 'Edit form' }).click();
+    const row = page.locator('[data-field="3.steps"]');
+    await row.getByRole('button', { name: 'Points' }).click();
+    await row.getByRole('textbox', { name: /points from/ }).fill('20');
+    await row.getByRole('textbox', { name: /points to/ }).fill('40');
+    await row.getByRole('textbox', { name: /points step/ }).fill('10');
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    await page.getByRole('link', { name: 'Generate' }).click();
+    const point = page.getByRole('button', { name: /^Steps 20$/ });
+    await expect(point).toBeVisible();
+
+    const radius = await point.evaluate((element) => getComputedStyle(element).borderTopLeftRadius);
+    // A box, not a pill: well under half the 32px height.
+    expect(Number.parseFloat(radius)).toBeLessThan(10);
+
+    // And below the Generate button in the stacking order, not over it.
+    const generate = page.getByRole('button', { name: /^Generate/ });
+    const box = await generate.boundingBox();
+    const onTop = await page.evaluate(
+      ({ x, y }) => document.elementFromPoint(x, y)?.closest('button')?.textContent ?? '',
+      { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 },
+    );
+    expect(onTop).toMatch(/Generate/);
   });
 });

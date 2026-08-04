@@ -3,6 +3,7 @@ import type { ParamSchema, ParamValues } from '@latent/shared';
 import type { Archive } from '../archive.js';
 import type { Auth } from '../auth.js';
 import type { Config } from '../config.js';
+import type { Endless } from '../endless.js';
 import type { Store } from '../db.js';
 import type { Importer } from '../importer.js';
 import type { InputLibrary } from '../inputLibrary.js';
@@ -28,6 +29,8 @@ export interface AppContext {
   sweeper: Sweeper;
   /** Reads every workflow saved in the ComfyUI installation. */
   workflowScanner: WorkflowScanner;
+  /** Keeps the queue fed while endless generation is switched on. */
+  endless: Endless;
 }
 
 /**

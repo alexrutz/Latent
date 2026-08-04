@@ -3051,3 +3051,85 @@ describe('re-importing after the database is thrown away', () => {
     }
   }, 40_000);
 });
+
+/**
+ * Generating until told to stop.
+ *
+ * It runs on the server because a phone locks its screen inside a minute and a
+ * suspended tab cannot top up a queue. The two things worth pinning down: it
+ * keeps queueing without anybody asking, and "Generate" while it is on changes
+ * the settings rather than adding to the queue.
+ */
+describe('endless generation', () => {
+  it('keeps the queue fed, and takes new settings for the next run', async () => {
+    // `/api/workflows` is summaries; the graph comes with the detail.
+    const summaries = await json<{ id: string }[]>(api('/api/workflows'));
+    let workflow: WorkflowDetail | undefined;
+    for (const summary of summaries) {
+      const detail = await json<WorkflowDetail>(api(`/api/workflows/${summary.id}`));
+      if (detail.graph['6']) {
+        workflow = detail;
+        break;
+      }
+    }
+    expect(workflow).toBeDefined();
+
+    const before = await json<GalleryPage>(api('/api/gallery?limit=100'));
+
+    await api('/api/generate/endless', {
+      method: 'PUT',
+      body: JSON.stringify({
+        workflowId: workflow!.id,
+        values: { '6.text': 'endless one' },
+        randomizeSeeds: true,
+        batchCount: 1,
+        enabled: true,
+      }),
+    });
+
+    try {
+      // Left alone, it queues runs by itself — more than the one a tap would.
+      const queuedTwo = await waitFor(async () => {
+        const gallery = await json<GalleryPage>(api('/api/gallery?limit=100'));
+        const made = gallery.items.filter((item) => item.title === 'endless one');
+        return made.length >= 2 ? made.length : null;
+      }, 60_000);
+      expect(queuedTwo).toBeGreaterThanOrEqual(2);
+
+      const state = await json<{ enabled: boolean; queued: number }>(
+        api('/api/generate/endless'),
+      );
+      expect(state.enabled).toBe(true);
+      expect(state.queued).toBeGreaterThanOrEqual(2);
+
+      // Changing the settings does not queue anything itself; the next run uses them.
+      await api('/api/generate/endless', {
+        method: 'PUT',
+        body: JSON.stringify({
+          workflowId: workflow!.id,
+          values: { '6.text': 'endless two' },
+          randomizeSeeds: true,
+          batchCount: 1,
+          enabled: true,
+        }),
+      });
+
+      const switched = await waitFor(async () => {
+        const gallery = await json<GalleryPage>(api('/api/gallery?limit=100'));
+        return gallery.items.some((item) => item.title === 'endless two') || null;
+      }, 60_000);
+      expect(switched).toBe(true);
+    } finally {
+      await api('/api/generate/endless', {
+        method: 'PUT',
+        body: JSON.stringify({ workflowId: workflow!.id, values: {}, enabled: false }),
+      });
+      await api('/api/queue/interrupt', { method: 'POST' });
+    }
+
+    // Switched off, it stops adding to the gallery.
+    const stopped = await json<{ enabled: boolean }>(api('/api/generate/endless'));
+    expect(stopped.enabled).toBe(false);
+    expect(before.items.length).toBeGreaterThanOrEqual(0);
+  }, 120_000);
+});

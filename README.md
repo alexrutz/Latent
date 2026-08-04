@@ -395,6 +395,13 @@ phone, which is what makes picking a 12 MP photo cost one small request instead
 of a download and a re-upload. The grid itself only ever loads generated
 thumbnails.
 
+**Folders are the categories.** The picker walks the tree one level at a time,
+with a count on each folder and a breadcrumb back out — a reference library is
+sketches and masks and photographs of one subject, and the folders they are
+already in on disk are the categorisation. Typing in the filter searches the
+whole tree instead, because "where is the one called sketch-3" is a different
+question from "what is in here".
+
 **Edit** on a picture is the opt-in path: only then is the original pulled down,
 so you can crop or straighten it first. The result is uploaded like any other
 edited photo.
@@ -448,6 +455,51 @@ description — it is part of every request you make, and re-tapping it each tim
 is exactly the tedium the block library exists to remove. It is applied on the
 server at submit time, so it lands on a drawn prompt as surely as a typed one,
 and text that is already there is never doubled.
+
+## Endless generation
+
+The ∞ next to Generate keeps the queue fed until you switch it off. With the
+prompt drawn from blocks and parameters varied per run, every picture is a
+different one, and this is the difference between watching that happen and
+tapping Generate eight times.
+
+While it is on, **Generate becomes Update**: it queues nothing and hands over
+what is on screen, and the *next* run — the one after whatever is already in
+flight — uses it. Change the prompt, watch the change arrive a picture later,
+change it again. Queueing as well would put a batch in front of the change.
+
+It runs on the server, and it has to: a phone locks its screen inside a minute,
+the browser suspends the tab, and a loop in the client would stop with it —
+leaving the GPU you are renting idle for exactly as long as you were not looking
+at it. Only one batch is ever queued at a time, which is what makes a settings
+change take effect on the next picture rather than in ten minutes. A run that
+fails twice in a row switches the mode off and says why, rather than filling the
+gallery with failures at one every two seconds.
+
+## Telling Latent what a node is
+
+Latent works out which input is the prompt, which is the LoRA field and which is
+a plain setting by looking at node classes, input names and wiring. For a stock
+workflow that is right. For a custom node nobody anticipated it cannot be, and
+no amount of heuristic will change that — so a workflow can simply **say**:
+
+| Node title | What it means |
+| --- | --- |
+| `Prompt` | This is the description of the picture. |
+| `Negative prompt` | This is what to avoid. |
+| `Lora Input` | This field holds `<lora:…>` tags. |
+| `<name> [thinking]` | A text output carrying a model's reasoning. |
+| `<name> [answer]` | A text output carrying its answer. |
+
+A title beats every inference below it. `rewrite prompt [thinking]` and
+`rewrite prompt [answer]` are two outputs of one step, and the gallery labels
+them as such instead of listing two anonymous paragraphs. Everything else keeps
+being guessed at, exactly as before — the convention is for the cases guessing
+gets wrong.
+
+**LoRA tags belong to the LoRA field.** They are no longer offered under the
+prompt: putting them there wrote them somewhere the workflow may never read, and
+made two controls responsible for one value.
 
 ## Random prompt mode
 
@@ -555,6 +607,12 @@ Anything rated, kept or favourited stays, and one of those anywhere in a run
 keeps the whole run — deleting three of four frames from a batch would throw
 away the comparison that made the fourth worth keeping. Imported folders are
 never touched: that is somebody's existing library, not scratch space.
+
+**The picture gets the whole screen.** The header and the action bar float over
+it rather than taking their height out of the middle — a viewer that letterboxes
+the image between two black strips is showing you less of the thing you opened.
+The bar is translucent with the picture behind it blurred, so the composition
+stays readable underneath while the labels on top stay legible.
 
 **Details open when you tap them.** The parameter list cuts each value to a
 line — a prompt is both the value you most want to read here and the one least
@@ -667,6 +725,11 @@ what makes straightening a one-slider job rather than a slider plus a manual
 trim. Anything still outside the crop is filled black rather than left
 transparent: a transparent PNG becomes an alpha mask inside ComfyUI, which is not
 what anyone means by "straighten".
+
+**Pinch to zoom**, or tap − and +. There is no separate zoom to keep in step
+with anything: keeping less of the picture *is* looking at it more closely, so
+zooming shrinks the crop box about its own centre and the result is exactly what
+the box encloses.
 
 Output is capped at 2048px on the longest edge, and **Original** skips the canvas
 entirely when the picture was already right.

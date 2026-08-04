@@ -267,7 +267,16 @@ export function ErrorNote({ children }: { children: ReactNode }) {
   return (
     <p
       role="alert"
-      className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-sm text-danger"
+      /*
+       * Wraps anywhere, and never widens what it sits in.
+       *
+       * The messages that land here are ComfyUI's, and ComfyUI's are node
+       * names, file paths and stack frames — long runs with nothing a normal
+       * line break can use. One of those in the pinned footer made the footer
+       * wider than the screen, and from there the whole page could be dragged
+       * sideways off it.
+       */
+      className="max-w-full rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-sm break-words text-danger [overflow-wrap:anywhere]"
     >
       {children}
     </p>

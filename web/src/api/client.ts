@@ -21,6 +21,7 @@ import type {
   ConnectionInput,
   ConnectionSummary,
   ConnectionTestResult,
+  EndlessState,
   GalleryPage,
   GenerateRequest,
   GenerateResponse,
@@ -377,6 +378,15 @@ export const api = {
 
   generate: (body: GenerateRequest) =>
     request<GenerateResponse>('/api/generate', { method: 'POST', body: JSON.stringify(body) }),
+
+  /** Endless generation: what the next run will use, and whether it is running. */
+  endless: () => request<EndlessState>('/api/generate/endless'),
+
+  setEndless: (body: GenerateRequest & { enabled: boolean }) =>
+    request<EndlessState>('/api/generate/endless', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
 
   queue: () => request<QueueState>('/api/queue'),
 

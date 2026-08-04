@@ -18,6 +18,7 @@ import { loadConfig, type Config } from './config.js';
 import { Store } from './db.js';
 import { Orchestrator } from './orchestrator.js';
 import { StateFiles } from './statefile.js';
+import { Endless } from './endless.js';
 import { Sweeper } from './sweeper.js';
 import { WorkflowScanner } from './workflowScan.js';
 import { registerConnectionRoutes, toConfig } from './routes/connections.js';
@@ -139,6 +140,9 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
 
   const orchestrator = new Orchestrator(store, resolveConnection(store, config, app), app.log);
   const workflowScanner = new WorkflowScanner(store, orchestrator, stateFiles);
+  // The context is built below and the runner needs it, so it is handed a
+  // getter rather than the object — a cycle broken by a closure, not a cast.
+  const endless = new Endless(store, orchestrator, () => ctx, app.log);
 
   // With the password fixed in the environment there is nobody to wait for, so
   // the archive can be unsealed at boot. Otherwise it stays locked until the
@@ -157,6 +161,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     stateFiles,
     sweeper,
     workflowScanner,
+    endless,
   };
 
   /*
@@ -253,6 +258,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   app.addHook('onClose', async () => {
     await orchestrator.stop();
     stateFiles.stop();
+    endless.stop();
     sweeper.stop();
     vault.lock();
     store.close();

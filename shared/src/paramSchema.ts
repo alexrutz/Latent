@@ -177,8 +177,14 @@ function findTextSources(workflow: ApiWorkflow, startNodeId: string, maxDepth = 
     const node = workflow[current.id];
     if (!node) continue;
 
+    /*
+     * A node that has said what it is does not get guessed about. `Lora Input`
+     * sits in the conditioning chain like a prompt node and is not one, and the
+     * same goes for a LoRA loader whatever it is titled.
+     */
+    const claimed = TITLE_ROLES[(node._meta?.title ?? '').trim().toLowerCase()];
     const hasEditableText =
-      // A LoRA loader in the conditioning chain is wiring, not a prompt source.
+      claimed !== 'lora_text' &&
       !isLoraNodeClass(node.class_type) &&
       Object.entries(node.inputs ?? {}).some(
         ([name, value]) => typeof value === 'string' && (name === 'text' || name === 'prompt'),
@@ -264,6 +270,31 @@ function classifyPrompts(workflow: ApiWorkflow): PromptClassification {
 }
 
 /**
+ * Titles that say outright what a node is for.
+ *
+ * Every heuristic in this file is an inference from class names, input names
+ * and wiring, and inference has a ceiling: a workflow can always be built in a
+ * way none of it anticipates. A title is not an inference. Name the node
+ * `Prompt` and that input *is* the prompt, whatever it is wired to and whatever
+ * the node is called; name one `Lora Input` and it is the LoRA field. The
+ * heuristics still run for every workflow that says nothing.
+ */
+const TITLE_ROLES: Record<string, ParamRole> = {
+  prompt: 'prompt',
+  'negative prompt': 'negative_prompt',
+  'lora input': 'lora_text',
+};
+
+/** Input names that hold a node's own text, as opposed to a wired value. */
+const TEXT_INPUTS = new Set(['text', 'prompt', 'string', 'value']);
+
+/** The role a node's title claims, if it claims one. */
+export function roleFromTitle(nodeTitle: string, inputName: string): ParamRole | null {
+  if (!TEXT_INPUTS.has(inputName)) return null;
+  return TITLE_ROLES[nodeTitle.trim().toLowerCase()] ?? null;
+}
+
+/**
  * A node whose job is loading LoRAs.
  *
  * It matters because several of them carry a *text* input — trigger words, a
@@ -295,7 +326,12 @@ function detectRole(
   nodeId: string,
   prompts: PromptClassification,
   literal: WidgetValue,
+  nodeTitle: string,
 ): ParamRole {
+  // A title that says what the node is beats everything below it.
+  const claimed = roleFromTitle(nodeTitle, inputName);
+  if (claimed) return claimed;
+
   // Before either prompt check: a LoRA loader's own text is trigger words or a
   // tag string, not the description of the picture. Deliberately only `text`
   // and `prompt` — `lora_name` is a combo of installed files and stays one.
@@ -577,7 +613,15 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
       // Known node, but the input isn't in its definition — a stale export or a
       // hidden input. Keep it, typed from its literal value.
       const options = specOptions(spec);
-      const role = detectRole(node.class_type, inputName, options, nodeId, prompts, value);
+      const role = detectRole(
+        node.class_type,
+        inputName,
+        options,
+        nodeId,
+        prompts,
+        value,
+        nodeTitle,
+      );
       const typed = typeControl(spec, options, value, role);
       const soft = deriveSoftRange(role, inputName, typed.control, typed.min, typed.max, value);
 

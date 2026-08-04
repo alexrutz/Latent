@@ -6,10 +6,12 @@ import type { ParamField, ParamValues, WidgetValue } from '@latent/shared';
 
 import {
   useDeletePreset,
+  useEndless,
   useGenerate,
   usePresets,
   usePromptMode,
   useSavePreset,
+  useSetEndless,
   useWorkflow,
   useVisibleWorkflows,
   useWorkflows,
@@ -33,6 +35,114 @@ import { usePendingStore } from '../state/pending';
 import { savePromptDraft } from '../state/promptDraft';
 
 const LAST_WORKFLOW_KEY = 'latent.lastWorkflowId';
+
+/** Roles that get a control of their own rather than a chip in the grid. */
+const DEDICATED_ROLES = new Set<ParamField['role']>([
+  'prompt',
+  'negative_prompt',
+  'image_input',
+  'seed',
+  'lora_text',
+]);
+
+/**
+ * One field on the main screen, rendered as whatever it is.
+ *
+ * Split out so the ordered walk above stays a walk: which control a field gets
+ * is a property of the field, and where it sits is a property of the list.
+ */
+function MainField({
+  field,
+  values,
+  setValue,
+  lockedSeeds,
+  onToggleSeedLock,
+}: {
+  field: ParamField;
+  values: ParamValues;
+  setValue: (id: string, value: WidgetValue) => void;
+  lockedSeeds: string[];
+  onToggleSeedLock: (id: string) => void;
+}) {
+  const value = values[field.id] ?? field.defaultValue;
+
+  switch (field.role) {
+    case 'prompt':
+      return (
+        <div className="space-y-2">
+          <PromptField
+            field={field}
+            value={values[field.id] ?? ''}
+            onChange={(next) => setValue(field.id, next)}
+          />
+          <div className="flex flex-wrap items-center gap-4">
+            {/* Assemble the prompt from saved fragments rather than typing. */}
+            <PromptBuilder
+              value={String(values[field.id] ?? '')}
+              onChange={(next) => setValue(field.id, next)}
+            />
+            {/* The phrases that go on everything, chosen once. */}
+            <AlwaysBlocks />
+            {/*
+              No LoRA editor here any more. LoRA tags belong in the field that
+              exists to hold them — offering to write them into the description
+              of the picture put them somewhere the workflow may well not read,
+              and made two places responsible for one thing.
+            */}
+          </div>
+        </div>
+      );
+
+    case 'negative_prompt':
+      return (
+        <PromptField
+          field={field}
+          value={values[field.id] ?? ''}
+          onChange={(next) => setValue(field.id, next)}
+          compact
+        />
+      );
+
+    case 'lora_text':
+      return (
+        <LoraEditor
+          label={field.label}
+          alwaysShow
+          value={String(values[field.id] ?? '')}
+          onChange={(next) => setValue(field.id, next)}
+        />
+      );
+
+    case 'image_input':
+      return (
+        <ImageField
+          field={field}
+          value={values[field.id] ?? ''}
+          onChange={(next) => setValue(field.id, next)}
+        />
+      );
+
+    case 'seed':
+      return (
+        <SeedField
+          field={field}
+          value={value}
+          onChange={(next) => setValue(field.id, next)}
+          locked={lockedSeeds.includes(field.id)}
+          onToggleLock={() => onToggleSeedLock(field.id)}
+        />
+      );
+
+    default:
+      /*
+       * Fields set to a point line get a row of their own — the whole point is
+       * that the values are on screen, which needs the width.
+       */
+      return (
+        <PointLine field={field} value={value} onChange={(next) => setValue(field.id, next)} />
+      );
+  }
+}
 
 export function GenerateScreen() {
   const navigate = useNavigate();
@@ -126,6 +236,8 @@ function GenerateForm({
 }: GenerateFormProps) {
   const detail = workflowQuery.data;
   const generate = useGenerate();
+  const endless = useEndless();
+  const setEndless = useSetEndless();
   const randomMode = usePromptMode();
   const job = useLiveStore((state) => state.live.job);
   const comfyOnline = useLiveStore((state) => state.live.comfyOnline);
@@ -200,21 +312,28 @@ function GenerateForm({
 
   const byRole = (role: ParamField['role']) => fields.filter((field) => field.role === role);
   const promptFields = byRole('prompt');
-  const negativeFields = byRole('negative_prompt');
-  const imageFields = byRole('image_input');
   const seedFields = byRole('seed');
-  const loraTextFields = byRole('lora_text');
 
-  /** Everything on the main screen that isn't given its own dedicated control. */
-  const mainOther = fields.filter(
-    (field) =>
-      field.group === 'main' &&
-      !['prompt', 'negative_prompt', 'image_input', 'seed', 'lora_text'].includes(field.role),
-  );
-  // A point line needs a full row; everything else pairs up in the grid.
-  const pointFields = mainOther.filter((field) => usesPointLine(field));
-  const chipFields = mainOther.filter((field) => !usesPointLine(field));
   const advancedFields = fields.filter((field) => field.group === 'advanced');
+
+  /**
+   * The main screen, in stored order, with consecutive chips gathered up.
+   *
+   * A chip is half a row wide, so several in a row belong in one grid; anything
+   * else — a prompt box, an image picker, a point line — takes the full width
+   * and stands alone. Grouping only ever merges *adjacent* chips, so the order
+   * the user dragged them into is preserved exactly.
+   */
+  const mainRuns = useMemo(() => {
+    const runs: { kind: 'chips' | 'block'; fields: ParamField[] }[] = [];
+    for (const field of fields.filter((candidate) => candidate.group === 'main')) {
+      const chip = !DEDICATED_ROLES.has(field.role) && !usesPointLine(field);
+      const last = runs[runs.length - 1];
+      if (chip && last?.kind === 'chips') last.fields.push(field);
+      else runs.push({ kind: chip ? 'chips' : 'block', fields: [field] });
+    }
+    return runs;
+  }, [fields]);
 
   // Hand the typed prompt to the Random tab, which previews draws on top of it.
   const promptDraft = promptFields
@@ -232,22 +351,50 @@ function GenerateForm({
 
   const anySeedUnlocked = seedFields.some((field) => !lockedSeeds.includes(field.id));
 
+  /** What is on screen, in the shape both the queue and the endless runner take. */
+  const currentRequest = () => ({
+    workflowId: detail!.id,
+    values,
+    // A locked seed means "give me this exact image again"; otherwise every
+    // run should differ, which is what people expect from a Generate button.
+    randomizeSeeds: anySeedUnlocked,
+    lockedSeedFields: lockedSeeds,
+    batchCount,
+  });
+
   const submit = async () => {
     if (!detail) return;
     setError(null);
     try {
-      await generate.mutateAsync({
-        workflowId: detail.id,
-        values,
-        // A locked seed means "give me this exact image again"; otherwise every
-        // run should differ, which is what people expect from a Generate button.
-        randomizeSeeds: anySeedUnlocked,
-        lockedSeedFields: lockedSeeds,
-        batchCount,
-      });
+      /*
+       * While endless is running, Generate queues nothing.
+       *
+       * It hands over the settings, and the next run — the one after whatever
+       * is already in flight — uses them. Queueing here as well would put a
+       * batch in front of the change, so you would watch several pictures made
+       * under the old values before seeing the new ones.
+       */
+      if (endless.data?.enabled) {
+        await setEndless.mutateAsync({ ...currentRequest(), enabled: true });
+      } else {
+        await generate.mutateAsync(currentRequest());
+      }
       setJustQueued(Date.now());
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not queue the prompt');
+    }
+  };
+
+  const toggleEndless = async () => {
+    if (!detail) return;
+    setError(null);
+    try {
+      await setEndless.mutateAsync({
+        ...currentRequest(),
+        enabled: !endless.data?.enabled,
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not change that');
     }
   };
 
@@ -307,112 +454,55 @@ function GenerateForm({
         onApply={(preset) => patchDraft(detail.id, { values: { ...values, ...preset } })}
       />
 
-      {promptFields.map((field) => (
-        <div key={field.id} className="space-y-2">
-          <PromptField
-            field={field}
-            value={values[field.id] ?? ''}
-            onChange={(value) => setValue(field.id, value)}
-          />
-          <div className="flex flex-wrap items-center gap-4">
-            {/* Assemble the prompt from saved fragments rather than typing. */}
-            <PromptBuilder
-              value={String(values[field.id] ?? '')}
-              onChange={(next) => setValue(field.id, next)}
-            />
-            {/* The phrases that go on everything, chosen once. */}
-            <AlwaysBlocks />
-            {/* LoRA tags live inside the prompt text; edit them structurally. */}
-            <LoraEditor
-              value={String(values[field.id] ?? '')}
-              onChange={(next) => setValue(field.id, next)}
-            />
+      {/*
+        Rendered in the order the form editor was left in, not grouped by role.
+
+        Bucketing by role — every prompt, then every LoRA field, then the chips —
+        was simple and made the editor's drag-and-drop a lie: you could reorder
+        the list all you liked and the Generate screen kept its own fixed
+        sequence. The order stored per field is the order here. Consecutive
+        chips still collapse into one two-column grid, because that is a layout
+        decision about chips rather than a reordering of them.
+      */}
+      {mainRuns.map((run, runIndex) =>
+        run.kind === 'chips' ? (
+          /*
+            A two-column grid, not a wrapping row.
+
+            Wrapping put chips of every width wherever they happened to land,
+            which read as a scattered heap rather than a list of settings. Equal
+            columns line the labels up, so the sampler block can be scanned down
+            instead of hunted through.
+          */
+          <div key={`chips-${runIndex}`} className="grid grid-cols-2 gap-1.5">
+            {run.fields.map((field) => (
+              <div key={field.id} className={cn('min-w-0', field.width === 'full' && 'col-span-2')}>
+                <FieldChip
+                  field={field}
+                  value={values[field.id] ?? field.defaultValue}
+                  onChange={(value) => setValue(field.id, value)}
+                  block
+                />
+              </div>
+            ))}
           </div>
-        </div>
-      ))}
-
-      {loraTextFields.map((field) => (
-        <LoraEditor
-          key={field.id}
-          label={field.label}
-          alwaysShow
-          value={String(values[field.id] ?? '')}
-          onChange={(next) => setValue(field.id, next)}
-        />
-      ))}
-
-      {negativeFields.map((field) => (
-        <PromptField
-          key={field.id}
-          field={field}
-          value={values[field.id] ?? ''}
-          onChange={(value) => setValue(field.id, value)}
-          compact
-        />
-      ))}
-
-      {imageFields.map((field) => (
-        <ImageField
-          key={field.id}
-          field={field}
-          value={values[field.id] ?? ''}
-          onChange={(value) => setValue(field.id, value)}
-        />
-      ))}
-
-      {/*
-        Fields set to a point line get a row of their own — the whole point is
-        that the values are on screen, which needs the width.
-      */}
-      {pointFields.map((field) => (
-        <PointLine
-          key={field.id}
-          field={field}
-          value={values[field.id] ?? field.defaultValue}
-          onChange={(value) => setValue(field.id, value)}
-        />
-      ))}
-
-      {/*
-        A two-column grid, not a wrapping row.
-
-        Wrapping put chips of every width wherever they happened to land, which
-        read as a scattered heap rather than a list of settings. Equal columns
-        line the labels up, so the sampler block can be scanned down instead of
-        hunted through — and every value is still on screen at once, which is why
-        it stopped being a sideways-scrolling row in the first place.
-      */}
-      {chipFields.length > 0 && (
-        <div className="grid grid-cols-2 gap-1.5">
-          {chipFields.map((field) => (
-            <div key={field.id} className={cn('min-w-0', field.width === 'full' && 'col-span-2')}>
-              <FieldChip
-                field={field}
-                value={values[field.id] ?? field.defaultValue}
-                onChange={(value) => setValue(field.id, value)}
-                block
-              />
-            </div>
-          ))}
-        </div>
+        ) : (
+          <MainField
+            key={run.fields[0]!.id}
+            field={run.fields[0]!}
+            values={values}
+            setValue={setValue}
+            lockedSeeds={lockedSeeds}
+            onToggleSeedLock={(id) =>
+              patchDraft(detail.id, {
+                lockedSeeds: lockedSeeds.includes(id)
+                  ? lockedSeeds.filter((seed) => seed !== id)
+                  : [...lockedSeeds, id],
+              })
+            }
+          />
+        ),
       )}
-
-      {seedFields.map((field) => (
-        <SeedField
-          key={field.id}
-          field={field}
-          value={values[field.id] ?? field.defaultValue}
-          onChange={(value) => setValue(field.id, value)}
-          locked={lockedSeeds.includes(field.id)}
-          onToggleLock={() =>
-            patchDraft(detail.id, {
-              lockedSeeds: lockedSeeds.includes(field.id)
-                ? lockedSeeds.filter((id) => id !== field.id)
-                : [...lockedSeeds, field.id],
-            })
-          }
-        />
-      ))}
 
       {seedFields.length > 0 && (
         <p className="-mt-2 text-xs text-muted">
@@ -503,7 +593,13 @@ function GenerateForm({
       */}
       {/* Fully opaque, not translucent: chips scrolling underneath showed
           through as half-visible shapes below the button. */}
-      <div className="sticky bottom-0 -mx-4 mt-auto space-y-1 border-t border-line bg-ink px-4 pt-2 pb-1">
+      {/*
+        `overflow-hidden` because this is pinned: anything inside it that turns
+        out to be wider than the screen — a ComfyUI error naming half a dozen
+        nodes, say — would otherwise stretch the bar and let the whole page be
+        dragged sideways.
+      */}
+      <div className="sticky bottom-0 -mx-4 mt-auto space-y-1 overflow-hidden border-t border-line bg-ink px-4 pt-2 pb-1">
         {/*
           Said out loud, right where you tap. With random mode on, what gets
           rendered is not what the prompt field says — leaving that implicit
@@ -531,16 +627,54 @@ function GenerateForm({
             fullWidth={!job}
             className={job ? 'shrink-0' : undefined}
             onClick={submit}
-            busy={generate.isPending}
+            busy={generate.isPending || setEndless.isPending}
             disabled={!comfyOnline}
           >
             {justQueued
-              ? 'Queued ✓'
-              : job
-                ? `+${batchCount > 1 ? batchCount : 1}`
-                : `Generate${batchCount > 1 ? ` ×${batchCount}` : ''}`}
+              ? endless.data?.enabled
+                ? 'Updated ✓'
+                : 'Queued ✓'
+              : endless.data?.enabled
+                ? 'Update'
+                : job
+                  ? `+${batchCount > 1 ? batchCount : 1}`
+                  : `Generate${batchCount > 1 ? ` ×${batchCount}` : ''}`}
           </Button>
+          {/*
+            Endless generation. Its own switch rather than a mode buried in a
+            sheet: it is the difference between the GPU working while you are
+            not looking and not, and turning it off has to be as quick as
+            turning it on.
+          */}
+          <button
+            type="button"
+            onClick={() => void toggleEndless()}
+            aria-pressed={Boolean(endless.data?.enabled)}
+            aria-label="Endless generation"
+            title={
+              endless.data?.enabled
+                ? 'Generating until stopped — tap to stop'
+                : 'Keep generating until stopped'
+            }
+            className={cn(
+              'grid h-12 w-12 shrink-0 place-items-center rounded-xl text-xl',
+              endless.data?.enabled ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+            )}
+          >
+            ∞
+          </button>
         </div>
+
+        {endless.data?.enabled && (
+          <p className="text-center text-[11px] text-accent">
+            Generating until stopped · {endless.data.queued} so far · Update applies to the next run
+          </p>
+        )}
+        {!endless.data?.enabled && endless.data?.message && (
+          <p className="text-center text-[11px] text-warn">
+            Endless generation stopped: {endless.data.message}
+          </p>
+        )}
 
         {!comfyOnline && (
           <p className="text-center text-xs text-danger">

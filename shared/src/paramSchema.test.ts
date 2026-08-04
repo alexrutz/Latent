@@ -509,3 +509,75 @@ describe('text on a LoRA loader', () => {
     ]);
   });
 });
+
+/**
+ * Titles that say outright what a node is.
+ *
+ * Every other rule in this file is an inference, and inference has a ceiling —
+ * a workflow can always be built in a way none of it anticipates. Naming a node
+ * is not an inference, so it wins.
+ */
+describe('nodes named by convention', () => {
+  const graph = {
+    '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'sd15.safetensors' } },
+    // Deliberately a class the heuristics would read as a plain text encode,
+    // wired so that the *other* one looks like the positive prompt.
+    '2': {
+      class_type: 'CLIPTextEncode',
+      inputs: { text: 'trigger words for a style', clip: ['1', 1] },
+      _meta: { title: 'Lora Input' },
+    },
+    '3': {
+      class_type: 'CLIPTextEncode',
+      inputs: { text: 'a lighthouse', clip: ['1', 1] },
+      _meta: { title: 'Prompt' },
+    },
+    '4': { class_type: 'CLIPTextEncode', inputs: { text: 'blurry', clip: ['1', 1] } },
+    '5': {
+      class_type: 'KSampler',
+      inputs: {
+        seed: 1,
+        steps: 20,
+        cfg: 8,
+        sampler_name: 'euler',
+        scheduler: 'normal',
+        denoise: 1,
+        model: ['1', 0],
+        // Both text nodes feed the positive side, which is exactly the case the
+        // heuristics cannot resolve on their own.
+        positive: ['2', 0],
+        negative: ['4', 0],
+        latent_image: ['6', 0],
+      },
+    },
+    '6': { class_type: 'EmptyLatentImage', inputs: { width: 512, height: 512, batch_size: 1 } },
+    '7': { class_type: 'SaveImage', inputs: { filename_prefix: 'out', images: ['5', 0] } },
+  };
+
+  it('takes the named prompt and the named LoRA input at their word', () => {
+    const schema = buildParamSchema(graph, {});
+
+    expect(byId(schema.fields, '3.text')).toMatchObject({ role: 'prompt' });
+    expect(byId(schema.fields, '2.text')).toMatchObject({ role: 'lora_text' });
+    // And only the named one is a prompt, so the random draw touches only it.
+    expect(schema.fields.filter((field) => field.role === 'prompt').map((f) => f.id)).toEqual([
+      '3.text',
+    ]);
+  });
+
+  it('shows what the titles are for by taking them away', () => {
+    const quiet = {
+      ...graph,
+      '2': { ...graph['2'], _meta: undefined },
+      '3': { ...graph['3'], _meta: undefined },
+    };
+    const schema = buildParamSchema(quiet, {});
+
+    // Untitled, the wiring is all there is to go on — and the wiring says the
+    // LoRA trigger words are the prompt, because that is the node the sampler's
+    // positive input leads back to. Which is precisely the case the convention
+    // exists to settle.
+    expect(byId(schema.fields, '2.text')).toMatchObject({ role: 'prompt' });
+    expect(byId(schema.fields, '3.text')?.role).not.toBe('prompt');
+  });
+});

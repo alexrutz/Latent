@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildParamSummary, primaryParams } from './paramSummary.js';
+import {
+  buildParamSummary,
+  parseTextOutputName,
+  primaryParams,
+  textOutputLabel,
+} from './paramSummary.js';
 import type { ParamField, ParamSchema } from './paramTypes.js';
 
 /**
@@ -176,5 +181,43 @@ describe('buildParamSummary', () => {
       {},
     );
     expect(summary[0]!.primary).toBe(false);
+  });
+});
+
+/**
+ * The naming convention a workflow uses to say what a text output is.
+ *
+ * Without it several printed paragraphs are an undifferentiated list; with it
+ * the gallery can say which is the answer and which is the reasoning behind it.
+ */
+describe('text output names', () => {
+  it('splits the name from the kind', () => {
+    expect(parseTextOutputName('rewrite prompt [thinking]')).toEqual({
+      name: 'rewrite prompt',
+      kind: 'thinking',
+    });
+    expect(parseTextOutputName('rewrite prompt [answer]')).toEqual({
+      name: 'rewrite prompt',
+      kind: 'answer',
+    });
+    // Case and spacing are the author's business, not ours.
+    expect(parseTextOutputName('  Caption  [ANSWER] ')).toEqual({
+      name: 'Caption',
+      kind: 'answer',
+    });
+  });
+
+  it('leaves a title that follows no convention alone', () => {
+    expect(parseTextOutputName('Preview Any')).toEqual({ name: 'Preview Any', kind: null });
+    // A bracket that is not one of the two kinds is part of the name.
+    expect(parseTextOutputName('sizes [computed]')).toEqual({
+      name: 'sizes [computed]',
+      kind: null,
+    });
+  });
+
+  it('reads as a label rather than a filename', () => {
+    expect(textOutputLabel('rewrite prompt [thinking]')).toBe('rewrite prompt · thinking');
+    expect(textOutputLabel('Preview Any')).toBe('Preview Any');
   });
 });

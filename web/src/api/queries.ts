@@ -159,6 +159,25 @@ export function useUpdateWorkflow() {
   });
 }
 
+/** Endless generation: the settings the next run will use. */
+export function useEndless() {
+  return useQuery({
+    queryKey: ['endless'] as const,
+    queryFn: api.endless,
+    // The runner stops itself on a repeated failure, and the button has to say
+    // so without the user reloading.
+    refetchInterval: 10_000,
+  });
+}
+
+export function useSetEndless() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: GenerateRequest & { enabled: boolean }) => api.setEndless(body),
+    onSuccess: (state) => client.setQueryData(['endless'], state),
+  });
+}
+
 export function useGenerate() {
   const client = useQueryClient();
   return useMutation({

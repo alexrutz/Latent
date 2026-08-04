@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { GenerationImage, GenerationRecord } from '@latent/shared';
 
 import { imageUrl } from '../api/client';
+import { useBlur } from '../state/blur';
 import { cn } from './ui';
 
 /** One image in the viewer's flat list, with the run it came from. */
@@ -56,6 +57,13 @@ export function ImageViewer({
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
+  /*
+   * The blur is reachable from here as well as from the grid. Full screen is
+   * exactly where somebody sitting down next to you sees the most, and going
+   * back out to the gallery header to cover it is a second too late.
+   */
+  const blurred = useBlur((state) => state.blurred);
+  const toggleBlur = useBlur((state) => state.toggle);
 
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gestureStart = useRef({ distance: 0, scale: 1, x: 0, y: 0, offsetX: 0, offsetY: 0 });
@@ -243,26 +251,17 @@ export function ImageViewer({
   };
 
   return (
-    <div className="fixed inset-0 z-60 flex flex-col bg-black">
-      <div className="safe-t flex shrink-0 items-center justify-between px-2 py-2">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="grid size-11 place-items-center rounded-full text-2xl text-white/80 active:bg-white/10"
-        >
-          ✕
-        </button>
-        {entries.length > 1 && (
-          <span className="text-sm text-white/60 tabular-nums">
-            {index + 1} / {entries.length}
-          </span>
-        )}
-        <span className="size-11" />
-      </div>
+    /*
+      One layer, not three stacked boxes.
 
+      The header and the footer used to take their height out of the middle,
+      so the picture was shown in whatever was left — a letterboxed strip with
+      black above and below it. The picture is the whole point of this screen,
+      so it gets the whole screen, and the controls float on top of it.
+    */
+    <div className="fixed inset-0 z-60 bg-black">
       <div
-        className="relative min-h-0 flex-1 touch-none overflow-hidden"
+        className="absolute inset-0 touch-none overflow-hidden"
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -280,12 +279,47 @@ export function ImageViewer({
             transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})`,
           }}
         />
+      </div>
 
+      {/*
+        `pointer-events-none` on the strip, `auto` on what is actually in it:
+        the picture underneath still takes a tap to close, everywhere the close
+        button is not.
+      */}
+      <div className="safe-t pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-between bg-gradient-to-b from-black/60 to-transparent px-2 py-2">
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="pointer-events-auto grid size-11 place-items-center rounded-full text-2xl text-white/80 active:bg-white/10"
+        >
+          ✕
+        </button>
+        {entries.length > 1 && (
+          <span className="text-sm text-white/60 tabular-nums">
+            {index + 1} / {entries.length}
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={toggleBlur}
+          aria-label="Blur every image"
+          aria-pressed={blurred}
+          className={cn(
+            'pointer-events-auto grid size-11 place-items-center rounded-full text-xl active:bg-white/10',
+            blurred ? 'text-accent' : 'text-white/80',
+          )}
+        >
+          ◌
+        </button>
+      </div>
+
+      <div className="absolute inset-x-0 bottom-0 z-10">
         {/* Over the picture, not below it: this is a glance, and the footer is
             already carrying the actions. Hidden while zoomed, where it would
             just be in the way of what you are inspecting. */}
         {overlay && scale === 1 && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 overflow-hidden bg-gradient-to-t from-black/70 to-transparent px-3 pt-6 pb-2">
+          <div className="pointer-events-none overflow-hidden bg-gradient-to-t from-black/70 to-transparent px-3 pt-6 pb-2">
             {/*
               Capped and scrollable rather than as tall as it likes. What a
               node prints can be a paragraph — a model's reasoning, an expanded
@@ -299,9 +333,19 @@ export function ImageViewer({
             </div>
           </div>
         )}
-      </div>
 
-      {footer && <div className="safe-b shrink-0 bg-black/80 px-4 py-3">{footer}</div>}
+        {/*
+          Translucent, with the picture behind it blurred rather than hidden.
+          An opaque bar is a slice of the image you cannot see; a blurred one
+          keeps the composition readable underneath while the labels on top of
+          it stay legible against it.
+        */}
+        {footer && (
+          <div className="safe-b border-t border-white/10 bg-black/35 px-4 py-3 backdrop-blur-md">
+            {footer}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

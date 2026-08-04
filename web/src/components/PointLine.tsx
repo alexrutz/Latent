@@ -53,11 +53,11 @@ export function PointLine({
       <div
         role="group"
         aria-label={field.label}
-        className="no-scrollbar relative flex items-center gap-0.5 overflow-x-auto py-1"
+        className="no-scrollbar relative isolate flex items-center gap-0.5 overflow-x-auto py-1"
       >
         <span
           aria-hidden
-          className="pointer-events-none absolute inset-x-1 top-1/2 h-px -translate-y-1/2 bg-line"
+          className="pointer-events-none absolute inset-x-1 top-1/2 -z-10 h-px -translate-y-1/2 bg-line"
         />
         {points.map((point) => {
           const active = selected === point;
@@ -69,7 +69,11 @@ export function PointLine({
               aria-pressed={active}
               aria-label={`${field.label} ${formatPoint(point)}`}
               className={cn(
-                'relative z-10 h-8 min-w-9 shrink-0 rounded-full px-1.5 text-[11px] tabular-nums transition-colors',
+                // Boxes, not pills — a row of them reads as one scale rather
+                // than a scatter of beads. `isolate` on the row keeps this
+                // above the track without stacking above the whole page, which
+                // is how these ended up painting over the Generate button.
+                'relative h-8 min-w-9 shrink-0 rounded-md px-1.5 text-[11px] tabular-nums transition-colors',
                 active
                   ? 'bg-accent font-medium text-white'
                   : 'bg-surface-2 text-muted active:bg-surface-3',

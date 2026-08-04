@@ -24,6 +24,8 @@ const ASPECTS: { label: string; value: number | null }[] = [
 
 /** Longest edge of the produced file. Beyond this is wasted on a sampler. */
 const MAX_OUTPUT = 2048;
+/** Smallest side the crop box may shrink to, as a fraction of the frame. */
+const MIN_CROP = 0.1;
 
 interface Crop {
   /** Fractions of the rotated image, 0..1. */
@@ -160,6 +162,8 @@ export function ImageEditor({
   const previewRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; crop: Crop } | null>(null);
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const pinch = useRef<{ distance: number; crop: Crop } | null>(null);
 
   useEffect(() => {
     const url = URL.createObjectURL(file);
@@ -221,13 +225,66 @@ export function ImageEditor({
   /** True whenever the crop keeps less than the whole frame, so it can be moved. */
   const cropping = crop.width < 0.999 || crop.height < 0.999;
 
+  /**
+   * Zoom, expressed as the crop box getting smaller.
+   *
+   * There is no separate zoom state to keep in step with anything: keeping less
+   * of the picture *is* looking at it more closely, and the result is exactly
+   * what the box encloses. Scaling about the box's own centre means a pinch
+   * keeps the subject where the fingers are, which is the whole expectation.
+   */
+  const zoomBy = useCallback((factor: number, base?: Crop) => {
+    setCrop((current) => {
+      const from = base ?? current;
+      const centreX = from.x + from.width / 2;
+      const centreY = from.y + from.height / 2;
+
+      // Never smaller than a tenth of the frame — past that the box is finer
+      // than a fingertip — and never larger than the frame itself.
+      const maxScale = Math.min(1 / from.width, 1 / from.height);
+      const minScale = MIN_CROP / Math.min(from.width, from.height);
+      const scale = Math.min(Math.max(factor, minScale), maxScale);
+
+      const width = Math.min(1, from.width * scale);
+      const height = Math.min(1, from.height * scale);
+      return {
+        width,
+        height,
+        x: Math.min(Math.max(0, centreX - width / 2), 1 - width),
+        y: Math.min(Math.max(0, centreY - height / 2), 1 - height),
+      };
+    });
+  }, []);
+
   const onPointerDown = (event: React.PointerEvent) => {
+    pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    if (pointers.current.size === 2) {
+      const [a, b] = [...pointers.current.values()];
+      pinch.current = { distance: Math.hypot(a!.x - b!.x, a!.y - b!.y), crop };
+      drag.current = null;
+      return;
+    }
+
     if (!cropping) return;
     (event.currentTarget as Element).setPointerCapture?.(event.pointerId);
     drag.current = { x: event.clientX, y: event.clientY, crop };
   };
 
   const onPointerMove = (event: React.PointerEvent) => {
+    if (pointers.current.has(event.pointerId)) {
+      pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    }
+
+    // Two fingers: pinch. Spreading them keeps less of the picture, i.e. zooms in.
+    const pinching = pinch.current;
+    if (pointers.current.size === 2 && pinching && pinching.distance > 0) {
+      const [a, b] = [...pointers.current.values()];
+      const distance = Math.hypot(a!.x - b!.x, a!.y - b!.y);
+      zoomBy(pinching.distance / distance, pinching.crop);
+      return;
+    }
+
     const start = drag.current;
     const frame = frameRef.current;
     if (!start || !frame) return;
@@ -243,7 +300,9 @@ export function ImageEditor({
     });
   };
 
-  const endDrag = () => {
+  const endDrag = (event?: React.PointerEvent) => {
+    if (event) pointers.current.delete(event.pointerId);
+    if (pointers.current.size < 2) pinch.current = null;
     drag.current = null;
   };
 
@@ -360,9 +419,33 @@ export function ImageEditor({
               )}
             </div>
 
-            {cropping && (
-              <p className="text-center text-xs text-muted">Drag to reposition the frame</p>
-            )}
+            {/*
+              Zoom is the crop box getting smaller, so it belongs right next to
+              the frame rather than in its own section. Pinching does the same
+              thing continuously; these are for a mouse, and for the times a
+              pinch on a phone is more fuss than a tap.
+            */}
+            <div className="flex items-center justify-center gap-2">
+              <button
+                type="button"
+                onClick={() => zoomBy(1 / 0.8)}
+                aria-label="Zoom out"
+                className="grid size-9 place-items-center rounded-lg bg-surface-2 text-lg active:bg-surface-3"
+              >
+                −
+              </button>
+              <span className="min-w-24 text-center text-xs text-muted">
+                {cropping ? 'Drag to reposition · pinch to zoom' : 'Pinch to zoom'}
+              </span>
+              <button
+                type="button"
+                onClick={() => zoomBy(0.8)}
+                aria-label="Zoom in"
+                className="grid size-9 place-items-center rounded-lg bg-surface-2 text-lg active:bg-surface-3"
+              >
+                +
+              </button>
+            </div>
 
             <div className="space-y-2">
               <span className="text-xs font-medium tracking-wide text-muted uppercase">Crop</span>

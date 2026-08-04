@@ -1,6 +1,7 @@
 import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import { textOutputLabel } from '@latent/shared';
 import type { GenerationImage, GenerationRecord, GridSettings } from '@latent/shared';
 
 import { api, imageUrl } from '../api/client';
@@ -175,7 +176,12 @@ export function GalleryScreen() {
     : -1;
 
   const filterBar = (
-    <div className="mb-3 flex items-center justify-between gap-2">
+    /*
+      Pinned, not scrolled away with the first row of pictures. The blur and
+      the filters are wanted *while* looking through a long gallery, which is
+      exactly when the top of the page is thousands of pixels behind you.
+    */
+    <div className="sticky top-0 z-20 -mx-4 mb-3 flex items-center justify-between gap-2 bg-ink/95 px-4 py-2 backdrop-blur">
       <h1 className="text-xl font-semibold">Gallery</h1>
       <div className="flex items-center gap-2">
         <div className="flex gap-1 rounded-full bg-surface p-1">
@@ -839,6 +845,30 @@ function DetailsList({ record }: { record: GenerationRecord }) {
       </div>
 
       {record.error && <ErrorNote>{record.error}</ErrorNote>}
+
+      {/*
+        Whatever the graph printed, one line each until you open it.
+
+        A workflow can print several things — a rewritten prompt, a caption, the
+        reasoning that produced either — and a node titled `rewrite prompt
+        [thinking]` says which is which. Shown the same way as the parameters,
+        because that is what they are: something the run decided, which you
+        occasionally want to read in full and usually only want to know exists.
+      */}
+      {record.texts.length > 0 && (
+        <div>
+          <p className="mb-2 text-xs tracking-wide text-muted uppercase">What the graph printed</p>
+          <dl className="space-y-1.5 text-xs">
+            {record.texts.map((output, index) => (
+              <DetailRow
+                key={`${output.nodeId}-${index}`}
+                name={textOutputLabel(output.nodeTitle)}
+                value={output.text}
+              />
+            ))}
+          </dl>
+        </div>
+      )}
 
       <div>
         <p className="mb-2 text-xs tracking-wide text-muted uppercase">All parameters</p>
