@@ -268,6 +268,7 @@ export function ImageViewer({
         onPointerCancel={onPointerUp}
       >
         <img
+          data-testid="viewer-image"
           src={imageUrl(image)}
           alt={record.title}
           draggable={false}
@@ -335,15 +336,15 @@ export function ImageViewer({
         )}
 
         {/*
-          Translucent, with the picture behind it blurred rather than hidden.
-          An opaque bar is a slice of the image you cannot see; a blurred one
-          keeps the composition readable underneath while the labels on top of
-          it stay legible against it.
+          Translucent, and deliberately *not* blurred.
+
+          The blur was meant to keep the labels legible against whatever was
+          behind them. What it actually did was smear the bottom fifth of every
+          picture — the part you are often looking at — for the sake of a
+          contrast problem the tint already solves.
         */}
         {footer && (
-          <div className="safe-b border-t border-white/10 bg-black/35 px-4 py-3 backdrop-blur-md">
-            {footer}
-          </div>
+          <div className="safe-b border-t border-white/10 bg-black/45 px-4 py-3">{footer}</div>
         )}
       </div>
     </div>

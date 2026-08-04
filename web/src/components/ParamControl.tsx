@@ -130,6 +130,9 @@ export function SeedField({
 /* Image input                                                         */
 /* ------------------------------------------------------------------ */
 
+/** Where one image input remembers whether it is folded away. */
+const foldKey = (fieldId: string) => `latent.imageField.${fieldId}`;
+
 export function ImageField({ field, value, onChange }: ControlProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -138,6 +141,11 @@ export function ImageField({ field, value, onChange }: ControlProps) {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [picking, setPicking] = useState(false);
   const filename = typeof value === 'string' ? value : '';
+  const [open, setOpen] = useState(() => localStorage.getItem(foldKey(field.id)) !== 'closed');
+
+  useEffect(() => {
+    localStorage.setItem(foldKey(field.id), open ? 'open' : 'closed');
+  }, [field.id, open]);
 
   /**
    * Pull a folder image down so it can be edited before use.
@@ -175,11 +183,36 @@ export function ImageField({ field, value, onChange }: ControlProps) {
 
   return (
     <div className="space-y-2">
-      <span className="block text-xs font-medium tracking-wide text-muted uppercase">
-        {field.label}
-      </span>
+      {/*
+        Foldable, and it remembers.
 
-      <div className="flex items-center gap-3">
+        The preview is the whole picture at thumbnail size, sitting on the
+        screen you look at with other people around. Folding it away leaves the
+        filename — enough to know what is loaded — and the choice is kept per
+        field, because it is a decision about this input rather than about the
+        app.
+      */}
+      <button
+        type="button"
+        data-testid="image-fold"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-1.5 text-left"
+      >
+        <span aria-hidden className="text-[10px] text-muted">
+          {open ? '▾' : '▸'}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-xs font-medium tracking-wide text-muted uppercase">
+          {field.label}
+        </span>
+        {!open && (
+          <span className="min-w-0 max-w-[55%] truncate text-[11px] text-muted">
+            {filename || 'none'}
+          </span>
+        )}
+      </button>
+
+      <div className={cn('flex items-center gap-3', !open && 'hidden')}>
         <div className="size-20 shrink-0 overflow-hidden rounded-xl border border-line bg-surface-2">
           {filename ? (
             <img

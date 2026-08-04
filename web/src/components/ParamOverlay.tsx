@@ -123,6 +123,7 @@ export function ParamOverlayLine({
  */
 export function ParamOverlayPicker({
   label,
+  caption,
   records,
   selected,
   withLabels,
@@ -131,6 +132,14 @@ export function ParamOverlayPicker({
   className,
 }: {
   label: string;
+  /**
+   * A word under the glyph, for callers that lay their buttons out in a column.
+   *
+   * Without it the column stacked the glyph, the count and the caret into three
+   * rows, which made this one button taller than every other cell in the bar and
+   * cost a strip of the picture underneath.
+   */
+  caption?: string;
   records: GenerationRecord[];
   selected: string[];
   withLabels: boolean;
@@ -150,6 +159,20 @@ export function ParamOverlayPicker({
     [records],
   );
 
+  /*
+   * Chosen values that these runs know nothing about.
+   *
+   * Switching workflow does this: a value you picked when you were using one
+   * graph is not among the choices the next graph offers, so it vanished from
+   * the list while staying switched on — selected, invisible, and impossible to
+   * turn off. They are listed here so a choice can always be undone where it
+   * was made.
+   */
+  const orphans = useMemo(
+    () => selected.filter((key) => !choices.some((choice) => choice.key === key)),
+    [selected, choices],
+  );
+
   const toggle = (key: string) =>
     onChange(selected.includes(key) ? selected.filter((k) => k !== key) : [...selected, key]);
 
@@ -160,15 +183,21 @@ export function ParamOverlayPicker({
         onClick={() => setOpen(true)}
         aria-label={label}
         className={cn(
-          'flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[11px]',
+          'flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] leading-none',
           selected.length > 0 ? 'bg-accent/20 text-accent' : 'bg-surface text-muted',
           className,
         )}
       >
-        <span aria-hidden>ⓘ</span>
-        {selected.length > 0 && <span className="tabular-nums">{selected.length}</span>}
-        <span aria-hidden className="opacity-60">
-          ▾
+        <span aria-hidden className="text-base leading-none">
+          ⓘ
+        </span>
+        {/* One row, whichever way the button is laid out. */}
+        <span className="flex max-w-full items-center gap-0.5 truncate leading-none">
+          {caption && <span className="truncate text-[9px]">{caption}</span>}
+          {selected.length > 0 && <span className="tabular-nums">{selected.length}</span>}
+          <span aria-hidden className="opacity-60">
+            ▾
+          </span>
         </span>
       </button>
 
@@ -178,7 +207,7 @@ export function ParamOverlayPicker({
             Chosen values are drawn over the picture, in the order you pick them.
           </p>
 
-          {choices.length === 0 ? (
+          {choices.length === 0 && orphans.length === 0 ? (
             <p className="py-4 text-sm text-muted">
               Nothing to show yet. Runs record their settings as they are queued, so this fills up
               once you generate something.
@@ -188,29 +217,33 @@ export function ParamOverlayPicker({
               {/* Two columns: this list is as long as the workflow has knobs,
                   and one name per row turns a choice into a scroll. */}
               <ul data-testid="overlay-choices" className="grid grid-cols-2 gap-1">
-                {choices.map((choice) => {
-                  const position = selected.indexOf(choice.key);
-                  const picked = position >= 0;
-                  return (
-                    <li key={choice.key} className="min-w-0">
-                      <button
-                        type="button"
-                        onClick={() => toggle(choice.key)}
-                        aria-pressed={picked}
-                        className={cn(
-                          'flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-xs',
-                          picked ? 'bg-accent/15 text-accent' : 'bg-surface-2/60 active:bg-surface-2',
-                        )}
-                      >
-                        <span className="min-w-0 truncate">{choice.label}</span>
-                        {picked && (
-                          <span className="shrink-0 text-[10px] tabular-nums">#{position + 1}</span>
-                        )}
-                      </button>
-                    </li>
-                  );
-                })}
+                {choices.map((choice) => (
+                  <ChoiceRow
+                    key={choice.key}
+                    itemKey={choice.key}
+                    label={choice.label}
+                    position={selected.indexOf(choice.key)}
+                    onToggle={toggle}
+                  />
+                ))}
+                {orphans.map((key) => (
+                  <ChoiceRow
+                    key={key}
+                    itemKey={key}
+                    label={orphanLabel(key)}
+                    position={selected.indexOf(key)}
+                    absent
+                    onToggle={toggle}
+                  />
+                ))}
               </ul>
+
+              {orphans.length > 0 && (
+                <p className="text-[11px] text-warn">
+                  Dimmed values are not recorded by these runs — from another workflow, most
+                  likely. Tap to stop showing them.
+                </p>
+              )}
 
               {/*
                 The shared switch, not one of its own.
@@ -232,20 +265,62 @@ export function ParamOverlayPicker({
                   label="Short labels"
                 />
               </div>
-
-              {selected.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => onChange([])}
-                  className="w-full py-2 text-center text-xs text-accent"
-                >
-                  Show none
-                </button>
-              )}
             </>
+          )}
+
+          {/* Outside the list on purpose: the one time you most need this is
+              when the list no longer contains what is switched on. */}
+          {selected.length > 0 && (
+            <button
+              type="button"
+              onClick={() => onChange([])}
+              className="w-full py-2 text-center text-xs text-accent"
+            >
+              Show none
+            </button>
           )}
         </div>
       </Sheet>
     </>
   );
+}
+
+function ChoiceRow({
+  itemKey,
+  label,
+  position,
+  absent = false,
+  onToggle,
+}: {
+  itemKey: string;
+  label: string;
+  position: number;
+  absent?: boolean;
+  onToggle: (key: string) => void;
+}) {
+  const picked = position >= 0;
+
+  return (
+    <li className="min-w-0">
+      <button
+        type="button"
+        onClick={() => onToggle(itemKey)}
+        aria-pressed={picked}
+        className={cn(
+          'flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-xs',
+          picked ? 'bg-accent/15 text-accent' : 'bg-surface-2/60 active:bg-surface-2',
+          absent && 'opacity-50',
+        )}
+      >
+        <span className="min-w-0 truncate">{label}</span>
+        {picked && <span className="shrink-0 text-[10px] tabular-nums">#{position + 1}</span>}
+      </button>
+    </li>
+  );
+}
+
+/** The best name we can give a key no run in view describes. */
+function orphanLabel(key: string): string {
+  if (key.startsWith(TEXT_OVERLAY_PREFIX)) return key.slice(TEXT_OVERLAY_PREFIX.length);
+  return key.split('.').pop() ?? key;
 }

@@ -200,6 +200,26 @@ export function useGallery(options: { workflowId?: string | null; minRating?: nu
   });
 }
 
+/**
+ * One run, followed until it finishes.
+ *
+ * Polled rather than driven off the live socket because the caller is the chat
+ * transcript, which shows runs from any point in the conversation — including
+ * ones started days ago, whose events are long gone. Polling stops the moment
+ * the run reaches a terminal state, so a finished conversation is idle.
+ */
+export function useGeneration(id: string | null) {
+  return useQuery({
+    queryKey: ['generation', id],
+    queryFn: () => api.generation(id as string),
+    enabled: id !== null,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === 'queued' || status === 'running' ? 2_000 : false;
+    },
+  });
+}
+
 /* ------------------------------------------------------------------ */
 /* Connections                                                         */
 /* ------------------------------------------------------------------ */

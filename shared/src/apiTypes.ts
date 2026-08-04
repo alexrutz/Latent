@@ -783,6 +783,47 @@ export interface ChatSettings {
   thinking: boolean;
   /** Prepended to every conversation. Empty uses Latent's own. */
   systemPrompt: string;
+  /** How readily each tool is reached for. */
+  tools: ChatToolSettings;
+  /** What a picture generated from the chat is used with. */
+  generation: ChatGenerationSettings;
+  /**
+   * How tall a generated picture is in the transcript, as a fraction of the
+   * chat window's height. A third by default: big enough to judge, small
+   * enough that the conversation around it is still readable.
+   */
+  imageHeight: number;
+}
+
+/**
+ * How eagerly one tool is used.
+ *
+ * A separate setting per tool because they are not the same kind of
+ * interruption. Being asked a clarifying question mid-conversation is cheap;
+ * being handed a finished prompt while you are still deciding what you want
+ * derails the thing the module is for. The defaults reflect that.
+ */
+export type ToolEagerness = 'off' | 'on-request' | 'considered' | 'eager';
+
+export interface ChatToolSettings {
+  prompt_blocks: ToolEagerness;
+  build_prompt: ToolEagerness;
+  ask_user: ToolEagerness;
+}
+
+/**
+ * What a picture started from the chat is generated with.
+ *
+ * Either whatever the Generate screen is currently set to — which is what you
+ * want while iterating on one workflow — or a workflow of its own with its own
+ * values, for when the chat is the place you start from and Generate is where
+ * you happen to have left something else set up.
+ */
+export interface ChatGenerationSettings {
+  /** Empty means "whatever Generate is on". */
+  workflowId: string;
+  /** Applied over that workflow's stored values. Only used with `workflowId`. */
+  values: ParamValues;
 }
 
 export type ChatRole = 'user' | 'assistant' | 'tool';
@@ -805,6 +846,14 @@ export interface ChatMessage {
   toolCall?: ChatToolCall;
   /** What the user decided about that tool call, once they have. */
   toolResult?: ChatToolResult;
+  /**
+   * The run this message started, when it started one.
+   *
+   * Only the id is kept. The pictures themselves belong to the gallery, and
+   * copying them into the transcript would mean a second place to delete from
+   * and a conversation that grows by a megabyte per accepted prompt.
+   */
+  generationId?: string;
   createdAt: number;
 }
 
@@ -823,7 +872,7 @@ export interface ChatConversationDetail extends ChatConversation {
 /* Chat tools                                                          */
 /* ------------------------------------------------------------------ */
 
-export type ChatToolName = 'prompt_blocks' | 'build_prompt';
+export type ChatToolName = 'prompt_blocks' | 'build_prompt' | 'ask_user';
 
 /** A block the model proposes adding, changing or removing. */
 export interface ProposedBlock {
@@ -850,7 +899,24 @@ export interface BuildPromptCall {
   reason: string;
 }
 
-export type ChatToolCall = (PromptBlocksCall | BuildPromptCall) & {
+/**
+ * A question the model wants answered before it goes on.
+ *
+ * The point is not politeness. A prompt is only as good as the decisions behind
+ * it, and a model that guesses at "portrait or landscape" produces something
+ * plausible and wrong. Asking costs one tap, because the answers come ready
+ * made — with a box for the answer it did not think of.
+ */
+export interface AskUserCall {
+  tool: 'ask_user';
+  question: string;
+  /** Ready answers, so the usual reply is a tap. Two to four is the useful range. */
+  options: string[];
+  /** Why it matters, in a few words. */
+  reason: string;
+}
+
+export type ChatToolCall = (PromptBlocksCall | BuildPromptCall | AskUserCall) & {
   /** The id llama.cpp gave it, needed to answer the model. */
   callId: string;
 };

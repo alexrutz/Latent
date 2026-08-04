@@ -400,6 +400,9 @@ export const api = {
       '/api/chat/status',
     ),
 
+  /** Latent's own instructions, so Settings can show and restore them. */
+  chatDefaultPrompt: () => request<{ prompt: string }>('/api/chat/prompt'),
+
   chats: () => request<ChatConversation[]>('/api/chat/conversations'),
 
   createChat: () =>
@@ -417,6 +420,7 @@ export const api = {
       decision: 'accepted' | 'rejected';
       blocks?: ProposedBlock[];
       note?: string;
+      generationId?: string;
     },
   ) =>
     request<{ ok: true; summary: string }>(`/api/chat/conversations/${id}/tool`, {

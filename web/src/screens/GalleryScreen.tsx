@@ -782,13 +782,14 @@ function ViewerWithActions({
                 from the grid's — there is room for more here. */}
             <ParamOverlayPicker
               label="Values on the picture"
+              caption="Values"
               records={entries.map((candidate) => candidate.record)}
               selected={grid.viewerParams}
               withLabels={grid.overlayLabels}
               onChange={(viewerParams) => onGridChange({ viewerParams })}
               onWithLabelsChange={(overlayLabels) => onGridChange({ overlayLabels })}
-              // Shaped like the cells it shares a row with.
-              className="h-auto w-full flex-col justify-center gap-0 rounded-lg py-1"
+              // Shaped like the cells it shares a row with: glyph, then a word.
+              className="h-auto w-full flex-col justify-center gap-0.5 rounded-lg px-1 py-1"
             />
             {/* Two taps, because it cannot be undone. */}
             <ViewerAction

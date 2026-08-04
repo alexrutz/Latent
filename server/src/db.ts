@@ -301,6 +301,19 @@ CREATE TABLE chat_messages (
 CREATE INDEX idx_chat_messages_chat ON chat_messages (chat_id, created_at);
 `);
 
+/**
+ * v11: which run a message started.
+ *
+ * A prompt accepted in the chat is generated from the chat, and the picture it
+ * produced belongs next to the conversation that produced it. Only the run's id
+ * is stored: the gallery already owns the pictures, and copying them in here
+ * would mean two places to delete from and a conversation that grows by a
+ * megabyte every time you say yes.
+ */
+MIGRATIONS.push(`
+ALTER TABLE chat_messages ADD COLUMN generation_id TEXT;
+`);
+
 interface ChatRow {
   id: string;
   title: string;
@@ -317,6 +330,7 @@ interface ChatMessageRow {
   attachments_json: string;
   tool_call_json: string | null;
   tool_result_json: string | null;
+  generation_id: string | null;
   created_at: number;
 }
 
@@ -348,6 +362,7 @@ function toChatMessage(row: ChatMessageRow): ChatMessage {
     ...(row.tool_result_json
       ? { toolResult: parseJson<ChatMessage['toolResult']>(row.tool_result_json, undefined) }
       : {}),
+    ...(row.generation_id ? { generationId: row.generation_id } : {}),
     createdAt: row.created_at,
   };
 }
@@ -573,6 +588,21 @@ const DEFAULT_SETTINGS: AppSettings = {
     maxTokens: 0,
     thinking: true,
     systemPrompt: '',
+    /*
+     * The defaults are what makes the module usable rather than annoying.
+     *
+     * `build_prompt` waits to be asked, because being handed a finished prompt
+     * while you are still working out what you want ends the conversation the
+     * module exists to have. `ask_user` is the opposite: a question costs one
+     * tap and improves everything after it.
+     */
+    tools: {
+      prompt_blocks: 'on-request',
+      build_prompt: 'on-request',
+      ask_user: 'considered',
+    },
+    generation: { workflowId: '', values: {} },
+    imageHeight: 1 / 3,
   },
   importRoot: null,
   inputRoot: null,
@@ -674,8 +704,8 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO chat_messages
-           (id, chat_id, role, content, thinking, attachments_json, tool_call_json, tool_result_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, chat_id, role, content, thinking, attachments_json, tool_call_json, tool_result_json, generation_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         message.id,
@@ -686,6 +716,7 @@ export class Store {
         JSON.stringify(message.attachments ?? []),
         message.toolCall ? JSON.stringify(message.toolCall) : null,
         message.toolResult ? JSON.stringify(message.toolResult) : null,
+        message.generationId ?? null,
         message.createdAt,
       );
     this.db.prepare('UPDATE chats SET updated_at = ? WHERE id = ?').run(Date.now(), chatId);

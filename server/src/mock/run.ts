@@ -23,6 +23,9 @@ llama.app.post('/__script', async (request) => {
   llama.script(...(request.body as Parameters<typeof llama.script>));
   return { ok: true };
 });
+// What was actually sent, so a test can assert on the request rather than only
+// on the reply — which is the only way to see that a tool was withheld.
+llama.app.get('/__requests', async () => llama.requests);
 const llamaAddress = await llama.listen(Number(process.env.MOCK_LLAMA_PORT ?? 8189));
 console.log(`Mock model server listening on ${llamaAddress}`);
 

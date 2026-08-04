@@ -2551,10 +2551,38 @@ test.describe('the chat module', () => {
     }
   };
 
+  /** Which tools the last request actually put in front of the model. */
+  const lastOffer = async (): Promise<string[]> => {
+    const context = await apiRequest.newContext({ baseURL: LLAMA });
+    try {
+      const sent = (await (await context.get('/__requests')).json()) as {
+        tools?: { function: { name: string } }[];
+      }[];
+      return (sent.at(-1)?.tools ?? []).map((tool) => tool.function.name);
+    } finally {
+      await context.dispose();
+    }
+  };
+
   test.beforeEach(async () => {
     await resetState();
+    // The whole chat block, not a patch of it: settings merge, so a test that
+    // switches a tool off would otherwise leave it off for everything after it.
     await withApi((ctx) =>
-      ctx.patch('/api/settings', { data: { chat: { baseUrl: LLAMA, thinking: true } } }),
+      ctx.patch('/api/settings', {
+        data: {
+          chat: {
+            baseUrl: LLAMA,
+            thinking: true,
+            generation: { workflowId: '', values: {} },
+            tools: {
+              build_prompt: 'considered',
+              prompt_blocks: 'considered',
+              ask_user: 'considered',
+            },
+          },
+        },
+      }),
     );
     // A conversation carries over between tests otherwise, and the transcript
     // is what most of these assert on.
@@ -2657,6 +2685,90 @@ test.describe('the chat module', () => {
         { timeout: 60_000 },
       )
       .toContain('a harbour at dawn');
+
+    // And you are still in the conversation, with the picture in it. Being sent
+    // to the Generate screen threw away the thread at the moment it paid off.
+    expect(new URL(page.url()).pathname).toBe('/chat');
+    const picture = page.getByRole('button', { name: /Open picture/ }).first();
+    await expect(picture).toBeVisible({ timeout: 60_000 });
+    await page.screenshot({ path: 'test-results/60-chat-picture.png' });
+
+    // Tap to look at it properly, tap again to put it away.
+    await picture.click();
+    const viewer = page.getByTestId('viewer-image');
+    await expect(viewer).toBeVisible();
+    await viewer.click();
+    await expect(viewer).toHaveCount(0);
+  });
+
+  /**
+   * A question, with the answers already written.
+   *
+   * The tool that makes the rest of them worth having: the model stops instead
+   * of guessing, and answering is one tap.
+   */
+  test('asks a question and carries the answer back', async ({ page }) => {
+    await script(
+      {
+        toolCall: {
+          name: 'ask_user',
+          arguments: {
+            question: 'Portrait or landscape?',
+            options: ['Portrait', 'Landscape'],
+            reason: 'It decides the composition.',
+          },
+        },
+      },
+      { content: 'Landscape it is.' },
+    );
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('a harbour');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    await expect(dialog.getByText('Portrait or landscape?')).toBeVisible();
+    await expect(dialog.getByText('It decides the composition.')).toBeVisible();
+    // The answer it did not think of is always available too.
+    await expect(dialog.getByRole('textbox', { name: 'Your own answer' })).toBeVisible();
+    await page.screenshot({ path: 'test-results/61-ask-user.png' });
+
+    await dialog.getByRole('button', { name: 'Landscape' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByText('Landscape it is.')).toBeVisible({ timeout: 30_000 });
+
+    // The model was told what was chosen, as the tool's result.
+    await expect(page.getByText('Landscape', { exact: true })).toBeVisible();
+  });
+
+  /**
+   * The pace setting that is a guarantee rather than an instruction.
+   *
+   * Every other level is a sentence in the system prompt, which a small model
+   * can talk itself out of. Off has to mean the tool is not on offer at all.
+   */
+  test('does not offer a tool that is switched off', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', {
+        data: {
+          chat: {
+            baseUrl: LLAMA,
+            tools: { build_prompt: 'off', prompt_blocks: 'considered', ask_user: 'considered' },
+          },
+        },
+      }),
+    );
+    await script({ content: 'Tell me more first.' });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('give me a prompt');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByText('Tell me more first.')).toBeVisible({ timeout: 30_000 });
+
+    const offered = await lastOffer();
+    expect(offered).toContain('ask_user');
+    expect(offered).not.toContain('build_prompt');
   });
 
   /** Rejecting leaves the conversation exactly where it was. */
@@ -2739,5 +2851,128 @@ test.describe('the chat module', () => {
     );
     expect(blocks.map((block) => block.name).sort()).toEqual(['Golden hour', 'Overcast']);
     expect(blocks.find((block) => block.name === 'Overcast')?.text).toBe('flat grey daylight');
+  });
+});
+
+/**
+ * Wave eighteen: the rough edges around the chat and the gallery.
+ *
+ * Three of these are bugs with a shape worth keeping a test for — a choice you
+ * could not undo, a button one row too tall, and a preview you could not put
+ * away — and one is a setting whose whole point is that it is remembered.
+ */
+test.describe('the eighteenth wave', () => {
+  test.beforeEach(async () => {
+    await resetState();
+  });
+
+  /** Generate and wait for this prompt's own pictures, not the gallery's. */
+  async function generateBatch(page: Page, prompt: string) {
+    await seedWorkflow();
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill(prompt);
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const gallery = (await (await ctx.get('/api/gallery?limit=100')).json()) as {
+              items: { title: string; images: unknown[] }[];
+            };
+            return gallery.items
+              .filter((item) => item.title === prompt)
+              .reduce((total, item) => total + item.images.length, 0);
+          }),
+        { timeout: 60_000 },
+      )
+      .toBeGreaterThanOrEqual(1);
+  }
+
+  /**
+   * A value chosen under one workflow, and then the workflow changed.
+   *
+   * The choice stayed switched on but stopped appearing in the list, because
+   * the list is built from what the runs in view actually recorded — so there
+   * was no way left to turn it off from the place it was turned on.
+   */
+  test('lets you unpick a value the runs no longer record', async ({ page }) => {
+    await generateBatch(page, 'orphan check');
+
+    // Chosen while a different workflow was in use, which is what the app sees
+    // on the next visit: a key nothing in the gallery describes.
+    await page.evaluate(() => {
+      localStorage.setItem(
+        'latent.grid',
+        JSON.stringify({ gridParams: ['9.something_else'], overlayLabels: true }),
+      );
+    });
+
+    await open(page, '/gallery');
+    await dismissResult(page);
+
+    const picker = page.getByRole('button', { name: 'Values on thumbnails' });
+    await expect(picker).toContainText('1');
+    await picker.click();
+
+    const orphan = page.getByRole('button', { name: 'something_else' });
+    await expect(orphan).toBeVisible();
+    await expect(orphan).toHaveAttribute('aria-pressed', 'true');
+    await page.screenshot({ path: 'test-results/62-orphan-value.png' });
+
+    // Unpicked, it stops being listed at all — it was only there because it was
+    // switched on, which is the whole point of listing it.
+    await orphan.click();
+    await expect(orphan).toHaveCount(0);
+    await page.getByRole('button', { name: 'Done' }).click();
+    await expect(picker).not.toContainText('1');
+  });
+
+  /**
+   * The picker sat among the viewer's other buttons and was a row taller than
+   * all of them, which pushed the whole bar up over the picture.
+   */
+  test('keeps the values button the same height as the buttons beside it', async ({ page }) => {
+    await generateBatch(page, 'height check');
+    await open(page, '/gallery');
+    await dismissResult(page);
+
+    await page.locator('img[alt*="height check"]').first().click();
+
+    const details = await page.getByRole('button', { name: 'Details' }).boundingBox();
+    const values = await page.getByRole('button', { name: 'Values on the picture' }).boundingBox();
+    expect(details).not.toBeNull();
+    expect(values).not.toBeNull();
+    expect(Math.round(values!.height)).toBe(Math.round(details!.height));
+    await page.screenshot({ path: 'test-results/63-viewer-bar.png' });
+  });
+
+  /**
+   * Folding the input image away, and it staying folded.
+   *
+   * The preview is the whole picture at thumbnail size on the screen you look
+   * at with other people around; the point of the fold is that it is not there
+   * until you ask for it, including after a reload.
+   */
+  test('folds the image input away and remembers it', async ({ page }) => {
+    // The img2img fixture, because it is the one with an image input.
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } }),
+    );
+    await open(page, '/');
+
+    const fold = page.getByTestId('image-fold').first();
+    await expect(fold).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByRole('button', { name: 'From folder' })).toBeVisible();
+
+    await fold.click();
+    await expect(page.getByRole('button', { name: 'From folder' })).toBeHidden();
+
+    await page.reload();
+    await signIn(page);
+    await expect(page.getByTestId('image-fold').first()).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    await page.screenshot({ path: 'test-results/64-folded-input.png' });
   });
 });

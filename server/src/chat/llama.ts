@@ -4,7 +4,10 @@ import type {
   ChatSettings,
   ChatStreamEvent,
   ChatToolCall,
+  ChatToolName,
+  ChatToolSettings,
   ProposedBlock,
+  ToolEagerness,
 } from '@latent/shared';
 
 /**
@@ -28,25 +31,75 @@ import type {
 
 const TIMEOUT_MS = 300_000;
 
-/** Latent's own instructions, used when the user has not written their own. */
-export const DEFAULT_SYSTEM_PROMPT = `You help someone make images with ComfyUI.
+/**
+ * Latent's own instructions, used when the user has not written their own.
+ *
+ * Written for how modern image models actually read a prompt. The keyword-salad
+ * style — `masterpiece, 8k, highly detailed, trending on artstation` — is a
+ * habit from CLIP-era encoders. Krea 2 and its contemporaries put a language
+ * model in front of the image model, so grammar and spatial relationships
+ * survive: "a red chair *behind* a blue table" places the chair behind the
+ * table, and a flowing sentence beats a comma-separated pile. The published
+ * guidance for Krea 2 says exactly this, and adds two things worth having here:
+ * quote whatever should be rendered as text, and do not pile on style
+ * adjectives, which muddy the result rather than strengthening it.
+ *
+ * The other half of this prompt is about pace, and it matters more. The module
+ * exists so that working out *what* to make is a conversation. A model that
+ * answers "a lighthouse at dusk" with a finished prompt has ended that
+ * conversation before it started.
+ */
+export const DEFAULT_SYSTEM_PROMPT = `You help someone work out what picture to
+make, and then how to describe it. You are talking to them on a phone, so keep
+replies short — a few sentences, no headings, no bullet lists unless they are
+genuinely a list.
 
-You have two tools:
+## What this is for
 
-- \`prompt_blocks\` proposes changes to their library of reusable prompt
-  fragments. Use it when they ask for block ideas, or when a conversation has
-  produced phrases worth keeping. Group blocks by category — lighting, mood,
-  camera, subject — and keep each one a fragment, not a sentence.
-- \`build_prompt\` writes a finished image prompt. Use it when they ask for a
-  prompt, or to make a picture of what you have been discussing. Write it as
-  comma-separated fragments the way image models expect, not as prose.
+Most of the work is not writing the prompt. It is deciding what the picture is:
+what is in it, what it feels like, how it is framed, what it is *for*. Do that
+part with them. Offer directions, disagree, suggest the thing they did not think
+of, ask what they mean by "moody". Half-formed ideas are the normal starting
+point and a good place to work from.
 
-Propose a tool call rather than pasting blocks or prompts into your reply: the
-tools are what let them accept your suggestion with one tap. Everything you
-propose is reviewed before it takes effect, so suggest freely — but only call a
-tool when it is actually what they asked for.
+Do not rush to a finished prompt. Building one is a tool call and interrupts
+everything; it is worth doing once the picture is actually decided, not as a way
+of answering the first thing they say.
 
-Keep replies short. They are reading on a phone.`;
+## Writing an image prompt, when it is time
+
+Modern image models read prompts with a language model, not a keyword matcher,
+so write like a person describing a photograph:
+
+- **One flowing paragraph of plain prose.** Not comma-separated tags. Grammar
+  carries meaning: word order and prepositions place things in the frame.
+- **Concrete over decorative.** Say what is in the picture, where it is, what
+  the light is doing, how it is framed and shot. Skip "masterpiece", "8k",
+  "highly detailed", "award-winning" — they do nothing and crowd out the
+  description that would have worked.
+- **Few style words, chosen deliberately.** One clear reference — a medium, an
+  era, a named technique — beats five adjectives, which muddy each other.
+- **Say the medium.** Photograph, oil painting, cel-shaded illustration, 3D
+  render. If they asked for one, keep it; never quietly swap it for another.
+- **Text in the image goes in quotation marks**, exactly as it should appear.
+- **Stay faithful.** Everything they asked for goes in; nothing they did not ask
+  for gets invented. Fill in what a description genuinely needs and leave the
+  rest open — an over-specified prompt is a narrower picture, not a better one.
+- **Detail is good, padding is not.** Long is fine when every clause is doing
+  work.
+
+Depict people clothed and with dignity.
+
+## Prompt blocks
+
+They keep a library of reusable fragments — lighting, mood, camera, subject —
+that a random-prompt mode draws from. Blocks are fragments, not sentences, and
+each belongs to a group.
+
+Nothing you propose takes effect on its own: every tool call is shown to them
+first and they accept, edit or refuse it. So propose things properly rather than
+pasting a prompt into your reply — a pasted prompt is something they have to
+copy by hand.`;
 
 /** The tools, in the shape the OpenAI API expects. */
 export const TOOLS = [
@@ -116,7 +169,96 @@ export const TOOLS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'ask_user',
+      description:
+        'Ask one specific question whose answer would change the picture, offering a few ready ' +
+        'answers. Use it for a decision you cannot make for them — not for small talk, and not ' +
+        'when the conversation already implies the answer.',
+      parameters: {
+        type: 'object',
+        properties: {
+          question: {
+            type: 'string',
+            description: 'One question, plainly put. Not several at once.',
+          },
+          options: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'Two to four short answers covering the likely ones. They can always write ' +
+              'their own instead, so these do not have to be exhaustive.',
+          },
+          reason: {
+            type: 'string',
+            description: 'Why the answer matters, in a few words.',
+          },
+        },
+        required: ['question', 'options', 'reason'],
+      },
+    },
+  },
 ] as const;
+
+/**
+ * How readily each tool is reached for, as instructions the model can follow.
+ *
+ * Per tool, and settable, because "too eager" is not one judgement: being asked
+ * a question mid-conversation is welcome at the same moment a finished prompt
+ * would be an interruption. `off` is not a sentence at all — the tool is simply
+ * not offered, which is the only setting that is a guarantee rather than an
+ * instruction.
+ */
+const EAGERNESS: Record<ToolEagerness, string> = {
+  off: '',
+  'on-request': 'ONLY when they explicitly ask for it in so many words. Never on your own initiative, however obviously useful it seems.',
+  considered: 'when it is clearly the next thing to do and the conversation has settled — not while an idea is still being worked out.',
+  eager: 'whenever it would help, without waiting to be asked.',
+};
+
+/** Ready answers for a question about pace, spelled out so a small model follows them. */
+const ON_REQUEST_EXAMPLES: Partial<Record<ChatToolName, string>> = {
+  build_prompt:
+    'Explicit means a sentence like "write me a prompt", "give me a prompt", "generate it now", ' +
+    '"erstelle mir einen prompt", "gib mir einen prompt" or "generiere jetzt das bild". ' +
+    'Talking about the picture, agreeing on it, or saying it sounds good is not asking for it.',
+  prompt_blocks:
+    'Explicit means asking for blocks — "add these as blocks", "mach daraus blöcke". ' +
+    'Coming up with good phrases in conversation is not.',
+};
+
+/**
+ * The policy section appended to whatever instructions are in force.
+ *
+ * Appended rather than woven in, so it applies to a hand-written system prompt
+ * too: the pace settings belong to the app, not to the wording of the prompt,
+ * and a user who replaces the instructions should not silently lose them.
+ */
+export function toolPolicy(tools: ChatToolSettings): string {
+  const lines: string[] = [];
+
+  for (const name of TOOL_ORDER) {
+    const level = tools[name];
+    if (level === 'off') continue;
+    const extra = level === 'on-request' ? ` ${ON_REQUEST_EXAMPLES[name] ?? ''}`.trimEnd() : '';
+    lines.push(`- \`${name}\`: use it ${EAGERNESS[level]}${extra}`);
+  }
+
+  if (lines.length === 0) {
+    return '\n\n## Tools\n\nNone are available. Answer in words.';
+  }
+
+  return `\n\n## When to use each tool\n\n${lines.join('\n')}`;
+}
+
+const TOOL_ORDER: ChatToolName[] = ['build_prompt', 'prompt_blocks', 'ask_user'];
+
+/** The tools this configuration offers at all. `off` means genuinely absent. */
+export function enabledTools(tools: ChatToolSettings) {
+  return TOOLS.filter((tool) => tools[tool.function.name as ChatToolName] !== 'off');
+}
 
 export class LlamaError extends Error {
   override name = 'LlamaError';
@@ -219,17 +361,18 @@ export class LlamaClient {
     messages: ChatMessage[],
     options: { signal?: AbortSignal } = {},
   ): AsyncGenerator<ChatStreamEvent> {
+    const tools = enabledTools(this.settings.tools);
     const body = {
       ...(this.settings.model ? { model: this.settings.model } : {}),
       messages: toApiMessages(
         messages,
-        this.settings.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT,
+        (this.settings.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT) +
+          toolPolicy(this.settings.tools),
       ),
       temperature: this.settings.temperature,
       ...(this.settings.maxTokens > 0 ? { max_tokens: this.settings.maxTokens } : {}),
       stream: true,
-      tools: TOOLS,
-      tool_choice: 'auto',
+      ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
       /*
        * `none` keeps the reasoning in its own field instead of inline in the
        * answer. Builds that do not know the option ignore it, and the inline
@@ -466,6 +609,23 @@ export function parseCall(call: PartialCall): ChatToolCall | null {
       ...(typeof args.negativePrompt === 'string' && args.negativePrompt.trim() !== ''
         ? { negativePrompt: args.negativePrompt.trim() }
         : {}),
+      reason: typeof args.reason === 'string' ? args.reason : '',
+    };
+  }
+
+  if (call.name === 'ask_user') {
+    const question = typeof args.question === 'string' ? args.question.trim() : '';
+    if (question === '') return null;
+    const options = (Array.isArray(args.options) ? args.options : [])
+      .map((option) => (typeof option === 'string' ? option.trim() : ''))
+      .filter((option) => option !== '')
+      // Four is what fits on a phone without the question scrolling off.
+      .slice(0, 4);
+    return {
+      callId,
+      tool: 'ask_user',
+      question,
+      options,
       reason: typeof args.reason === 'string' ? args.reason : '',
     };
   }

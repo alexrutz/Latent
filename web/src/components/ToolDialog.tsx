@@ -27,19 +27,18 @@ export interface ToolDecision {
   decision: 'accepted' | 'rejected';
   blocks?: ProposedBlock[];
   note?: string;
+  /** The run an accepted prompt started, so the transcript can show it. */
+  generationId?: string;
 }
 
 export function ToolDialog({
   call,
   settings,
   onResolve,
-  onGenerated,
 }: {
   call: ChatToolCall;
   settings: AppSettings | null;
   onResolve: (decision: ToolDecision) => void | Promise<void>;
-  /** The prompt was accepted and queued; the caller usually navigates away. */
-  onGenerated: () => void;
 }) {
   return createPortal(
     <div className="fixed inset-0 z-70 flex items-center justify-center p-4" role="dialog" aria-modal="true">
@@ -52,18 +51,99 @@ export function ToolDialog({
 
       <div className="animate-rise relative flex max-h-[85svh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl">
         {call.tool === 'build_prompt' ? (
-          <BuildPromptBody
-            call={call}
-            settings={settings}
-            onResolve={onResolve}
-            onGenerated={onGenerated}
-          />
+          <BuildPromptBody call={call} settings={settings} onResolve={onResolve} />
+        ) : call.tool === 'ask_user' ? (
+          <AskUserBody call={call} onResolve={onResolve} />
         ) : (
           <PromptBlocksBody call={call} onResolve={onResolve} />
         )}
       </div>
     </div>,
     document.body,
+  );
+}
+
+/**
+ * A question, with the answers already written out.
+ *
+ * The cheapest thing in the module and one of the most useful: a model that
+ * guesses at "portrait or landscape" produces something plausible and wrong,
+ * and a model that stops to ask costs one tap. The ready answers are what keep
+ * that tap from becoming a typing exercise on a phone — and the box underneath
+ * is there because the answer it did not think of is often the real one.
+ */
+function AskUserBody({
+  call,
+  onResolve,
+}: {
+  call: Extract<ChatToolCall, { tool: 'ask_user' }>;
+  onResolve: (decision: ToolDecision) => void | Promise<void>;
+}) {
+  const [own, setOwn] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const answer = (text: string) => {
+    setBusy(true);
+    void onResolve({ decision: 'accepted', note: text });
+  };
+
+  return (
+    <>
+      <div className="shrink-0 border-b border-line px-4 py-3">
+        <p className="text-sm leading-relaxed font-medium">{call.question}</p>
+        {call.reason !== '' && <p className="mt-1 text-xs text-muted">{call.reason}</p>}
+      </div>
+
+      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3">
+        {call.options.map((option) => (
+          <button
+            key={option}
+            type="button"
+            disabled={busy}
+            onClick={() => answer(option)}
+            className="w-full rounded-xl bg-surface-2 px-3 py-2.5 text-left text-sm active:bg-surface-3 disabled:opacity-50"
+          >
+            {option}
+          </button>
+        ))}
+
+        <div className="flex items-end gap-2 pt-1">
+          <textarea
+            value={own}
+            onChange={(event) => setOwn(event.target.value)}
+            rows={1}
+            aria-label="Your own answer"
+            placeholder="Or say it yourself…"
+            className="max-h-24 min-h-10 flex-1 resize-none rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm focus:border-accent focus:outline-none"
+          />
+          <Button
+            variant="primary"
+            size="sm"
+            className="h-10 shrink-0"
+            disabled={busy || own.trim() === ''}
+            onClick={() => answer(own.trim())}
+          >
+            Send
+          </Button>
+        </div>
+
+        {/* Not answering is an answer: it tells the model to decide for itself
+            rather than asking again. */}
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() =>
+            void onResolve({
+              decision: 'rejected',
+              note: 'The user would rather not answer. Choose sensibly and carry on.',
+            })
+          }
+          className="w-full py-2 text-center text-xs text-muted"
+        >
+          Skip
+        </button>
+      </div>
+    </>
   );
 }
 
@@ -80,28 +160,46 @@ function BuildPromptBody({
   call,
   settings,
   onResolve,
-  onGenerated,
 }: {
   call: Extract<ChatToolCall, { tool: 'build_prompt' }>;
   settings: AppSettings | null;
   onResolve: (decision: ToolDecision) => void | Promise<void>;
-  onGenerated: () => void;
 }) {
   const workflows = useVisibleWorkflows();
-  const workflowId =
+
+  /*
+   * Either the chat's own workflow or whatever Generate is on.
+   *
+   * The second is the default because iterating on one workflow is the common
+   * case and two sets of settings that drift apart is a bug factory. The first
+   * exists for when the chat is where you start: Generate is then just wherever
+   * you happened to leave something, and inheriting that is worse than useless.
+   */
+  const chosen = settings?.chat.generation.workflowId ?? '';
+  const fallback =
     localStorage.getItem('latent.lastWorkflowId') ?? workflows.data?.[0]?.id ?? null;
+  const wanted = chosen !== '' ? chosen : fallback;
   const workflow = useWorkflow(
-    workflowId && workflows.data?.some((entry) => entry.id === workflowId)
-      ? workflowId
+    wanted && workflows.data?.some((entry) => entry.id === wanted)
+      ? wanted
       : (workflows.data?.[0]?.id ?? null),
   );
+  /** True when the values below are the chat's own rather than the form's. */
+  const ownSettings = chosen !== '' && workflow.data?.id === chosen;
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState(call.prompt);
 
   const detail = workflow.data;
-  const draft = useFormDrafts((state) => (detail ? state.drafts[detail.id] : undefined));
+  const formDraft = useFormDrafts((state) => (detail ? state.drafts[detail.id] : undefined));
+  const draft = ownSettings
+    ? {
+        values: { ...detail?.lastValues, ...settings?.chat.generation.values },
+        lockedSeeds: [] as string[],
+        batchCount: 1,
+      }
+    : formDraft;
 
   /**
    * Queue it exactly as the Generate screen would.
@@ -126,7 +224,7 @@ function BuildPromptBody({
       }
 
       const lockedSeeds = draft?.lockedSeeds ?? [];
-      await api.generate({
+      const queued = await api.generate({
         workflowId: detail.id,
         values,
         randomizeSeeds: detail.schema.fields.some(
@@ -136,14 +234,16 @@ function BuildPromptBody({
         batchCount: draft?.batchCount ?? 1,
       });
 
-      // The form keeps the prompt too, so going to Generate shows what ran.
-      useFormDrafts.getState().patch(detail.id, { values });
+      // Only when the form is what ran. Writing the chat's own values into the
+      // form would change what Generate does next, which is not what was asked.
+      if (!ownSettings) useFormDrafts.getState().patch(detail.id, { values });
 
       await onResolve({
         decision: 'accepted',
         note: `The user accepted the prompt and queued it: "${prompt.slice(0, 200)}"`,
+        // The first of the batch. The transcript shows the whole run from it.
+        ...(queued.generationIds[0] ? { generationId: queued.generationIds[0] } : {}),
       });
-      onGenerated();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not queue that');
       setBusy(false);
@@ -197,7 +297,7 @@ function BuildPromptBody({
         {/* What "Generate" would actually do, so accepting is not a leap. */}
         <div className="rounded-lg border border-line bg-surface-2/60 px-2.5 py-2">
           <p className="mb-1 text-[10px] tracking-wide text-muted uppercase">
-            Generating with
+            Generating with {ownSettings ? "the chat's own settings" : 'the Generate screen'}
           </p>
           {workflow.isLoading ? (
             <Spinner className="size-4 text-muted" />

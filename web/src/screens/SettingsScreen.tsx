@@ -2,10 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { fieldPoints, fieldPointValues, usesPointLine } from '@latent/shared';
 import type {
+  ChatSettings,
   FieldOverride,
   FieldOverrides,
   ParamField,
   QueuePolicy,
+  ToolEagerness,
+  WidgetValue,
   WorkflowDetail,
   WorkflowSummary,
 } from '@latent/shared';
@@ -26,16 +29,38 @@ import {
   useStatus,
   useUpdateSettings,
   useUpdateWorkflow,
+  useVisibleWorkflows,
   useWorkflow,
   useWorkflows,
 } from '../api/queries';
 import { NumericInput } from '../components/NumericInput';
 import { SortableList, type DragHandleProps } from '../components/SortableList';
-import { Toggle } from '../components/ParamControl';
+import { FieldChip, Toggle, WorkflowScope } from '../components/ParamControl';
 import { Button, Card, cn, ErrorNote, Row, Sheet, Spinner } from '../components/ui';
 import { useBlur } from '../state/blur';
 import { ConnectionsScreen } from './ConnectionsScreen';
 import { TerminalScreen } from './TerminalScreen';
+
+/** The pace settings, worst-to-best-behaved left to right. */
+const EAGERNESS_OPTIONS: { value: ToolEagerness; label: string }[] = [
+  { value: 'off', label: 'Off' },
+  { value: 'on-request', label: 'When asked' },
+  { value: 'considered', label: 'When settled' },
+  { value: 'eager', label: 'Freely' },
+];
+
+const TOOL_ROWS: { key: keyof ChatSettings['tools']; label: string; hint: string }[] = [
+  { key: 'build_prompt', label: 'Build a prompt', hint: 'stops the conversation' },
+  { key: 'prompt_blocks', label: 'Edit prompt blocks', hint: 'writes to your library' },
+  { key: 'ask_user', label: 'Ask a question', hint: 'one tap to answer' },
+];
+
+const IMAGE_HEIGHTS = [
+  { label: 'Quarter', value: 0.25 },
+  { label: 'Third', value: 1 / 3 },
+  { label: 'Half', value: 0.5 },
+  { label: 'Most', value: 0.7 },
+];
 
 const QUEUE_POLICIES: { value: QueuePolicy; label: string; hint: string }[] = [
   {
@@ -861,6 +886,19 @@ function ChatSection() {
     setSystemPrompt((current) => (current === '' ? chat.systemPrompt : current));
   }, [chat]);
 
+  /**
+   * Fill the box with Latent's own wording, to read or to edit.
+   *
+   * Fetched rather than duplicated here: there is one wording, it lives beside
+   * the tools it describes, and a copy in the browser would be wrong the first
+   * time either changed.
+   */
+  const loadDefault = async () => {
+    const { prompt } = await api.chatDefaultPrompt();
+    setSystemPrompt(prompt);
+    updateSettings.mutate({ chat: { ...chat!, systemPrompt: prompt } });
+  };
+
   if (!chat) return null;
 
   const patch = (change: Partial<typeof chat>) =>
@@ -954,20 +992,225 @@ function ChatSection() {
           </label>
         </div>
 
-        <label className="block space-y-1">
-          <span className="block text-[11px] text-muted">
-            Instructions (empty uses Latent’s own)
-          </span>
+        <div className="space-y-1">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-[11px] text-muted">
+              Instructions {systemPrompt.trim() === '' && '(Latent’s own)'}
+            </span>
+            <button
+              type="button"
+              onClick={() => void loadDefault()}
+              className="text-[11px] text-accent"
+            >
+              {systemPrompt.trim() === '' ? 'Show Latent’s own' : 'Start from Latent’s own'}
+            </button>
+          </div>
           <textarea
             value={systemPrompt}
             onChange={(event) => setSystemPrompt(event.target.value)}
             onBlur={() => patch({ systemPrompt })}
-            rows={3}
-            className="w-full resize-none rounded-xl border border-line bg-surface px-3 py-2 text-sm focus:border-accent focus:outline-none"
+            rows={6}
+            aria-label="Instructions"
+            className="w-full resize-none rounded-xl border border-line bg-surface px-3 py-2 font-mono text-xs leading-relaxed focus:border-accent focus:outline-none"
           />
-        </label>
+          <p className="text-[11px] text-muted">
+            Latent’s own describes the tools and how modern image models read a prompt — plain
+            prose rather than a pile of tags. Editing it replaces all of that;{' '}
+            <button
+              type="button"
+              onClick={() => {
+                setSystemPrompt('');
+                patch({ systemPrompt: '' });
+              }}
+              className="text-accent"
+            >
+              empty it
+            </button>{' '}
+            to go back. When each tool is reached for is set below and applies either way.
+          </p>
+        </div>
+      </Card>
+
+      {/* When it reaches for a tool ---------------------------------- */}
+      <Card className="space-y-3">
+        <div>
+          <p className="text-sm">When it reaches for a tool</p>
+          <p className="text-[11px] text-muted">
+            Separately per tool, because they are not the same interruption. A question mid-
+            conversation is cheap; a finished prompt while you are still deciding what you want
+            ends the conversation this module is for. <strong className="text-body">Off</strong> is
+            the only one that is a guarantee — the tool is not offered at all.
+          </p>
+        </div>
+
+        {TOOL_ROWS.map((row) => (
+          <div key={row.key} className="space-y-1">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-sm">{row.label}</span>
+              <span className="text-[11px] text-muted">{row.hint}</span>
+            </div>
+            <div className="flex gap-1">
+              {EAGERNESS_OPTIONS.map((option) => {
+                const active = chat.tools[row.key] === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-pressed={active}
+                    aria-label={`${row.label}: ${option.label}`}
+                    onClick={() =>
+                      patch({ tools: { ...chat.tools, [row.key]: option.value } })
+                    }
+                    className={cn(
+                      'min-w-0 flex-1 truncate rounded-lg px-1.5 py-1.5 text-[11px]',
+                      active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </Card>
+
+      {/* Pictures, and what they are made with ----------------------- */}
+      <Card className="space-y-3">
+        <div className="space-y-1.5">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-sm">Picture height in the chat</span>
+            <span className="text-[11px] text-muted">
+              {Math.round((chat.imageHeight ?? 1 / 3) * 100)}% of the window
+            </span>
+          </div>
+          <div className="flex gap-1">
+            {IMAGE_HEIGHTS.map((option) => {
+              const active = Math.abs((chat.imageHeight ?? 1 / 3) - option.value) < 0.01;
+              return (
+                <button
+                  key={option.label}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => patch({ imageHeight: option.value })}
+                  className={cn(
+                    'flex-1 rounded-lg px-2 py-1.5 text-xs',
+                    active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                  )}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-[11px] text-muted">
+            Tapping one opens it full-screen, where it zooms and pans; tapping again closes it.
+          </p>
+        </div>
+
+        <ChatGenerationSettingsEditor chat={chat} onPatch={patch} />
       </Card>
     </section>
+  );
+}
+
+/**
+ * What a picture started from the chat is generated with.
+ *
+ * Two modes, and the default is the boring one on purpose: while you are
+ * iterating on a workflow, the chat should use exactly what the Generate screen
+ * is holding, or the two drift and the prompt you accepted was rendered with
+ * settings you never saw. The second mode is for when the chat is where you
+ * start — then Generate is just wherever you last left something, and
+ * inheriting that is worse than useless.
+ */
+function ChatGenerationSettingsEditor({
+  chat,
+  onPatch,
+}: {
+  chat: ChatSettings;
+  onPatch: (change: Partial<ChatSettings>) => void;
+}) {
+  const workflows = useVisibleWorkflows();
+  const chosen = chat.generation.workflowId;
+  const detail = useWorkflow(chosen === '' ? null : chosen);
+
+  const setValue = (fieldId: string, value: WidgetValue) =>
+    onPatch({
+      generation: {
+        ...chat.generation,
+        values: { ...chat.generation.values, [fieldId]: value },
+      },
+    });
+
+  // Prompts are excluded: the whole point is that the model writes those.
+  const fields = (detail.data?.schema.fields ?? []).filter(
+    (field) =>
+      !field.hidden && field.role !== 'prompt' && field.role !== 'negative_prompt',
+  );
+
+  return (
+    <div className="space-y-2 border-t border-line pt-3">
+      <p className="text-sm">Generating from the chat uses</p>
+
+      <div className="flex flex-wrap gap-1">
+        <button
+          type="button"
+          aria-pressed={chosen === ''}
+          onClick={() => onPatch({ generation: { workflowId: '', values: {} } })}
+          className={cn(
+            'rounded-lg px-2.5 py-1.5 text-xs',
+            chosen === '' ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+          )}
+        >
+          Whatever Generate is on
+        </button>
+        {(workflows.data ?? []).map((workflow) => (
+          <button
+            key={workflow.id}
+            type="button"
+            aria-pressed={chosen === workflow.id}
+            onClick={() => onPatch({ generation: { workflowId: workflow.id, values: {} } })}
+            className={cn(
+              'max-w-full truncate rounded-lg px-2.5 py-1.5 text-xs',
+              chosen === workflow.id ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+            )}
+          >
+            {workflow.name}
+          </button>
+        ))}
+      </div>
+
+      {chosen !== '' && (
+        <>
+          {detail.isLoading ? (
+            <Spinner className="size-4 text-muted" />
+          ) : fields.length === 0 ? (
+            <p className="text-[11px] text-muted">That workflow has nothing to set.</p>
+          ) : (
+            <WorkflowScope workflowId={chosen}>
+              <div className="grid grid-cols-2 gap-1.5">
+                {fields.map((field) => (
+                  <FieldChip
+                    key={field.id}
+                    field={field}
+                    value={
+                      chat.generation.values[field.id] ??
+                      detail.data?.lastValues?.[field.id] ??
+                      field.defaultValue
+                    }
+                    onChange={(next) => setValue(field.id, next)}
+                  />
+                ))}
+              </div>
+            </WorkflowScope>
+          )}
+          <p className="text-[11px] text-muted">
+            Anything left alone uses that workflow’s own last values. Seeds are always redrawn.
+          </p>
+        </>
+      )}
+    </div>
   );
 }
 

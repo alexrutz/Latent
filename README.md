@@ -83,10 +83,11 @@ form. Nothing about your ComfyUI setup changes.
   **Random** tab, because it is a screenful you arrange once and come back to.
 - **A model to talk to.** Point Latent at a local `llama-server` and the **Chat**
   tab becomes the place you work out what to make: describe a picture in prose,
-  argue about it, show it a photo you like, and then ask for a prompt. Every
-  tool it wants to use is a dialog you approve or refuse — and when it hands you
-  a prompt, **Generate** on that dialog queues it with the settings the Generate
-  screen is holding, so the good idea does not have to be copied anywhere.
+  argue about it, show it a photo you like, answer the odd question it stops to
+  ask, and *then* ask for a prompt. Every tool it wants to use is a dialog you
+  approve or refuse, and how readily it reaches for each one is yours to set.
+  **Generate** on that dialog queues the prompt without leaving the
+  conversation, and the picture arrives in it.
 - **Parameter sweeps.** Give any numeric setting a range and an interval; each
   run draws one of the resulting values. Saved together with the prompt setup as
   one named thing, because that is how it is used.
@@ -444,6 +445,11 @@ The folder is strictly read-only — Latent never writes to it — and, like the
 import folder, a path is refused the moment it tries to escape the configured
 root.
 
+**The image input folds away.** Its preview is the whole picture at thumbnail
+size, sitting on the screen you look at with other people around, so the label
+is a fold: tap it and only the filename is left. The choice is remembered per
+input, and survives a reload.
+
 ## Importing an existing output folder
 
 **A folder at a time.** `<ComfyUI>/output` is routinely tens of thousands of
@@ -657,6 +663,13 @@ of what gets sent back on the next turn, which is both what the model expects
 and what keeps a long conversation from filling the context with its own
 deliberation. Turn it off in Settings if your model does not do it.
 
+**It is meant to be slow to conclude.** Deciding what the picture *is* — what is
+in it, what it feels like, how it is framed, what it is for — is most of the
+work, and a model that answers "a lighthouse at dusk" with a finished prompt has
+ended that conversation before it started. So building a prompt waits until you
+ask for it in so many words: *give me a prompt*, *erstelle mir einen prompt*,
+*generate it now*. Until then it talks, disagrees, and asks.
+
 **Show it a picture.** If the model is multimodal — most worth running are —
 the ⊕ button attaches a photo from the device and you can ask what is in it,
 what makes it work, or for a prompt that would produce something like it.
@@ -674,10 +687,26 @@ the model is told, and you carry on refining.
 **Build a prompt** is the one this module exists for. Ask for a prompt from what
 you have been discussing and you get it in an editable box — with **Reject** and
 **Generate** at the very top, and the settings it would run with listed small
-underneath: workflow, steps, CFG, sampler, size, batch. Generate submits it
-through exactly the path the Generate screen uses, with exactly the values that
-screen is holding, so there is no second set of settings to keep in sync and no
-copying a prompt between two tabs. Reject just continues the conversation.
+underneath: workflow, steps, CFG, sampler, size, batch. Reject just continues the
+conversation.
+
+Generate submits it through exactly the path the Generate screen uses. By
+default with exactly the values that screen is holding, so there is no second
+set of settings to keep in sync — but Settings can give the chat **a workflow
+and values of its own** instead, for when the chat is where a session starts and
+Generate is merely where you left something else set up.
+
+**You stay in the conversation, and the picture arrives in it.** Being sent to
+the Generate screen threw away the thread at the moment it had paid off. The run
+appears where you asked for it, a third of the chat window tall by default and
+adjustable; tapping one opens it full-screen with pinch-zoom and pan, and
+tapping again puts it away.
+
+**Ask a question** is the cheap one that makes the rest work. When a decision
+would change the picture and the conversation does not imply it — portrait or
+landscape, photograph or illustration — the model stops and asks, with two to
+four ready answers and a box for the one it did not think of. Skipping tells it
+to decide for itself.
 
 **Edit the prompt blocks** is the other. Writing a block library by hand is the
 tedious part of [random prompt mode](#random-prompt-mode), so the model can
@@ -690,6 +719,44 @@ updates and removes, so "these four are near-duplicates" is a thing it can fix.
 kept, listed by its first line, and renameable — but the model has no memory
 across them, and the point of the module is the prompt at the end, not the
 transcript.
+
+### How eagerly it reaches for each one
+
+Under Settings → Chat, every tool has its own setting: **Off**, **When asked**,
+**When settled**, **Freely**. Separately per tool, because they are not the same
+interruption — a question mid-conversation is welcome at the moment a finished
+prompt would derail things. Building a prompt and editing blocks start at *when
+asked*; questions start at *when settled*.
+
+Three of the four are sentences added to the model's instructions, which a small
+model can talk itself out of. **Off is the one that is a guarantee**: the tool
+is not in the request at all, so there is nothing to talk itself into.
+
+### The instructions
+
+Also editable, and worth reading before you replace them. Latent's own say two
+things.
+
+The first is about pace: work the idea out together, and do not rush to a
+finished prompt.
+
+The second is how to write one. The keyword pile — `masterpiece, 8k, highly
+detailed, trending on artstation` — is a habit from CLIP-era text encoders.
+Current models put a language model in front of the image model, so grammar and
+spatial relationships survive: "a red chair *behind* a blue table" puts the
+chair behind the table, and a flowing paragraph beats a comma-separated heap.
+[Krea 2's own guidance](https://github.com/krea-ai/krea-2/blob/main/docs/prompting.md)
+says as much, and adds the details worth having: long prompts are fine when
+every clause is doing work, too many style adjectives muddy rather than
+strengthen, whatever should appear as text in the picture goes in quotation
+marks, and the medium you asked for is never quietly swapped for another. The
+default prompt says all of that, plus: keep faith with what was actually asked
+for, and do not invent specifics nobody wanted.
+
+**Show Latent's own** fills the box so you can read or edit it; emptying the box
+goes back to it. The pace settings above apply either way — they belong to the
+app, not to the wording, so replacing the instructions does not silently lose
+them.
 
 ## Getting around
 
@@ -783,6 +850,13 @@ off for bare numbers.
 
 The values come from what each run recorded when it was queued, so they describe
 what actually ran even after the workflow has changed.
+
+**A choice can always be undone where it was made.** The list is built from what
+the runs in view actually recorded, so switching workflow used to make a value
+you had picked vanish from it while staying switched on — selected, invisible,
+and impossible to turn off. Those now stay listed, dimmed and labelled as
+belonging to something else, and **Show none** is reachable whether or not the
+list has anything in it.
 
 ## Timings and the queue
 
@@ -929,7 +1003,7 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 | `shared/` | Types, the form-building engine (`paramSchema.ts`), LoRA tag parsing, the queue's parameter summaries and both random draws (`randomPrompt.ts`, `randomParams.ts`) — pure, no I/O |
 | `server/` | Fastify proxy, ComfyUI client, live event hub, SQLite store, archive, terminal |
 | `server/src/monitor.ts` | The resource and event history behind the Monitor tab |
-| `server/src/chat/llama.ts` | The llama.cpp client: streaming, reasoning, tool schemas |
+| `server/src/chat/llama.ts` | The llama.cpp client: streaming, reasoning, tool schemas, and the instructions and pace policy |
 | `server/src/routes/chat.ts` | Conversations, the SSE reply stream, and tool decisions |
 | `server/src/statefile.ts` | Mirrors the arrangement to the files above the project |
 | `server/src/sweeper.ts` | Deletes runs nobody kept, once they are old enough |

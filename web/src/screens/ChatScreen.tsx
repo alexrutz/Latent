@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 
 import type {
   ChatConversationDetail,
@@ -8,8 +7,9 @@ import type {
   ChatToolCall,
 } from '@latent/shared';
 
-import { api } from '../api/client';
-import { useSettings } from '../api/queries';
+import { api, imageUrl } from '../api/client';
+import { useGeneration, useSettings } from '../api/queries';
+import { ImageViewer } from '../components/ImageViewer';
 import { ToolDialog } from '../components/ToolDialog';
 import { Button, cn, ErrorNote, Sheet, Spinner } from '../components/ui';
 
@@ -35,8 +35,14 @@ interface Streaming {
   thinking: string;
 }
 
+/** What a resolved tool call is called once it is only a line in the history. */
+const TOOL_LABELS: Record<ChatToolCall['tool'], string> = {
+  build_prompt: 'Proposed a prompt',
+  prompt_blocks: 'Proposed blocks',
+  ask_user: 'Asked something',
+};
+
 export function ChatScreen() {
-  const navigate = useNavigate();
   const settings = useSettings();
 
   const [chat, setChat] = useState<ChatConversationDetail | null>(null);
@@ -52,6 +58,28 @@ export function ChatScreen() {
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const [transcriptHeight, setTranscriptHeight] = useState(0);
+
+  /*
+   * A generated picture is sized against the chat window, not against the
+   * screen: the setting is "a third of what I am reading", and on a phone with
+   * the keyboard up that is a very different number from a third of the
+   * display. Measured rather than assumed for the same reason.
+   */
+  useEffect(() => {
+    const element = transcriptRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => setTranscriptHeight(element.clientHeight));
+    observer.observe(element);
+    setTranscriptHeight(element.clientHeight);
+    return () => observer.disconnect();
+  }, []);
+
+  const pictureHeight = Math.max(
+    80,
+    Math.round(transcriptHeight * (settings.data?.chat.imageHeight ?? 1 / 3)),
+  );
 
   /** Open the conversation we were last in, or start one. */
   useEffect(() => {
@@ -262,6 +290,7 @@ export function ChatScreen() {
         plainly not the thing being interacted with.
       */}
       <div
+        ref={transcriptRef}
         className={cn(
           'min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-2',
           pendingCall && 'pointer-events-none blur-sm',
@@ -279,7 +308,7 @@ export function ChatScreen() {
 
         <div className="space-y-3">
           {chat.messages.map((message) => (
-            <MessageRow key={message.id} message={message} />
+            <MessageRow key={message.id} message={message} pictureHeight={pictureHeight} />
           ))}
 
           {streaming && (
@@ -385,7 +414,6 @@ export function ChatScreen() {
               setError(cause instanceof Error ? cause.message : 'Could not record that');
             }
           }}
-          onGenerated={() => navigate('/')}
         />
       )}
 
@@ -405,12 +433,21 @@ export function ChatScreen() {
   );
 }
 
-function MessageRow({ message }: { message: ChatMessage }) {
+function MessageRow({
+  message,
+  pictureHeight,
+}: {
+  message: ChatMessage;
+  pictureHeight: number;
+}) {
   if (message.role === 'tool') {
     return (
-      <p className="text-center text-[11px] text-muted">
-        {message.content}
-      </p>
+      <div className="space-y-1.5">
+        <p className="text-center text-[11px] text-muted">{message.content}</p>
+        {message.generationId && (
+          <GeneratedRun id={message.generationId} height={pictureHeight} />
+        )}
+      </div>
     );
   }
 
@@ -448,13 +485,86 @@ function MessageRow({ message }: { message: ChatMessage }) {
       )}
       {message.toolCall && (
         <p className="text-[11px] text-muted">
-          {message.toolCall.tool === 'build_prompt' ? 'Proposed a prompt' : 'Proposed blocks'}
+          {TOOL_LABELS[message.toolCall.tool]}
           {message.toolResult
             ? ` · ${message.toolResult.decision === 'accepted' ? 'accepted' : 'declined'}`
             : ' · waiting'}
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * The pictures a prompt accepted here produced, in the conversation.
+ *
+ * They belong at the point they were asked for. Sending you to the Generate
+ * screen to look at them — which is what used to happen — threw away the thread
+ * of the conversation at exactly the moment it had paid off, and coming back
+ * meant scrolling to find where you were.
+ *
+ * Sized against the chat window rather than to a fixed number of pixels, and
+ * tapping one opens the full viewer: pinch to zoom, drag to move, tap again to
+ * put it away.
+ */
+function GeneratedRun({ id, height }: { id: string; height: number }) {
+  const generation = useGeneration(id);
+  const [viewing, setViewing] = useState<number | null>(null);
+
+  const record = generation.data;
+  const images = record?.images ?? [];
+
+  if (!record || (images.length === 0 && record.status !== 'failed')) {
+    return (
+      <div
+        style={{ height }}
+        className="grid place-items-center rounded-xl border border-line bg-surface-2/50"
+      >
+        <span className="flex items-center gap-2 text-xs text-muted">
+          <Spinner className="size-3.5" />
+          {record?.status === 'running' ? 'Generating…' : 'Queued'}
+        </span>
+      </div>
+    );
+  }
+
+  if (record.status === 'failed') {
+    return <ErrorNote>{record.error || 'That run failed.'}</ErrorNote>;
+  }
+
+  return (
+    <>
+      <div className="flex flex-wrap gap-1.5">
+        {images.map((image, index) => (
+          <button
+            key={image.id ?? `${image.filename}-${index}`}
+            type="button"
+            onClick={() => setViewing(index)}
+            style={{ height }}
+            aria-label={`Open picture ${index + 1}`}
+            className="overflow-hidden rounded-xl bg-surface-2 active:opacity-80"
+          >
+            <img
+              src={imageUrl(image, 'webp;80')}
+              alt=""
+              // `h-full w-auto` so the row keeps each picture's own shape: a
+              // portrait and a landscape from one batch should not be cropped
+              // into agreeing with each other.
+              className="h-full w-auto object-contain"
+            />
+          </button>
+        ))}
+      </div>
+
+      {viewing !== null && (
+        <ImageViewer
+          entries={images.map((image) => ({ record, image }))}
+          index={viewing}
+          onIndexChange={setViewing}
+          onClose={() => setViewing(null)}
+        />
+      )}
+    </>
   );
 }
 

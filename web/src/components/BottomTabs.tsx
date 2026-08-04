@@ -49,6 +49,36 @@ const MORE: Tab[] = [
 const MORE_AFTER = '/queue';
 
 /**
+ * The chat module's mark: a speech bubble with a spark in it.
+ *
+ * Drawn rather than typed. No single character says "talk to a model that makes
+ * pictures", and the ones that come close — ✧, ✦, 💬 — are either already used
+ * by another tab or render as the platform's own coloured emoji, which next to
+ * five monochrome glyphs looks like a sticker somebody left on the app.
+ *
+ * `currentColor` throughout, so the one mark serves both the filled active tile
+ * and the outlined resting one.
+ */
+function ChatMark() {
+  return (
+    <svg viewBox="0 0 24 24" className="size-[1.15rem]" fill="none" aria-hidden>
+      <path
+        d="M4 10.2c0-2.9 2.4-5.2 5.4-5.2h5.2c3 0 5.4 2.3 5.4 5.2s-2.4 5.3-5.4 5.3H11l-3.6 3v-3.3C5.5 14.4 4 12.5 4 10.2Z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinejoin="round"
+      />
+      {/* The spark: four-pointed, the same family as Generate's ✦, so the two
+          read as one app rather than two. */}
+      <path
+        d="M12 7.4c.35 1.7.75 2.1 2.45 2.45-1.7.35-2.1.75-2.45 2.45-.35-1.7-.75-2.1-2.45-2.45 1.7-.35 2.1-.75 2.45-2.45Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+/**
  * Bottom navigation, because the bottom of the screen is the only part of a
  * phone you can reach one-handed.
  */
@@ -130,25 +160,33 @@ export function BottomTabs() {
                   }
                 >
                   {/*
-                    Chat's mark sits in a ring. Colour alone would be one more
-                    thing competing with the active state; a shape reads as
-                    "this one is different" at any size and in any theme.
+                    Chat gets a tile, not a glyph.
+
+                    The other five are typographic marks sitting on the bar;
+                    this one is a filled squircle with a drawn mark inside it,
+                    which is a different *kind* of thing rather than a bigger
+                    version of the same one — and that is what makes the middle
+                    of the bar findable without reading any of the labels. Same
+                    footprint as the ring it replaces, so the bar's height is
+                    unchanged.
                   */}
-                  <span
-                    aria-hidden
-                    className={cn(
-                      'text-base leading-none',
-                      chat &&
-                        cn(
-                          'grid size-8 -translate-y-1 place-items-center rounded-full border',
-                          active
-                            ? 'border-accent bg-accent text-white'
-                            : 'border-accent/40 bg-accent/10 text-accent',
-                        ),
-                    )}
-                  >
-                    {tab.icon}
-                  </span>
+                  {chat ? (
+                    <span
+                      aria-hidden
+                      className={cn(
+                        'grid size-8 -translate-y-1 place-items-center rounded-[0.7rem] transition-colors',
+                        active
+                          ? 'bg-gradient-to-br from-accent to-accent/70 text-white shadow-sm shadow-accent/30'
+                          : 'bg-surface-2 text-accent ring-1 ring-accent/30 ring-inset',
+                      )}
+                    >
+                      <ChatMark />
+                    </span>
+                  ) : (
+                    <span aria-hidden className="text-base leading-none">
+                      {tab.icon}
+                    </span>
+                  )}
                   <span
                     className={cn(
                       'max-w-full truncate px-px text-[8px] leading-none font-medium',

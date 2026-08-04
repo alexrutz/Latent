@@ -9,7 +9,7 @@ import type {
   ProposedBlock,
 } from '@latent/shared';
 
-import { LlamaClient, LlamaError } from '../chat/llama.js';
+import { DEFAULT_SYSTEM_PROMPT, LlamaClient, LlamaError } from '../chat/llama.js';
 import type { AppContext } from './context.js';
 
 /**
@@ -47,6 +47,15 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       };
     }
   });
+
+  /**
+   * Latent's own instructions, so Settings can show them and reset to them.
+   *
+   * A read-only route rather than a copy in the client: there is one wording,
+   * it lives next to the tools it describes, and a duplicate in the browser
+   * would be wrong the first time either changed.
+   */
+  app.get('/api/chat/prompt', async () => ({ prompt: DEFAULT_SYSTEM_PROMPT }));
 
   app.get('/api/chat/conversations', async () => ctx.store.listChats());
 
@@ -126,14 +135,16 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       decision?: ChatToolResult['decision'];
       /** For `prompt_blocks`: the blocks the user kept, as edited. */
       blocks?: ProposedBlock[];
-      /** For `build_prompt`: what the client did with it. */
+      /** For `build_prompt` and `ask_user`: what the client did, or the answer. */
       note?: string;
+      /** For `build_prompt`: the run the accepted prompt started. */
+      generationId?: string;
     };
   }>('/api/chat/conversations/:id/tool', async (request, reply) => {
     const chat = ctx.store.getChat(request.params.id);
     if (!chat) return reply.code(404).send({ error: 'No such conversation' });
 
-    const { messageId, decision = 'rejected', blocks, note } = request.body ?? {};
+    const { messageId, decision = 'rejected', blocks, note, generationId } = request.body ?? {};
     const message = chat.messages.find((candidate) => candidate.id === messageId);
     if (!message?.toolCall) return reply.code(404).send({ error: 'No such tool call' });
     if (message.toolResult) {
@@ -145,6 +156,9 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       summary = note?.trim() || 'The user declined.';
     } else if (message.toolCall.tool === 'prompt_blocks') {
       summary = applyBlocks(ctx, blocks ?? message.toolCall.blocks);
+    } else if (message.toolCall.tool === 'ask_user') {
+      // The answer *is* the result. Quoted so the model reads it as theirs.
+      summary = note?.trim() || 'The user did not answer.';
     } else {
       summary = note?.trim() || 'The user accepted the prompt and is generating it.';
     }
@@ -162,6 +176,9 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       role: 'tool',
       content: summary,
       toolCall: message.toolCall,
+      // The run this decision started, so its pictures land in the transcript
+      // at the point they were asked for rather than only in the gallery.
+      ...(typeof generationId === 'string' && generationId !== '' ? { generationId } : {}),
       createdAt: Date.now(),
     });
 
