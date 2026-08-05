@@ -16,6 +16,15 @@ export interface PendingSetup {
   imageFilename?: string;
   /** Roll a new seed rather than reusing the recorded one. */
   freshSeed?: boolean;
+  /**
+   * Text to write into whatever fields play these roles.
+   *
+   * By role rather than by field id, because this is the one handoff that
+   * crosses *between* workflows — "try this prompt in the other graph" — and
+   * the other graph's prompt field has a different id. Everything in `values`
+   * is keyed by the source workflow's ids and only makes sense within it.
+   */
+  promptText?: { positive?: string; negative?: string };
 }
 
 interface PendingStore {

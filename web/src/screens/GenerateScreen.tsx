@@ -57,12 +57,18 @@ function MainField({
   setValue,
   lockedSeeds,
   onToggleSeedLock,
+  workflows,
+  workflowId,
+  onSendToWorkflow,
 }: {
   field: ParamField;
   values: ParamValues;
   setValue: (id: string, value: WidgetValue) => void;
   lockedSeeds: string[];
   onToggleSeedLock: (id: string) => void;
+  workflows: { id: string; name: string }[];
+  workflowId: string | null;
+  onSendToWorkflow: (id: string, text: string) => void;
 }) {
   const value = values[field.id] ?? field.defaultValue;
 
@@ -83,6 +89,13 @@ function MainField({
             />
             {/* The phrases that go on everything, chosen once. */}
             <AlwaysBlocks />
+            {/* The same words through a different graph, without the round trip
+                through the clipboard. */}
+            <SendToWorkflow
+              workflows={workflows}
+              workflowId={workflowId}
+              onSend={(id) => onSendToWorkflow(id, String(values[field.id] ?? ''))}
+            />
             {/*
               No LoRA editor here any more. LoRA tags belong in the field that
               exists to hold them — offering to write them into the description
@@ -239,6 +252,7 @@ function GenerateForm({
   const endless = useEndless();
   const setEndless = useSetEndless();
   const randomMode = usePromptMode();
+  const setPending = usePendingStore((state) => state.setPending);
   const job = useLiveStore((state) => state.live.job);
   const comfyOnline = useLiveStore((state) => state.live.comfyOnline);
 
@@ -280,10 +294,29 @@ function GenerateForm({
     // whatever was already set up stays exactly as it was left.
     if (stored && !reused) return;
 
-    const base = { ...defaultValues(detail.schema), ...detail.lastValues };
+    /*
+     * A prompt sent over from another workflow changes the prompt and nothing
+     * else. "Reuse these settings" is the opposite — it replaces the lot — so
+     * the two start from different places: this one from whatever is already
+     * set up here, that one from the workflow's own defaults.
+     */
+    const carriedPrompt = reused && handoff?.promptText && !handoff.values;
+    const base =
+      carriedPrompt && stored
+        ? { ...stored.values }
+        : { ...defaultValues(detail.schema), ...detail.lastValues };
 
     if (reused) {
       Object.assign(base, handoff?.values ?? {});
+
+      for (const field of detail.schema.fields) {
+        if (field.role === 'prompt' && handoff?.promptText?.positive !== undefined) {
+          base[field.id] = handoff.promptText.positive;
+        }
+        if (field.role === 'negative_prompt' && handoff?.promptText?.negative !== undefined) {
+          base[field.id] = handoff.promptText.negative;
+        }
+      }
 
       if (handoff?.imageFilename) {
         const imageField = findFieldByRole(detail.schema, 'image_input');
@@ -347,6 +380,30 @@ function GenerateForm({
   const setValue = (id: string, value: WidgetValue) => {
     if (!detail) return;
     patchDraft(detail.id, { values: { ...values, [id]: value } });
+  };
+
+  /**
+   * Carry the prompt over to another workflow and switch to it.
+   *
+   * Through the same one-shot handoff the gallery's "reuse" uses, because the
+   * target's schema is not loaded yet and its prompt field has an id this
+   * screen has never seen — so the text travels by *role* and is applied once
+   * the other form knows what its fields are. Everything else there stays as it
+   * was left: this is "try these words in the other graph", not "replace that
+   * graph's settings with this one's".
+   */
+  const sendToWorkflow = (id: string, text: string) => {
+    const negativeField = detail
+      ? detail.schema.fields.find((field) => field.role === 'negative_prompt')
+      : undefined;
+    setPending({
+      workflowId: id,
+      promptText: {
+        positive: text,
+        ...(negativeField ? { negative: String(values[negativeField.id] ?? '') } : {}),
+      },
+    });
+    onSelectWorkflow(id);
   };
 
   const anySeedUnlocked = seedFields.some((field) => !lockedSeeds.includes(field.id));
@@ -424,6 +481,9 @@ function GenerateForm({
         <button
           type="button"
           onClick={() => setShowPicker(true)}
+          // Labelled rather than named by its contents: what it *says* is the
+          // workflow you are on, which is not what the control is.
+          aria-label="Choose workflow"
           className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-left active:bg-surface-2"
         >
           <span className="min-w-0 flex-1 truncate font-medium">{detail.name}</span>
@@ -492,6 +552,9 @@ function GenerateForm({
             field={run.fields[0]!}
             values={values}
             setValue={setValue}
+            workflows={workflows}
+            workflowId={workflowId}
+            onSendToWorkflow={sendToWorkflow}
             lockedSeeds={lockedSeeds}
             onToggleSeedLock={(id) =>
               patchDraft(detail.id, {
@@ -883,5 +946,65 @@ function FieldChipFallback({
       onChange={(event) => onChange(event.target.value)}
       className="w-full rounded-xl border border-line bg-surface px-4 py-2.5 focus:border-accent focus:outline-none"
     />
+  );
+}
+
+/**
+ * Send the prompt through a different workflow.
+ *
+ * The same words are worth trying through the fast draft graph and the slow
+ * one, and doing that by hand meant selecting a paragraph on a phone, copying
+ * it, switching workflow and pasting — four operations, one of which the
+ * software should simply not require. Only the *other* workflows are listed,
+ * because sending a prompt to the one it is already in does nothing.
+ */
+function SendToWorkflow({
+  workflows,
+  workflowId,
+  onSend,
+}: {
+  workflows: { id: string; name: string }[];
+  workflowId: string | null;
+  onSend: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const others = workflows.filter((item) => item.id !== workflowId);
+
+  if (others.length === 0) return null;
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex items-center gap-1 text-xs text-muted"
+      >
+        <span aria-hidden>⇢</span>
+        Send to…
+      </button>
+
+      <Sheet open={open} onClose={() => setOpen(false)} title="Send the prompt to">
+        <ul className="space-y-1">
+          {others.map((item) => (
+            <li key={item.id}>
+              <button
+                type="button"
+                onClick={() => {
+                  onSend(item.id);
+                  setOpen(false);
+                }}
+                className="w-full truncate rounded-xl px-4 py-3 text-left active:bg-surface-2"
+              >
+                {item.name}
+              </button>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-2 px-1 text-[11px] text-muted">
+          The prompt is copied across and that workflow is opened. Its own settings are left
+          exactly as you had them.
+        </p>
+      </Sheet>
+    </>
   );
 }

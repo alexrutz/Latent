@@ -428,6 +428,20 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  /** Note that a prompt from further up the conversation was generated again. */
+  rerunPrompt: (id: string, body: { messageId: string; generationId?: string }) =>
+    request<{ ok: true; messageId: string }>(`/api/chat/conversations/${id}/rerun`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Drop everything after a message, keeping the message itself. */
+  rewindChat: (id: string, messageId: string) =>
+    request<{ ok: true; removed: number }>(`/api/chat/conversations/${id}/rewind`, {
+      method: 'POST',
+      body: JSON.stringify({ messageId }),
+    }),
+
   queue: () => request<QueueState>('/api/queue'),
 
   interrupt: () => request<void>('/api/queue/interrupt', { method: 'POST' }),

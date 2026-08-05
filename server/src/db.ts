@@ -722,6 +722,34 @@ export class Store {
     this.db.prepare('UPDATE chats SET updated_at = ? WHERE id = ?').run(Date.now(), chatId);
   }
 
+  /**
+   * Drop everything after a message, keeping the message itself.
+   *
+   * Ordered by `(created_at, rowid)` exactly as `getChat` reads them, so "after"
+   * here means the same thing it means on screen. Two messages inserted in the
+   * same millisecond are ordered by rowid, and comparing on `created_at` alone
+   * would take one of them with it.
+   */
+  truncateChat(chatId: string, afterMessageId: string): number {
+    const anchor = this.db
+      .prepare<[string], { created_at: number; rowid: number }>(
+        'SELECT created_at, rowid FROM chat_messages WHERE id = ?',
+      )
+      .get(afterMessageId);
+    if (!anchor) return 0;
+
+    const result = this.db
+      .prepare(
+        `DELETE FROM chat_messages
+          WHERE chat_id = ?
+            AND (created_at > ? OR (created_at = ? AND rowid > ?))`,
+      )
+      .run(chatId, anchor.created_at, anchor.created_at, anchor.rowid);
+
+    this.db.prepare('UPDATE chats SET updated_at = ? WHERE id = ?').run(Date.now(), chatId);
+    return result.changes;
+  }
+
   /** Record what the user decided about a tool call, on the message that asked. */
   setChatToolResult(messageId: string, result: ChatToolResult): void {
     this.db

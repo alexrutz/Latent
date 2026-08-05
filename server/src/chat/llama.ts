@@ -298,6 +298,9 @@ export function toApiMessages(messages: ChatMessage[], systemPrompt: string): Op
   const out: OpenAiMessage[] = [{ role: 'system', content: systemPrompt }];
 
   for (const message of messages) {
+    // Latent's own. See `ChatRole`: it is transcript, not conversation.
+    if (message.role === 'note') continue;
+
     if (message.role === 'tool') {
       out.push({
         role: 'tool',

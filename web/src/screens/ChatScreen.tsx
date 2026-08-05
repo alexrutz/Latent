@@ -30,6 +30,8 @@ import { useLiveStore } from '../state/live';
  */
 
 const LAST_CHAT_KEY = 'latent.lastChatId';
+/** What was typed but not sent, kept across a tab switch. */
+const DRAFT_KEY = 'latent.chatDraft';
 /** Longest side an attachment is scaled to before it is sent. */
 const MAX_IMAGE_SIDE = 1024;
 
@@ -53,7 +55,26 @@ export function ChatScreen() {
   const [pendingCall, setPendingCall] = useState<{ messageId: string; call: ChatToolCall } | null>(
     null,
   );
-  const [draft, setDraft] = useState('');
+  /** A prompt from further up, reopened to run again or to rewind to. */
+  const [revisiting, setRevisiting] = useState<{
+    messageId: string;
+    call: ChatToolCall;
+  } | null>(null);
+  /*
+   * What you were typing outlives the tab.
+   *
+   * Leaving the tab unmounts this screen, and a half-written sentence going
+   * with it is the same fault the Generate form had: you switch to the gallery
+   * to check something *about* the message you are writing, and lose it for
+   * looking. Kept on the device rather than the server — it is not part of the
+   * conversation until it is sent.
+   */
+  const [draft, setDraft] = useState(() => localStorage.getItem(DRAFT_KEY) ?? '');
+
+  useEffect(() => {
+    if (draft === '') localStorage.removeItem(DRAFT_KEY);
+    else localStorage.setItem(DRAFT_KEY, draft);
+  }, [draft]);
   const [attachments, setAttachments] = useState<{ dataUrl: string; name: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
@@ -382,7 +403,12 @@ export function ChatScreen() {
 
         <div className="space-y-3">
           {chat.messages.map((message) => (
-            <MessageRow key={message.id} message={message} pictureWidth={pictureWidth} />
+            <MessageRow
+              key={message.id}
+              message={message}
+              pictureWidth={pictureWidth}
+              onRevisit={(call) => setRevisiting({ messageId: message.id, call })}
+            />
           ))}
 
           {streaming && (
@@ -507,6 +533,40 @@ export function ChatScreen() {
         />
       )}
 
+      {revisiting && (
+        <ToolDialog
+          call={revisiting.call}
+          settings={settings.data ?? null}
+          onResolve={() => setRevisiting(null)}
+          revisit={{
+            onClose: () => setRevisiting(null),
+            onRerun: async (generationId) => {
+              const { messageId } = revisiting;
+              setRevisiting(null);
+              try {
+                await api.rerunPrompt(chat.id, {
+                  messageId,
+                  ...(generationId ? { generationId } : {}),
+                });
+                setChat(await api.chat(chat.id));
+              } catch (cause) {
+                setError(cause instanceof Error ? cause.message : 'Could not record that');
+              }
+            },
+            onRewind: async () => {
+              const { messageId } = revisiting;
+              setRevisiting(null);
+              try {
+                await api.rewindChat(chat.id, messageId);
+                setChat(await api.chat(chat.id));
+              } catch (cause) {
+                setError(cause instanceof Error ? cause.message : 'Could not rewind');
+              }
+            },
+          }}
+        />
+      )}
+
       <Sheet open={showHistory} onClose={() => setShowHistory(false)} title="Saved chats">
         <SavedChats
           currentId={chat.id}
@@ -526,11 +586,13 @@ export function ChatScreen() {
 function MessageRow({
   message,
   pictureWidth,
+  onRevisit,
 }: {
   message: ChatMessage;
   pictureWidth: number;
+  onRevisit: (call: ChatToolCall) => void;
 }) {
-  if (message.role === 'tool') {
+  if (message.role === 'tool' || message.role === 'note') {
     return (
       <div className="space-y-1.5">
         <p className="text-center text-[11px] text-muted">{message.content}</p>
@@ -571,14 +633,35 @@ function MessageRow({
     <div className="space-y-1">
       {message.thinking && <ThinkingBlock text={message.thinking} />}
       {message.content !== '' && <Markdown text={message.content} />}
-      {message.toolCall && (
-        <p className="text-[11px] text-muted">
-          {TOOL_LABELS[message.toolCall.tool]}
-          {message.toolResult
-            ? ` · ${message.toolResult.decision === 'accepted' ? 'accepted' : 'declined'}`
-            : ' · waiting'}
-        </p>
-      )}
+      {message.toolCall &&
+        /*
+          A prompt stays reachable for the rest of the conversation.
+          Wanting the same picture with one thing changed is the commonest
+          thing there is, and the alternative was a trip to the gallery to
+          find the result and press reuse — which loses the conversation the
+          prompt came out of. Only prompts: a decided question or a saved
+          block has nothing left to do.
+        */
+        (message.toolCall.tool === 'build_prompt' && message.toolResult ? (
+          <button
+            type="button"
+            onClick={() => onRevisit(message.toolCall!)}
+            className="flex w-full items-center gap-1.5 rounded-lg bg-surface-2/60 px-2 py-1.5 text-left text-[11px] text-muted active:bg-surface-2"
+          >
+            <span aria-hidden className="text-accent">
+              ✦
+            </span>
+            <span className="min-w-0 flex-1 truncate">{message.toolCall.prompt}</span>
+            <span className="shrink-0 text-accent">Again</span>
+          </button>
+        ) : (
+          <p className="text-[11px] text-muted">
+            {TOOL_LABELS[message.toolCall.tool]}
+            {message.toolResult
+              ? ` · ${message.toolResult.decision === 'accepted' ? 'accepted' : 'declined'}`
+              : ' · waiting'}
+          </p>
+        ))}
     </div>
   );
 }

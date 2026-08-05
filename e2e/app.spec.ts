@@ -2929,6 +2929,87 @@ test.describe('the chat module', () => {
     await page.screenshot({ path: 'test-results/67-own-message.png' });
   });
 
+  /**
+   * A prompt stays reachable for the rest of the conversation.
+   *
+   * Wanting the same picture with one thing changed is the commonest thing
+   * there is, and the alternative was a trip to the gallery to find the result
+   * and press reuse — which loses the conversation the prompt came out of.
+   */
+  test('runs an earlier prompt again, and can wind back to it', async ({ page }) => {
+    await seedWorkflow();
+    await script(
+      {
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+        },
+      },
+      { content: 'Queued that one.' },
+      { content: 'Talking about something else now.' },
+    );
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('build me a prompt');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    await expect(page.getByRole('dialog')).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('dialog').getByRole('button', { name: 'Generate', exact: true }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 30_000 });
+
+    // Say something else, so there is a tail to wind back over.
+    await page.getByPlaceholder('Say something…').fill('never mind, tell me a joke');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByText('Talking about something else now.')).toBeVisible({
+      timeout: 30_000,
+    });
+
+    // The prompt is still there, as something you can press.
+    const again = page.getByRole('button', { name: /a harbour at dawn/ });
+    await expect(again).toBeVisible();
+    await again.click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByRole('button', { name: 'Generate again' })).toBeVisible();
+    await page.screenshot({ path: 'test-results/68-revisit.png' });
+
+    await dialog.getByRole('button', { name: 'Generate again' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 30_000 });
+
+    // Two runs of the same prompt now.
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const gallery = (await (await ctx.get('/api/gallery?limit=20')).json()) as {
+              items: { title: string }[];
+            };
+            return gallery.items.filter((item) => item.title.includes('a harbour at dawn')).length;
+          }),
+        { timeout: 60_000 },
+      )
+      .toBe(2);
+
+    // And winding back drops everything said after it.
+    await again.click();
+    await page.getByRole('button', { name: /Carry on from here/ }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByText('never mind, tell me a joke')).toHaveCount(0);
+    await expect(again).toBeVisible();
+  });
+
+  /** A half-written sentence should survive going to look something up. */
+  test('keeps what you were typing when you leave the tab', async ({ page }) => {
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('a lighthouse, but');
+
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    await expect(page.getByRole('heading', { name: 'Gallery' })).toBeVisible();
+    await page.getByRole('link', { name: 'Chat' }).click();
+
+    await expect(page.getByPlaceholder('Say something…')).toHaveValue('a lighthouse, but');
+  });
+
   /** Blocks arrive one at a time, and only what you keep is saved. */
   test('keeps the proposed blocks you choose, as edited', async ({ page }) => {
     await script(
@@ -3066,6 +3147,40 @@ test.describe('the eighteenth wave', () => {
     expect(values).not.toBeNull();
     expect(Math.round(values!.height)).toBe(Math.round(details!.height));
     await page.screenshot({ path: 'test-results/63-viewer-bar.png' });
+  });
+
+  /**
+   * The same words through a different graph.
+   *
+   * Doing it by hand meant selecting a paragraph on a phone, copying it,
+   * switching workflow and pasting — four operations, one of which the software
+   * should simply not require.
+   */
+  test('sends the prompt to another workflow without copying it', async ({ page }) => {
+    await seedWorkflow();
+    await seedWorkflow('the other one');
+    await open(page, '/');
+
+    const picker = page.getByRole('button', { name: 'Choose workflow' });
+
+    // Set something up in the second workflow, so we can see it survives.
+    await picker.click();
+    await page.getByRole('button', { name: 'the other one' }).click();
+    await page.getByPlaceholder('Describe the image…').fill('whatever was here');
+
+    // Back to the first, and send its prompt across.
+    await picker.click();
+    await page.getByRole('button', { name: WORKFLOW_NAME }).click();
+    await page.getByPlaceholder('Describe the image…').fill('a harbour at dawn');
+
+    await page.getByRole('button', { name: 'Send to…' }).click();
+    await expect(page.getByRole('heading', { name: 'Send the prompt to' })).toBeVisible();
+    await page.getByRole('button', { name: 'the other one' }).click();
+
+    // That workflow is open, with the prompt carried over.
+    await expect(picker).toContainText('the other one');
+    await expect(page.getByPlaceholder('Describe the image…')).toHaveValue('a harbour at dawn');
+    await page.screenshot({ path: 'test-results/69-send-to-workflow.png' });
   });
 
   /**

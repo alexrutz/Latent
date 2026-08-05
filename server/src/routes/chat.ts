@@ -186,6 +186,65 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
   });
 
   /**
+   * Note that a prompt from further up was generated again.
+   *
+   * Its own route, and its own `note` role, because this is not a turn in the
+   * conversation: the model already had its answer to that tool call, and a
+   * second tool response for one call is what chat templates refuse. The note
+   * exists so the picture has somewhere to appear.
+   */
+  app.post<{
+    Params: { id: string };
+    Body: { messageId?: string; generationId?: string };
+  }>('/api/chat/conversations/:id/rerun', async (request, reply) => {
+    const chat = ctx.store.getChat(request.params.id);
+    if (!chat) return reply.code(404).send({ error: 'No such conversation' });
+
+    const { messageId, generationId } = request.body ?? {};
+    const message = chat.messages.find((candidate) => candidate.id === messageId);
+    if (message?.toolCall?.tool !== 'build_prompt') {
+      return reply.code(404).send({ error: 'No such prompt' });
+    }
+
+    const id = randomUUID();
+    ctx.store.insertChatMessage(chat.id, {
+      id,
+      role: 'note',
+      content: 'Generated again',
+      ...(typeof generationId === 'string' && generationId !== ''
+        ? { generationId }
+        : {}),
+      createdAt: Date.now(),
+    });
+    return reply.send({ ok: true, messageId: id });
+  });
+
+  /**
+   * Wind the conversation back to a message and drop everything after it.
+   *
+   * The message itself stays: "take me back to this prompt and carry on from
+   * there" means that prompt is where you are, not the last thing you lost. It
+   * is a real delete rather than a marker — a hidden tail that the model could
+   * still see would make the conversation behave in ways the transcript does
+   * not explain.
+   */
+  app.post<{ Params: { id: string }; Body: { messageId?: string } }>(
+    '/api/chat/conversations/:id/rewind',
+    async (request, reply) => {
+      const chat = ctx.store.getChat(request.params.id);
+      if (!chat) return reply.code(404).send({ error: 'No such conversation' });
+
+      const at = chat.messages.findIndex(
+        (candidate) => candidate.id === request.body?.messageId,
+      );
+      if (at < 0) return reply.code(404).send({ error: 'No such message' });
+
+      const removed = ctx.store.truncateChat(chat.id, chat.messages[at]!.id);
+      return reply.send({ ok: true, removed });
+    },
+  );
+
+  /**
    * Carry on after a tool call, without the user saying anything.
    *
    * Separate from answering, because after a decision the model usually has

@@ -848,7 +848,16 @@ export interface ChatGenerationSettings {
   values: ParamValues;
 }
 
-export type ChatRole = 'user' | 'assistant' | 'tool';
+/**
+ * `note` is Latent's own, and is never sent to the model.
+ *
+ * Re-running a prompt from further up the conversation is something *you* did
+ * with the app rather than a turn in the conversation. It belongs in the
+ * transcript, next to the picture it produced — but a model told about it would
+ * have to be told in the tool-response format, and a second response to a call
+ * it already answered is exactly what chat templates refuse.
+ */
+export type ChatRole = 'user' | 'assistant' | 'tool' | 'note';
 
 /** One image on a message, held as a data URI so a conversation is self-contained. */
 export interface ChatAttachment {

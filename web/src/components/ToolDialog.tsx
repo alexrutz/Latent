@@ -31,14 +31,32 @@ export interface ToolDecision {
   generationId?: string;
 }
 
+/**
+ * Reopening a prompt from further up the conversation.
+ *
+ * The decision was made long ago, so there is nothing left to accept or refuse:
+ * what is on offer is generating it again — usually with something changed —
+ * and winding the conversation back to it.
+ */
+export interface RevisitActions {
+  /** Queued again; the run's id, so the transcript can show what it made. */
+  onRerun: (generationId: string | null) => void | Promise<void>;
+  /** Drop everything said after this prompt and carry on from here. */
+  onRewind: () => void | Promise<void>;
+  onClose: () => void;
+}
+
 export function ToolDialog({
   call,
   settings,
   onResolve,
+  revisit,
 }: {
   call: ChatToolCall;
   settings: AppSettings | null;
   onResolve: (decision: ToolDecision) => void | Promise<void>;
+  /** Set when this is an old call being looked at again rather than decided. */
+  revisit?: RevisitActions;
 }) {
   return createPortal(
     <div className="fixed inset-0 z-70 flex items-center justify-center p-4" role="dialog" aria-modal="true">
@@ -51,7 +69,12 @@ export function ToolDialog({
 
       <div className="animate-rise relative flex max-h-[85svh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl">
         {call.tool === 'build_prompt' ? (
-          <BuildPromptBody call={call} settings={settings} onResolve={onResolve} />
+          <BuildPromptBody
+            call={call}
+            settings={settings}
+            onResolve={onResolve}
+            revisit={revisit}
+          />
         ) : call.tool === 'ask_user' ? (
           <AskUserBody call={call} onResolve={onResolve} />
         ) : (
@@ -160,10 +183,12 @@ function BuildPromptBody({
   call,
   settings,
   onResolve,
+  revisit,
 }: {
   call: Extract<ChatToolCall, { tool: 'build_prompt' }>;
   settings: AppSettings | null;
   onResolve: (decision: ToolDecision) => void | Promise<void>;
+  revisit?: RevisitActions;
 }) {
   const workflows = useVisibleWorkflows();
 
@@ -248,11 +273,19 @@ function BuildPromptBody({
       // form would change what Generate does next, which is not what was asked.
       if (!ownSettings) useFormDrafts.getState().patch(detail.id, { values });
 
+      // The first of the batch. The transcript shows the whole run from it.
+      const generationId = queued.generationIds[0] ?? null;
+
+      if (revisit) {
+        // Decided long ago; there is no decision left to record, only a run.
+        await revisit.onRerun(generationId);
+        return;
+      }
+
       await onResolve({
         decision: 'accepted',
         note: `The user accepted the prompt and queued it: "${prompt.slice(0, 200)}"`,
-        // The first of the batch. The transcript shows the whole run from it.
-        ...(queued.generationIds[0] ? { generationId: queued.generationIds[0] } : {}),
+        ...(generationId ? { generationId } : {}),
       });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not queue that');
@@ -270,9 +303,9 @@ function BuildPromptBody({
           size="sm"
           className="flex-1"
           disabled={busy}
-          onClick={() => void onResolve({ decision: 'rejected' })}
+          onClick={() => (revisit ? revisit.onClose() : void onResolve({ decision: 'rejected' }))}
         >
-          Reject
+          {revisit ? 'Close' : 'Reject'}
         </Button>
         <Button
           variant="primary"
@@ -282,7 +315,7 @@ function BuildPromptBody({
           disabled={!detail}
           onClick={() => void generate()}
         >
-          Generate
+          {revisit ? 'Generate again' : 'Generate'}
         </Button>
       </div>
 
@@ -368,6 +401,29 @@ function BuildPromptBody({
             </p>
           )}
         </div>
+
+        {/*
+          Winding back is separate from generating, and deliberately at the
+          bottom.
+
+          Generating again is the cheap, common thing — a different sampler, one
+          more step — and it leaves the conversation alone. This one throws away
+          everything said after this prompt, so it belongs where you arrive
+          after reading rather than under your thumb.
+        */}
+        {revisit && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void revisit.onRewind()}
+            className="w-full border-t border-line pt-3 pb-1 text-center text-xs text-accent"
+          >
+            Carry on from here
+            <span className="mt-0.5 block text-[11px] text-muted">
+              Everything said after this is dropped.
+            </span>
+          </button>
+        )}
 
         <ErrorNote>{error}</ErrorNote>
       </div>

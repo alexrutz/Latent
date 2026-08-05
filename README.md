@@ -556,6 +556,13 @@ them as such instead of listing two anonymous paragraphs. Everything else keeps
 being guessed at, exactly as before — the convention is for the cases guessing
 gets wrong.
 
+**Send the prompt to another workflow.** *Send to…* under the prompt field
+lists your other switched-on workflows; picking one opens it with the prompt
+already there. The same words are worth trying through the fast draft graph and
+the slow one, and doing that by hand meant selecting a paragraph on a phone,
+copying it, switching workflow and pasting. Only the prompt travels — that
+workflow's own settings are left exactly as you had them.
+
 **LoRA tags belong to the LoRA field.** They are no longer offered under the
 prompt: putting them there wrote them somewhere the workflow may never read, and
 made two controls responsible for one value.
@@ -731,6 +738,26 @@ opens it full-screen with pinch-zoom and pan; tapping again puts it away.
 The size is a share of the *width*, not of the window's height. Height sounds
 tidier and is not: the chat window gets shorter when the keyboard opens, so one
 setting meant two different sizes depending on whether you were typing.
+
+**Every prompt stays reachable.** A build-prompt call does not become a line of
+history once it is decided — it stays in the transcript as something you can
+press, showing the prompt it carried. Pressing it reopens the dialog with
+**Generate again** at the top: the same words, a different workflow or a
+different sampler, one tap. Wanting the same picture with one thing changed is
+the commonest thing there is, and the alternative was a trip to the gallery to
+find the result and press *reuse* — which loses the conversation the prompt came
+out of.
+
+**Carry on from here**, at the bottom of that dialog, winds the conversation
+back to that prompt and drops everything said after it. Useful when a
+conversation went somewhere that turned out to be wrong and the good idea is
+four messages up. It is a real delete rather than a marker: a hidden tail the
+model could still see would make the conversation behave in ways the transcript
+does not explain.
+
+**What you were typing survives leaving the tab.** Switching to the gallery to
+check something *about* the message you are writing should not cost you the
+message.
 
 **Stop** sits next to Send while a reply is arriving. Small models get stuck —
 the same paragraph three times, a list that never ends — and without it the only
