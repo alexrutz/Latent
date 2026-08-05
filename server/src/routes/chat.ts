@@ -263,6 +263,23 @@ async function streamReply(
     }
     send({ type: 'done', messageId: message.id });
   } catch (error) {
+    /*
+     * The user pressed stop, or walked away.
+     *
+     * What the model had already said is kept. Stopping a model that has got
+     * stuck repeating itself usually means the first paragraph was the good
+     * one, and throwing the whole turn away to punish the last one is not what
+     * anybody wants — nor is leaving the conversation with a user message and
+     * no answer, which most chat templates then refuse to continue from.
+     */
+    if (controller.signal.aborted) {
+      if (thinking !== '') message.thinking = thinking;
+      if (message.content.trim() !== '' || message.toolCall) {
+        ctx.store.insertChatMessage(chatId, message);
+      }
+      return;
+    }
+
     const text =
       error instanceof LlamaError
         ? error.message

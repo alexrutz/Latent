@@ -8,7 +8,7 @@ import type {
   ChatToolCall,
 } from '@latent/shared';
 
-import { api, imageUrl } from '../api/client';
+import { ApiError, api, imageUrl } from '../api/client';
 import { useGeneration, useSettings } from '../api/queries';
 import { ImageViewer } from '../components/ImageViewer';
 import { Markdown } from '../components/Markdown';
@@ -77,19 +77,37 @@ export function ChatScreen() {
       Math.min(Math.max(settings.data?.chat.imageSize ?? 3, 1), CHAT_IMAGE_SIZES.length) - 1
     ] ?? 0.7;
 
-  /** Open the conversation we were last in, or start one. */
+  /**
+   * Open the conversation we were last in, or start one.
+   *
+   * A failed read used to fall through to creating a new conversation, which
+   * meant a moment's bad connection silently swapped an ongoing chat for an
+   * empty one — the old messages still on the server, just no longer the chat
+   * you were in. Only a conversation that is genuinely gone is replaced; any
+   * other failure says so and leaves the screen empty, which is recoverable.
+   */
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       const remembered = localStorage.getItem(LAST_CHAT_KEY);
       try {
         if (remembered) {
-          const existing = await api.chat(remembered).catch(() => null);
-          if (existing && !cancelled) {
-            setChat(existing);
-            return;
-          }
+          const existing = await api.chat(remembered);
+          if (!cancelled) setChat(existing);
+          return;
         }
+      } catch (cause: unknown) {
+        const missing = cause instanceof ApiError && cause.status === 404;
+        if (!missing) {
+          if (!cancelled) {
+            setError(cause instanceof Error ? cause.message : 'Could not open the chat');
+          }
+          return;
+        }
+        localStorage.removeItem(LAST_CHAT_KEY);
+      }
+
+      try {
         const created = await api.createChat();
         if (cancelled) return;
         localStorage.setItem(LAST_CHAT_KEY, created.id);
@@ -104,6 +122,23 @@ export function ChatScreen() {
       cancelled = true;
     };
   }, []);
+
+  /*
+   * Leaving the tab stops the stream.
+   *
+   * Without this a reply kept arriving into a screen that no longer existed,
+   * and its final re-read raced whatever the screen did on the way back in —
+   * which is how a conversation could come back missing what had just been
+   * said. The server keeps what it had when the connection closes, so nothing
+   * is lost by stopping.
+   */
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+    },
+    [],
+  );
 
   // Follow the reply as it arrives, the way a chat should.
   useEffect(() => {
@@ -187,6 +222,28 @@ export function ChatScreen() {
     const sending = attachments;
     setAttachments([]);
 
+    /*
+     * Your own message goes up immediately.
+     *
+     * It used to appear only once the whole reply had finished, because the
+     * transcript was re-read from the server rather than patched — which is
+     * right for the *model's* messages and wrong for yours. Against a local
+     * model that is half a minute of watching your own sentence not be there,
+     * and it looked exactly like a message that had failed to send. The id is
+     * provisional; the re-read at the end of the stream replaces it with the
+     * stored one.
+     */
+    const provisional: ChatMessage = {
+      id: `pending-${Date.now()}`,
+      role: 'user',
+      content,
+      ...(sending.length > 0 ? { attachments: sending } : {}),
+      createdAt: Date.now(),
+    };
+    setChat((current) =>
+      current ? { ...current, messages: [...current.messages, provisional] } : current,
+    );
+
     const controller = new AbortController();
     abortRef.current = controller;
 
@@ -200,10 +257,31 @@ export function ChatScreen() {
       });
       await consume(response, chat.id);
     } catch (cause) {
-      if (controller.signal.aborted) return;
-      setError(cause instanceof Error ? cause.message : 'The model did not answer');
       setStreaming(null);
+      if (!controller.signal.aborted) {
+        setError(cause instanceof Error ? cause.message : 'The model did not answer');
+      }
+      // Either way the server is the authority on what was stored — including
+      // the provisional message above, which may or may not have got there.
+      await api.chat(chat.id).then(setChat).catch(() => {});
     }
+  };
+
+  /**
+   * Cut the reply short.
+   *
+   * Small models get stuck: the same paragraph three times, a list that never
+   * ends, a tool call it keeps rewriting. Without this the only way out is to
+   * wait for the token limit. Aborting the request closes the stream, which the
+   * server takes as its cue to stop asking the model and keep what it has — so
+   * stopping a rambler leaves the useful first paragraph behind rather than
+   * throwing the turn away.
+   */
+  const stop = async () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setStreaming(null);
+    if (chat) await api.chat(chat.id).then(setChat).catch(() => {});
   };
 
   /** After a decision, let the model say something about it. */
@@ -386,6 +464,20 @@ export function ChatScreen() {
             placeholder="Say something…"
             className="max-h-32 min-h-10 flex-1 resize-none rounded-xl border border-line bg-surface px-3 py-2 text-sm leading-relaxed focus:border-accent focus:outline-none"
           />
+
+          {/* Stop sits beside Send rather than replacing it: replacing it makes
+              the one button mean two things, and the moment you want to stop is
+              the moment you are already reaching for that corner. */}
+          {streaming && (
+            <Button
+              variant="secondary"
+              className="size-10 shrink-0 rounded-xl p-0 text-base"
+              onClick={() => void stop()}
+              aria-label="Stop"
+            >
+              ■
+            </Button>
+          )}
 
           <Button
             variant="primary"

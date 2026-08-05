@@ -167,25 +167,35 @@ function BuildPromptBody({
 }) {
   const workflows = useVisibleWorkflows();
 
-  /*
-   * Either the chat's own workflow or whatever Generate is on.
+  /**
+   * Which workflow this one gets generated with.
    *
-   * The second is the default because iterating on one workflow is the common
-   * case and two sets of settings that drift apart is a bug factory. The first
-   * exists for when the chat is where you start: Generate is then just wherever
-   * you happened to leave something, and inheriting that is worse than useless.
+   * `null` until you touch the picker, so the default from Settings applies —
+   * and once you pick, that choice belongs to *this* dialog and nothing else.
+   * A prompt is not always for the workflow you last used: the same
+   * description is worth trying through the fast draft graph and the slow one,
+   * and being sent to Settings between the two would be absurd.
    */
-  const chosen = settings?.chat.generation.workflowId ?? '';
+  const [override, setOverride] = useState<string | null>(null);
+
+  const preferred = settings?.chat.generation.workflowId ?? '';
   const fallback =
     localStorage.getItem('latent.lastWorkflowId') ?? workflows.data?.[0]?.id ?? null;
-  const wanted = chosen !== '' ? chosen : fallback;
-  const workflow = useWorkflow(
+  const wanted = override ?? (preferred !== '' ? preferred : fallback);
+  const workflowId =
     wanted && workflows.data?.some((entry) => entry.id === wanted)
       ? wanted
-      : (workflows.data?.[0]?.id ?? null),
-  );
-  /** True when the values below are the chat's own rather than the form's. */
-  const ownSettings = chosen !== '' && workflow.data?.id === chosen;
+      : (workflows.data?.[0]?.id ?? null);
+  const workflow = useWorkflow(workflowId);
+
+  /**
+   * True when the values come from the chat's own settings rather than the form.
+   *
+   * Only while the chosen workflow *is* the one those settings are for.
+   * Overriding to another workflow means its values are the honest starting
+   * point — the chat's stored values describe a different graph's fields.
+   */
+  const ownSettings = preferred !== '' && workflowId === preferred;
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -291,6 +301,39 @@ function BuildPromptBody({
           <div>
             <p className="text-[11px] tracking-wide text-muted uppercase">Negative</p>
             <p className="text-xs break-words">{call.negativePrompt}</p>
+          </div>
+        )}
+
+        {/*
+          Which workflow, right here.
+
+          The same description is worth trying through the fast draft graph and
+          the slow one, and being sent to Settings between the two would be
+          absurd. The default is what Settings says; this only overrides it for
+          this one prompt.
+        */}
+        {(workflows.data?.length ?? 0) > 1 && (
+          <div className="space-y-1">
+            <p className="text-[10px] tracking-wide text-muted uppercase">Workflow</p>
+            <div className="flex flex-wrap gap-1">
+              {(workflows.data ?? []).map((entry) => (
+                <button
+                  key={entry.id}
+                  type="button"
+                  aria-pressed={workflowId === entry.id}
+                  disabled={busy}
+                  onClick={() => setOverride(entry.id)}
+                  className={cn(
+                    'max-w-full truncate rounded-lg px-2.5 py-1.5 text-xs',
+                    workflowId === entry.id
+                      ? 'bg-accent text-white'
+                      : 'bg-surface-2 text-muted active:bg-surface-3',
+                  )}
+                >
+                  {entry.name}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 

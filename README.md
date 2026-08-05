@@ -716,6 +716,11 @@ set of settings to keep in sync — but Settings can give the chat **a workflow
 and values of its own** instead, for when the chat is where a session starts and
 Generate is merely where you left something else set up.
 
+**The dialog also lists your switched-on workflows**, so this one prompt can go
+through a different graph without a trip to Settings. The same description is
+worth trying through the fast draft workflow and the slow one; the choice
+applies to that dialog only, and the default stays whatever Settings says.
+
 **You stay in the conversation, and the picture arrives in it.** Being sent to
 the Generate screen threw away the thread at the moment it had paid off. The run
 appears where you asked for it, with a progress bar while it renders — the same
@@ -726,6 +731,13 @@ opens it full-screen with pinch-zoom and pan; tapping again puts it away.
 The size is a share of the *width*, not of the window's height. Height sounds
 tidier and is not: the chat window gets shorter when the keyboard opens, so one
 setting meant two different sizes depending on whether you were typing.
+
+**Stop** sits next to Send while a reply is arriving. Small models get stuck —
+the same paragraph three times, a list that never ends — and without it the only
+way out is to wait for the token limit. What the model had already said is kept:
+the first paragraph is usually the good one, and leaving the conversation with a
+question and no answer is a state most chat templates then refuse to continue
+from. Leaving the tab does the same thing, for the same reason.
 
 **Ask a question** is the cheap one that makes the rest work. When a decision
 would change the picture and the conversation does not imply it — portrait or

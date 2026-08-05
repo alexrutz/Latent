@@ -2851,6 +2851,84 @@ test.describe('the chat module', () => {
     await page.screenshot({ path: 'test-results/65-markdown.png' });
   });
 
+  /**
+   * Which workflow, chosen on the dialog itself.
+   *
+   * The same description is worth trying through the fast draft graph and the
+   * slow one, and being sent to Settings between the two would be absurd.
+   */
+  test('picks the workflow to generate with on the dialog', async ({ page }) => {
+    await seedWorkflow();
+    await seedWorkflow('the other one');
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+      },
+    });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('build me a prompt');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+
+    // Both are offered, and one of them is already the choice.
+    const other = dialog.getByRole('button', { name: 'the other one' });
+    await expect(other).toBeVisible();
+    await other.click();
+    await expect(other).toHaveAttribute('aria-pressed', 'true');
+    await page.screenshot({ path: 'test-results/66-workflow-picker.png' });
+
+    await dialog.getByRole('button', { name: 'Generate' }).click();
+
+    // It ran through the workflow picked here, not the default one.
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const gallery = (await (await ctx.get('/api/gallery?limit=10')).json()) as {
+              items: { workflowName: string }[];
+            };
+            return gallery.items[0]?.workflowName ?? '';
+          }),
+        { timeout: 60_000 },
+      )
+      .toBe('the other one');
+  });
+
+  /**
+   * Your own message, immediately.
+   *
+   * It used to appear only once the whole reply had finished, which against a
+   * local model is half a minute of watching your own sentence not be there.
+   */
+  test('shows what you said before the reply arrives', async ({ page }) => {
+    await script({ content: 'A harbour, then.' });
+
+    await open(page, '/chat');
+    // Away and back, which is when this went wrong.
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    await expect(page.getByRole('heading', { name: 'Gallery' })).toBeVisible();
+    await page.getByRole('link', { name: 'Chat' }).click();
+
+    await page.getByPlaceholder('Say something…').fill('something calm please');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    /*
+     * Scoped to the transcript on purpose: the first thing said also names the
+     * conversation, so an unscoped match finds the header too.
+     */
+    const said = page.getByRole('paragraph').filter({ hasText: 'something calm please' });
+
+    // There before the answer is, and still there after.
+    await expect(said).toBeVisible();
+    await expect(page.getByText('A harbour, then.')).toBeVisible({ timeout: 30_000 });
+    await expect(said).toBeVisible();
+    await page.screenshot({ path: 'test-results/67-own-message.png' });
+  });
+
   /** Blocks arrive one at a time, and only what you keep is saved. */
   test('keeps the proposed blocks you choose, as edited', async ({ page }) => {
     await script(
