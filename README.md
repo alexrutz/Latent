@@ -663,6 +663,26 @@ of what gets sent back on the next turn, which is both what the model expects
 and what keeps a long conversation from filling the context with its own
 deliberation. Turn it off in Settings if your model does not do it.
 
+There is no agreed way for a model to mark its reasoning. The clean path is a
+`reasoning_content` field of its own, which most builds use. The rest inline it
+in the answer, and Latent reads the ones that turn up: `<think>` from
+DeepSeek-R1 and everything that copied it, `<|channel>thought` from Gemma 4 —
+whose template is meant to keep that channel out of the visible output and in
+llama.cpp routinely does not — plus `<thought>` and `<reasoning>`. Tags arrive
+split across frames, so a partial one is held back rather than leaked into the
+reply.
+
+**Markdown is rendered**, because models write it whether or not you ask them
+to and a reply full of asterisks looks broken. A deliberate subset — headings,
+lists, quotes, code, the inline marks, links — parsed to elements rather than to
+HTML, so there is nothing for a model's output to inject into.
+
+**Pick the model** when the server has more than one. A plain `llama-server` has
+one loaded and its name is decoration; in router mode it fronts several and
+choosing is the point, so Settings lists what `/v1/models` reports.
+*Whatever is loaded* stays available and is the right answer for a single-model
+server.
+
 **It is meant to be slow to conclude.** Deciding what the picture *is* — what is
 in it, what it feels like, how it is framed, what it is for — is most of the
 work, and a model that answers "a lighthouse at dusk" with a finished prompt has
@@ -698,9 +718,14 @@ Generate is merely where you left something else set up.
 
 **You stay in the conversation, and the picture arrives in it.** Being sent to
 the Generate screen threw away the thread at the moment it had paid off. The run
-appears where you asked for it, a third of the chat window tall by default and
-adjustable; tapping one opens it full-screen with pinch-zoom and pan, and
-tapping again puts it away.
+appears where you asked for it, with a progress bar while it renders — the same
+numbers the live bar shows, in the place you are already looking. Its size is a
+step on a five-point scale in Settings, centred in the conversation. Tapping one
+opens it full-screen with pinch-zoom and pan; tapping again puts it away.
+
+The size is a share of the *width*, not of the window's height. Height sounds
+tidier and is not: the chat window gets shorter when the keyboard opens, so one
+setting meant two different sizes depending on whether you were typing.
 
 **Ask a question** is the cheap one that makes the rest work. When a decision
 would change the picture and the conversation does not imply it — portrait or
@@ -722,13 +747,18 @@ transcript.
 
 ### How eagerly it reaches for each one
 
-Under Settings → Chat, every tool has its own setting: **Off**, **When asked**,
-**When settled**, **Freely**. Separately per tool, because they are not the same
-interruption — a question mid-conversation is welcome at the moment a finished
-prompt would derail things. Building a prompt and editing blocks start at *when
-asked*; questions start at *when settled*.
+Under Settings → Chat, every tool has its own line of points, from **Off**
+through *only when asked*, *when invited*, *once decided*, *when it fits*, to
+**freely**. Separately per tool, because they are not the same interruption — a
+question mid-conversation is welcome at the moment a finished prompt would
+derail things. Building a prompt and editing blocks start at *only when asked*;
+questions start at *once decided*.
 
-Three of the four are sentences added to the model's instructions, which a small
+Six steps rather than three, because the useful distinctions are at the quiet
+end: "only if I say so" and "if I say go on" are different instructions, and so
+are "once we have decided" and "when it looks like the next step".
+
+Five of the six are sentences added to the model's instructions, which a small
 model can talk itself out of. **Off is the one that is a guarantee**: the tool
 is not in the request at all, so there is nothing to talk itself into.
 
@@ -753,6 +783,13 @@ marks, and the medium you asked for is never quietly swapped for another. The
 default prompt says all of that, plus: keep faith with what was actually asked
 for, and do not invent specifics nobody wanted.
 
+**The prompt is always in English**, whatever language you are talking in. Image
+models are trained overwhelmingly on English captions and understand it far
+better than anything else, so a German prompt is a worse picture rather than a
+more authentic one. Only the prompt — the conversation stays in your language,
+and text that should appear *in* the picture stays in whatever language you
+asked for.
+
 **Show Latent's own** fills the box so you can read or edit it; emptying the box
 goes back to it. The pace settings above apply either way — they belong to the
 app, not to the wording, so replacing the instructions does not silently lose
@@ -773,6 +810,13 @@ the labels on the ones you use every minute to pay for it, was the wrong trade.
 
 **Tapping the tab you are already on goes back to the top**, the way every other
 phone app behaves. Without it a long gallery scroll is a one-way trip.
+
+**The bar gets out of the way of the keyboard.** It sits at the bottom of a
+full-height column, so an on-screen keyboard used to push it up and park it
+between what you were writing and the keys you were writing it with. There is no
+event for "the keyboard is up", so it is inferred from `visualViewport` — the
+part of the page you can actually see — and the bar hides while that is short.
+Nothing on it is reachable mid-sentence anyway.
 
 ## In the gallery
 
@@ -850,6 +894,13 @@ off for bare numbers.
 
 The values come from what each run recorded when it was queued, so they describe
 what actually ran even after the workflow has changed.
+
+**Nothing behind the buttons.** The action row in the viewer floats straight
+over the picture with no bar under it. It started as a translucent strip with a
+blur behind it, then a strip without the blur, and the honest end of that line
+is nothing at all: every version was a band across the bottom of the picture
+that existed to make the buttons legible, when the buttons carry their own
+backgrounds and do that themselves.
 
 **A choice can always be undone where it was made.** The list is built from what
 the runs in view actually recorded, so switching workflow used to make a value
@@ -1003,7 +1054,8 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 | `shared/` | Types, the form-building engine (`paramSchema.ts`), LoRA tag parsing, the queue's parameter summaries and both random draws (`randomPrompt.ts`, `randomParams.ts`) — pure, no I/O |
 | `server/` | Fastify proxy, ComfyUI client, live event hub, SQLite store, archive, terminal |
 | `server/src/monitor.ts` | The resource and event history behind the Monitor tab |
-| `server/src/chat/llama.ts` | The llama.cpp client: streaming, reasoning, tool schemas, and the instructions and pace policy |
+| `server/src/chat/llama.ts` | The llama.cpp client: streaming, reasoning tags, tool schemas, and the instructions and pace policy |
+| `shared/src/markdown.ts` | The Markdown subset a chat reply is rendered from |
 | `server/src/routes/chat.ts` | Conversations, the SSE reply stream, and tool decisions |
 | `server/src/statefile.ts` | Mirrors the arrangement to the files above the project |
 | `server/src/sweeper.ts` | Deletes runs nobody kept, once they are old enough |

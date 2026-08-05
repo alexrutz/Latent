@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { fieldPoints, fieldPointValues, usesPointLine } from '@latent/shared';
+import { CHAT_IMAGE_SIZES, fieldPoints, fieldPointValues, usesPointLine } from '@latent/shared';
 import type {
   ChatSettings,
   FieldOverride,
@@ -17,6 +17,7 @@ import { api } from '../api/client';
 import {
   useActivateLayout,
   useArchiveStats,
+  useChatStatus,
   useDeleteLayout,
   useDeleteWorkflow,
   useImportBrowse,
@@ -41,12 +42,22 @@ import { useBlur } from '../state/blur';
 import { ConnectionsScreen } from './ConnectionsScreen';
 import { TerminalScreen } from './TerminalScreen';
 
-/** The pace settings, worst-to-best-behaved left to right. */
-const EAGERNESS_OPTIONS: { value: ToolEagerness; label: string }[] = [
-  { value: 'off', label: 'Off' },
-  { value: 'on-request', label: 'When asked' },
-  { value: 'considered', label: 'When settled' },
-  { value: 'eager', label: 'Freely' },
+/**
+ * The pace scale, most reluctant first.
+ *
+ * Six steps rather than four because the useful distinctions are at the quiet
+ * end: "only if I say so" and "if I say go on" are different instructions, and
+ * so are "once we have decided" and "when it looks like the next step". Shown
+ * as a line of points rather than six buttons in a row, which at this width
+ * would be six illegible ones.
+ */
+const EAGERNESS_OPTIONS: { value: ToolEagerness; label: string; hint: string }[] = [
+  { value: 'off', label: 'Off', hint: 'not offered to the model at all' },
+  { value: 'on-request', label: 'Only when asked', hint: 'the words have to be said' },
+  { value: 'invited', label: 'When invited', hint: '“go on then” counts' },
+  { value: 'settled', label: 'Once decided', hint: 'when nothing is still in flux' },
+  { value: 'ready', label: 'When it fits', hint: 'proposes the next step itself' },
+  { value: 'eager', label: 'Freely', hint: 'whenever it might help' },
 ];
 
 const TOOL_ROWS: { key: keyof ChatSettings['tools']; label: string; hint: string }[] = [
@@ -55,12 +66,8 @@ const TOOL_ROWS: { key: keyof ChatSettings['tools']; label: string; hint: string
   { key: 'ask_user', label: 'Ask a question', hint: 'one tap to answer' },
 ];
 
-const IMAGE_HEIGHTS = [
-  { label: 'Quarter', value: 0.25 },
-  { label: 'Third', value: 1 / 3 },
-  { label: 'Half', value: 0.5 },
-  { label: 'Most', value: 0.7 },
-];
+/** Names for the shared size scale, so the setting reads as sizes not numbers. */
+const IMAGE_SIZE_LABELS = ['Small', 'Modest', 'Medium', 'Large', 'Full width'];
 
 const QUEUE_POLICIES: { value: QueuePolicy; label: string; hint: string }[] = [
   {
@@ -878,6 +885,9 @@ function ChatSection() {
     null,
   );
   const [checking, setChecking] = useState(false);
+  const status = useChatStatus();
+  /** The freshest list we have: what Check just returned, else what was fetched. */
+  const models = probe?.models ?? status.data?.models ?? [];
 
   // Seeded once the settings arrive, and not overwritten while being typed in.
   useEffect(() => {
@@ -942,11 +952,56 @@ function ChatSection() {
           </Button>
         </div>
 
-        {probe && (
-          <p className={cn('text-xs', probe.ok ? 'text-success' : 'text-warn')}>
-            {probe.ok
-              ? `Reachable${probe.models.length > 0 ? ` — ${probe.models.join(', ')}` : ''}`
-              : probe.message}
+        {probe && !probe.ok && <p className="text-xs text-warn">{probe.message}</p>}
+
+        {/*
+          Which model, when the server has more than one.
+
+          A plain `llama-server` has exactly one loaded and the name is
+          decoration; in router mode it fronts several and picking one is the
+          whole point. So the list is only a choice when there is a choice, and
+          "whatever is loaded" stays available — it is right for the single-model
+          case and survives the model being swapped out from under it.
+        */}
+        {models.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-[11px] text-muted">
+              {models.length === 1 ? 'Loaded' : `${models.length} models available`}
+            </p>
+            <div className="flex flex-wrap gap-1">
+              <button
+                type="button"
+                aria-pressed={chat.model === ''}
+                onClick={() => patch({ model: '' })}
+                className={cn(
+                  'rounded-lg px-2.5 py-1.5 text-xs',
+                  chat.model === '' ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                )}
+              >
+                Whatever is loaded
+              </button>
+              {models.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  aria-pressed={chat.model === name}
+                  onClick={() => patch({ model: name })}
+                  className={cn(
+                    'max-w-full truncate rounded-lg px-2.5 py-1.5 text-xs',
+                    chat.model === name ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                  )}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {chat.model !== '' && !models.includes(chat.model) && (
+          <p className="text-xs text-warn">
+            {chat.model} is not in the list the server just gave. Check the address, or pick
+            another.
           </p>
         )}
 
@@ -1043,68 +1098,97 @@ function ChatSection() {
           </p>
         </div>
 
-        {TOOL_ROWS.map((row) => (
-          <div key={row.key} className="space-y-1">
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="text-sm">{row.label}</span>
-              <span className="text-[11px] text-muted">{row.hint}</span>
-            </div>
-            <div className="flex gap-1">
-              {EAGERNESS_OPTIONS.map((option) => {
-                const active = chat.tools[row.key] === option.value;
-                return (
+        {TOOL_ROWS.map((row) => {
+          const at = Math.max(
+            0,
+            EAGERNESS_OPTIONS.findIndex((option) => option.value === chat.tools[row.key]),
+          );
+          const current = EAGERNESS_OPTIONS[at]!;
+
+          return (
+            <div key={row.key} className="space-y-1">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-sm">{row.label}</span>
+                <span className="min-w-0 truncate text-[11px] text-muted">{row.hint}</span>
+              </div>
+
+              {/* A line of points, the same control a numeric parameter gets:
+                  six labelled buttons in a phone's width are six unreadable
+                  ones, and this is an ordered scale rather than a set of
+                  alternatives. */}
+              <div className="flex items-center gap-1">
+                {EAGERNESS_OPTIONS.map((option, index) => (
                   <button
                     key={option.value}
                     type="button"
-                    aria-pressed={active}
+                    aria-pressed={index === at}
                     aria-label={`${row.label}: ${option.label}`}
-                    onClick={() =>
-                      patch({ tools: { ...chat.tools, [row.key]: option.value } })
-                    }
-                    className={cn(
-                      'min-w-0 flex-1 truncate rounded-lg px-1.5 py-1.5 text-[11px]',
-                      active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
-                    )}
+                    onClick={() => patch({ tools: { ...chat.tools, [row.key]: option.value } })}
+                    className="min-w-0 flex-1 py-2"
                   >
-                    {option.label}
+                    <span
+                      className={cn(
+                        'block h-2 rounded-[3px]',
+                        index === at
+                          ? 'bg-accent'
+                          : index < at
+                            ? 'bg-accent/30'
+                            : 'bg-surface-3',
+                      )}
+                    />
                   </button>
-                );
-              })}
+                ))}
+              </div>
+
+              <p className="text-[11px]">
+                <span className="text-body">{current.label}</span>
+                <span className="text-muted"> — {current.hint}</span>
+              </p>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </Card>
 
       {/* Pictures, and what they are made with ----------------------- */}
       <Card className="space-y-3">
         <div className="space-y-1.5">
           <div className="flex items-baseline justify-between gap-2">
-            <span className="text-sm">Picture height in the chat</span>
+            <span className="text-sm">Picture size in the chat</span>
             <span className="text-[11px] text-muted">
-              {Math.round((chat.imageHeight ?? 1 / 3) * 100)}% of the window
+              {IMAGE_SIZE_LABELS[(chat.imageSize ?? 3) - 1] ?? 'Medium'}
             </span>
           </div>
-          <div className="flex gap-1">
-            {IMAGE_HEIGHTS.map((option) => {
-              const active = Math.abs((chat.imageHeight ?? 1 / 3) - option.value) < 0.01;
+          {/* Steps rather than a fraction of the window: the chat window's
+              height changes when the keyboard opens, so a fraction of it meant
+              two different sizes depending on whether you were typing. */}
+          <div className="flex items-end gap-1">
+            {CHAT_IMAGE_SIZES.map((fraction, index) => {
+              const step = index + 1;
+              const active = (chat.imageSize ?? 3) === step;
               return (
                 <button
-                  key={option.label}
+                  key={step}
                   type="button"
                   aria-pressed={active}
-                  onClick={() => patch({ imageHeight: option.value })}
-                  className={cn(
-                    'flex-1 rounded-lg px-2 py-1.5 text-xs',
-                    active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
-                  )}
+                  aria-label={IMAGE_SIZE_LABELS[index]}
+                  onClick={() => patch({ imageSize: step })}
+                  className="flex flex-1 items-end justify-center py-1"
                 >
-                  {option.label}
+                  <span
+                    style={{ height: `${12 + index * 6}px` }}
+                    className={cn(
+                      'block w-full rounded-[3px]',
+                      active ? 'bg-accent' : 'bg-surface-2',
+                    )}
+                  />
+                  <span className="sr-only">{Math.round(fraction * 100)}%</span>
                 </button>
               );
             })}
           </div>
           <p className="text-[11px] text-muted">
-            Tapping one opens it full-screen, where it zooms and pans; tapping again closes it.
+            A share of the width, centred in the conversation. Tapping one opens it full-screen,
+            where it zooms and pans; tapping again closes it.
           </p>
         </div>
 

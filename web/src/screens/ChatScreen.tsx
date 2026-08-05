@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { CHAT_IMAGE_SIZES } from '@latent/shared';
 import type {
   ChatConversationDetail,
   ChatMessage,
@@ -10,8 +11,10 @@ import type {
 import { api, imageUrl } from '../api/client';
 import { useGeneration, useSettings } from '../api/queries';
 import { ImageViewer } from '../components/ImageViewer';
+import { Markdown } from '../components/Markdown';
 import { ToolDialog } from '../components/ToolDialog';
 import { Button, cn, ErrorNote, Sheet, Spinner } from '../components/ui';
+import { useLiveStore } from '../state/live';
 
 /**
  * Talking to a local model about what to make.
@@ -59,27 +62,20 @@ export function ChatScreen() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
-  const [transcriptHeight, setTranscriptHeight] = useState(0);
 
   /*
-   * A generated picture is sized against the chat window, not against the
-   * screen: the setting is "a third of what I am reading", and on a phone with
-   * the keyboard up that is a very different number from a third of the
-   * display. Measured rather than assumed for the same reason.
+   * Sized as a share of the transcript's width, on a fixed scale.
+   *
+   * It used to be a share of the *height*, which was wrong twice over: the
+   * chat window's height changes when the keyboard opens, so one setting meant
+   * two sizes; and the measurement ran before the transcript existed, so it
+   * fell through to the 80-pixel floor and every picture came out as a stamp.
+   * Width is stable, and a percentage of it needs no measuring at all.
    */
-  useEffect(() => {
-    const element = transcriptRef.current;
-    if (!element) return;
-    const observer = new ResizeObserver(() => setTranscriptHeight(element.clientHeight));
-    observer.observe(element);
-    setTranscriptHeight(element.clientHeight);
-    return () => observer.disconnect();
-  }, []);
-
-  const pictureHeight = Math.max(
-    80,
-    Math.round(transcriptHeight * (settings.data?.chat.imageHeight ?? 1 / 3)),
-  );
+  const pictureWidth =
+    CHAT_IMAGE_SIZES[
+      Math.min(Math.max(settings.data?.chat.imageSize ?? 3, 1), CHAT_IMAGE_SIZES.length) - 1
+    ] ?? 0.7;
 
   /** Open the conversation we were last in, or start one. */
   useEffect(() => {
@@ -308,7 +304,7 @@ export function ChatScreen() {
 
         <div className="space-y-3">
           {chat.messages.map((message) => (
-            <MessageRow key={message.id} message={message} pictureHeight={pictureHeight} />
+            <MessageRow key={message.id} message={message} pictureWidth={pictureWidth} />
           ))}
 
           {streaming && (
@@ -316,8 +312,10 @@ export function ChatScreen() {
               {streaming.thinking !== '' && (
                 <ThinkingBlock text={streaming.thinking} live={streaming.content === ''} />
               )}
-              <div className="text-sm leading-relaxed whitespace-pre-wrap">
-                {streaming.content}
+              {/* Rendered as it arrives, so the reply does not reflow into
+                  something different the moment it finishes. */}
+              <div className="relative">
+                <Markdown text={streaming.content} />
                 <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-accent align-middle" />
               </div>
             </div>
@@ -435,17 +433,17 @@ export function ChatScreen() {
 
 function MessageRow({
   message,
-  pictureHeight,
+  pictureWidth,
 }: {
   message: ChatMessage;
-  pictureHeight: number;
+  pictureWidth: number;
 }) {
   if (message.role === 'tool') {
     return (
       <div className="space-y-1.5">
         <p className="text-center text-[11px] text-muted">{message.content}</p>
         {message.generationId && (
-          <GeneratedRun id={message.generationId} height={pictureHeight} />
+          <GeneratedRun id={message.generationId} width={pictureWidth} />
         )}
       </div>
     );
@@ -480,9 +478,7 @@ function MessageRow({
   return (
     <div className="space-y-1">
       {message.thinking && <ThinkingBlock text={message.thinking} />}
-      {message.content !== '' && (
-        <p className="text-sm leading-relaxed break-words whitespace-pre-wrap">{message.content}</p>
-      )}
+      {message.content !== '' && <Markdown text={message.content} />}
       {message.toolCall && (
         <p className="text-[11px] text-muted">
           {TOOL_LABELS[message.toolCall.tool]}
@@ -507,23 +503,53 @@ function MessageRow({
  * tapping one opens the full viewer: pinch to zoom, drag to move, tap again to
  * put it away.
  */
-function GeneratedRun({ id, height }: { id: string; height: number }) {
+function GeneratedRun({ id, width }: { id: string; width: number }) {
   const generation = useGeneration(id);
+  const job = useLiveStore((state) => state.live.job);
   const [viewing, setViewing] = useState<number | null>(null);
 
   const record = generation.data;
   const images = record?.images ?? [];
+  /** Centred, and as wide a share of the message as the setting says. */
+  const style = { width: `${Math.round(width * 100)}%` };
 
   if (!record || (images.length === 0 && record.status !== 'failed')) {
+    /*
+     * The same numbers the live bar shows, in the place you are looking.
+     *
+     * A run started from the chat is one you are watching from the chat, and
+     * "Queued" with no end in sight for two minutes is indistinguishable from
+     * broken. `graphProgress` rather than sampler steps: it covers the whole
+     * graph, so a workflow that loads a model for forty seconds before the
+     * first step still moves.
+     */
+    const mine = job?.generationId === id ? job : null;
+    const fraction = mine
+      ? Math.max(mine.graphProgress, mine.progressMax > 0 ? mine.progress / mine.progressMax : 0)
+      : 0;
+
     return (
-      <div
-        style={{ height }}
-        className="grid place-items-center rounded-xl border border-line bg-surface-2/50"
-      >
-        <span className="flex items-center gap-2 text-xs text-muted">
-          <Spinner className="size-3.5" />
-          {record?.status === 'running' ? 'Generating…' : 'Queued'}
-        </span>
+      <div style={style} className="mx-auto space-y-1.5 rounded-xl border border-line bg-surface-2/50 p-3">
+        <div className="flex items-center justify-between gap-2 text-xs text-muted">
+          <span className="flex min-w-0 items-center gap-2 truncate">
+            <Spinner className="size-3.5 shrink-0" />
+            {mine?.nodeTitle ?? (record?.status === 'running' ? 'Generating…' : 'Queued')}
+          </span>
+          {fraction > 0 && (
+            <span className="shrink-0 tabular-nums">{Math.round(fraction * 100)}%</span>
+          )}
+        </div>
+        <div className="h-1.5 overflow-hidden rounded-full bg-surface-3">
+          <div
+            className={cn(
+              'h-full rounded-full bg-accent transition-[width] duration-300',
+              // Nothing to report yet: a bar at zero looks stuck, so it pulses
+              // across instead of claiming a progress it does not have.
+              fraction === 0 && 'w-1/3 animate-pulse',
+            )}
+            style={fraction > 0 ? { width: `${Math.round(fraction * 100)}%` } : undefined}
+          />
+        </div>
       </div>
     );
   }
@@ -534,23 +560,26 @@ function GeneratedRun({ id, height }: { id: string; height: number }) {
 
   return (
     <>
-      <div className="flex flex-wrap gap-1.5">
+      {/* Centred in the row, one under the other. A batch is a column rather
+          than a wrapped row because at these widths a row of two is two
+          pictures too small to judge. */}
+      <div className="flex flex-col items-center gap-1.5">
         {images.map((image, index) => (
           <button
             key={image.id ?? `${image.filename}-${index}`}
             type="button"
             onClick={() => setViewing(index)}
-            style={{ height }}
+            style={style}
             aria-label={`Open picture ${index + 1}`}
             className="overflow-hidden rounded-xl bg-surface-2 active:opacity-80"
           >
             <img
               src={imageUrl(image, 'webp;80')}
               alt=""
-              // `h-full w-auto` so the row keeps each picture's own shape: a
-              // portrait and a landscape from one batch should not be cropped
-              // into agreeing with each other.
-              className="h-full w-auto object-contain"
+              // `h-auto` so each picture keeps its own shape: a portrait and a
+              // landscape from one batch should not be cropped into agreeing
+              // with each other.
+              className="block h-auto w-full"
             />
           </button>
         ))}

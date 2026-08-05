@@ -789,7 +789,7 @@ function ViewerWithActions({
               onChange={(viewerParams) => onGridChange({ viewerParams })}
               onWithLabelsChange={(overlayLabels) => onGridChange({ overlayLabels })}
               // Shaped like the cells it shares a row with: glyph, then a word.
-              className="h-auto w-full flex-col justify-center gap-0.5 rounded-lg px-1 py-1"
+              className="h-auto w-full flex-col justify-center gap-0.5 rounded-lg px-1 py-1 shadow-md shadow-black/40"
             />
             {/* Two taps, because it cannot be undone. */}
             <ViewerAction
@@ -918,7 +918,9 @@ function ViewerAction({
       aria-label={label}
       title={title}
       className={cn(
-        'flex flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1 disabled:opacity-40',
+        // The shadow does what the bar behind these used to: separates them
+        // from whatever part of the picture they happen to be sitting on.
+        'flex flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1 shadow-md shadow-black/40 disabled:opacity-40',
         danger
           ? 'bg-danger/20 text-danger'
           : active

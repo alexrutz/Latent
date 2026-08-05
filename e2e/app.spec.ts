@@ -2576,9 +2576,9 @@ test.describe('the chat module', () => {
             thinking: true,
             generation: { workflowId: '', values: {} },
             tools: {
-              build_prompt: 'considered',
-              prompt_blocks: 'considered',
-              ask_user: 'considered',
+              build_prompt: 'settled',
+              prompt_blocks: 'settled',
+              ask_user: 'settled',
             },
           },
         },
@@ -2754,7 +2754,7 @@ test.describe('the chat module', () => {
         data: {
           chat: {
             baseUrl: LLAMA,
-            tools: { build_prompt: 'off', prompt_blocks: 'considered', ask_user: 'considered' },
+            tools: { build_prompt: 'off', prompt_blocks: 'settled', ask_user: 'settled' },
           },
         },
       }),
@@ -2805,6 +2805,50 @@ test.describe('the chat module', () => {
         return gallery.items.length;
       }),
     ).toBe(0);
+  });
+
+  /**
+   * Gemma 4's thought channel, which its template is supposed to keep out of
+   * the visible output and in llama.cpp routinely does not.
+   */
+  test("folds away Gemma's thought channel too", async ({ page }) => {
+    await script({
+      channelThinking: 'They said calm, so muted colours.',
+      content: 'How about a harbour at dawn?',
+    });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('something calm');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    await expect(page.getByText('How about a harbour at dawn?')).toBeVisible({ timeout: 30_000 });
+    // The channel tokens are gone from the answer, not merely hidden.
+    await expect(page.getByText(/channel/)).toHaveCount(0);
+
+    const thinking = page.getByRole('button', { name: /Thinking/ });
+    await expect(thinking).toBeVisible();
+    await thinking.click();
+    await expect(page.getByText('They said calm, so muted colours.')).toBeVisible();
+  });
+
+  /** A reply full of asterisks is a reply that looks broken. */
+  test('renders the Markdown a model writes', async ({ page }) => {
+    await script({
+      content:
+        '## Two directions\n\nEither **a harbour** or `something quieter`.\n\n- dawn light\n- long lens',
+    });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('ideas?');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    await expect(page.getByText('Two directions')).toBeVisible({ timeout: 30_000 });
+    // The marks are gone and the structure is real.
+    await expect(page.getByText('**')).toHaveCount(0);
+    await expect(page.locator('strong, .font-semibold').getByText('a harbour')).toBeVisible();
+    // Scoped: the tab bar is a list of seven too.
+    await expect(page.locator('main').getByRole('listitem')).toHaveCount(2);
+    await page.screenshot({ path: 'test-results/65-markdown.png' });
   });
 
   /** Blocks arrive one at a time, and only what you keep is saved. */

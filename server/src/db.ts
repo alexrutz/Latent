@@ -599,10 +599,10 @@ const DEFAULT_SETTINGS: AppSettings = {
     tools: {
       prompt_blocks: 'on-request',
       build_prompt: 'on-request',
-      ask_user: 'considered',
+      ask_user: 'settled',
     },
     generation: { workflowId: '', values: {} },
-    imageHeight: 1 / 3,
+    imageSize: 3,
   },
   importRoot: null,
   inputRoot: null,

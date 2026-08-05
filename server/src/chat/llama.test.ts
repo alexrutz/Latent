@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ChatToolSettings } from '@latent/shared';
+import type { ChatStreamEvent, ChatToolSettings } from '@latent/shared';
 
-import { enabledTools, parseCall, toolPolicy } from './llama.js';
+import { enabledTools, inlineReasoning, parseCall, toolPolicy } from './llama.js';
 
 /**
  * The parts of the chat client that are decisions rather than plumbing.
@@ -14,9 +14,9 @@ import { enabledTools, parseCall, toolPolicy } from './llama.js';
  */
 
 const ALL: ChatToolSettings = {
-  build_prompt: 'considered',
-  prompt_blocks: 'considered',
-  ask_user: 'considered',
+  build_prompt: 'settled',
+  prompt_blocks: 'settled',
+  ask_user: 'settled',
 };
 
 describe('which tools the model gets', () => {
@@ -118,5 +118,77 @@ describe('reading a tool call off the wire', () => {
 
   it('drops a tool it does not have', () => {
     expect(parseCall({ id: 'c', name: 'delete_everything', args: '{}' })).toBeNull();
+  });
+});
+
+describe('pulling reasoning out of the content stream', () => {
+  /** Everything one splitter makes of a sequence of deltas. */
+  const run = (deltas: string[], thinking = true) => {
+    const splitter = inlineReasoning(thinking);
+    const events: ChatStreamEvent[] = [];
+    for (const delta of deltas) events.push(...splitter.push(delta));
+    events.push(...splitter.end());
+    return {
+      content: events
+        .filter((event) => event.type === 'content')
+        .map((event) => (event as { text: string }).text)
+        .join(''),
+      thinking: events
+        .filter((event) => event.type === 'thinking')
+        .map((event) => (event as { text: string }).text)
+        .join(''),
+    };
+  };
+
+  it('reads DeepSeek-style tags split across deltas', () => {
+    expect(run(['<thi', 'nk>quiet and blue</th', 'ink>A harbour.'])).toEqual({
+      thinking: 'quiet and blue',
+      content: 'A harbour.',
+    });
+  });
+
+  /**
+   * Gemma 4's template is supposed to keep the thought channel out of the
+   * visible output and in llama.cpp routinely does not.
+   */
+  it("reads Gemma's thought channel, newline and all", () => {
+    expect(run(['<|chan', 'nel>thought\nweighing it up<chan', 'nel|>A harbour.'])).toEqual({
+      thinking: 'weighing it up',
+      content: 'A harbour.',
+    });
+  });
+
+  /** A block has to be closed by its own family, not by whatever comes first. */
+  it('does not close one family with another', () => {
+    expect(run(['<|channel>thought\nI could write </think> here<channel|>Done.'])).toEqual({
+      thinking: 'I could write </think> here',
+      content: 'Done.',
+    });
+  });
+
+  it('leaves text that only looks like a tag alone', () => {
+    expect(run(['Use <thinking> as a word.'])).toEqual({
+      thinking: '',
+      content: 'Use <thinking> as a word.',
+    });
+  });
+
+  /** An unclosed block is what a stream cut off mid-thought looks like. */
+  it('flushes an unterminated block at the end', () => {
+    expect(run(['<think>half a thou'])).toEqual({ thinking: 'half a thou', content: '' });
+  });
+
+  it('drops the reasoning entirely when it is switched off', () => {
+    expect(run(['<think>never mind</think>The answer.'], false)).toEqual({
+      thinking: '',
+      content: 'The answer.',
+    });
+  });
+
+  it('handles two blocks in one reply', () => {
+    expect(run(['<think>one</think>Middle.<thought>two</thought>End.'])).toEqual({
+      thinking: 'onetwo',
+      content: 'Middle.End.',
+    });
   });
 });

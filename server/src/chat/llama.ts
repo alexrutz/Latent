@@ -81,7 +81,14 @@ so write like a person describing a photograph:
   era, a named technique — beats five adjectives, which muddy each other.
 - **Say the medium.** Photograph, oil painting, cel-shaded illustration, 3D
   render. If they asked for one, keep it; never quietly swap it for another.
+- **Always write the prompt in English**, whatever language the conversation is
+  in. Image models are trained overwhelmingly on English captions and understand
+  it far better than anything else; a German prompt is a worse picture, not a
+  more authentic one. Keep talking to them in their language — it is only the
+  prompt itself that is always English. Proper nouns stay as they are.
 - **Text in the image goes in quotation marks**, exactly as it should appear.
+  That text is whatever they asked for, in whatever language they asked for —
+  the English rule is about the description, not about words in the picture.
 - **Stay faithful.** Everything they asked for goes in; nothing they did not ask
   for gets invented. Fill in what a description genuinely needs and leave the
   rest open — an over-specified prompt is a narrower picture, not a better one.
@@ -157,11 +164,14 @@ export const TOOLS = [
         properties: {
           prompt: {
             type: 'string',
-            description: 'The positive prompt, as comma-separated fragments.',
+            description:
+              'The positive prompt: one paragraph of plain English prose describing the ' +
+              'picture. Always English, whatever language the conversation is in. Not ' +
+              'comma-separated tags.',
           },
           negativePrompt: {
             type: 'string',
-            description: 'What to avoid. Omit unless there is a reason for one.',
+            description: 'What to avoid, also in English. Omit unless there is a reason for one.',
           },
           reason: { type: 'string', description: 'What you were going for, in a sentence.' },
         },
@@ -213,8 +223,14 @@ export const TOOLS = [
  */
 const EAGERNESS: Record<ToolEagerness, string> = {
   off: '',
-  'on-request': 'ONLY when they explicitly ask for it in so many words. Never on your own initiative, however obviously useful it seems.',
-  considered: 'when it is clearly the next thing to do and the conversation has settled — not while an idea is still being worked out.',
+  'on-request':
+    'ONLY when they explicitly ask for it in so many words. Never on your own initiative, however obviously useful it seems.',
+  invited:
+    'when they ask for it, or when they plainly invite it — "go on then", "sounds good, do it". An invitation has to be in what they just said; do not read one into agreement about the picture itself.',
+  settled:
+    'when what it would act on is decided and nothing is still in flux, and they have not signalled they want to keep going. Not while an idea is still being worked out.',
+  ready:
+    'when it looks like the sensible next step, without waiting for the decision to be final. Say in one line what you are proposing and why, so refusing is easy.',
   eager: 'whenever it would help, without waiting to be asked.',
 };
 
@@ -424,10 +440,7 @@ async function* readStream(
   const decoder = new TextDecoder();
   let buffer = '';
   const calls = new Map<number, PartialCall>();
-  /** True while inside an inline `<think>` block. */
-  let inThink = false;
-  /** Content held back because it might be the start of a tag. */
-  let carry = '';
+  const reasoning = inlineReasoning(thinking);
 
   try {
     for (;;) {
@@ -471,10 +484,7 @@ async function* readStream(
              * reply arriving smoothly without ever leaking a half-written tag
              * into it.
              */
-            carry += delta.content;
-            for (const event of drain(() => carry, (rest) => (carry = rest), thinking, () => inThink, (next) => (inThink = next))) {
-              yield event;
-            }
+            yield* reasoning.push(delta.content);
           }
 
           for (const part of delta.tool_calls ?? []) {
@@ -493,8 +503,7 @@ async function* readStream(
     reader.releaseLock();
   }
 
-  // Whatever is left cannot become a tag now the stream has ended.
-  if (carry !== '') yield { type: inThink ? 'thinking' : 'content', text: carry };
+  yield* reasoning.end();
 
   // Only now are the arguments complete enough to parse.
   for (const call of calls.values()) {
@@ -503,60 +512,102 @@ async function* readStream(
   }
 }
 
-const OPEN_TAG = '<think>';
-const CLOSE_TAG = '</think>';
+/**
+ * The ways a model marks its reasoning inside the content stream.
+ *
+ * The clean path is `reasoning_content`, a field of its own, and most builds
+ * use it. The rest inline the reasoning in the answer, and there is no shared
+ * convention — so this is a list rather than a constant:
+ *
+ * - `<think>` is the DeepSeek-R1 wording, which Qwen and most of the
+ *   distillations copied.
+ * - `<|channel>thought` is Gemma 4's. Its template is supposed to keep the
+ *   thought channel out of the visible output, and in llama.cpp it routinely
+ *   does not — the channel tokens arrive in `content` like everything else.
+ * - `<thought>` and `<reasoning>` turn up in fine-tunes often enough to be
+ *   worth the two lines it costs to read them.
+ *
+ * Longest opener first, so `<|channel>thought` is not mistaken for anything
+ * shorter that happens to share a prefix.
+ */
+const THINK_TAGS: { open: string; close: string }[] = [
+  { open: '<|channel>thought', close: '<channel|>' },
+  { open: '<think>', close: '</think>' },
+  { open: '<thought>', close: '</thought>' },
+  { open: '<reasoning>', close: '</reasoning>' },
+];
 
 /**
- * Emit everything in the buffer that is unambiguous, and keep the rest.
+ * Pulls inline reasoning out of a content stream, one delta at a time.
  *
- * "The rest" is a partial tag at the very end: `…light <thi` could become
- * `<think>`, so those four characters wait for the next frame. Anything else is
- * safe to pass on immediately, which is what keeps the reply readable as it
- * arrives.
+ * Stateful because it has to be: a tag straddles deltas — llama.cpp really does
+ * send `<thi` and `nk>` in separate frames — so a tail that could still become
+ * one is held back until the next delta says whether it did. Everything else is
+ * passed on immediately, which is what keeps the reply arriving smoothly rather
+ * than in tag-sized jumps.
+ *
+ * Which family opened the block is remembered, not just *that* one did: a reply
+ * that opened with Gemma's channel token has to be closed by Gemma's, and not
+ * by a `</think>` that happens to appear in the prose.
  */
-function* drain(
-  read: () => string,
-  write: (rest: string) => void,
-  thinking: boolean,
-  inThink: () => boolean,
-  setThink: (next: boolean) => void,
-): Generator<ChatStreamEvent> {
-  let buffer = read();
+export function inlineReasoning(thinking: boolean) {
+  /** Content held back because it might be the start of a tag. */
+  let carry = '';
+  /** Which tag family we are inside, or −1 outside one. */
+  let open = -1;
 
-  for (;;) {
-    const tag = inThink() ? CLOSE_TAG : OPEN_TAG;
-    const at = buffer.indexOf(tag);
+  const emit = function* (text: string): Generator<ChatStreamEvent> {
+    if (text === '') return;
+    if (open >= 0) {
+      if (thinking) yield { type: 'thinking', text };
+    } else {
+      yield { type: 'content', text };
+    }
+  };
 
-    if (at >= 0) {
-      const before = buffer.slice(0, at);
-      if (before !== '') {
-        if (inThink()) {
-          if (thinking) yield { type: 'thinking', text: before };
-        } else {
-          yield { type: 'content', text: before };
+  return {
+    *push(delta: string): Generator<ChatStreamEvent> {
+      carry += delta;
+
+      for (;;) {
+        const inside = open;
+        const tags = inside >= 0 ? [THINK_TAGS[inside]!.close] : THINK_TAGS.map((tag) => tag.open);
+
+        // The earliest of the tags we are watching for, so two families in one
+        // buffer are handled in the order they actually appear.
+        let at = -1;
+        let which = -1;
+        for (const [index, tag] of tags.entries()) {
+          const found = carry.indexOf(tag);
+          if (found >= 0 && (at < 0 || found < at)) {
+            at = found;
+            which = index;
+          }
         }
-      }
-      buffer = buffer.slice(at + tag.length);
-      setThink(!inThink());
-      continue;
-    }
 
-    /*
-     * No whole tag. Emit everything except a tail that could still become one,
-     * and wait for more.
-     */
-    const held = partialTagLength(buffer, tag);
-    const safe = buffer.slice(0, buffer.length - held);
-    if (safe !== '') {
-      if (inThink()) {
-        if (thinking) yield { type: 'thinking', text: safe };
-      } else {
-        yield { type: 'content', text: safe };
+        if (at >= 0) {
+          yield* emit(carry.slice(0, at));
+          carry = carry.slice(at + tags[which]!.length);
+          open = inside >= 0 ? -1 : which;
+          // Gemma's opener is followed by a newline that belongs to the token
+          // rather than to the reasoning.
+          if (open >= 0 && carry.startsWith('\n')) carry = carry.slice(1);
+          continue;
+        }
+
+        const held = Math.max(...tags.map((tag) => partialTagLength(carry, tag)));
+        yield* emit(carry.slice(0, carry.length - held));
+        carry = carry.slice(carry.length - held);
+        return;
       }
-    }
-    write(buffer.slice(buffer.length - held));
-    return;
-  }
+    },
+
+    /** Whatever is left cannot become a tag now the stream has ended. */
+    *end(): Generator<ChatStreamEvent> {
+      yield* emit(carry);
+      carry = '';
+    },
+  };
 }
 
 /** How many trailing characters of `text` are a prefix of `tag`. */

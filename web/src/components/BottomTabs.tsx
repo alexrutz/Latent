@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 
+import { useKeyboardOpen } from '../state/keyboard';
 import { useLiveStore } from '../state/live';
 import { scrollToTop } from '../state/scroll';
 import { cn } from './ui';
@@ -87,11 +88,22 @@ export function BottomTabs() {
   const pathname = useLocation().pathname;
   const navigate = useNavigate();
   const [moreOpen, setMoreOpen] = useState(false);
+  const keyboard = useKeyboardOpen();
 
   // Any navigation closes it, including one made from inside the menu.
   useEffect(() => setMoreOpen(false), [pathname]);
 
   const inMore = MORE.some((tab) => pathname.startsWith(tab.to));
+
+  /*
+   * Out of the way while the keyboard is up.
+   *
+   * The bar is at the bottom of a full-height column, so the keyboard pushed it
+   * up and it sat between the text you were writing and the keys you were
+   * writing it with — three quarters of an inch of navigation nobody can use
+   * mid-sentence. Nothing here is reachable while typing anyway.
+   */
+  if (keyboard) return null;
 
   return (
     <nav className="safe-b relative shrink-0 border-t border-line bg-surface/95 backdrop-blur">

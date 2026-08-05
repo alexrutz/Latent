@@ -201,6 +201,23 @@ export function useGallery(options: { workflowId?: string | null; minRating?: nu
 }
 
 /**
+ * Whether the model server is there, and what it has loaded.
+ *
+ * Fetched rather than waited for: in router mode the list of models *is* the
+ * choice, and a picker that only appears after you press Check is a picker
+ * nobody finds. Not retried, because the honest answer to "no model server" is
+ * to say so once.
+ */
+export function useChatStatus() {
+  return useQuery({
+    queryKey: ['chat', 'status'],
+    queryFn: api.chatStatus,
+    retry: false,
+    staleTime: 30_000,
+  });
+}
+
+/**
  * One run, followed until it finishes.
  *
  * Polled rather than driven off the live socket because the caller is the chat

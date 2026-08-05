@@ -788,12 +788,23 @@ export interface ChatSettings {
   /** What a picture generated from the chat is used with. */
   generation: ChatGenerationSettings;
   /**
-   * How tall a generated picture is in the transcript, as a fraction of the
-   * chat window's height. A third by default: big enough to judge, small
-   * enough that the conversation around it is still readable.
+   * How big a generated picture is in the transcript, as a step on a scale.
+   *
+   * A step rather than a fraction of the window. A fraction sounds tidier and
+   * is not: the chat window's height changes when the keyboard opens, so the
+   * same setting meant two different sizes depending on whether you were
+   * typing. The steps are widths, which do not move.
    */
-  imageHeight: number;
+  imageSize: number;
 }
+
+/**
+ * The sizes a picture in the transcript can be, as a fraction of the width.
+ *
+ * Width rather than height, and shared so that the setting and the transcript
+ * cannot disagree about what step 3 means.
+ */
+export const CHAT_IMAGE_SIZES = [0.4, 0.55, 0.7, 0.85, 1] as const;
 
 /**
  * How eagerly one tool is used.
@@ -803,7 +814,18 @@ export interface ChatSettings {
  * being handed a finished prompt while you are still deciding what you want
  * derails the thing the module is for. The defaults reflect that.
  */
-export type ToolEagerness = 'off' | 'on-request' | 'considered' | 'eager';
+export type ToolEagerness =
+  | 'off'
+  /** Only when the words "do this" are actually said. */
+  | 'on-request'
+  /** Asked for, or a plain invitation to go ahead. */
+  | 'invited'
+  /** Once the thing it would act on is decided and nothing is in flux. */
+  | 'settled'
+  /** When it looks like the next step, without waiting for the decision. */
+  | 'ready'
+  /** Whenever it might help. */
+  | 'eager';
 
 export interface ChatToolSettings {
   prompt_blocks: ToolEagerness;

@@ -336,16 +336,15 @@ export function ImageViewer({
         )}
 
         {/*
-          Translucent, and deliberately *not* blurred.
+          No bar. Just the buttons, over the picture.
 
-          The blur was meant to keep the labels legible against whatever was
-          behind them. What it actually did was smear the bottom fifth of every
-          picture — the part you are often looking at — for the sake of a
-          contrast problem the tint already solves.
+          This started as a translucent strip with a blur behind it, then a
+          strip without the blur, and the honest end of that line is nothing at
+          all: every version was a band across the bottom of the picture that
+          existed to make the buttons legible, when the buttons already carry
+          their own backgrounds and do that themselves.
         */}
-        {footer && (
-          <div className="safe-b border-t border-white/10 bg-black/45 px-4 py-3">{footer}</div>
-        )}
+        {footer && <div className="safe-b px-3 pt-2 pb-2">{footer}</div>}
       </div>
     </div>
   );

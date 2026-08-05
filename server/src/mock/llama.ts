@@ -17,6 +17,8 @@ export interface ScriptedReply {
   content?: string;
   /** Wrapped in `<think>` tags inside the content, as some builds do. */
   inlineThinking?: string;
+  /** Wrapped in Gemma 4's thought channel, which leaks into content routinely. */
+  channelThinking?: string;
   toolCall?: { name: string; arguments: unknown };
 }
 
@@ -55,6 +57,13 @@ export function createMockLlama(options: { logLevel?: string } = {}) {
       frame({ content: '<thi' });
       frame({ content: `nk>${script.inlineThinking}</th` });
       frame({ content: 'ink>' });
+    }
+    if (script.channelThinking) {
+      // Gemma 4's channel token, straddled the same way — and with the newline
+      // the template puts after the opener.
+      frame({ content: '<|chan' });
+      frame({ content: `nel>thought\n${script.channelThinking}<chan` });
+      frame({ content: 'nel|>' });
     }
     if (script.content) {
       for (const chunk of split(script.content)) frame({ content: chunk });
