@@ -67,10 +67,24 @@ describe('what the model is told about pace', () => {
   });
 
   it('distinguishes the levels', () => {
-    const asked = toolPolicy({ ...ALL, ask_user: 'on-request' });
-    const freely = toolPolicy({ ...ALL, ask_user: 'eager' });
+    const asked = toolPolicy({ ...ALL, build_prompt: 'on-request' });
+    const freely = toolPolicy({ ...ALL, build_prompt: 'eager' });
     expect(asked).not.toEqual(freely);
     expect(freely).toContain('without waiting to be asked');
+  });
+
+  /**
+   * Asking has its own scale, shifted towards firing.
+   *
+   * A question is one tap and improves everything after it; a finished prompt
+   * interrupts the conversation it came out of. Treating them as equally
+   * expensive is what left the model listing options in prose, which then have
+   * to be typed back in by hand.
+   */
+  it('tells it never to list options in prose, at every level', () => {
+    for (const level of ['on-request', 'invited', 'settled', 'ready', 'eager'] as const) {
+      expect(toolPolicy({ ...ALL, ask_user: level })).toContain('in prose');
+    }
   });
 });
 
@@ -80,19 +94,42 @@ describe('reading a tool call off the wire', () => {
       id: 'call_1',
       name: 'ask_user',
       args: JSON.stringify({
-        question: 'Portrait or landscape?',
-        options: ['Portrait', 'Landscape', ''],
-        reason: 'It changes the composition.',
+        questions: [
+          { question: 'Portrait or landscape?', options: ['Portrait', 'Landscape', ''] },
+          { question: 'Photograph or illustration?', options: ['Photo', 'Illustration'] },
+        ],
+        reason: 'They change the composition.',
       }),
     });
 
     expect(call).toEqual({
       callId: 'call_1',
       tool: 'ask_user',
-      question: 'Portrait or landscape?',
-      // The empty one is dropped: a blank button is not an answer.
-      options: ['Portrait', 'Landscape'],
-      reason: 'It changes the composition.',
+      questions: [
+        // The empty option is dropped: a blank button is not an answer.
+        { question: 'Portrait or landscape?', options: ['Portrait', 'Landscape'] },
+        { question: 'Photograph or illustration?', options: ['Photo', 'Illustration'] },
+      ],
+      reason: 'They change the composition.',
+    });
+  });
+
+  /**
+   * The single-question shape, which smaller models produce anyway.
+   *
+   * They have seen a thousand examples of `{question, options}` and will write
+   * it whatever the schema says. Refusing it would mean the tool silently doing
+   * nothing on exactly the models this is for.
+   */
+  it('accepts one question written the old way', () => {
+    const call = parseCall({
+      id: 'c',
+      name: 'ask_user',
+      args: JSON.stringify({ question: 'Portrait or landscape?', options: ['Portrait'] }),
+    });
+    expect(call).toMatchObject({
+      tool: 'ask_user',
+      questions: [{ question: 'Portrait or landscape?', options: ['Portrait'] }],
     });
   });
 
@@ -101,14 +138,17 @@ describe('reading a tool call off the wire', () => {
     const call = parseCall({
       id: 'c',
       name: 'ask_user',
-      args: JSON.stringify({ question: 'What is it for?', reason: '' }),
+      args: JSON.stringify({ questions: [{ question: 'What is it for?' }], reason: '' }),
     });
-    expect(call).toMatchObject({ tool: 'ask_user', options: [] });
+    expect(call).toMatchObject({
+      tool: 'ask_user',
+      questions: [{ question: 'What is it for?', options: [] }],
+    });
   });
 
   it('drops a question with nothing in it', () => {
     expect(
-      parseCall({ id: 'c', name: 'ask_user', args: JSON.stringify({ question: '  ' }) }),
+      parseCall({ id: 'c', name: 'ask_user', args: JSON.stringify({ questions: [{ question: '  ' }] }) }),
     ).toBeNull();
   });
 

@@ -87,6 +87,44 @@ export function registerFavoriteRoutes(app: FastifyInstance, ctx: AppContext): v
   );
 
   /**
+   * Fetch the picture for a favourite that never got one.
+   *
+   * The copy made at favouriting time can fail — ComfyUI busy, the connection
+   * dropped — and it was only logged, which left a favourite that looked fine
+   * until the instance holding the picture went away. This is the second
+   * chance, and it only works while the source is still reachable, so the
+   * failure has to say that rather than "something went wrong".
+   */
+  app.post<{ Params: { id: string } }>('/api/favorites/:id/archive', async (request, reply) => {
+    const favorite = ctx.store.getFavorite(request.params.id);
+    if (!favorite) return reply.code(404).send({ error: 'No such favourite' });
+    if (favorite.archived) return reply.send(favorite);
+    if (!favorite.image) {
+      return reply.code(409).send({ error: 'That favourite has no image to fetch.' });
+    }
+
+    const row = ctx.store.findImage(favorite.image, favorite.generationId ?? undefined);
+    if (!row) {
+      return reply.code(409).send({
+        error: 'That picture is no longer in the gallery, so there is nothing left to copy.',
+      });
+    }
+
+    try {
+      await ctx.archive.capture(ctx.orchestrator.client, row.id, favorite.image);
+    } catch (error) {
+      app.log.warn({ err: error }, 'Could not archive a favourite on request');
+      return reply.code(502).send({
+        error:
+          'ComfyUI could not give us that picture. It only works while the instance that ' +
+          'made it is still reachable and still has the file.',
+      });
+    }
+
+    return reply.send(ctx.store.getFavorite(request.params.id));
+  });
+
+  /**
    * Removing a favourite leaves the archived image alone. The gallery rating is
    * a separate decision, and silently deleting a picture because someone
    * un-starred it here would be the wrong kind of surprise.

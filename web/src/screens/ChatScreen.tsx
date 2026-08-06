@@ -78,6 +78,8 @@ export function ChatScreen() {
   const [attachments, setAttachments] = useState<{ dataUrl: string; name: string }[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  /** Set while the transcript is at the end, which is when it follows a reply. */
+  const [atBottom, setAtBottom] = useState(true);
 
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -161,10 +163,29 @@ export function ChatScreen() {
     [],
   );
 
-  // Follow the reply as it arrives, the way a chat should.
+  /*
+   * Follow the reply as it arrives — until you scroll away from the bottom.
+   *
+   * Following unconditionally is what made the transcript feel like it was
+   * fighting you: every token dragged the view back down, so reading anything
+   * further up, or reading the thinking as it streams, was impossible. A chat
+   * should follow when you are at the bottom and hold still when you are not,
+   * which is what every messaging app does and what the `atBottom` flag is.
+   */
   useEffect(() => {
+    if (!atBottom) return;
     bottomRef.current?.scrollIntoView({ block: 'end' });
-  }, [chat?.messages.length, streaming?.content, streaming?.thinking]);
+  }, [atBottom, chat?.messages.length, streaming?.content, streaming?.thinking]);
+
+  /** Whether the transcript is scrolled to (or near) the end. */
+  const onTranscriptScroll = () => {
+    const element = transcriptRef.current;
+    if (!element) return;
+    // A few pixels of slack: sub-pixel layout means an element scrolled all the
+    // way down is rarely exactly at its maximum.
+    const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+    setAtBottom(distance < 40);
+  };
 
   /** Read one server-sent stream to the end, updating as it goes. */
   const consume = useCallback(
@@ -386,6 +407,7 @@ export function ChatScreen() {
       */}
       <div
         ref={transcriptRef}
+        onScroll={onTranscriptScroll}
         className={cn(
           'min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-2',
           pendingCall && 'pointer-events-none blur-sm',

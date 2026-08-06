@@ -10,3 +10,4 @@ export * from './randomParams.js';
 export * from './randomPrompt.js';
 export * from './apiTypes.js';
 export * from './markdown.js';
+export * from './promptDiff.js';

@@ -5,6 +5,7 @@ import type {
   ChatAttachment,
   ChatMessage,
   ChatStreamEvent,
+  ChatToolName,
   ChatToolResult,
   ProposedBlock,
 } from '@latent/shared';
@@ -139,12 +140,21 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       note?: string;
       /** For `build_prompt`: the run the accepted prompt started. */
       generationId?: string;
+      /** The prompt as it was actually queued, after any editing in the dialog. */
+      prompt?: string;
     };
   }>('/api/chat/conversations/:id/tool', async (request, reply) => {
     const chat = ctx.store.getChat(request.params.id);
     if (!chat) return reply.code(404).send({ error: 'No such conversation' });
 
-    const { messageId, decision = 'rejected', blocks, note, generationId } = request.body ?? {};
+    const {
+      messageId,
+      decision = 'rejected',
+      blocks,
+      note,
+      generationId,
+      prompt,
+    } = request.body ?? {};
     const message = chat.messages.find((candidate) => candidate.id === messageId);
     if (!message?.toolCall) return reply.code(404).send({ error: 'No such tool call' });
     if (message.toolResult) {
@@ -179,6 +189,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       // The run this decision started, so its pictures land in the transcript
       // at the point they were asked for rather than only in the gallery.
       ...(typeof generationId === 'string' && generationId !== '' ? { generationId } : {}),
+      ...(typeof prompt === 'string' && prompt !== '' ? { prompt } : {}),
       createdAt: Date.now(),
     });
 
@@ -195,12 +206,12 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
    */
   app.post<{
     Params: { id: string };
-    Body: { messageId?: string; generationId?: string };
+    Body: { messageId?: string; generationId?: string; prompt?: string };
   }>('/api/chat/conversations/:id/rerun', async (request, reply) => {
     const chat = ctx.store.getChat(request.params.id);
     if (!chat) return reply.code(404).send({ error: 'No such conversation' });
 
-    const { messageId, generationId } = request.body ?? {};
+    const { messageId, generationId, prompt } = request.body ?? {};
     const message = chat.messages.find((candidate) => candidate.id === messageId);
     if (message?.toolCall?.tool !== 'build_prompt') {
       return reply.code(404).send({ error: 'No such prompt' });
@@ -214,6 +225,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       ...(typeof generationId === 'string' && generationId !== ''
         ? { generationId }
         : {}),
+      ...(typeof prompt === 'string' && prompt !== '' ? { prompt } : {}),
       createdAt: Date.now(),
     });
     return reply.send({ ok: true, messageId: id });
@@ -241,6 +253,23 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
 
       const removed = ctx.store.truncateChat(chat.id, chat.messages[at]!.id);
       return reply.send({ ok: true, removed });
+    },
+  );
+
+  /**
+   * Ask for a prompt, because a button was pressed.
+   *
+   * The tool is forced rather than suggested: pressing the button is not the
+   * model's initiative to weigh up, it is an instruction. Its own route so the
+   * pace settings stay about what the model does *on its own* — which is what
+   * they are for.
+   */
+  app.post<{ Params: { id: string } }>(
+    '/api/chat/conversations/:id/build',
+    async (request, reply) => {
+      const chat = ctx.store.getChat(request.params.id);
+      if (!chat) return reply.code(404).send({ error: 'No such conversation' });
+      return streamReply(app, ctx, reply, chat.id, 'build_prompt');
     },
   );
 
@@ -274,6 +303,7 @@ async function streamReply(
   ctx: AppContext,
   reply: FastifyReply,
   chatId: string,
+  force?: ChatToolName,
 ): Promise<void> {
   const chat = ctx.store.getChat(chatId);
   if (!chat) {
@@ -307,7 +337,7 @@ async function streamReply(
   try {
     for await (const event of new LlamaClient(ctx.store.getSettings().chat).stream(
       chat.messages,
-      { signal: controller.signal },
+      { signal: controller.signal, ...(force ? { force } : {}) },
     )) {
       if (event.type === 'content') message.content += event.text;
       if (event.type === 'thinking') thinking += event.text;

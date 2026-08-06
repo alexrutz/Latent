@@ -391,6 +391,16 @@ export interface Favorite {
   values: ParamValues;
   image: GenerationImage | null;
   generationId: string | null;
+  /**
+   * Whether the picture itself is stored here, rather than only referenced.
+   *
+   * Favouriting archives the bytes, but that copy can fail — ComfyUI busy,
+   * the connection dropped — and it was only logged. The favourite then looked
+   * fine until the day the instance that held the picture went away, which is
+   * exactly the day a favourite is supposed to survive. Reported so the screen
+   * can say so, and offer to fetch it while the source is still there.
+   */
+  archived: boolean;
   createdAt: number;
 }
 
@@ -770,6 +780,16 @@ export interface ChatSettings {
   baseUrl: string;
   /** Empty means "whatever the server has loaded", which is the usual case. */
   model: string;
+  /**
+   * Bearer token, for a `llama-server` that is not on your own machine.
+   *
+   * The same situation ComfyUI's connection presets exist for: a rented box
+   * puts the model behind a proxy that wants a token, often with a certificate
+   * nothing has signed. Empty for the ordinary local case.
+   */
+  apiKey: string;
+  /** Accept a certificate nothing signed. Only ever for a box you rented. */
+  allowSelfSigned: boolean;
   temperature: number;
   /** Ceiling on one reply. 0 leaves it to the server. */
   maxTokens: number;
@@ -796,6 +816,16 @@ export interface ChatSettings {
    * typing. The steps are widths, which do not move.
    */
   imageSize: number;
+  /**
+   * What the prompt button next to Send does.
+   *
+   * `generate` takes the model's prompt and queues it without asking, which is
+   * the point of having a button: you have finished talking and want the
+   * picture. `dialog` shows it first, for when you would rather read it.
+   */
+  promptButton: 'generate' | 'dialog';
+  /** Where changes against the conversation's previous prompt are marked. */
+  showDiff: { inDialog: boolean; underPicture: boolean };
 }
 
 /**
@@ -885,6 +915,15 @@ export interface ChatMessage {
    * and a conversation that grows by a megabyte per accepted prompt.
    */
   generationId?: string;
+  /**
+   * The prompt that run was queued with.
+   *
+   * Stored rather than read back from the generation: the diff against the
+   * conversation's previous prompt has to be computable from the transcript
+   * alone, and a run can be swept out of the gallery while the conversation
+   * that produced it stays.
+   */
+  prompt?: string;
   createdAt: number;
 }
 
@@ -938,11 +977,22 @@ export interface BuildPromptCall {
  * plausible and wrong. Asking costs one tap, because the answers come ready
  * made — with a box for the answer it did not think of.
  */
-export interface AskUserCall {
-  tool: 'ask_user';
+export interface AskUserQuestion {
   question: string;
   /** Ready answers, so the usual reply is a tap. Two to four is the useful range. */
   options: string[];
+}
+
+export interface AskUserCall {
+  tool: 'ask_user';
+  /**
+   * Several at once, because that is how the decisions actually arrive.
+   *
+   * "Portrait or landscape, and photograph or illustration?" is one moment's
+   * thinking and two taps; asking it as two round trips is two waits for a
+   * local model to reply. One question is simply a list of one.
+   */
+  questions: AskUserQuestion[];
   /** Why it matters, in a few words. */
   reason: string;
 }

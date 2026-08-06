@@ -1,3 +1,5 @@
+import { Agent } from 'undici';
+
 import type {
   ChatAttachment,
   ChatMessage,
@@ -184,29 +186,38 @@ export const TOOLS = [
     function: {
       name: 'ask_user',
       description:
-        'Ask one specific question whose answer would change the picture, offering a few ready ' +
-        'answers. Use it for a decision you cannot make for them — not for small talk, and not ' +
-        'when the conversation already implies the answer.',
+        'Ask the user one or more questions whose answers would change the picture, each with ' +
+        'a few ready answers to tap. ALWAYS use this rather than listing options in your reply ' +
+        '— options written in prose have to be typed back in by hand, which is the whole thing ' +
+        'this avoids. Ask everything you need in one call rather than one question per turn.',
       parameters: {
         type: 'object',
         properties: {
-          question: {
-            type: 'string',
-            description: 'One question, plainly put. Not several at once.',
-          },
-          options: {
+          questions: {
             type: 'array',
-            items: { type: 'string' },
             description:
-              'Two to four short answers covering the likely ones. They can always write ' +
-              'their own instead, so these do not have to be exhaustive.',
+              'One to four questions, answered together. Two related decisions are one call.',
+            items: {
+              type: 'object',
+              properties: {
+                question: { type: 'string', description: 'One question, plainly put.' },
+                options: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description:
+                    'Two to four short answers covering the likely ones. They can always ' +
+                    'write their own instead, so these need not be exhaustive.',
+                },
+              },
+              required: ['question', 'options'],
+            },
           },
           reason: {
             type: 'string',
-            description: 'Why the answer matters, in a few words.',
+            description: 'Why the answers matter, in a few words.',
           },
         },
-        required: ['question', 'options', 'reason'],
+        required: ['questions', 'reason'],
       },
     },
   },
@@ -234,6 +245,30 @@ const EAGERNESS: Record<ToolEagerness, string> = {
   eager: 'whenever it would help, without waiting to be asked.',
 };
 
+/**
+ * The same scale, shifted for asking questions.
+ *
+ * Every level means "sooner" here than it does for the other two, because the
+ * costs are not comparable: a question is one tap and makes everything after it
+ * better, while a finished prompt interrupts the conversation it came out of.
+ * The failure people actually hit is a model listing three options in prose,
+ * which then have to be typed back in by hand — so every level says the same
+ * thing about that, and the quiet end of the scale still fires.
+ */
+const ASK_EAGERNESS: Record<ToolEagerness, string> = {
+  off: '',
+  'on-request':
+    'when they ask you to, and whenever you would otherwise list options in prose — that list goes in this tool instead of in your reply.',
+  invited:
+    'whenever you are about to offer choices, and whenever a decision you cannot make for them is in the way. Never write options out in prose; that is what this tool is.',
+  settled:
+    'whenever a decision would change the picture and the conversation has not already made it. Never list options in prose — they go here instead.',
+  ready:
+    'freely, whenever an answer would make what comes next better. Ask about several things in one call rather than one per turn, and never list options in prose.',
+  eager:
+    'at every opportunity. If there is anything at all you are unsure of, ask — several questions in one call — and never list options in prose.',
+};
+
 /** Ready answers for a question about pace, spelled out so a small model follows them. */
 const ON_REQUEST_EXAMPLES: Partial<Record<ChatToolName, string>> = {
   build_prompt:
@@ -258,6 +293,10 @@ export function toolPolicy(tools: ChatToolSettings): string {
   for (const name of TOOL_ORDER) {
     const level = tools[name];
     if (level === 'off') continue;
+    if (name === 'ask_user') {
+      lines.push(`- \`ask_user\`: use it ${ASK_EAGERNESS[level]}`);
+      continue;
+    }
     const extra = level === 'on-request' ? ` ${ON_REQUEST_EXAMPLES[name] ?? ''}`.trimEnd() : '';
     lines.push(`- \`${name}\`: use it ${EAGERNESS[level]}${extra}`);
   }
@@ -351,17 +390,54 @@ function userContent(text: string, attachments?: ChatAttachment[]): OpenAiMessag
 }
 
 export class LlamaClient {
-  constructor(private readonly settings: ChatSettings) {}
+  /**
+   * Set only when the preset opts into an unsigned certificate.
+   *
+   * The same arrangement ComfyUI's connections use, and for the same reason: a
+   * rented box serves HTTPS with a certificate nothing signed, and there is no
+   * way to reach it otherwise. Per-client and off by default, so nothing else
+   * loses verification for it.
+   */
+  private readonly dispatcher: Agent | undefined;
+
+  constructor(private readonly settings: ChatSettings) {
+    this.dispatcher = settings.allowSelfSigned
+      ? new Agent({ connect: { rejectUnauthorized: false } })
+      : undefined;
+  }
 
   private url(path: string): string {
     return new URL(path, this.settings.baseUrl.replace(/\/+$/, '') + '/').toString();
   }
 
+  /** Whatever the connection needs on every request. */
+  private headers(extra: Record<string, string> = {}): Record<string, string> {
+    const key = this.settings.apiKey.trim();
+    return { ...extra, ...(key === '' ? {} : { authorization: `Bearer ${key}` }) };
+  }
+
+  /**
+   * Undici's dispatcher, which the global `fetch` accepts but does not type.
+   *
+   * The same cast the ComfyUI client makes: Node's `fetch` is undici's, and
+   * these are the same object at runtime.
+   */
+  private request(): Record<string, unknown> {
+    return this.dispatcher ? { dispatcher: this.dispatcher } : {};
+  }
+
   /** What the server has loaded. Used only to tell the user it is reachable. */
   async models(): Promise<string[]> {
     const response = await fetch(this.url('v1/models'), {
+      headers: this.headers(),
       signal: AbortSignal.timeout(5_000),
-    });
+      ...this.request(),
+    } as RequestInit);
+    if (response.status === 401 || response.status === 403) {
+      throw new LlamaError(
+        'The model server refused the token. Check the key under Settings → Chat.',
+      );
+    }
     if (!response.ok) throw new LlamaError(`The model server answered ${response.status}.`);
     const body = (await response.json()) as { data?: { id?: unknown }[] };
     return (body.data ?? [])
@@ -378,9 +454,18 @@ export class LlamaClient {
    */
   async *stream(
     messages: ChatMessage[],
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; force?: ChatToolName } = {},
   ): AsyncGenerator<ChatStreamEvent> {
-    const tools = enabledTools(this.settings.tools);
+    /*
+     * A forced tool is offered even when its setting is `off`.
+     *
+     * The setting is about what the model does on its own. Pressing the button
+     * is not the model's initiative — it is an instruction, and refusing to
+     * carry it out because of a pace setting would be obtuse.
+     */
+    const tools = options.force
+      ? TOOLS.filter((tool) => tool.function.name === options.force)
+      : enabledTools(this.settings.tools);
     const body = {
       ...(this.settings.model ? { model: this.settings.model } : {}),
       messages: toApiMessages(
@@ -391,7 +476,14 @@ export class LlamaClient {
       temperature: this.settings.temperature,
       ...(this.settings.maxTokens > 0 ? { max_tokens: this.settings.maxTokens } : {}),
       stream: true,
-      ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
+      ...(tools.length > 0
+        ? {
+            tools,
+            tool_choice: options.force
+              ? { type: 'function', function: { name: options.force } }
+              : 'auto',
+          }
+        : {}),
       /*
        * `none` keeps the reasoning in its own field instead of inline in the
        * answer. Builds that do not know the option ignore it, and the inline
@@ -406,10 +498,11 @@ export class LlamaClient {
     try {
       response = await fetch(this.url('v1/chat/completions'), {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: this.headers({ 'content-type': 'application/json' }),
         body: JSON.stringify(body),
         signal: options.signal ?? AbortSignal.timeout(TIMEOUT_MS),
-      });
+        ...this.request(),
+      } as RequestInit);
     } catch (error) {
       throw new LlamaError(
         `No answer from the model server at ${this.settings.baseUrl}. ` +
@@ -668,18 +761,37 @@ export function parseCall(call: PartialCall): ChatToolCall | null {
   }
 
   if (call.name === 'ask_user') {
-    const question = typeof args.question === 'string' ? args.question.trim() : '';
-    if (question === '') return null;
-    const options = (Array.isArray(args.options) ? args.options : [])
-      .map((option) => (typeof option === 'string' ? option.trim() : ''))
-      .filter((option) => option !== '')
-      // Four is what fits on a phone without the question scrolling off.
+    /*
+     * Both shapes. `questions` is what the tool asks for; a single `question`
+     * is what smaller models produce anyway, having seen a thousand examples of
+     * it — refusing that would mean the tool silently doing nothing.
+     */
+    const raw: unknown[] = Array.isArray(args.questions)
+      ? args.questions
+      : [{ question: args.question, options: args.options }];
+
+    const questions = raw
+      .map((entry) => {
+        const item = (entry ?? {}) as { question?: unknown; options?: unknown };
+        const question = typeof item.question === 'string' ? item.question.trim() : '';
+        if (question === '') return null;
+        return {
+          question,
+          options: (Array.isArray(item.options) ? item.options : [])
+            .map((option) => (typeof option === 'string' ? option.trim() : ''))
+            .filter((option) => option !== '')
+            // Four is what fits on a phone without the question scrolling off.
+            .slice(0, 4),
+        };
+      })
+      .filter((entry): entry is { question: string; options: string[] } => entry !== null)
       .slice(0, 4);
+
+    if (questions.length === 0) return null;
     return {
       callId,
       tool: 'ask_user',
-      question,
-      options,
+      questions,
       reason: typeof args.reason === 'string' ? args.reason : '',
     };
   }

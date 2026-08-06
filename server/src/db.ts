@@ -314,6 +314,18 @@ MIGRATIONS.push(`
 ALTER TABLE chat_messages ADD COLUMN generation_id TEXT;
 `);
 
+/**
+ * v12: the prompt a run in the chat was queued with.
+ *
+ * Kept on the message rather than read back from the generation, so the diff
+ * against the conversation's previous prompt can be worked out from the
+ * transcript alone — and so it survives the run being swept out of the gallery
+ * while the conversation that produced it stays.
+ */
+MIGRATIONS.push(`
+ALTER TABLE chat_messages ADD COLUMN prompt TEXT;
+`);
+
 interface ChatRow {
   id: string;
   title: string;
@@ -331,6 +343,7 @@ interface ChatMessageRow {
   tool_call_json: string | null;
   tool_result_json: string | null;
   generation_id: string | null;
+  prompt: string | null;
   created_at: number;
 }
 
@@ -363,6 +376,7 @@ function toChatMessage(row: ChatMessageRow): ChatMessage {
       ? { toolResult: parseJson<ChatMessage['toolResult']>(row.tool_result_json, undefined) }
       : {}),
     ...(row.generation_id ? { generationId: row.generation_id } : {}),
+    ...(row.prompt ? { prompt: row.prompt } : {}),
     createdAt: row.created_at,
   };
 }
@@ -523,9 +537,14 @@ export function toGenerationImage(row: ImageRow): GenerationImage {
   };
 }
 
-function toFavorite(row: FavoriteRow, workflowAvailable: boolean): Favorite {
+function toFavorite(
+  row: FavoriteRow,
+  workflowAvailable: boolean,
+  archived: boolean,
+): Favorite {
   const image = parseJson<GenerationImage | null>(row.image_json, null);
   return {
+    archived,
     id: row.id,
     title: row.title,
     note: row.note,
@@ -584,6 +603,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     // Where `llama-server` listens unless told otherwise.
     baseUrl: 'http://127.0.0.1:8080',
     model: '',
+    apiKey: '',
+    allowSelfSigned: false,
     temperature: 0.8,
     maxTokens: 0,
     thinking: true,
@@ -599,10 +620,19 @@ const DEFAULT_SETTINGS: AppSettings = {
     tools: {
       prompt_blocks: 'on-request',
       build_prompt: 'on-request',
-      ask_user: 'settled',
+      /*
+       * Questions start high and the scale is shifted for this one tool.
+       *
+       * A question costs one tap and improves everything after it, and the
+       * failure mode people actually hit is a model that lists three options in
+       * prose — which then have to be typed back in by hand.
+       */
+      ask_user: 'ready',
     },
     generation: { workflowId: '', values: {} },
     imageSize: 3,
+    promptButton: 'generate',
+    showDiff: { inDialog: true, underPicture: true },
   },
   importRoot: null,
   inputRoot: null,
@@ -704,8 +734,8 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO chat_messages
-           (id, chat_id, role, content, thinking, attachments_json, tool_call_json, tool_result_json, generation_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, chat_id, role, content, thinking, attachments_json, tool_call_json, tool_result_json, generation_id, prompt, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         message.id,
@@ -717,6 +747,7 @@ export class Store {
         message.toolCall ? JSON.stringify(message.toolCall) : null,
         message.toolResult ? JSON.stringify(message.toolResult) : null,
         message.generationId ?? null,
+        message.prompt ?? null,
         message.createdAt,
       );
     this.db.prepare('UPDATE chats SET updated_at = ? WHERE id = ?').run(Date.now(), chatId);
@@ -1313,7 +1344,26 @@ export class Store {
         .map((row) => row.id),
     );
 
-    return rows.map((row) => toFavorite(row, row.workflow_id !== null && available.has(row.workflow_id)));
+    /*
+     * Which of these actually have their bytes here.
+     *
+     * One query rather than one per row, for the same reason as the workflow
+     * lookup above: this list is as long as the user's taste.
+     */
+    const archived = new Set(
+      this.db
+        .prepare<[], { id: number }>('SELECT id FROM images WHERE archived_path IS NOT NULL')
+        .all()
+        .map((entry) => entry.id),
+    );
+
+    return rows.map((row) =>
+      toFavorite(
+        row,
+        row.workflow_id !== null && available.has(row.workflow_id),
+        row.image_id !== null && archived.has(row.image_id),
+      ),
+    );
   }
 
   getFavorite(id: string): Favorite | null {
@@ -1323,7 +1373,13 @@ export class Store {
     if (!row) return null;
     const available =
       row.workflow_id !== null && this.getWorkflow(row.workflow_id) !== null;
-    return toFavorite(row, available);
+    return toFavorite(row, available, this.isArchived(row.image_id));
+  }
+
+  /** Whether an image's bytes are stored here rather than only referenced. */
+  private isArchived(imageId: number | null): boolean {
+    if (imageId === null) return false;
+    return this.getImage(imageId)?.archived_path != null;
   }
 
   /** True when this exact image is already a favourite, so the UI can toggle. */
@@ -1332,7 +1388,11 @@ export class Store {
       .prepare<[number], FavoriteRow>('SELECT * FROM favorites WHERE image_id = ? LIMIT 1')
       .get(imageId);
     if (!row) return null;
-    return toFavorite(row, row.workflow_id !== null && this.getWorkflow(row.workflow_id) !== null);
+    return toFavorite(
+      row,
+      row.workflow_id !== null && this.getWorkflow(row.workflow_id) !== null,
+      this.isArchived(row.image_id),
+    );
   }
 
   insertFavorite(favorite: {

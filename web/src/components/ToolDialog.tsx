@@ -102,58 +102,57 @@ function AskUserBody({
   call: Extract<ChatToolCall, { tool: 'ask_user' }>;
   onResolve: (decision: ToolDecision) => void | Promise<void>;
 }) {
-  const [own, setOwn] = useState('');
+  /** One answer per question, by index. A tap or a typed one, the same thing. */
+  const [answers, setAnswers] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState(false);
 
-  const answer = (text: string) => {
+  const answered = call.questions.filter((_, index) => (answers[index] ?? '') !== '').length;
+  const all = answered === call.questions.length;
+
+  const send = () => {
     setBusy(true);
-    void onResolve({ decision: 'accepted', note: text });
+    void onResolve({
+      decision: 'accepted',
+      // Written back as question-and-answer pairs rather than bare answers:
+      // "Landscape" on its own tells the model nothing about which of three
+      // questions it belongs to.
+      note: call.questions
+        .map((entry, index) => `${entry.question} — ${answers[index] ?? 'no preference'}`)
+        .join('\n'),
+    });
   };
 
   return (
     <>
       <div className="shrink-0 border-b border-line px-4 py-3">
-        <p className="text-sm leading-relaxed font-medium">{call.question}</p>
-        {call.reason !== '' && <p className="mt-1 text-xs text-muted">{call.reason}</p>}
+        <p className="text-sm font-medium">
+          {call.questions.length === 1 ? 'One question' : `${call.questions.length} questions`}
+        </p>
+        {call.reason !== '' && <p className="mt-0.5 text-xs text-muted">{call.reason}</p>}
       </div>
 
-      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3">
-        {call.options.map((option) => (
-          <button
-            key={option}
-            type="button"
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 py-3">
+        {/* Several at once, because that is how the decisions arrive: two
+            related choices are one moment's thinking and two taps, and asking
+            them a turn apart is two waits for a local model to reply. */}
+        {call.questions.map((entry, index) => (
+          <QuestionRow
+            key={`${entry.question}-${index}`}
+            entry={entry}
+            answer={answers[index] ?? ''}
             disabled={busy}
-            onClick={() => answer(option)}
-            className="w-full rounded-xl bg-surface-2 px-3 py-2.5 text-left text-sm active:bg-surface-3 disabled:opacity-50"
-          >
-            {option}
-          </button>
-        ))}
-
-        <div className="flex items-end gap-2 pt-1">
-          <textarea
-            value={own}
-            onChange={(event) => setOwn(event.target.value)}
-            rows={1}
-            aria-label="Your own answer"
-            placeholder="Or say it yourself…"
-            className="max-h-24 min-h-10 flex-1 resize-none rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm focus:border-accent focus:outline-none"
+            onAnswer={(text) => setAnswers((current) => ({ ...current, [index]: text }))}
           />
-          <Button
-            variant="primary"
-            size="sm"
-            className="h-10 shrink-0"
-            disabled={busy || own.trim() === ''}
-            onClick={() => answer(own.trim())}
-          >
-            Send
-          </Button>
-        </div>
+        ))}
+      </div>
 
+      <div className="flex shrink-0 items-center gap-2 border-t border-line px-3 py-2">
         {/* Not answering is an answer: it tells the model to decide for itself
             rather than asking again. */}
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
+          className="flex-1"
           disabled={busy}
           onClick={() =>
             void onResolve({
@@ -161,12 +160,76 @@ function AskUserBody({
               note: 'The user would rather not answer. Choose sensibly and carry on.',
             })
           }
-          className="w-full py-2 text-center text-xs text-muted"
         >
           Skip
-        </button>
+        </Button>
+        <Button
+          variant="primary"
+          size="sm"
+          className="flex-1"
+          busy={busy}
+          disabled={answered === 0}
+          onClick={send}
+        >
+          {all ? 'Send' : `Send ${answered} of ${call.questions.length}`}
+        </Button>
       </div>
     </>
+  );
+}
+
+/** One question: its ready answers, and a box for the one it did not think of. */
+function QuestionRow({
+  entry,
+  answer,
+  disabled,
+  onAnswer,
+}: {
+  entry: { question: string; options: string[] };
+  answer: string;
+  disabled: boolean;
+  onAnswer: (text: string) => void;
+}) {
+  const [own, setOwn] = useState('');
+  const chosen = entry.options.includes(answer);
+
+  return (
+    <div className="space-y-1.5">
+      <p className="text-sm leading-relaxed">{entry.question}</p>
+
+      <div className="flex flex-wrap gap-1.5">
+        {entry.options.map((option) => (
+          <button
+            key={option}
+            type="button"
+            disabled={disabled}
+            aria-pressed={answer === option}
+            onClick={() => {
+              setOwn('');
+              onAnswer(answer === option ? '' : option);
+            }}
+            className={cn(
+              'max-w-full truncate rounded-xl px-3 py-2 text-left text-sm disabled:opacity-50',
+              answer === option ? 'bg-accent text-white' : 'bg-surface-2 active:bg-surface-3',
+            )}
+          >
+            {option}
+          </button>
+        ))}
+      </div>
+
+      <input
+        value={chosen ? '' : (own || answer)}
+        onChange={(event) => {
+          setOwn(event.target.value);
+          onAnswer(event.target.value);
+        }}
+        disabled={disabled}
+        aria-label={`Your own answer to: ${entry.question}`}
+        placeholder="Or say it yourself…"
+        className="w-full rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-xs focus:border-accent focus:outline-none"
+      />
+    </div>
   );
 }
 

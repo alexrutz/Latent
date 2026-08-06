@@ -421,6 +421,7 @@ export const api = {
       blocks?: ProposedBlock[];
       note?: string;
       generationId?: string;
+      prompt?: string;
     },
   ) =>
     request<{ ok: true; summary: string }>(`/api/chat/conversations/${id}/tool`, {
