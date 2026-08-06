@@ -1211,6 +1211,73 @@ function ChatSection() {
           </p>
         </div>
 
+        {/* What the ✦ button next to Send does with the prompt it asks for. */}
+        <div className="space-y-1.5 border-t border-line pt-3">
+          <span className="text-sm">The prompt button</span>
+          <div className="flex gap-1">
+            {(
+              [
+                { value: 'generate', label: 'Generates it', hint: 'no dialog' },
+                { value: 'dialog', label: 'Shows it first', hint: 'read, then decide' },
+              ] as const
+            ).map((option) => {
+              const active = (chat.promptButton ?? 'generate') === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => patch({ promptButton: option.value })}
+                  className={cn(
+                    'flex flex-1 flex-col items-start gap-0.5 rounded-lg px-2.5 py-1.5 text-left',
+                    active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                  )}
+                >
+                  <span className="text-xs">{option.label}</span>
+                  <span className={cn('text-[10px]', active ? 'text-white/70' : 'text-muted')}>
+                    {option.hint}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-[11px] text-muted">
+            Only the button. A prompt the model offers on its own is always shown first.
+          </p>
+        </div>
+
+        {/* Marking what changed, in the two places a prompt is read. */}
+        <div className="space-y-2 border-t border-line pt-3">
+          <div>
+            <p className="text-sm">Mark what changed</p>
+            <p className="text-[11px] text-muted">
+              Against the conversation’s previous prompt. Two paragraphs of near-identical prose
+              are hard to compare by eye, which is how you regenerate something you meant to
+              change and do not notice.
+            </p>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="min-w-0 flex-1 text-sm">In the prompt dialog</span>
+            <Toggle
+              checked={chat.showDiff?.inDialog ?? true}
+              onChange={(inDialog) =>
+                patch({ showDiff: { ...chat.showDiff, inDialog } })
+              }
+              label="Mark changes in the prompt dialog"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span className="min-w-0 flex-1 text-sm">Under the picture</span>
+            <Toggle
+              checked={chat.showDiff?.underPicture ?? true}
+              onChange={(underPicture) =>
+                patch({ showDiff: { ...chat.showDiff, underPicture } })
+              }
+              label="Mark changes under the picture"
+            />
+          </div>
+        </div>
+
         <ChatGenerationSettingsEditor chat={chat} onPatch={patch} />
       </Card>
     </section>

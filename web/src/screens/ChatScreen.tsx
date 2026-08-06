@@ -12,6 +12,7 @@ import { ApiError, api, imageUrl } from '../api/client';
 import { useGeneration, useSettings } from '../api/queries';
 import { ImageViewer } from '../components/ImageViewer';
 import { Markdown } from '../components/Markdown';
+import { PromptDiff, promptChanged } from '../components/PromptDiff';
 import { ToolDialog } from '../components/ToolDialog';
 import { Button, cn, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { useLiveStore } from '../state/live';
@@ -38,6 +39,23 @@ const MAX_IMAGE_SIDE = 1024;
 interface Streaming {
   content: string;
   thinking: string;
+}
+
+/**
+ * The prompt generated before this message, if there was one.
+ *
+ * Each picture is marked against the one before *it*, not against the newest —
+ * scrolling back through a conversation should show the change that was made at
+ * the time, which is the only version of that comparison worth anything.
+ */
+function promptBefore(messages: ChatMessage[], id: string): string {
+  const at = messages.findIndex((message) => message.id === id);
+  if (at < 0) return '';
+  for (let index = at - 1; index >= 0; index -= 1) {
+    const earlier = messages[index]!.prompt;
+    if (earlier) return earlier;
+  }
+  return '';
 }
 
 /** What a resolved tool call is called once it is only a line in the history. */
@@ -80,6 +98,14 @@ export function ChatScreen() {
   const [showHistory, setShowHistory] = useState(false);
   /** Set while the transcript is at the end, which is when it follows a reply. */
   const [atBottom, setAtBottom] = useState(true);
+  /**
+   * True while the tool call in flight is one the button asked for.
+   *
+   * Only those are queued without being read. A prompt the model offered on its
+   * own is still shown first, whatever the button's setting says — the setting
+   * is about what the button does, not about what the model may do unattended.
+   */
+  const [askedForPrompt, setAskedForPrompt] = useState(false);
 
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -176,6 +202,16 @@ export function ChatScreen() {
     if (!atBottom) return;
     bottomRef.current?.scrollIntoView({ block: 'end' });
   }, [atBottom, chat?.messages.length, streaming?.content, streaming?.thinking]);
+
+  /**
+   * The last prompt this conversation actually generated with.
+   *
+   * What the next one is marked against. Taken from the transcript rather than
+   * from the gallery so it is right even after a run has been swept, and so
+   * the marking works the moment the dialog opens.
+   */
+  const previousPrompt = [...(chat?.messages ?? [])].reverse().find((message) => message.prompt)
+    ?.prompt ?? '';
 
   /** Whether the transcript is scrolled to (or near) the end. */
   const onTranscriptScroll = () => {
@@ -326,6 +362,37 @@ export function ChatScreen() {
     if (chat) await api.chat(chat.id).then(setChat).catch(() => {});
   };
 
+  /**
+   * Ask for a prompt, because the button was pressed.
+   *
+   * A forced tool call rather than a message saying "write me a prompt": the
+   * second is a request the model weighs up against its pace setting, and the
+   * button is not a request. What happens to the result is the setting next to
+   * it — queued straight away, or shown first.
+   */
+  const askForPrompt = async () => {
+    if (!chat || streaming) return;
+    setError(null);
+    setAskedForPrompt(true);
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const response = await fetch(`/api/chat/conversations/${chat.id}/build`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        signal: controller.signal,
+      });
+      await consume(response, chat.id);
+    } catch (cause) {
+      setStreaming(null);
+      if (!controller.signal.aborted) {
+        setError(cause instanceof Error ? cause.message : 'The model did not answer');
+      }
+    }
+  };
+
   /** After a decision, let the model say something about it. */
   const continueAfterTool = async (chatId: string) => {
     try {
@@ -429,6 +496,8 @@ export function ChatScreen() {
               key={message.id}
               message={message}
               pictureWidth={pictureWidth}
+              previousPrompt={promptBefore(chat.messages, message.id)}
+              showDiff={settings.data?.chat.showDiff.underPicture ?? true}
               onRevisit={(call) => setRevisiting({ messageId: message.id, call })}
             />
           ))}
@@ -513,6 +582,20 @@ export function ChatScreen() {
             className="max-h-32 min-h-10 flex-1 resize-none rounded-xl border border-line bg-surface px-3 py-2 text-sm leading-relaxed focus:border-accent focus:outline-none"
           />
 
+          {/* Ask for a prompt without saying so. What it does with the answer
+              — queue it, or show it first — is the setting beside it. */}
+          {!streaming && (
+            <Button
+              variant="secondary"
+              className="size-10 shrink-0 rounded-xl p-0 text-base"
+              onClick={() => void askForPrompt()}
+              aria-label="Build a prompt"
+              title="Build a prompt from this conversation"
+            >
+              ✦
+            </Button>
+          )}
+
           {/* Stop sits beside Send rather than replacing it: replacing it makes
               the one button mean two things, and the moment you want to stop is
               the moment you are already reaching for that corner. */}
@@ -543,8 +626,15 @@ export function ChatScreen() {
         <ToolDialog
           call={pendingCall.call}
           settings={settings.data ?? null}
+          previousPrompt={previousPrompt}
+          autoAccept={
+            pendingCall.call.tool === 'build_prompt' &&
+            askedForPrompt &&
+            settings.data?.chat.promptButton === 'generate'
+          }
           onResolve={async (body) => {
             setPendingCall(null);
+            setAskedForPrompt(false);
             try {
               await api.resolveTool(chat.id, { messageId: pendingCall.messageId, ...body });
               await continueAfterTool(chat.id);
@@ -559,16 +649,18 @@ export function ChatScreen() {
         <ToolDialog
           call={revisiting.call}
           settings={settings.data ?? null}
+          previousPrompt={previousPrompt}
           onResolve={() => setRevisiting(null)}
           revisit={{
             onClose: () => setRevisiting(null),
-            onRerun: async (generationId) => {
+            onRerun: async (generationId, prompt) => {
               const { messageId } = revisiting;
               setRevisiting(null);
               try {
                 await api.rerunPrompt(chat.id, {
                   messageId,
                   ...(generationId ? { generationId } : {}),
+                  prompt,
                 });
                 setChat(await api.chat(chat.id));
               } catch (cause) {
@@ -608,10 +700,15 @@ export function ChatScreen() {
 function MessageRow({
   message,
   pictureWidth,
+  previousPrompt,
+  showDiff,
   onRevisit,
 }: {
   message: ChatMessage;
   pictureWidth: number;
+  /** The prompt generated before this one, for marking what changed. */
+  previousPrompt: string;
+  showDiff: boolean;
   onRevisit: (call: ChatToolCall) => void;
 }) {
   if (message.role === 'tool' || message.role === 'note') {
@@ -619,7 +716,13 @@ function MessageRow({
       <div className="space-y-1.5">
         <p className="text-center text-[11px] text-muted">{message.content}</p>
         {message.generationId && (
-          <GeneratedRun id={message.generationId} width={pictureWidth} />
+          <GeneratedRun
+            id={message.generationId}
+            width={pictureWidth}
+            prompt={message.prompt ?? ''}
+            previousPrompt={previousPrompt}
+            showDiff={showDiff}
+          />
         )}
       </div>
     );
@@ -700,7 +803,19 @@ function MessageRow({
  * tapping one opens the full viewer: pinch to zoom, drag to move, tap again to
  * put it away.
  */
-function GeneratedRun({ id, width }: { id: string; width: number }) {
+function GeneratedRun({
+  id,
+  width,
+  prompt,
+  previousPrompt,
+  showDiff,
+}: {
+  id: string;
+  width: number;
+  prompt: string;
+  previousPrompt: string;
+  showDiff: boolean;
+}) {
   const generation = useGeneration(id);
   const job = useLiveStore((state) => state.live.job);
   const [viewing, setViewing] = useState<number | null>(null);
@@ -731,6 +846,17 @@ function GeneratedRun({ id, width }: { id: string; width: number }) {
           <span className="flex min-w-0 items-center gap-2 truncate">
             <Spinner className="size-3.5 shrink-0" />
             {mine?.nodeTitle ?? (record?.status === 'running' ? 'Generating…' : 'Queued')}
+            {/*
+              The node's own steps, next to its name.
+              A percentage across the whole graph barely moves during the part
+              that actually takes the time; "KSampler 12/20" is the number you
+              are waiting on.
+            */}
+            {mine && mine.progressMax > 0 && (
+              <span className="shrink-0 tabular-nums text-body">
+                {mine.progress}/{mine.progressMax}
+              </span>
+            )}
           </span>
           {fraction > 0 && (
             <span className="shrink-0 tabular-nums">{Math.round(fraction * 100)}%</span>
@@ -782,6 +908,13 @@ function GeneratedRun({ id, width }: { id: string; width: number }) {
         ))}
       </div>
 
+      {/* What it was made from, folded away. */}
+      {prompt !== '' && (
+        <div style={style} className="mx-auto">
+          <PromptPanel prompt={prompt} previousPrompt={showDiff ? previousPrompt : ''} />
+        </div>
+      )}
+
       {viewing !== null && (
         <ImageViewer
           entries={images.map((image) => ({ record, image }))}
@@ -795,6 +928,49 @@ function GeneratedRun({ id, width }: { id: string; width: number }) {
 }
 
 /**
+ * The prompt a picture was made from, under it and folded away.
+ *
+ * Folded because the picture is the answer and the prompt is the working; open
+ * because the moment you want to change one word, retyping the paragraph from
+ * the dialog is the alternative. What changed since the conversation's previous
+ * prompt is marked, which is the difference between "that looks different" and
+ * knowing why.
+ */
+function PromptPanel({ prompt, previousPrompt }: { prompt: string; previousPrompt: string }) {
+  const [open, setOpen] = useState(false);
+  const changed = promptChanged(previousPrompt, prompt);
+
+  return (
+    <div className="rounded-lg border border-line/60 bg-surface/60">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        aria-label="The prompt used"
+        className="flex w-full items-center gap-1.5 px-2 py-1 text-left text-[11px] text-muted"
+      >
+        <span aria-hidden>{open ? '▾' : '▸'}</span>
+        <span className="min-w-0 flex-1 truncate">{open ? 'Prompt' : prompt}</span>
+        {changed && !open && (
+          <span aria-hidden className="shrink-0 text-success">
+            ±
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="px-2 pb-1.5">
+          {changed ? (
+            <PromptDiff previous={previousPrompt} next={prompt} className="text-[11px]" />
+          ) : (
+            <p className="text-[11px] leading-relaxed break-words whitespace-pre-wrap">{prompt}</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * The model's reasoning, folded away.
  *
  * Worth having — it is often where the interesting part of a suggestion is —
@@ -803,6 +979,24 @@ function GeneratedRun({ id, width }: { id: string; width: number }) {
  */
 function ThinkingBlock({ text, live = false }: { text: string; live?: boolean }) {
   const [open, setOpen] = useState(false);
+  const body = useRef<HTMLDivElement>(null);
+  /** Cleared the moment you scroll up, so reading is possible while it writes. */
+  const [follow, setFollow] = useState(true);
+
+  /*
+   * Its own scroll, capped, and it follows only while you let it.
+   *
+   * Reasoning arrives faster than anyone reads, so following it unconditionally
+   * meant the text you were half-way through was gone before you finished the
+   * line — and there was no way to hold it still. Scrolling up stops the
+   * follow; scrolling back to the end resumes it, which is the behaviour of
+   * every log viewer worth using.
+   */
+  useEffect(() => {
+    if (!open || !follow) return;
+    const element = body.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [open, follow, text]);
 
   return (
     <div className="rounded-lg border border-line/60 bg-surface/60">
@@ -814,11 +1008,25 @@ function ThinkingBlock({ text, live = false }: { text: string; live?: boolean })
       >
         <span aria-hidden>{open ? '▾' : '▸'}</span>
         {live ? 'Thinking…' : 'Thinking'}
+        {open && live && !follow && (
+          <span className="ml-auto text-[10px] text-accent">paused — scroll down to follow</span>
+        )}
       </button>
       {open && (
-        <p className="px-2 pb-1.5 text-[11px] leading-relaxed text-muted whitespace-pre-wrap">
-          {text}
-        </p>
+        <div
+          ref={body}
+          data-testid="thinking-body"
+          onScroll={(event) => {
+            const element = event.currentTarget;
+            const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
+            setFollow(distance < 24);
+          }}
+          // Capped and scrollable: a model's reasoning runs to paragraphs, and
+          // at full height it pushes the answer off the screen entirely.
+          className="max-h-48 overflow-y-auto overscroll-contain px-2 pb-1.5"
+        >
+          <p className="text-[11px] leading-relaxed text-muted whitespace-pre-wrap">{text}</p>
+        </div>
       )}
     </div>
   );

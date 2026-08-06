@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { findFieldByRole } from '@latent/shared';
@@ -6,6 +6,7 @@ import type { AppSettings, ChatToolCall, ProposedBlock } from '@latent/shared';
 
 import { api } from '../api/client';
 import { useVisibleWorkflows, useWorkflow } from '../api/queries';
+import { PromptDiff, promptChanged } from './PromptDiff';
 import { useFormDrafts } from '../state/formDraft';
 import { Button, cn, ErrorNote, Spinner } from './ui';
 
@@ -29,6 +30,8 @@ export interface ToolDecision {
   note?: string;
   /** The run an accepted prompt started, so the transcript can show it. */
   generationId?: string;
+  /** The prompt as it was queued, so the next one can be marked against it. */
+  prompt?: string;
 }
 
 /**
@@ -40,7 +43,7 @@ export interface ToolDecision {
  */
 export interface RevisitActions {
   /** Queued again; the run's id, so the transcript can show what it made. */
-  onRerun: (generationId: string | null) => void | Promise<void>;
+  onRerun: (generationId: string | null, prompt: string) => void | Promise<void>;
   /** Drop everything said after this prompt and carry on from here. */
   onRewind: () => void | Promise<void>;
   onClose: () => void;
@@ -51,12 +54,24 @@ export function ToolDialog({
   settings,
   onResolve,
   revisit,
+  previousPrompt = '',
+  autoAccept = false,
 }: {
   call: ChatToolCall;
   settings: AppSettings | null;
   onResolve: (decision: ToolDecision) => void | Promise<void>;
   /** Set when this is an old call being looked at again rather than decided. */
   revisit?: RevisitActions;
+  /** The last prompt this conversation generated, for marking what changed. */
+  previousPrompt?: string;
+  /**
+   * Queue it the moment it is ready, without waiting to be read.
+   *
+   * What the prompt button does by default. It runs through this dialog rather
+   * than through a copy of its logic, so "generate straight away" and "show me
+   * first" cannot drift apart in which workflow or which values they use.
+   */
+  autoAccept?: boolean;
 }) {
   return createPortal(
     <div className="fixed inset-0 z-70 flex items-center justify-center p-4" role="dialog" aria-modal="true">
@@ -74,6 +89,8 @@ export function ToolDialog({
             settings={settings}
             onResolve={onResolve}
             revisit={revisit}
+            previousPrompt={previousPrompt}
+            autoAccept={autoAccept}
           />
         ) : call.tool === 'ask_user' ? (
           <AskUserBody call={call} onResolve={onResolve} />
@@ -247,11 +264,15 @@ function BuildPromptBody({
   settings,
   onResolve,
   revisit,
+  previousPrompt,
+  autoAccept,
 }: {
   call: Extract<ChatToolCall, { tool: 'build_prompt' }>;
   settings: AppSettings | null;
   onResolve: (decision: ToolDecision) => void | Promise<void>;
   revisit?: RevisitActions;
+  previousPrompt: string;
+  autoAccept: boolean;
 }) {
   const workflows = useVisibleWorkflows();
 
@@ -341,7 +362,7 @@ function BuildPromptBody({
 
       if (revisit) {
         // Decided long ago; there is no decision left to record, only a run.
-        await revisit.onRerun(generationId);
+        await revisit.onRerun(generationId, prompt);
         return;
       }
 
@@ -349,6 +370,8 @@ function BuildPromptBody({
         decision: 'accepted',
         note: `The user accepted the prompt and queued it: "${prompt.slice(0, 200)}"`,
         ...(generationId ? { generationId } : {}),
+        // As edited, not as proposed: the transcript shows what actually ran.
+        prompt,
       });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not queue that');
@@ -356,7 +379,36 @@ function BuildPromptBody({
     }
   };
 
+  /*
+   * Queue it as soon as there is something to queue with.
+   *
+   * `detail` arrives a tick after the dialog mounts, so this waits for it
+   * rather than firing on mount and finding no workflow. The ref is what keeps
+   * a re-render from queueing the same prompt twice.
+   */
+  const fired = useRef(false);
+  useEffect(() => {
+    if (!autoAccept || fired.current || !detail || busy) return;
+    fired.current = true;
+    void generate();
+  }, [autoAccept, detail, busy, generate]);
+
   const imageField = detail ? findFieldByRole(detail.schema, 'image_input') : undefined;
+
+  /*
+   * Nothing to read while it queues itself.
+   *
+   * Showing the whole dialog for the half-second before it closes would be a
+   * flash of buttons nobody is meant to press.
+   */
+  if (autoAccept && error === null) {
+    return (
+      <div className="flex items-center gap-3 px-4 py-5">
+        <Spinner className="size-4 text-muted" />
+        <p className="min-w-0 flex-1 truncate text-sm text-muted">Generating that prompt…</p>
+      </div>
+    );
+  }
 
   return (
     <>
@@ -384,6 +436,23 @@ function BuildPromptBody({
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
         {call.reason !== '' && <p className="text-xs text-muted">{call.reason}</p>}
+
+        {/*
+          What changed, above the box rather than inside it.
+
+          A textarea cannot carry colour, and making the prompt read-only to
+          mark it up would cost the editing that matters more. So the marked
+          version sits above as something to read, and the box below stays the
+          thing you type in.
+        */}
+        {settings?.chat.showDiff.inDialog && promptChanged(previousPrompt, prompt) && (
+          <div className="rounded-lg border border-line bg-surface-2/60 px-2.5 py-2">
+            <p className="mb-1 text-[10px] tracking-wide text-muted uppercase">
+              Changed from the last prompt
+            </p>
+            <PromptDiff previous={previousPrompt} next={prompt} className="text-xs" />
+          </div>
+        )}
 
         <textarea
           value={prompt}

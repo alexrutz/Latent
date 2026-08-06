@@ -30,6 +30,7 @@ import { Toggle } from '../components/ParamControl';
 import { cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { useBlur } from '../state/blur';
 import { TILE_OPTIONS, useGridSettings } from '../state/grid';
+import { useGalleryTargetStore } from '../state/galleryTarget';
 import { usePendingStore } from '../state/pending';
 
 /** A stable identity for one picture, unique across runs. */
@@ -67,6 +68,8 @@ export function GalleryScreen() {
   const firstResult = useRef<HTMLDivElement>(null);
   const scrolledOnce = useRef(false);
   const setTileSpan = useSetTileSpan();
+  const consumeTarget = useGalleryTargetStore((state) => state.consume);
+
 
   /*
    * Stable callbacks so the memoised tiles stay memoised. A fresh arrow per tile
@@ -86,6 +89,30 @@ export function GalleryScreen() {
     () => gallery.data?.pages.flatMap((page) => page.items) ?? [],
     [gallery.data],
   );
+
+  /*
+   * Someone sent us here to look at one picture.
+   *
+   * Consumed once, and only once its run is actually in the loaded pages —
+   * setting `selected` to something the list does not contain yet would open
+   * the viewer on nothing. A favourite from months ago is far enough down that
+   * the first page will not have it, which is why this waits rather than
+   * giving up.
+   */
+  useEffect(() => {
+    const target = useGalleryTargetStore.getState().target;
+    if (!target) return;
+    const found = items.some((item) => item.id === target.generationId);
+    if (!found) {
+      if (gallery.hasNextPage && !gallery.isFetchingNextPage) void gallery.fetchNextPage();
+      return;
+    }
+    consumeTarget();
+    setSelected(`${target.generationId}/${target.image.subfolder}/${target.image.filename}`);
+    // Arriving at a specific picture is not the moment to be auto-scrolled to
+    // the newest one.
+    scrolledOnce.current = true;
+  }, [items, gallery, consumeTarget]);
 
   /*
    * Every picture in the gallery, flattened.

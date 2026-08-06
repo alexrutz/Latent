@@ -3,14 +3,22 @@ import { useNavigate } from 'react-router-dom';
 
 import type { Favorite, FavoriteSort } from '@latent/shared';
 
-import { imageUrl } from '../api/client';
-import { useDeleteFavorite, useFavorites, useUpdateFavorite } from '../api/queries';
+import { useQueryClient } from '@tanstack/react-query';
+
+import { api, imageUrl } from '../api/client';
+import {
+  queryKeys,
+  useDeleteFavorite,
+  useFavorites,
+  useUpdateFavorite,
+} from '../api/queries';
 import { ImageViewer, Thumb } from '../components/ImageViewer';
 import { RatingStars } from '../components/RatingStars';
 import { ThumbGrid, useTileStyle } from '../components/ThumbGrid';
 import { Toggle } from '../components/ParamControl';
 import { Button, Card, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { useGridSettings } from '../state/grid';
+import { showInGallery } from '../state/galleryTarget';
 import { usePendingStore } from '../state/pending';
 
 const SORTS: { label: string; value: FavoriteSort }[] = [
@@ -152,6 +160,22 @@ function FavoriteTile({ favorite, onOpen }: { favorite: Favorite; onOpen: () => 
           {'★'.repeat(favorite.rating)}
         </span>
       )}
+      {/*
+        Marked while the picture is only borrowed.
+
+        Favouriting copies the bytes here, but that copy can fail — ComfyUI
+        busy, the connection dropped — and it was only logged. The favourite
+        then looked fine right up until the instance holding the picture went
+        away, which is the day a favourite is supposed to survive.
+      */}
+      {!favorite.archived && (
+        <span
+          title="Not stored here yet"
+          className="pointer-events-none absolute top-1 right-1 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] text-warn backdrop-blur"
+        >
+          ⚠
+        </span>
+      )}
     </div>
   );
 }
@@ -162,15 +186,32 @@ function FavoriteSheet({ favorite, onClose }: { favorite: Favorite; onClose: () 
   const update = useUpdateFavorite();
   const remove = useDeleteFavorite();
 
+  const queryClient = useQueryClient();
   const [note, setNote] = useState(favorite.note ?? '');
   const [viewing, setViewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [saving, setSaving] = useState(false);
 
   const makeMore = (freshSeed: boolean) => {
     if (!favorite.workflowId || !favorite.workflowAvailable) return;
     setPending({ workflowId: favorite.workflowId, values: favorite.values, freshSeed });
     onClose();
     navigate('/');
+  };
+
+  /**
+   * Open the picture where the rest of its run is.
+   *
+   * A favourite is one image out of a batch, and "show me the others" is the
+   * commonest thing to want from it — previously a scroll through the gallery
+   * looking for something you were already holding.
+   */
+  const openInGallery = () => {
+    if (!favorite.generationId || !favorite.image) return;
+    showInGallery(favorite.generationId, favorite.image);
+    onClose();
+    navigate('/gallery');
   };
 
   if (viewing && favorite.image) {
@@ -250,7 +291,41 @@ function FavoriteSheet({ favorite, onClose }: { favorite: Favorite; onClose: () 
 
         <ErrorNote>{error}</ErrorNote>
 
+        {/* The copy that never happened, and the second chance at it. */}
+        {!favorite.archived && (
+          <Card className="space-y-2">
+            <p className="text-xs text-warn">
+              This picture is not stored on this device. It is still being read from ComfyUI,
+              so it will disappear when that instance does.
+            </p>
+            <Button
+              variant="secondary"
+              className="w-full"
+              busy={saving}
+              onClick={async () => {
+                setError(null);
+                setSaving(true);
+                try {
+                  await api.archiveFavorite(favorite.id);
+                  await queryClient.invalidateQueries({ queryKey: queryKeys.favorites });
+                } catch (cause) {
+                  setError(cause instanceof Error ? cause.message : 'Could not fetch it');
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            >
+              Store it here now
+            </Button>
+          </Card>
+        )}
+
         <div className="space-y-2">
+          {favorite.generationId && favorite.image && (
+            <Button variant="secondary" className="w-full" onClick={openInGallery}>
+              Show in the gallery
+            </Button>
+          )}
           <Button
             variant="primary"
             size="lg"

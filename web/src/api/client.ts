@@ -430,7 +430,10 @@ export const api = {
     }),
 
   /** Note that a prompt from further up the conversation was generated again. */
-  rerunPrompt: (id: string, body: { messageId: string; generationId?: string }) =>
+  rerunPrompt: (
+    id: string,
+    body: { messageId: string; generationId?: string; prompt?: string },
+  ) =>
     request<{ ok: true; messageId: string }>(`/api/chat/conversations/${id}/rerun`, {
       method: 'POST',
       body: JSON.stringify(body),
@@ -442,6 +445,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ messageId }),
     }),
+
+  /** Fetch the picture for a favourite whose copy never got made. */
+  archiveFavorite: (id: string) =>
+    request<Favorite>(`/api/favorites/${id}/archive`, { method: 'POST' }),
 
   queue: () => request<QueueState>('/api/queue'),
 
