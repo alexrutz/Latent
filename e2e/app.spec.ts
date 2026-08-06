@@ -2575,6 +2575,10 @@ test.describe('the chat module', () => {
             baseUrl: LLAMA,
             thinking: true,
             generation: { workflowId: '', values: {} },
+            // Pinned, all of it: settings merge, so anything a test changes
+            // stays changed for every test after it.
+            promptButton: 'generate',
+            showDiff: { inDialog: true, underPicture: true },
             tools: {
               build_prompt: 'settled',
               prompt_blocks: 'settled',
@@ -2731,15 +2735,24 @@ test.describe('the chat module', () => {
     await expect(dialog.getByText('Portrait or landscape?')).toBeVisible();
     await expect(dialog.getByText('It decides the composition.')).toBeVisible();
     // The answer it did not think of is always available too.
-    await expect(dialog.getByRole('textbox', { name: 'Your own answer' })).toBeVisible();
+    await expect(
+      dialog.getByRole('textbox', { name: /Your own answer to/ }),
+    ).toBeVisible();
     await page.screenshot({ path: 'test-results/61-ask-user.png' });
 
+    // Tapping picks; Send confirms. Two taps rather than one, because a call
+    // can carry several questions and answering the first should not close it.
     await dialog.getByRole('button', { name: 'Landscape' }).click();
+    await dialog.getByRole('button', { name: 'Send' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(page.getByText('Landscape it is.')).toBeVisible({ timeout: 30_000 });
 
-    // The model was told what was chosen, as the tool's result.
-    await expect(page.getByText('Landscape', { exact: true })).toBeVisible();
+    /*
+     * The model is told the question as well as the answer.
+     * "Landscape" alone says nothing about which of several questions it
+     * belongs to, so the result is written back as pairs.
+     */
+    await expect(page.getByText('Portrait or landscape? — Landscape')).toBeVisible();
   });
 
   /**
@@ -3008,6 +3021,141 @@ test.describe('the chat module', () => {
     await page.getByRole('link', { name: 'Chat' }).click();
 
     await expect(page.getByPlaceholder('Say something…')).toHaveValue('a lighthouse, but');
+  });
+
+  /**
+   * The button that asks for a prompt, and queues it without asking twice.
+   *
+   * Its whole point is that you have finished talking and want the picture, so
+   * by default there is no dialog to read.
+   */
+  test('builds and queues a prompt from the button', async ({ page }) => {
+    await seedWorkflow();
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+      },
+    });
+
+    await open(page, '/chat');
+    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    // No dialog to decide: it queued.
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const gallery = (await (await ctx.get('/api/gallery?limit=10')).json()) as {
+              items: { title: string }[];
+            };
+            return gallery.items[0]?.title ?? '';
+          }),
+        { timeout: 60_000 },
+      )
+      .toContain('a harbour at dawn');
+
+    expect(new URL(page.url()).pathname).toBe('/chat');
+    await expect(page.getByRole('button', { name: /Open picture/ }).first()).toBeVisible({
+      timeout: 60_000,
+    });
+    await page.screenshot({ path: 'test-results/70-prompt-button.png' });
+  });
+
+  /** The same button, set to show its work first. */
+  test('shows the prompt first when the button is set to', async ({ page }) => {
+    await seedWorkflow();
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', {
+        data: { chat: { baseUrl: LLAMA, promptButton: 'dialog' } },
+      }),
+    );
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a lighthouse in fog', reason: 'Quiet.' },
+      },
+    });
+
+    await open(page, '/chat');
+    await page.getByRole('button', { name: 'Build a prompt' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    await expect(dialog.getByRole('textbox', { name: 'The prompt' })).toHaveValue(
+      'a lighthouse in fog',
+    );
+  });
+
+  /**
+   * What changed since the last prompt, marked.
+   *
+   * Two paragraphs of near-identical prose are hard to compare by eye, which is
+   * how you regenerate something you meant to change and do not notice.
+   */
+  test('marks what changed between one prompt and the next', async ({ page }) => {
+    await seedWorkflow();
+    /*
+     * Four replies, not two: accepting a prompt asks the model for a word
+     * about it, and that turn takes the next scripted reply with it.
+     */
+    await script(
+      {
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+        },
+      },
+      { content: 'Queued the first.' },
+      {
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a harbour at dusk', reason: 'Later.' },
+        },
+      },
+      { content: 'Queued the second.' },
+    );
+
+    await open(page, '/chat');
+    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await expect(page.getByRole('button', { name: /Open picture/ }).first()).toBeVisible({
+      timeout: 60_000,
+    });
+
+    // Second prompt, same conversation. The button is hidden while a reply is
+    // still arriving, so wait for it rather than racing it.
+    await expect(page.getByText('Queued the first.')).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const gallery = (await (await ctx.get('/api/gallery?limit=10')).json()) as {
+              items: { title: string }[];
+            };
+            return gallery.items.filter((item) => item.title.includes('harbour')).length;
+          }),
+        { timeout: 60_000 },
+      )
+      .toBe(2);
+
+    /*
+     * Both pictures, not both queue entries: the panel is part of the finished
+     * run, so a gallery row that exists but has no image yet still shows the
+     * progress bar and nothing to open.
+     */
+    await expect(page.getByRole('button', { name: /Open picture/ })).toHaveCount(2, {
+      timeout: 60_000,
+    });
+
+    // The prompt is under the picture, and opening it marks the change.
+    const panel = page.getByRole('button', { name: 'The prompt used' }).last();
+    await expect(panel).toBeVisible();
+    await panel.click();
+    // The word it replaced is struck through, the new one highlighted — the
+    // span carries the text itself, so this reads it rather than its children.
+    await expect(page.locator('.line-through').last()).toHaveText('dawn');
+    await expect(page.locator('.bg-success\\/20').last()).toHaveText('dusk');
+    await page.screenshot({ path: 'test-results/71-prompt-diff.png' });
   });
 
   /** Blocks arrive one at a time, and only what you keep is saved. */
