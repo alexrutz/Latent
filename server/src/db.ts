@@ -627,7 +627,7 @@ const DEFAULT_SETTINGS: AppSettings = {
        * failure mode people actually hit is a model that lists three options in
        * prose — which then have to be typed back in by hand.
        */
-      ask_user: 'ready',
+      ask_user: 'always',
     },
     generation: { workflowId: '', values: {} },
     imageSize: 3,

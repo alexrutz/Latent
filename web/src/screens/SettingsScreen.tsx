@@ -58,7 +58,15 @@ const EAGERNESS_OPTIONS: { value: ToolEagerness; label: string; hint: string }[]
   { value: 'settled', label: 'Once decided', hint: 'when nothing is still in flux' },
   { value: 'ready', label: 'When it fits', hint: 'proposes the next step itself' },
   { value: 'eager', label: 'Freely', hint: 'whenever it might help' },
+  {
+    value: 'always',
+    label: 'Always, enforced',
+    hint: 'a question asked in prose is re-asked as a dialog',
+  },
 ];
+
+/** Only asking has the enforced top step; the other tools stop at "freely". */
+const ASK_ONLY: ToolEagerness[] = ['always'];
 
 const TOOL_ROWS: { key: keyof ChatSettings['tools']; label: string; hint: string }[] = [
   { key: 'build_prompt', label: 'Build a prompt', hint: 'stops the conversation' },
@@ -1099,11 +1107,22 @@ function ChatSection() {
         </div>
 
         {TOOL_ROWS.map((row) => {
+          /*
+           * Asking gets one more step than the others: an enforced one.
+           *
+           * Every level below it is a sentence in the system prompt, which a
+           * small model can talk itself out of — and the failure people hit is
+           * exactly that, options listed in prose that then have to be typed
+           * back in. `always` catches those and re-asks with the tool forced.
+           */
+          const levels = EAGERNESS_OPTIONS.filter(
+            (option) => row.key === 'ask_user' || !ASK_ONLY.includes(option.value),
+          );
           const at = Math.max(
             0,
-            EAGERNESS_OPTIONS.findIndex((option) => option.value === chat.tools[row.key]),
+            levels.findIndex((option) => option.value === chat.tools[row.key]),
           );
-          const current = EAGERNESS_OPTIONS[at]!;
+          const current = levels[at]!;
 
           return (
             <div key={row.key} className="space-y-1">
@@ -1117,7 +1136,7 @@ function ChatSection() {
                   ones, and this is an ordered scale rather than a set of
                   alternatives. */}
               <div className="flex items-center gap-1">
-                {EAGERNESS_OPTIONS.map((option, index) => (
+                {levels.map((option, index) => (
                   <button
                     key={option.value}
                     type="button"

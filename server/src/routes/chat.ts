@@ -10,7 +10,12 @@ import type {
   ProposedBlock,
 } from '@latent/shared';
 
-import { DEFAULT_SYSTEM_PROMPT, LlamaClient, LlamaError } from '../chat/llama.js';
+import {
+  DEFAULT_SYSTEM_PROMPT,
+  LlamaClient,
+  LlamaError,
+  looksLikeAQuestionWithOptions,
+} from '../chat/llama.js';
 import type { AppContext } from './context.js';
 
 /**
@@ -350,6 +355,33 @@ async function streamReply(
     if (message.content.trim() !== '' || message.toolCall) {
       ctx.store.insertChatMessage(chatId, message);
     }
+
+    /*
+     * The one place a pace setting is enforced rather than requested.
+     *
+     * At `always`, a question asked in prose is not a question the user can
+     * answer with a tap — so if the reply asked one and no tool was called, the
+     * model is asked again with the tool forced. Every other level is a
+     * sentence in the system prompt, which a small model talks itself out of
+     * constantly; this one does not depend on it agreeing.
+     *
+     * Conservative on purpose: it costs a second wait, so it only fires when
+     * the reply both asks something and enumerates the answers.
+     */
+    const settings = ctx.store.getSettings().chat;
+    if (
+      !force &&
+      !message.toolCall &&
+      settings.tools.ask_user === 'always' &&
+      looksLikeAQuestionWithOptions(message.content)
+    ) {
+      const asked = await runTurn(ctx, chatId, send, controller.signal, 'ask_user');
+      if (asked) {
+        send({ type: 'done', messageId: asked });
+        return;
+      }
+    }
+
     send({ type: 'done', messageId: message.id });
   } catch (error) {
     /*
@@ -380,6 +412,46 @@ async function streamReply(
   } finally {
     reply.raw.end();
   }
+}
+
+/**
+ * One more turn on the same stream, and the id of what it stored.
+ *
+ * Used only to force a tool the model should have called. Returns null when
+ * nothing came of it, so the caller can fall back to the reply it already has
+ * rather than leaving the conversation with a turn that says nothing.
+ */
+async function runTurn(
+  ctx: AppContext,
+  chatId: string,
+  send: (event: ChatStreamEvent) => void,
+  signal: AbortSignal,
+  force: ChatToolName,
+): Promise<string | null> {
+  const chat = ctx.store.getChat(chatId);
+  if (!chat) return null;
+
+  const message: ChatMessage = {
+    id: randomUUID(),
+    role: 'assistant',
+    content: '',
+    createdAt: Date.now(),
+  };
+
+  for await (const event of new LlamaClient(ctx.store.getSettings().chat).stream(chat.messages, {
+    signal,
+    force,
+  })) {
+    if (event.type === 'content') message.content += event.text;
+    if (event.type === 'tool') message.toolCall = event.call;
+    // The reasoning of a forced turn is not worth showing: it is the model
+    // restating what it already said, in a box the user has to open.
+    if (event.type !== 'thinking') send(event);
+  }
+
+  if (!message.toolCall) return null;
+  ctx.store.insertChatMessage(chatId, message);
+  return message.id;
 }
 
 /**

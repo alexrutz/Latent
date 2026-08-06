@@ -855,7 +855,17 @@ export type ToolEagerness =
   /** When it looks like the next step, without waiting for the decision. */
   | 'ready'
   /** Whenever it might help. */
-  | 'eager';
+  | 'eager'
+  /**
+   * Not an instruction: a guarantee, the way `off` is.
+   *
+   * Only meaningful for `ask_user`. A reply that asks a question and lists its
+   * answers in prose is caught and re-asked as a real tool call, so the options
+   * are always something to tap rather than something to type back in. Every
+   * level below this is a sentence in the system prompt, which a small model
+   * can talk itself out of — and routinely does.
+   */
+  | 'always';
 
 export interface ChatToolSettings {
   prompt_blocks: ToolEagerness;

@@ -243,6 +243,8 @@ const EAGERNESS: Record<ToolEagerness, string> = {
   ready:
     'when it looks like the sensible next step, without waiting for the decision to be final. Say in one line what you are proposing and why, so refusing is easy.',
   eager: 'whenever it would help, without waiting to be asked.',
+  // Only `ask_user` offers this level; for anything else it reads as `eager`.
+  always: 'whenever it would help, without waiting to be asked.',
 };
 
 /**
@@ -267,7 +269,43 @@ const ASK_EAGERNESS: Record<ToolEagerness, string> = {
     'freely, whenever an answer would make what comes next better. Ask about several things in one call rather than one per turn, and never list options in prose.',
   eager:
     'at every opportunity. If there is anything at all you are unsure of, ask — several questions in one call — and never list options in prose.',
+  always:
+    'for EVERY question you ask. You have no other way to ask one: a question written in your reply cannot be tapped, so it never counts. If you are about to ask anything, or about to list options in prose, that goes in this tool instead — several questions in one call.',
 };
+
+/**
+ * Whether a reply is asking something and spelling out the answers itself.
+ *
+ * The thing `always` exists to catch. Deliberately conservative — it fires a
+ * second request at the model, so a false positive costs a wait — which means
+ * two signals have to agree: the reply asks something, and it enumerates short
+ * alternatives. Prose that merely contains a question mark is left alone.
+ */
+export function looksLikeAQuestionWithOptions(text: string): boolean {
+  if (!text.includes('?')) return false;
+
+  const lines = text.split('\n').map((line) => line.trim());
+
+  // A list of short items: two to four bullets or numbers, none of them a
+  // paragraph. A long bulleted list is an explanation, not a set of answers.
+  const listed = lines.filter((line) => /^([-*+•]|\d{1,2}[.)])\s+\S/.test(line));
+  if (listed.length >= 2 && listed.length <= 5 && listed.every((line) => line.length <= 90)) {
+    return true;
+  }
+
+  /*
+   * Or an inline either/or. Both languages, because the conversation is as
+   * often German as English, and bounded on both sides so "a photograph or
+   * something like it, shot on a long lens in the late afternoon" does not
+   * count as an offer of two choices.
+   */
+  return lines.some(
+    (line) =>
+      line.endsWith('?') &&
+      line.length <= 120 &&
+      /\s(or|oder)\s/i.test(line),
+  );
+}
 
 /** Ready answers for a question about pace, spelled out so a small model follows them. */
 const ON_REQUEST_EXAMPLES: Partial<Record<ChatToolName, string>> = {

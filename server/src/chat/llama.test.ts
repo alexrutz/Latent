@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import type { ChatStreamEvent, ChatToolSettings } from '@latent/shared';
 
-import { enabledTools, inlineReasoning, parseCall, toolPolicy } from './llama.js';
+import {
+  enabledTools,
+  inlineReasoning,
+  looksLikeAQuestionWithOptions,
+  parseCall,
+  toolPolicy,
+} from './llama.js';
 
 /**
  * The parts of the chat client that are decisions rather than plumbing.
@@ -82,9 +88,81 @@ describe('what the model is told about pace', () => {
    * to be typed back in by hand.
    */
   it('tells it never to list options in prose, at every level', () => {
-    for (const level of ['on-request', 'invited', 'settled', 'ready', 'eager'] as const) {
+    for (const level of ['on-request', 'invited', 'settled', 'ready', 'eager', 'always'] as const) {
       expect(toolPolicy({ ...ALL, ask_user: level })).toContain('in prose');
     }
+  });
+
+  /** The top of the scale says plainly that prose is not a way to ask at all. */
+  it('tells it a written question does not count, at the enforced level', () => {
+    expect(toolPolicy({ ...ALL, ask_user: 'always' })).toContain('cannot be tapped');
+  });
+});
+
+/**
+ * The detector behind the one enforced level.
+ *
+ * At `always` a match costs a second request to the model, so a false positive
+ * costs a wait — and a false negative leaves options in prose that have to be
+ * typed back in. Both directions matter, which is why this is tested rather
+ * than eyeballed.
+ */
+describe('spotting a question the model asked in prose', () => {
+  it('catches a question followed by a short list', () => {
+    expect(
+      looksLikeAQuestionWithOptions(
+        'What sort of light did you have in mind?\n- Golden hour\n- Overcast\n- Harsh midday',
+      ),
+    ).toBe(true);
+  });
+
+  it('catches a numbered list too', () => {
+    expect(
+      looksLikeAQuestionWithOptions('Which framing?\n1. Wide\n2. Close\n3) Overhead'),
+    ).toBe(true);
+  });
+
+  it('catches an inline either/or, in both languages', () => {
+    expect(looksLikeAQuestionWithOptions('Portrait or landscape?')).toBe(true);
+    expect(looksLikeAQuestionWithOptions('Hochformat oder Querformat?')).toBe(true);
+  });
+
+  it('leaves prose that merely contains a question alone', () => {
+    expect(
+      looksLikeAQuestionWithOptions(
+        'That could work. What do you think the picture is actually about?',
+      ),
+    ).toBe(false);
+  });
+
+  /** An explanation in bullets is not an offer of answers. */
+  it('leaves a long bulleted explanation alone', () => {
+    const text =
+      'Why does this matter?\n' +
+      Array.from({ length: 7 }, (_, index) => `- point number ${index}`).join('\n');
+    expect(looksLikeAQuestionWithOptions(text)).toBe(false);
+  });
+
+  it('leaves a paragraph-length bullet alone', () => {
+    expect(
+      looksLikeAQuestionWithOptions(
+        'Which way?\n- ' + 'a very long consideration that runs on and on '.repeat(4),
+      ),
+    ).toBe(false);
+  });
+
+  /** A sentence that happens to contain "or" is not a choice of two. */
+  it('does not read a long sentence with "or" as an offer', () => {
+    expect(
+      looksLikeAQuestionWithOptions(
+        'Should it be a photograph or something like it, shot on a long lens in the late ' +
+          'afternoon with the sun behind the subject and a lot of haze?',
+      ),
+    ).toBe(false);
+  });
+
+  it('needs a question mark at all', () => {
+    expect(looksLikeAQuestionWithOptions('Here are some ideas.\n- One\n- Two')).toBe(false);
   });
 });
 
