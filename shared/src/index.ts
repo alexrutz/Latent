@@ -8,6 +8,8 @@ export * from './promptMatch.js';
 export * from './uiWorkflow.js';
 export * from './randomParams.js';
 export * from './randomPrompt.js';
+export * from './studyPlan.js';
+export * from './studyStats.js';
 export * from './apiTypes.js';
 export * from './markdown.js';
 export * from './promptDiff.js';
