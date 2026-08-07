@@ -1,6 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 
-import type { ComfyImageRef, GalleryPage } from '@latent/shared';
+import type { ComfyImageRef, GalleryPage, GallerySort } from '@latent/shared';
+
+/** Anything else in the query string is somebody's typo, not a third ordering. */
+const SORTS = new Set<GallerySort>(['newest', 'oldest', 'rating']);
 
 import { VaultLockedError } from '../vault.js';
 
@@ -8,15 +11,23 @@ import type { AppContext } from './context.js';
 
 export function registerGalleryRoutes(app: FastifyInstance, ctx: AppContext): void {
   app.get<{
-    Querystring: { cursor?: string; limit?: string; workflowId?: string; minRating?: string };
+    Querystring: {
+      cursor?: string;
+      limit?: string;
+      workflowId?: string;
+      minRating?: string;
+      sort?: string;
+    };
   }>('/api/gallery', async (request) => {
     const limit = Number(request.query.limit ?? 30);
     const minRating = Number(request.query.minRating ?? 0);
+    const sort = request.query.sort as GallerySort | undefined;
     const page = ctx.store.listGenerations({
       limit: Number.isFinite(limit) ? limit : 30,
       cursor: request.query.cursor ?? null,
       workflowId: request.query.workflowId ?? null,
       minRating: Number.isFinite(minRating) ? minRating : 0,
+      sort: sort && SORTS.has(sort) ? sort : 'newest',
     });
     return page satisfies GalleryPage;
   });

@@ -889,6 +889,8 @@ function ChatSection() {
 
   const [baseUrl, setBaseUrl] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [username, setUsername] = useState('');
   const [probe, setProbe] = useState<{ ok: boolean; models: string[]; message?: string } | null>(
     null,
   );
@@ -902,6 +904,8 @@ function ChatSection() {
     if (!chat) return;
     setBaseUrl((current) => (current === '' ? chat.baseUrl : current));
     setSystemPrompt((current) => (current === '' ? chat.systemPrompt : current));
+    setApiKey((current) => (current === '' ? (chat.apiKey ?? '') : current));
+    setUsername((current) => (current === '' ? (chat.username ?? '') : current));
   }, [chat]);
 
   /**
@@ -961,6 +965,86 @@ function ChatSection() {
         </div>
 
         {probe && !probe.ok && <p className="text-xs text-warn">{probe.message}</p>}
+
+        {/*
+          The same three modes ComfyUI's connections offer.
+
+          It is the same proxy in front of the same rented box: vast.ai accepts
+          a bearer token or `vastai:<token>` as basic auth, and a certificate
+          nothing signed. Offering only one of those means the arrangement you
+          happen to have is the one that does not work.
+        */}
+        <div className="space-y-2">
+          <div className="flex gap-1">
+            {(
+              [
+                { value: 'none', label: 'No auth' },
+                { value: 'bearer', label: 'Bearer token' },
+                { value: 'basic', label: 'Username' },
+              ] as const
+            ).map((option) => {
+              const active = (chat.authMode ?? 'none') === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  aria-pressed={active}
+                  onClick={() => patch({ authMode: option.value })}
+                  className={cn(
+                    'flex-1 rounded-lg px-2 py-1.5 text-xs',
+                    active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                  )}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {(chat.authMode ?? 'none') !== 'none' && (
+            <div className="space-y-2">
+              {chat.authMode === 'basic' && (
+                <input
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  onBlur={() => patch({ username: username.trim() })}
+                  placeholder="Username (vast.ai uses “vastai”)"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  aria-label="Model server username"
+                  className="w-full rounded-xl border border-line bg-surface px-4 py-3 text-sm focus:border-accent focus:outline-none"
+                />
+              )}
+              <input
+                value={apiKey}
+                onChange={(event) => setApiKey(event.target.value)}
+                onBlur={() => patch({ apiKey: apiKey.trim() })}
+                type="password"
+                placeholder={chat.authMode === 'basic' ? 'Password' : 'Token'}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                aria-label="Model server token"
+                className="w-full rounded-xl border border-line bg-surface px-4 py-3 text-sm focus:border-accent focus:outline-none"
+              />
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm">Allow a self-signed certificate</p>
+                  <p className="text-[11px] text-muted">
+                    Only for a box you rented. It turns off the check that a certificate is
+                    genuine, which on a hostile network is exactly the check that matters.
+                  </p>
+                </div>
+                <Toggle
+                  checked={chat.allowSelfSigned ?? false}
+                  onChange={(allowSelfSigned) => patch({ allowSelfSigned })}
+                  label="Allow a self-signed certificate"
+                />
+              </div>
+            </div>
+          )}
+        </div>
 
         {/*
           Which model, when the server has more than one.

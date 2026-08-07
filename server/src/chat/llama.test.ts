@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ChatStreamEvent, ChatToolSettings } from '@latent/shared';
 
 import {
+  authHeader,
   enabledTools,
   inlineReasoning,
   looksLikeAQuestionWithOptions,
@@ -308,5 +309,54 @@ describe('pulling reasoning out of the content stream', () => {
       thinking: 'onetwo',
       content: 'Middle.End.',
     });
+  });
+});
+
+describe('authenticating against the model server', () => {
+  /**
+   * The local case, which is most of them: nothing is sent, because
+   * `llama-server` on your own machine has nothing to check it against.
+   */
+  it('sends nothing when there is no token', () => {
+    expect(authHeader({ authMode: 'none', username: '', apiKey: '' })).toEqual({});
+    expect(authHeader({ authMode: 'bearer', username: '', apiKey: '   ' })).toEqual({});
+  });
+
+  it('sends a bearer token', () => {
+    expect(authHeader({ authMode: 'bearer', username: '', apiKey: 'sk-abc' })).toEqual({
+      authorization: 'Bearer sk-abc',
+    });
+  });
+
+  /** vast.ai's proxy takes `vastai:<token>`, which is what basic auth is for. */
+  it('sends basic auth as user:token', () => {
+    const header = authHeader({ authMode: 'basic', username: 'vastai', apiKey: 'hunter2' });
+    const encoded = header.authorization?.replace('Basic ', '') ?? '';
+    expect(Buffer.from(encoded, 'base64').toString()).toBe('vastai:hunter2');
+  });
+
+  /**
+   * A blank username is a real arrangement, not a mistake — some proxies want
+   * `:token` — so it has to encode rather than fall back to bearer.
+   */
+  it('encodes basic auth with an empty username', () => {
+    const header = authHeader({ authMode: 'basic', username: '', apiKey: 'tok' });
+    expect(Buffer.from(header.authorization?.slice(6) ?? '', 'base64').toString()).toBe(':tok');
+  });
+
+  /**
+   * Settings written before there were modes carry a token and no mode, and
+   * that has always meant bearer. Reading one must not silently stop
+   * authenticating.
+   */
+  it('treats a token with no mode as bearer, the way it used to be', () => {
+    expect(authHeader({ username: '', apiKey: 'legacy' })).toEqual({
+      authorization: 'Bearer legacy',
+    });
+  });
+
+  /** Switching the mode to none is how you turn it off without losing the token. */
+  it('sends nothing when the mode is none, even with a token saved', () => {
+    expect(authHeader({ authMode: 'none', username: 'vastai', apiKey: 'still here' })).toEqual({});
   });
 });

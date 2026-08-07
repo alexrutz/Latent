@@ -12,6 +12,7 @@ import type {
   ComfyImageRef,
   FavoriteSort,
   FieldOverrides,
+  GallerySort,
   GenerateRequest,
   ImportRequest,
   ParamValues,
@@ -189,12 +190,14 @@ export function useGenerate() {
   });
 }
 
-export function useGallery(options: { workflowId?: string | null; minRating?: number } = {}) {
-  const { workflowId, minRating = 0 } = options;
+export function useGallery(
+  options: { workflowId?: string | null; minRating?: number; sort?: GallerySort } = {},
+) {
+  const { workflowId, minRating = 0, sort = 'newest' } = options;
   return useInfiniteQuery({
-    queryKey: [...queryKeys.gallery(workflowId), minRating],
+    queryKey: [...queryKeys.gallery(workflowId), minRating, sort],
     queryFn: ({ pageParam }) =>
-      api.gallery({ cursor: pageParam as string | null, limit: 30, workflowId, minRating }),
+      api.gallery({ cursor: pageParam as string | null, limit: 30, workflowId, minRating, sort }),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor,
   });

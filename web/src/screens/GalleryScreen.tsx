@@ -2,7 +2,12 @@ import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } f
 import { useNavigate } from 'react-router-dom';
 
 import { textOutputLabel } from '@latent/shared';
-import type { GenerationImage, GenerationRecord, GridSettings } from '@latent/shared';
+import type {
+  GallerySort,
+  GenerationImage,
+  GenerationRecord,
+  GridSettings,
+} from '@latent/shared';
 
 import { api, imageUrl } from '../api/client';
 import {
@@ -39,6 +44,125 @@ function identify(entry: ViewerEntry | undefined): string | null {
   return `${entry.record.id}/${entry.image.subfolder}/${entry.image.filename}`;
 }
 
+const COLLAPSED_KEY = 'latent.galleryCollapsed';
+
+const SORTS: { value: GallerySort; label: string; hint: string }[] = [
+  { value: 'newest', label: 'Newest first', hint: 'what you just made' },
+  { value: 'oldest', label: 'Oldest first', hint: 'where a project started' },
+  { value: 'rating', label: 'Best rated', hint: 'across every day at once' },
+];
+
+/** The local day a run belongs to, as a key that sorts and compares. */
+function dayKey(at: number): string {
+  const date = new Date(at);
+  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+}
+
+/**
+ * How that day reads.
+ *
+ * Today and yesterday by name, because those are the two you look for most and
+ * a date tells you less than the word does. The year only when it is not this
+ * one — otherwise every heading carries four digits nobody needed.
+ */
+function dayLabel(at: number): string {
+  const date = new Date(at);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+
+  if (dayKey(at) === dayKey(today.getTime())) return 'Today';
+  if (dayKey(at) === dayKey(yesterday.getTime())) return 'Yesterday';
+
+  return date.toLocaleDateString(undefined, {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    ...(date.getFullYear() === today.getFullYear() ? {} : { year: 'numeric' }),
+  });
+}
+
+/** Sorting and the workflow filter, out of the way until asked for. */
+function FilterSheet({
+  open,
+  onClose,
+  sort,
+  onSort,
+  workflowId,
+  onWorkflow,
+}: {
+  open: boolean;
+  onClose: () => void;
+  sort: GallerySort;
+  onSort: (sort: GallerySort) => void;
+  workflowId: string | null;
+  onWorkflow: (id: string | null) => void;
+}) {
+  const workflows = useWorkflows();
+
+  return (
+    <Sheet open={open} onClose={onClose} title="Sort and filter">
+      <div className="space-y-4">
+        <div className="space-y-1">
+          <p className="text-xs tracking-wide text-muted uppercase">Order</p>
+          {SORTS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={sort === option.value}
+              onClick={() => onSort(option.value)}
+              className={cn(
+                'flex w-full flex-col items-start gap-0.5 rounded-lg px-3 py-2 text-left',
+                sort === option.value ? 'bg-accent/15 text-accent' : 'bg-surface-2 active:bg-surface-3',
+              )}
+            >
+              <span className="text-sm">{option.label}</span>
+              <span className="text-[11px] text-muted">{option.hint}</span>
+            </button>
+          ))}
+          {sort === 'rating' && (
+            <p className="text-[11px] text-muted">
+              Sorted by the best picture in each run, so a five-star image is not buried under the
+              near-misses it came with. Days are not shown, because this order crosses them.
+            </p>
+          )}
+        </div>
+
+        <div className="space-y-1">
+          <p className="text-xs tracking-wide text-muted uppercase">Workflow</p>
+          <div className="flex flex-wrap gap-1">
+            <button
+              type="button"
+              aria-pressed={workflowId === null}
+              onClick={() => onWorkflow(null)}
+              className={cn(
+                'rounded-lg px-2.5 py-1.5 text-xs',
+                workflowId === null ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+              )}
+            >
+              All
+            </button>
+            {(workflows.data ?? []).map((workflow) => (
+              <button
+                key={workflow.id}
+                type="button"
+                aria-pressed={workflowId === workflow.id}
+                onClick={() => onWorkflow(workflow.id)}
+                className={cn(
+                  'max-w-full truncate rounded-lg px-2.5 py-1.5 text-xs',
+                  workflowId === workflow.id ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                )}
+              >
+                {workflow.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
 const FILTERS = [
   { label: 'All', minRating: 0 },
   { label: 'Rated', minRating: 1 },
@@ -47,7 +171,28 @@ const FILTERS = [
 
 export function GalleryScreen() {
   const [minRating, setMinRating] = useState(0);
-  const gallery = useGallery({ minRating });
+  const [sort, setSort] = useState<GallerySort>('newest');
+  const [workflowId, setWorkflowId] = useState<string | null>(null);
+  const [showFilters, setShowFilters] = useState(false);
+  /**
+   * Days folded shut, by their key.
+   *
+   * Kept on the device: which days you have finished with is a fact about this
+   * screen and this phone, not about the pictures.
+   */
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]') as string[]);
+    } catch {
+      return new Set();
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsed]));
+  }, [collapsed]);
+
+  const gallery = useGallery({ minRating, sort, workflowId });
   /**
    * Which picture the viewer is showing, as `generation/filename`.
    *
@@ -114,16 +259,50 @@ export function GalleryScreen() {
     scrolledOnce.current = true;
   }, [items, gallery, consumeTarget]);
 
+  /**
+   * The list, cut into days.
+   *
+   * A month of heavy use is thousands of tiles, and "the ones from Tuesday"
+   * was a minute of scrolling. Consecutive runs only — the list already
+   * arrives in order, so this is a walk rather than a sort, and it stays
+   * correct when the order is oldest-first.
+   *
+   * Only for the time orderings: sorting by rating deliberately mixes days,
+   * and heading such a list with dates would be nonsense. That case is one
+   * unnamed section, which the rendering below leaves undivided.
+   */
+  const sections = useMemo(() => {
+    if (sort === 'rating') return [{ key: '', label: '', items }];
+    const out: { key: string; label: string; items: GenerationRecord[] }[] = [];
+    for (const record of items) {
+      const key = dayKey(record.createdAt);
+      const last = out[out.length - 1];
+      if (last?.key === key) last.items.push(record);
+      else out.push({ key, label: dayLabel(record.createdAt), items: [record] });
+    }
+    return out;
+  }, [items, sort]);
+
   /*
-   * Every picture in the gallery, flattened.
+   * Every picture the gallery is currently showing, flattened.
    *
    * This is what the viewer swipes through. A batch of four is not a meaningful
    * boundary when you are flicking through results, and stopping dead at the end
    * of one run made swiping feel broken.
+   *
+   * Folded days are left out on purpose: putting a day away and then swiping
+   * back into it would make the fold a lie.
    */
   const entries = useMemo<ViewerEntry[]>(
-    () => items.flatMap((record) => record.images.map((image) => ({ record, image }))),
-    [items],
+    () =>
+      sections
+        .filter((section) => !collapsed.has(section.key))
+        .flatMap((section) =>
+          section.items.flatMap((record) =>
+            record.images.map((image) => ({ record, image })),
+          ),
+        ),
+    [sections, collapsed],
   );
 
   // Infinite scroll: load the next page as the end of the list comes into view.
@@ -147,6 +326,15 @@ export function GalleryScreen() {
     () => items.findIndex((item) => item.images.length > 0),
     [items],
   );
+
+  /*
+   * The same run, by id.
+   *
+   * The tiles are rendered a day at a time now, so the position in the flat
+   * list is not to hand — and looking it up per tile turns drawing the grid
+   * into a quadratic walk of a list that runs to thousands.
+   */
+  const firstResultId = firstResultIndex < 0 ? null : (items[firstResultIndex]?.id ?? null);
 
   /*
    * Jump straight to the newest finished image.
@@ -226,6 +414,26 @@ export function GalleryScreen() {
             </button>
           ))}
         </div>
+        {/* Sorting and the workflow filter live behind one button: they are
+            decisions you make occasionally, and three more chips across the
+            top would leave no room for the pictures. */}
+        <button
+          type="button"
+          onClick={() => setShowFilters(true)}
+          aria-label="Sort and filter"
+          className={cn(
+            'flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] leading-none',
+            sort !== 'newest' || workflowId ? 'bg-accent/20 text-accent' : 'bg-surface text-muted',
+          )}
+        >
+          <span aria-hidden className="text-base leading-none">
+            ⇅
+          </span>
+          <span aria-hidden className="opacity-60">
+            ▾
+          </span>
+        </button>
+
         {/* Its own selection, separate from the viewer's: a thumbnail has room
             for two or three numbers, not eight. */}
         <ParamOverlayPicker
@@ -331,26 +539,77 @@ export function GalleryScreen() {
     <div className="safe-t px-4 pt-3 pb-6">
       {filterBar}
 
-      <ThumbGrid columns={settings.columns}>
-        {items.map((record, recordIndex) =>
-          record.images.length > 0 ? (
-            record.images.map((image, imageIndex) => (
-              <GalleryTile
-                key={`${record.id}-${image.filename}`}
-                ref={recordIndex === firstResultIndex && imageIndex === 0 ? firstResult : undefined}
-                record={record}
-                image={image}
-                index={imageIndex}
-                settings={settings}
-                onOpen={openTile}
-                onHold={holdTile}
-              />
-            ))
-          ) : (
-            <PlaceholderCard key={record.id} record={record} />
-          ),
-        )}
-      </ThumbGrid>
+      {sections.map((section) => {
+        const shut = collapsed.has(section.key);
+        const pictures = section.items.reduce((total, item) => total + item.images.length, 0);
+
+        return (
+          <div key={section.key || 'all'}>
+            {section.key !== '' && (
+              /*
+                The divider is the control.
+                A separate chevron would be a second thing to aim at on a
+                phone; the line between two days is already the boundary you
+                are thinking about, so tapping it is what folds the day away.
+              */
+              <button
+                type="button"
+                data-testid="day-divider"
+                onClick={() =>
+                  setCollapsed((current) => {
+                    const next = new Set(current);
+                    if (next.has(section.key)) next.delete(section.key);
+                    else next.add(section.key);
+                    return next;
+                  })
+                }
+                aria-expanded={!shut}
+                aria-label={`${section.label}, ${pictures} pictures`}
+                className="mt-2 mb-2 flex w-full items-center gap-2 text-left"
+              >
+                <span aria-hidden className="text-[10px] text-muted">
+                  {shut ? '▸' : '▾'}
+                </span>
+                <span className="shrink-0 text-xs font-medium">{section.label}</span>
+                <span className="shrink-0 text-[11px] text-muted tabular-nums">{pictures}</span>
+                <span className="h-px min-w-0 flex-1 bg-line" />
+              </button>
+            )}
+
+            {!shut && (
+              <ThumbGrid columns={settings.columns}>
+                {section.items.map((record) =>
+                  record.images.length > 0 ? (
+                    record.images.map((image, imageIndex) => (
+                      <GalleryTile
+                        key={`${record.id}-${image.filename}`}
+                        ref={record.id === firstResultId && imageIndex === 0 ? firstResult : undefined}
+                        record={record}
+                        image={image}
+                        index={imageIndex}
+                        settings={settings}
+                        onOpen={openTile}
+                        onHold={holdTile}
+                      />
+                    ))
+                  ) : (
+                    <PlaceholderCard key={record.id} record={record} />
+                  ),
+                )}
+              </ThumbGrid>
+            )}
+          </div>
+        );
+      })}
+
+      <FilterSheet
+        open={showFilters}
+        onClose={() => setShowFilters(false)}
+        sort={sort}
+        onSort={setSort}
+        workflowId={workflowId}
+        onWorkflow={setWorkflowId}
+      />
 
       <div ref={sentinel} className="h-8" />
       {gallery.isFetchingNextPage && (

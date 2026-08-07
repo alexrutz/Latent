@@ -166,6 +166,15 @@ export interface TextOutput {
   text: string;
 }
 
+/**
+ * How the gallery is ordered.
+ *
+ * `oldest` is not the mirror of `newest` in usefulness — it is how you find the
+ * beginning of a project — and `rating` is how you find the good ones without
+ * remembering when they happened.
+ */
+export type GallerySort = 'newest' | 'oldest' | 'rating';
+
 export interface GalleryPage {
   items: GenerationRecord[];
   nextCursor: string | null;
@@ -781,12 +790,17 @@ export interface ChatSettings {
   /** Empty means "whatever the server has loaded", which is the usual case. */
   model: string;
   /**
-   * Bearer token, for a `llama-server` that is not on your own machine.
+   * How the model server is authenticated, the same three ways ComfyUI is.
    *
-   * The same situation ComfyUI's connection presets exist for: a rented box
-   * puts the model behind a proxy that wants a token, often with a certificate
-   * nothing has signed. Empty for the ordinary local case.
+   * A rented box puts the model behind the same proxy the GPU is behind, and
+   * that proxy wants either a bearer token or `user:token` basic auth — vast.ai
+   * accepts both. Anything less than the full choice means the one arrangement
+   * it does not cover is the one you have.
    */
+  authMode: ConnectionAuthMode;
+  /** For basic auth. vast.ai wants `vastai` here. */
+  username: string;
+  /** The token or password, whichever mode is in use. */
   apiKey: string;
   /** Accept a certificate nothing signed. Only ever for a box you rented. */
   allowSelfSigned: boolean;

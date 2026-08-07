@@ -26,6 +26,7 @@ import type {
   EndlessState,
   ProposedBlock,
   GalleryPage,
+  GallerySort,
   GenerateRequest,
   GenerateResponse,
   GenerationRecord,
@@ -465,6 +466,7 @@ export const api = {
       limit?: number;
       workflowId?: string | null;
       minRating?: number;
+      sort?: GallerySort;
     } = {},
   ) => {
     const query = new URLSearchParams();
@@ -472,6 +474,7 @@ export const api = {
     if (params.limit) query.set('limit', String(params.limit));
     if (params.workflowId) query.set('workflowId', params.workflowId);
     if (params.minRating) query.set('minRating', String(params.minRating));
+    if (params.sort && params.sort !== 'newest') query.set('sort', params.sort);
     const suffix = query.toString();
     return request<GalleryPage>(`/api/gallery${suffix ? `?${suffix}` : ''}`);
   },

@@ -106,7 +106,18 @@ export function BottomTabs() {
   if (keyboard) return null;
 
   return (
-    <nav className="safe-b relative shrink-0 border-t border-line bg-surface/95 backdrop-blur">
+    /*
+      No rule above the tabs.
+      It was there to separate the blurred bar from the sharp content above it,
+      and read as a line drawn across the bottom of every screen — most
+      obviously the gallery, where it cuts the last row of pictures off. The
+      bar is nearly opaque and sits against the content anyway.
+
+      `touch-action: none` because this is not a scrollable surface: a drag
+      that starts here was being handed to the document, which slid the whole
+      app up and left a strip of background where it had been.
+    */
+    <nav className="safe-b relative shrink-0 touch-none bg-surface/95 backdrop-blur">
       {moreOpen && (
         <>
           {/* Tapping anywhere else puts it away, the way a menu should. */}

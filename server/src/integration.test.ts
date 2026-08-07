@@ -3146,6 +3146,112 @@ describe('endless generation', () => {
  * than a decision made for you: building a batch up to compare later wants the
  * queue kept, iterating on a prompt wants it gone.
  */
+describe('gallery ordering', () => {
+  /**
+   * Five runs, one image each, at known times and known ratings — built
+   * directly against the store because the point is the SQL, not the pipeline.
+   *
+   * `created_at` comes from `Date.now()` on insert, so five runs made in a
+   * loop share a millisecond and there is no ordering to test. A second
+   * connection stamps them apart afterwards.
+   */
+  function seedStore(path: string): Store {
+    const store = new Store(path);
+    const at: Record<string, number> = { g1: 1000, g2: 2000, g3: 3000, g4: 4000, g5: 5000 };
+    const stars: Record<string, number> = { g1: 5, g2: 0, g3: 3, g4: 0, g5: 1 };
+
+    for (const id of Object.keys(at)) {
+      store.insertGeneration({
+        id,
+        promptId: `p-${id}`,
+        workflowId: null,
+        workflowName: 'ordering',
+        title: id,
+        values: {},
+        seeds: {},
+      });
+      store.setGenerationStatus(`p-${id}`, 'completed');
+      store.addImages(`p-${id}`, '9', [{ filename: `${id}.png`, subfolder: '', type: 'output' }]);
+
+      const image = store.getGeneration(id)?.images[0];
+      if (image && stars[id]) store.setImageRating(image.id, stars[id] as number);
+    }
+
+    const stamp = new Database(path);
+    const update = stamp.prepare('UPDATE generations SET created_at = ? WHERE id = ?');
+    for (const [id, time] of Object.entries(at)) update.run(time, id);
+    stamp.close();
+
+    return store;
+  }
+
+  /** Walk the whole gallery a page at a time, the way the phone does. */
+  function pageThrough(store: Store, sort: 'newest' | 'oldest' | 'rating', limit: number) {
+    const seen: string[] = [];
+    let cursor: string | null = null;
+
+    for (let guard = 0; guard < 20; guard += 1) {
+      const page: ReturnType<Store['listGenerations']> = store.listGenerations({
+        limit,
+        cursor,
+        sort,
+      });
+      seen.push(...page.items.map((item) => item.id));
+      cursor = page.nextCursor;
+      if (!cursor) break;
+    }
+    return seen;
+  }
+
+  it('orders by newest, oldest and best rating, and pages in each direction', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-sort-'));
+    const store = seedStore(join(dir, 'sort.db'));
+
+    try {
+      expect(pageThrough(store, 'newest', 10)).toEqual(['g5', 'g4', 'g3', 'g2', 'g1']);
+      expect(pageThrough(store, 'oldest', 10)).toEqual(['g1', 'g2', 'g3', 'g4', 'g5']);
+
+      // Best rating first; ties fall back to newest, so the two unrated runs
+      // come back in time order rather than whatever the table felt like.
+      expect(pageThrough(store, 'rating', 10)).toEqual(['g1', 'g3', 'g5', 'g4', 'g2']);
+
+      /*
+       * The part that actually breaks: a cursor written for one ordering has
+       * to be compared in that ordering's direction. Paging two at a time must
+       * produce the same list as asking for all five, with nothing repeated
+       * and nothing skipped.
+       */
+      expect(pageThrough(store, 'newest', 2)).toEqual(['g5', 'g4', 'g3', 'g2', 'g1']);
+      expect(pageThrough(store, 'oldest', 2)).toEqual(['g1', 'g2', 'g3', 'g4', 'g5']);
+      expect(pageThrough(store, 'rating', 2)).toEqual(['g1', 'g3', 'g5', 'g4', 'g2']);
+
+      // An unknown ordering is somebody's typo, and must not empty the gallery.
+      expect(store.listGenerations({ limit: 10 }).items.map((item) => item.id)).toEqual([
+        'g5',
+        'g4',
+        'g3',
+        'g2',
+        'g1',
+      ]);
+
+      // Sorting and filtering are independent.
+      const rated = store.listGenerations({ limit: 10, minRating: 3, sort: 'oldest' });
+      expect(rated.items.map((item) => item.id)).toEqual(['g1', 'g3']);
+    } finally {
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an ordering it does not know rather than passing it to SQL', async () => {
+    const page = await json<GalleryPage>(api('/api/gallery?sort=; DROP TABLE generations'));
+    expect(Array.isArray(page.items)).toBe(true);
+
+    const known = await json<GalleryPage>(api('/api/gallery?sort=oldest'));
+    expect(Array.isArray(known.items)).toBe(true);
+  });
+});
+
 describe('the queue policy', () => {
   it('appends, clears what is waiting, or starts over', async () => {
     const summaries = await json<{ id: string }[]>(api('/api/workflows'));

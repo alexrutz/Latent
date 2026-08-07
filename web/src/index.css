@@ -62,7 +62,18 @@
    */
   html,
   body {
-    overflow-x: clip;
+    /*
+     * Neither axis, and `clip` rather than `hidden`.
+     *
+     * Sideways was always refused; vertically the document could still be
+     * dragged even though the app fills the viewport and scrolls its own
+     * panes — so a drag starting on the tab bar pulled the whole interface up
+     * and left a strip of background behind it. `clip` refuses the scroll
+     * without turning these into scroll containers, which `hidden` would, and
+     * which would break every `position: sticky` inside them.
+     */
+    overflow: clip;
+    overscroll-behavior: none;
   }
 
   /*

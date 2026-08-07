@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 
 import type {
+  GallerySort,
   AppSettings,
   ArchiveStats,
   ChatConversation,
@@ -603,6 +604,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     // Where `llama-server` listens unless told otherwise.
     baseUrl: 'http://127.0.0.1:8080',
     model: '',
+    authMode: 'none',
+    username: '',
     apiKey: '',
     allowSelfSigned: false,
     temperature: 0.8,
@@ -1032,12 +1035,23 @@ export class Store {
    * Keyset pagination on `(created_at, id)`. Cursor-based rather than OFFSET so
    * that new generations arriving mid-scroll don't shift the page boundaries.
    */
+  /**
+   * The best rating anywhere in a run, as SQL.
+   *
+   * A run is a batch, and sorting batches by their best picture is what people
+   * mean by "show me the good ones" — the alternative, an average, buries a
+   * five-star image under the three near-misses it came with.
+   */
+  private static readonly BEST_RATING =
+    '(SELECT COALESCE(MAX(rating), 0) FROM images WHERE images.generation_id = generations.id)';
+
   listGenerations(options: {
     limit: number;
     cursor?: string | null;
     workflowId?: string | null;
     /** Only generations holding an image rated at least this highly. */
     minRating?: number;
+    sort?: GallerySort;
   }): {
     items: GenerationRecord[];
     nextCursor: string | null;
@@ -1046,12 +1060,34 @@ export class Store {
     const where: string[] = [];
     const params: unknown[] = [];
 
+    /*
+     * Keyset pagination, in whichever direction the sort runs.
+     *
+     * An offset would skip or repeat rows as the queue drains underneath —
+     * which it constantly does — so the cursor is the last row's own key and
+     * the comparison flips with the order. Rating pages by rating first and
+     * then by time, because a page boundary in the middle of forty four-star
+     * pictures has to land somewhere deterministic.
+     */
+    const sort: GallerySort = options.sort ?? 'newest';
     if (options.cursor) {
-      const [createdAt, id] = options.cursor.split('_');
+      const [createdAt, id, rating] = options.cursor.split('_');
       const ts = Number(createdAt);
       if (Number.isFinite(ts) && id) {
-        where.push('(created_at < ? OR (created_at = ? AND id < ?))');
-        params.push(ts, ts, id);
+        if (sort === 'oldest') {
+          where.push('(created_at > ? OR (created_at = ? AND id > ?))');
+          params.push(ts, ts, id);
+        } else if (sort === 'rating') {
+          const stars = Number(rating ?? 0);
+          where.push(
+            `(${Store.BEST_RATING} < ?
+              OR (${Store.BEST_RATING} = ? AND (created_at < ? OR (created_at = ? AND id < ?))))`,
+          );
+          params.push(stars, stars, ts, ts, id);
+        } else {
+          where.push('(created_at < ? OR (created_at = ? AND id < ?))');
+          params.push(ts, ts, id);
+        }
       }
     }
     if (options.workflowId) {
@@ -1078,11 +1114,20 @@ export class Store {
         OR EXISTS (SELECT 1 FROM images WHERE images.generation_id = generations.id))`,
     );
 
-    const sql = `SELECT * FROM generations
+    const order =
+      sort === 'oldest'
+        ? 'created_at ASC, id ASC'
+        : sort === 'rating'
+          ? `${Store.BEST_RATING} DESC, created_at DESC, id DESC`
+          : 'created_at DESC, id DESC';
+
+    const sql = `SELECT *, ${Store.BEST_RATING} AS best_rating FROM generations
                  ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-                 ORDER BY created_at DESC, id DESC
+                 ORDER BY ${order}
                  LIMIT ?`;
-    const rows = this.db.prepare<unknown[], GenerationRow>(sql).all(...params, limit + 1);
+    const rows = this.db
+      .prepare<unknown[], GenerationRow & { best_rating: number }>(sql)
+      .all(...params, limit + 1);
 
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
@@ -1090,7 +1135,8 @@ export class Store {
 
     return {
       items: page.map((row) => this.hydrateGeneration(row)),
-      nextCursor: hasMore && last ? `${last.created_at}_${last.id}` : null,
+      nextCursor:
+        hasMore && last ? `${last.created_at}_${last.id}_${last.best_rating ?? 0}` : null,
     };
   }
 

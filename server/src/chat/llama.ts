@@ -353,6 +353,31 @@ export function enabledTools(tools: ChatToolSettings) {
   return TOOLS.filter((tool) => tools[tool.function.name as ChatToolName] !== 'off');
 }
 
+/**
+ * Whatever the connection needs on every request.
+ *
+ * The same three modes ComfyUI's connection presets offer, because on a rented
+ * box it is the same proxy in front of the same machine: a bearer token, basic
+ * auth as `user:token` — vast.ai answers to both — or nothing at all, which is
+ * the ordinary case of `llama-server` running where you are.
+ *
+ * `authMode` is read defensively because a settings blob written before this
+ * existed has a token and no mode, and that has always meant bearer.
+ */
+export function authHeader(
+  settings: Pick<ChatSettings, 'apiKey' | 'username'> & Partial<Pick<ChatSettings, 'authMode'>>,
+): Record<string, string> {
+  const key = settings.apiKey.trim();
+  const mode = settings.authMode ?? (key === '' ? 'none' : 'bearer');
+  if (key === '' || mode === 'none') return {};
+
+  if (mode === 'basic') {
+    const user = (settings.username ?? '').trim();
+    return { authorization: `Basic ${Buffer.from(`${user}:${key}`).toString('base64')}` };
+  }
+  return { authorization: `Bearer ${key}` };
+}
+
 export class LlamaError extends Error {
   override name = 'LlamaError';
 }
@@ -448,10 +473,8 @@ export class LlamaClient {
     return new URL(path, this.settings.baseUrl.replace(/\/+$/, '') + '/').toString();
   }
 
-  /** Whatever the connection needs on every request. */
   private headers(extra: Record<string, string> = {}): Record<string, string> {
-    const key = this.settings.apiKey.trim();
-    return { ...extra, ...(key === '' ? {} : { authorization: `Bearer ${key}` }) };
+    return { ...extra, ...authHeader(this.settings) };
   }
 
   /**
