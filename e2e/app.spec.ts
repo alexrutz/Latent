@@ -3361,3 +3361,250 @@ test.describe('the eighteenth wave', () => {
     await page.screenshot({ path: 'test-results/64-folded-input.png' });
   });
 });
+
+/**
+ * Wave 23: the gallery gets an order and a shape, the bar stops moving, and
+ * the model server gets a password.
+ */
+test.describe('the twenty-third wave', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+    await withApi(async (ctx) => {
+      await ctx.patch('/api/settings', { data: { chat: { authMode: 'none', username: '', apiKey: '' } } });
+    });
+  });
+
+  /** Generate one picture and wait for it to land. */
+  async function makePicture(page: Page, prompt: string, expected: number) {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill(prompt);
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const gallery = (await (await ctx.get('/api/gallery?limit=50')).json()) as {
+              items: { images: unknown[] }[];
+            };
+            return gallery.items.reduce((total, item) => total + item.images.length, 0);
+          }),
+        { timeout: 40_000 },
+      )
+      .toBeGreaterThanOrEqual(expected);
+    await dismissResult(page);
+  }
+
+  /**
+   * Move every run that exists back a day.
+   *
+   * There is no API for "pretend this happened yesterday", and there should not
+   * be — but without one there is only ever a single day and nothing to divide.
+   * Straight into the same database the server is reading, which SQLite is
+   * happy to allow.
+   */
+  async function backdateEverything(days: number) {
+    const { default: Database } = await import('better-sqlite3');
+    const db = new Database(join('data/e2e', 'latent.db'));
+    try {
+      db.prepare('UPDATE generations SET created_at = created_at - ?').run(days * 86_400_000);
+    } finally {
+      db.close();
+    }
+  }
+
+  /*
+   * The rule above the tab bar.
+   *
+   * Asserted by measurement rather than by reading the class list, because the
+   * complaint was about a line appearing on screen and a class name is not
+   * that. Anything that puts a border back — here or on a wrapper — fails.
+   */
+  test('draws no line across the bottom of the screen', async ({ page }) => {
+    await open(page, '/gallery');
+
+    const borders = await page.evaluate(() => {
+      const found: string[] = [];
+      const bottom = window.innerHeight / 2;
+      for (const element of document.querySelectorAll<HTMLElement>('*')) {
+        const box = element.getBoundingClientRect();
+        if (box.top < bottom || box.width < window.innerWidth * 0.8) continue;
+        const style = getComputedStyle(element);
+        const width = Number.parseFloat(style.borderTopWidth);
+        if (width > 0 && style.borderTopStyle !== 'none') {
+          found.push(`${element.tagName}.${element.className} ${style.borderTopWidth}`);
+        }
+      }
+      return found;
+    });
+
+    expect(borders).toEqual([]);
+  });
+
+  /*
+   * The drag that took the whole interface with it.
+   *
+   * A touch drag beginning on the tab bar was handed to the document, which
+   * scrolled the app up and left a band of background where it had been. All
+   * three conditions that allowed it are asserted, because the gesture itself
+   * cannot be: a mouse drag never scrolls a page, so driving one here would
+   * pass whether the fix were present or not.
+   */
+  test('cannot be dragged away by the tab bar', async ({ page }) => {
+    await open(page, '/gallery');
+
+    // The bar is not a scrollable surface, so a drag starting on it is not a
+    // scroll — which is what stopped the document being handed the gesture.
+    await expect(page.locator('nav').first()).toHaveCSS('touch-action', 'none');
+
+    for (const selector of ['html', 'body']) {
+      const element = page.locator(selector);
+      await expect(element).toHaveCSS('overscroll-behavior-y', 'none');
+
+      /*
+       * And there is nothing for it to scroll even if it were handed one.
+       * `clip` rather than `hidden` on purpose: `hidden` would make these
+       * scroll containers, which silently breaks every sticky header in the
+       * app — so the overflow value is asserted too, not just the outcome.
+       */
+      await expect(element).toHaveCSS('overflow-y', 'clip');
+      const scrollable = await element.evaluate(
+        (node) => node.scrollHeight > node.clientHeight + 1,
+      );
+      expect(scrollable).toBe(false);
+    }
+  });
+
+  test('cuts the gallery into days you can fold away', async ({ page }) => {
+    await makePicture(page, 'a lighthouse in fog', 1);
+    await backdateEverything(1);
+    await makePicture(page, 'a lighthouse at noon', 2);
+
+    await open(page, '/gallery');
+
+    // Two days, most recent first, each counting its own pictures.
+    const dividers = page.getByTestId('day-divider');
+    await expect(dividers).toHaveCount(2);
+    await expect(dividers.nth(0)).toHaveAttribute('aria-label', 'Today, 1 pictures');
+    await expect(dividers.nth(1)).toHaveAttribute('aria-label', 'Yesterday, 1 pictures');
+
+    const today = page.locator('img[alt*="at noon"]');
+    const yesterday = page.locator('img[alt*="in fog"]');
+    await expect(today.first()).toBeVisible();
+    await expect(yesterday.first()).toBeVisible();
+    await page.screenshot({ path: 'test-results/65-gallery-days.png' });
+
+    // Tapping the divider folds that day away, and only that day.
+    await dividers.nth(0).click();
+    await expect(dividers.nth(0)).toHaveAttribute('aria-expanded', 'false');
+    await expect(today).toHaveCount(0);
+    await expect(yesterday.first()).toBeVisible();
+
+    // And it stays folded across a reload — the point of remembering it.
+    await open(page, '/gallery');
+    await expect(page.getByTestId('day-divider').nth(0)).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('img[alt*="at noon"]')).toHaveCount(0);
+
+    // Tapping again brings it back.
+    await page.getByTestId('day-divider').nth(0).click();
+    await expect(page.locator('img[alt*="at noon"]').first()).toBeVisible();
+  });
+
+  test('sorts the gallery, and drops the day headings when the order crosses them', async ({
+    page,
+  }) => {
+    await makePicture(page, 'the older one', 1);
+    await backdateEverything(1);
+    await makePicture(page, 'the newer one', 2);
+
+    await open(page, '/gallery');
+    await expect(page.getByTestId('day-divider').nth(0)).toHaveAttribute(
+      'aria-label',
+      /^Today/,
+    );
+
+    await page.getByRole('button', { name: 'Sort and filter' }).click();
+    await page.getByRole('button', { name: /Oldest first/ }).click();
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    // Same two days, the other way up.
+    await expect(page.getByTestId('day-divider').nth(0)).toHaveAttribute(
+      'aria-label',
+      /^Yesterday/,
+    );
+    await expect(page.locator('img[alt*="older one"]').first()).toBeVisible();
+
+    /*
+     * Sorting by rating deliberately mixes days, so heading the list with
+     * dates would be a lie about what you are looking at.
+     */
+    await page.getByRole('button', { name: 'Sort and filter' }).click();
+    await page.getByRole('button', { name: /Best rated/ }).click();
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    await expect(page.getByTestId('day-divider')).toHaveCount(0);
+    await expect(page.locator('img[alt*="one"]').first()).toBeVisible();
+    await page.screenshot({ path: 'test-results/66-gallery-sorted.png' });
+  });
+
+  /*
+   * The model server behind a proxy, which is the rented-box case.
+   *
+   * What is asserted here is the shape of the form: a username only exists for
+   * basic auth, the token is never legible on screen, and the whole block is
+   * absent when there is nothing to authenticate against. Whether the right
+   * header goes out is a unit test, where it can be read directly.
+   */
+  test('asks for the model server’s password the way a connection does', async ({ page }) => {
+    await open(page, '/settings');
+
+    const username = page.getByLabel('Model server username');
+    const token = page.getByLabel('Model server token');
+
+    // Nothing to fill in until there is something to authenticate against.
+    await expect(token).toHaveCount(0);
+    await expect(username).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Bearer token' }).click();
+    await expect(token).toBeVisible();
+    await expect(username).toHaveCount(0);
+    // A token is a secret, and a phone screen is read over shoulders.
+    await expect(token).toHaveAttribute('type', 'password');
+
+    await token.fill('sk-rented-box');
+    await token.blur();
+
+    // Basic auth is the other thing vast.ai accepts, and it needs a name.
+    await page.getByRole('button', { name: 'Username', exact: true }).click();
+    await expect(username).toBeVisible();
+    await username.fill('vastai');
+    await username.blur();
+    await page.screenshot({ path: 'test-results/67-llama-auth.png' });
+
+    // Saved server-side, so the next request actually carries it.
+    await expect
+      .poll(async () =>
+        withApi(async (ctx) => {
+          const settings = (await (await ctx.get('/api/settings')).json()) as {
+            chat: { authMode: string; username: string; apiKey: string };
+          };
+          return settings.chat;
+        }),
+      )
+      .toMatchObject({ authMode: 'basic', username: 'vastai', apiKey: 'sk-rented-box' });
+
+    // Turning it off keeps the token rather than making you type it again.
+    await page.getByRole('button', { name: 'No auth' }).click();
+    await expect(token).toHaveCount(0);
+    await expect
+      .poll(async () =>
+        withApi(async (ctx) => {
+          const settings = (await (await ctx.get('/api/settings')).json()) as {
+            chat: { authMode: string; apiKey: string };
+          };
+          return settings.chat;
+        }),
+      )
+      .toMatchObject({ authMode: 'none', apiKey: 'sk-rented-box' });
+  });
+});

@@ -39,6 +39,10 @@ form. Nothing about your ComfyUI setup changes.
 - **Gallery.** Every result, with the exact settings that produced it. Swipe
   through the whole gallery, pinch to zoom, tap to close, save to your camera
   roll, re-run, or send a result straight to img2img or an upscale pass.
+- **Divided into days, sorted how you like.** The grid is cut at midnight and
+  each day folds away when you tap its divider, so a few days back is a tap
+  rather than a minute of scrolling. Order by newest, oldest, or the best
+  picture in each run.
 - **Values on the pictures.** Pick which settings to draw over the thumbnails —
   `St20 Cf8`, small enough to fit — so a sweep can be compared at a glance
   without opening anything. The full-size viewer has its own separate choice.
@@ -662,6 +666,15 @@ Set the address under **Settings → Chat** (the default is
 else is required — no key, no account, and the conversation never leaves your
 network.
 
+**Unless the model is on a rented box**, in which case it is behind the same
+proxy the GPU is behind, and that proxy wants a password. Settings → Chat offers
+the same three modes a [ComfyUI connection](#connecting-to-vastai) does —
+a **bearer token**, **basic auth** as `user:token` (vast.ai answers to both, and
+wants `vastai` as the name), or **none** — plus the same switch for a
+certificate nothing signed. Offering only one of those would mean the
+arrangement you happen to have is the one that does not work. Switching back to
+*No auth* keeps the token rather than making you type it in again.
+
 **Thinking is on by default.** Reasoning models are what this is worth doing
 with, and a model that thinks before answering gives noticeably better prompts.
 It arrives folded up under a *Thinking* line you can open, because the answer is
@@ -850,6 +863,16 @@ the labels on the ones you use every minute to pay for it, was the wrong trade.
 **Tapping the tab you are already on goes back to the top**, the way every other
 phone app behaves. Without it a long gallery scroll is a one-way trip.
 
+**No rule above it, and it cannot be dragged.** The line separating the bar from
+the content was left from when the bar was properly translucent; it read as a
+line drawn across the bottom of every screen, and in the gallery it cut the last
+row of pictures off. And a drag starting on the bar used to be handed to the
+document, which slid the whole interface up and left a band of background where
+it had been — the bar is not a scrollable surface and now says so, and the
+document no longer overscrolls. `overflow: clip` rather than `hidden` on the
+page, so `html` and `body` do not quietly become scroll containers and break
+every sticky header in the app.
+
 **The bar gets out of the way of the keyboard.** It sits at the bottom of a
 full-height column, so an on-screen keyboard used to push it up and park it
 between what you were writing and the keys you were writing it with. There is no
@@ -858,6 +881,32 @@ part of the page you can actually see — and the bar hides while that is short.
 Nothing on it is reachable mid-sentence anyway.
 
 ## In the gallery
+
+**Cut into days.** A month of heavy use is thousands of tiles, and "the ones
+from Tuesday" was a minute of scrolling. The grid is divided at midnight, and
+the divider *is* the control — tapping the line between two days folds that day
+away. A separate chevron would be a second thing to aim at on a phone, and the
+boundary between two days is already what you are thinking about when you want
+one of them gone. Folded days leave the viewer's swipe list too, or putting a
+day away would be a lie about what you are browsing. Which days are folded is
+kept on the device: that is a fact about this screen and this phone, not about
+the pictures.
+
+**Sorting.** The ⇅ button holds the order — **newest**, **oldest**, or **best
+rated** — and the workflow filter, rather than three more chips across a row
+that already has none to spare. Oldest is not the mirror of newest in
+usefulness; it is how you find where a project started.
+
+Best-rated orders each *run* by its best picture rather than its average: an
+average buries a five-star image under the three near-misses it came out of the
+batch with. That order deliberately crosses days, so the day headings disappear
+while it is on — heading such a list with dates would be a lie.
+
+The pagination is the part of this that could quietly break. The gallery pages
+by keyset rather than offset, because the queue drains underneath it and an
+offset would skip or repeat rows as it does. A cursor is only meaningful in the
+direction its ordering runs, so the comparison flips with the sort and the
+cursor carries the rating alongside the time.
 
 **The blur.** The ◌ button in the gallery header — and the same switch under
 Settings → Display — puts every image in the app heavily out of focus: the grid,
