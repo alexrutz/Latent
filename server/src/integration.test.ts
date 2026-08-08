@@ -2745,10 +2745,15 @@ describe('reading a ComfyUI installation', () => {
     mkdirSync(workflows, { recursive: true });
     mkdirSync(join(dir, 'output'), { recursive: true });
 
-    // What the editor saves, what "Export (API)" saves, and something broken.
-    writeFileSync(join(workflows, 'editor.json'), JSON.stringify(sd15Txt2ImgUi));
-    writeFileSync(join(workflows, 'api-export.json'), JSON.stringify(sd15Txt2Img));
-    writeFileSync(join(workflows, 'broken.json'), '{ not json');
+    /*
+     * What the editor saves, what "Export (API)" saves, and something broken —
+     * all carrying the prefix, because the scan only takes marked files now.
+     * The unmarked one below is the control.
+     */
+    writeFileSync(join(workflows, 'API_editor.json'), JSON.stringify(sd15Txt2ImgUi));
+    writeFileSync(join(workflows, 'API_api-export.json'), JSON.stringify(sd15Txt2Img));
+    writeFileSync(join(workflows, 'API_broken.json'), '{ not json');
+    writeFileSync(join(workflows, 'unmarked.json'), JSON.stringify(sd15Txt2Img));
     writeFileSync(join(dir, 'output', 'old.png'), renderPlaceholder(32, 32, 'old'));
 
     const before = await json<WorkflowDetail[]>(api('/api/workflows'));
@@ -2765,10 +2770,11 @@ describe('reading a ComfyUI installation', () => {
 
       expect(result.ok).toBe(true);
       expect(result.imported).toBe(2);
-      expect(result.failed.map((failure) => failure.path)).toEqual(['broken.json']);
+      expect(result.failed.map((failure) => failure.path)).toEqual(['API_broken.json']);
 
       const after = await json<WorkflowDetail[]>(api('/api/workflows'));
       const found = after.filter((workflow) => !before.some((old) => old.id === workflow.id));
+      // Named without the marker, and the unmarked file was left where it was.
       expect(found.map((workflow) => workflow.name).sort()).toEqual(['api-export', 'editor']);
 
       // Hidden on arrival: a whole installation's worth of workflows is the
@@ -2781,7 +2787,8 @@ describe('reading a ComfyUI installation', () => {
         api('/api/workflows/scan', { method: 'POST' }),
       );
       expect(again.imported).toBe(0);
-      expect(again.skipped).toBe(2);
+      // The two already here, plus the unmarked one that is skipped every time.
+      expect(again.skipped).toBe(3);
 
       const chosen = found[0]!;
       const updated = await json<WorkflowDetail>(
