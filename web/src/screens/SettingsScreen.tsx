@@ -250,7 +250,7 @@ export function SettingsScreen() {
           </p>
         )}
 
-        <div className="space-y-2">
+        <div className="space-y-2" data-testid="workflow-list">
           {workflowFolders.map((folder) =>
             folder.name === '' ? (
               folder.workflows.map((workflow) => (

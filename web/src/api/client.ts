@@ -1,4 +1,14 @@
 import type {
+  ParamSchema,
+  CreateStudyRequest,
+  StudyDetail,
+  StudyPreview,
+  StudyRating,
+  StudyShot,
+  StudyShotImage,
+  StudyStats,
+  StudySummary,
+  UpdateStudyRequest,
   AppSettings,
   ArchiveStats,
   ComfyImageRef,
@@ -516,7 +526,62 @@ export const api = {
       body: JSON.stringify(image),
     }),
 
+
+  /* ---------------------------------------------------------------- */
+  /* Parameter studies                                                 */
+  /* ---------------------------------------------------------------- */
+
+  studies: () => request<StudySummary[]>('/api/studies'),
+
+  study: (id: string) => request<StudyDetail>(`/api/studies/${id}`),
+
+  createStudy: (body: CreateStudyRequest) =>
+    request<StudyDetail>('/api/studies', { method: 'POST', body: JSON.stringify(body) }),
+
+  updateStudy: (id: string, patch: UpdateStudyRequest) =>
+    request<StudyDetail>(`/api/studies/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+
+  deleteStudy: (id: string) => request<void>(`/api/studies/${id}`, { method: 'DELETE' }),
+
+  /** The schema of the study's workflow: every field, as a candidate to vary. */
+  studyFields: (id: string) => request<ParamSchema>(`/api/studies/${id}/fields`),
+
+  studyPreview: (id: string) => request<StudyPreview>(`/api/studies/${id}/preview`),
+
+  startStudy: (id: string) =>
+    request<StudyDetail>(`/api/studies/${id}/start`, { method: 'POST' }),
+
+  pauseStudy: (id: string) =>
+    request<StudyDetail>(`/api/studies/${id}/pause`, { method: 'POST' }),
+
+  finishStudy: (id: string) =>
+    request<StudyDetail>(`/api/studies/${id}/finish`, { method: 'POST' }),
+
+  /**
+   * The next picture to judge — or nothing, when everything is rated.
+   *
+   * "Nothing left" is a real answer rather than an error, so the server's 204
+   * becomes `null` rather than throwing at a screen that would have to catch
+   * it. Explicitly `null` and not the `undefined` a 204 gives, because a query
+   * that resolves to `undefined` is an error in TanStack Query.
+   */
+  nextStudyShot: async (id: string) =>
+    (await request<StudyShotImage | undefined>(`/api/studies/${id}/next`)) ?? null,
+
+  rateStudyShot: (studyId: string, shotId: string, rating: StudyRating | null) =>
+    request<StudyShot>(`/api/studies/${studyId}/shots/${shotId}/rating`, {
+      method: 'PUT',
+      body: JSON.stringify({ rating }),
+    }),
+
+  /** Move one shot into the gallery and the favourites. */
+  keepStudyShot: (studyId: string, shotId: string) =>
+    request<Favorite>(`/api/studies/${studyId}/shots/${shotId}/keep`, { method: 'POST' }),
+
+  studyStats: (id: string) => request<StudyStats>(`/api/studies/${id}/stats`),
+
   settings: () => request<AppSettings>('/api/settings'),
+
 
   updateSettings: (patch: Partial<AppSettings>) =>
     request<AppSettings>('/api/settings', { method: 'PATCH', body: JSON.stringify(patch) }),

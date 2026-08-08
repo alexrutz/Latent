@@ -96,7 +96,7 @@ async function dismissResult(page: Page) {
  * is two taps rather than one. In its own helper because every test that uses
  * those screens would otherwise repeat it.
  */
-async function openModule(page: Page, label: 'Blocks' | 'Random' | 'Monitor') {
+async function openModule(page: Page, label: 'Blocks' | 'Random' | 'Monitor' | 'Study') {
   await page.getByRole('button', { name: 'More modules' }).click();
   await page.getByTestId('more-menu').getByRole('button', { name: label }).click();
   await expect(page.getByTestId('more-menu')).toHaveCount(0);
@@ -139,6 +139,11 @@ async function resetState() {
 
     const setups = (await (await ctx.get('/api/prompt-mode/presets')).json()) as { id: string }[];
     for (const setup of setups) await ctx.delete(`/api/prompt-mode/presets/${setup.id}`);
+
+    // Studies own generations of their own, hidden from the gallery — so
+    // deleting gallery entries above does not reach them.
+    const studies = (await (await ctx.get('/api/studies')).json()) as { id: string }[];
+    for (const study of studies) await ctx.delete(`/api/studies/${study.id}`);
 
     /*
      * The ComfyUI folder drives importing, the input picker and the workflow
@@ -1971,8 +1976,12 @@ test.describe('the twelfth wave', () => {
     const root = mkdtempSync(join(tmpdir(), 'latent-e2e-comfy-'));
     const workflows = join(root, 'user', 'default', 'workflows');
     mkdirSync(workflows, { recursive: true });
-    // Saved by the editor, not exported — which is what is actually on disk.
-    writeFileSync(join(workflows, 'from-the-editor.json'), JSON.stringify(sd15Txt2ImgUi));
+    /*
+     * Saved by the editor, not exported — which is what is actually on disk —
+     * and carrying the prefix, since the scan only reads marked files. The
+     * name inside is `from-the-editor`, with the marker stripped.
+     */
+    writeFileSync(join(workflows, 'API_from-the-editor.json'), JSON.stringify(sd15Txt2ImgUi));
 
     try {
       await open(page, '/settings');
@@ -3606,5 +3615,229 @@ test.describe('the twenty-third wave', () => {
         }),
       )
       .toMatchObject({ authMode: 'none', apiKey: 'sk-rented-box' });
+  });
+});
+
+
+/**
+ * Wave 24: the parameter study module.
+ *
+ * The sampler and the statistics are unit-tested, and the server half is
+ * covered end to end against a real ComfyUI. What is left for the browser is
+ * the shape of the two phases — that setting one up is possible with a thumb,
+ * that a tap on a third of the picture is a rating, and that the pictures stay
+ * out of the gallery.
+ */
+test.describe('parameter studies', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+    await withApi(async (ctx) => {
+      const workflows = (await (await ctx.get('/api/workflows')).json()) as { id: string }[];
+      for (const workflow of workflows) {
+        await ctx.patch(`/api/workflows/${workflow.id}`, { data: { visible: true } });
+      }
+    });
+  });
+
+  /** Set a study up, run it, and rate what it made — the whole loop by thumb. */
+  test('varies a parameter, renders it, and rates by tapping the picture', async ({ page }) => {
+    await open(page, '/');
+    await openModule(page, 'Study');
+
+    await page.getByRole('button', { name: 'New' }).click();
+    await page.getByRole('button', { name: WORKFLOW_NAME }).click();
+
+    // Four pictures is enough to have something to rate and quick to render.
+    const count = page.getByLabel('How many pictures');
+    await expect(count).toBeVisible();
+    await count.fill('4');
+    await count.blur();
+
+    await page.getByRole('button', { name: 'Add', exact: true }).click();
+    await page.getByRole('button', { name: /Steps/ }).first().click();
+
+    // The levels are spelled out, because a range plus a count is not obvious.
+    await expect(page.getByText(/^\d+ values?$/)).toBeVisible();
+    await page.screenshot({ path: 'test-results/68-study-setup.png' });
+
+    await page.getByRole('button', { name: 'Start rendering' }).click();
+
+    /*
+     * Straight to the rating zones.
+     *
+     * Deliberately not asserting the progress figure on the way past: four
+     * shots against the mock render in under a second, and the study turns
+     * itself over to its rating phase the moment the last one lands — so any
+     * assertion about a partly-rendered study is a race with the thing working
+     * properly.
+     */
+    const good = page.getByTestId('rate-3');
+    await expect(good).toBeVisible({ timeout: 60_000 });
+    await page.screenshot({ path: 'test-results/69-study-rating.png' });
+
+    /*
+     * Three zones on the picture, and the verdicts are mixed so the analysis
+     * has something other than one value to work with. Looping until the
+     * "everything is rated" state rather than a fixed four times, because a
+     * shot that failed to render is not offered.
+     */
+    const zones = ['rate-3', 'rate-1', 'rate-2', 'rate-3'];
+    for (const zone of zones) {
+      if (await page.getByText('Everything is rated').isVisible().catch(() => false)) break;
+      await page.getByTestId(zone).click();
+      await page.waitForTimeout(500);
+    }
+
+    await expect(page.getByText('Everything is rated')).toBeVisible({ timeout: 20_000 });
+
+    // And the analysis is underneath, naming the parameter that was varied.
+    await expect(page.getByText(/^\d+ rated$/)).toBeVisible();
+    await expect(page.getByText('Steps').first()).toBeVisible();
+    await page.screenshot({ path: 'test-results/70-study-results.png' });
+  });
+
+  /**
+   * The reason study output is marked at all: a study is hundreds of frames
+   * that differ by one setting, and the gallery is not where those belong.
+   */
+  test('keeps its pictures out of the gallery, until one is kept', async ({ page }) => {
+    const studyId = await withApi(async (ctx) => {
+      const workflows = (await (await ctx.get('/api/workflows')).json()) as { id: string }[];
+      const workflow = workflows[0] as { id: string };
+
+      const study = (await (
+        await ctx.post('/api/studies', {
+          data: { name: 'hidden output', workflowId: workflow.id },
+        })
+      ).json()) as { id: string };
+
+      await ctx.patch(`/api/studies/${study.id}`, {
+        data: {
+          shotCount: 2,
+          factors: [
+            {
+              kind: 'numeric',
+              key: '3.steps',
+              label: 'Steps',
+              min: 2,
+              max: 3,
+              quantise: { mode: 'interval', step: 1 },
+              distribution: 'uniform',
+              integer: true,
+              cost: 0,
+            },
+          ],
+        },
+      });
+      await ctx.post(`/api/studies/${study.id}/start`);
+      return study.id;
+    });
+
+    // Wait for both to land.
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const detail = (await (await ctx.get(`/api/studies/${studyId}`)).json()) as {
+              rendered: number;
+            };
+            return detail.rendered;
+          }),
+        { timeout: 60_000 },
+      )
+      .toBe(2);
+
+    /*
+     * The gallery shows none of them — asserted as "no pictures at all", which
+     * is what the claim actually is, rather than by matching the wording of an
+     * empty state that is free to change.
+     */
+    await open(page, '/gallery');
+    await expect(page.getByText('Nothing generated yet')).toBeVisible();
+    await expect(page.locator('img')).toHaveCount(0);
+
+    // Keep one, and it appears — as an ordinary picture with a favourite.
+    await open(page, '/');
+    await openModule(page, 'Study');
+    await page.getByTestId('study-row').first().click();
+
+    const keep = page.getByRole('button', { name: 'Keep' });
+    await expect(keep).toBeVisible({ timeout: 20_000 });
+    await keep.click();
+    await expect(page.getByRole('button', { name: 'Kept' })).toBeVisible();
+
+    await open(page, '/gallery');
+    await expect(page.locator('img').first()).toBeVisible({ timeout: 20_000 });
+
+    await open(page, '/favorites');
+    await expect(page.locator('img').first()).toBeVisible({ timeout: 20_000 });
+
+    /*
+     * The note saying where it came from is asserted through the API rather
+     * than on screen: the favourites list is in thumbnail mode by default, and
+     * that mode deliberately shows the picture and nothing else.
+     */
+    const notes = await withApi(async (ctx) => {
+      const favorites = (await (await ctx.get('/api/favorites')).json()) as {
+        note: string | null;
+      }[];
+      return favorites.map((favorite) => favorite.note ?? '');
+    });
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain('From the study');
+  });
+});
+
+/**
+ * Wave 24: which workflows get read, and how the list is arranged.
+ */
+test.describe('workflow folders', () => {
+  test('groups workflows by their leading name segment', async ({ page }) => {
+    await resetState();
+    await withApi(async (ctx) => {
+      // Two sharing a prefix become a folder; the lone one stays flat.
+      for (const name of ['SDXL_fast', 'SDXL_detail', 'standalone']) {
+        const created = (await (
+          await ctx.post('/api/workflows', { data: { name, graph: sd15Txt2Img } })
+        ).json()) as { id: string };
+        // Switched off, which is the state a scanned installation arrives in
+        // and the one the folders exist to make navigable.
+        await ctx.patch(`/api/workflows/${created.id}`, { data: { visible: false } });
+      }
+    });
+
+    await open(page, '/settings');
+
+    /*
+     * Scoped to the workflow list. The names appear again further down the
+     * screen in the gallery-shortcut pickers, and an unscoped match would find
+     * those and never notice the folder was shut.
+     */
+    const list = page.getByTestId('workflow-list');
+    const folder = list.getByTestId('workflow-folder');
+    await expect(folder).toHaveCount(1);
+    await expect(folder).toContainText('SDXL');
+
+    // Shut, because nothing inside it is switched on.
+    await expect(folder).toHaveAttribute('aria-expanded', 'false');
+    await expect(list.getByText('SDXL_fast')).toHaveCount(0);
+
+    await folder.click();
+    await expect(list.getByText('SDXL_fast')).toBeVisible();
+
+    // The one that is not part of a pair is not put in a folder of its own.
+    await expect(list.getByText('standalone')).toBeVisible();
+    await page.screenshot({ path: 'test-results/71-workflow-folders.png' });
+  });
+
+  /** The prefix, and the fact that it is dropped from what you see. */
+  test('reads only prefixed workflows and hides the prefix', async ({ page }) => {
+    await resetState();
+    await open(page, '/settings');
+
+    const prefix = page.getByLabel('Workflow name prefix');
+    await expect(prefix).toBeVisible();
+    await expect(prefix).toHaveValue('API_');
   });
 });

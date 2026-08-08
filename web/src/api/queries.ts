@@ -18,7 +18,9 @@ import type {
   ParamValues,
   PromptBlockInput,
   RandomPromptConfig,
+  StudyRating,
   TileSpan,
+  UpdateStudyRequest,
 } from '@latent/shared';
 
 import { useLiveStore } from '../state/live';
@@ -40,6 +42,12 @@ export const queryKeys = {
   presets: (workflowId: string) => ['presets', workflowId] as const,
   layouts: (workflowId: string) => ['layouts', workflowId] as const,
   archiveStats: ['archive-stats'] as const,
+  studies: ['studies'] as const,
+  study: (id: string) => ['study', id] as const,
+  studyFields: (id: string) => ['study-fields', id] as const,
+  studyPreview: (id: string) => ['study-preview', id] as const,
+  studyNext: (id: string) => ['study-next', id] as const,
+  studyStats: (id: string) => ['study-stats', id] as const,
 };
 
 export function useStatus() {
@@ -656,3 +664,145 @@ export const useActivateLayout = (workflowId: string | null) =>
 
 export const useDeleteLayout = (workflowId: string | null) =>
   useLayoutMutation(workflowId, (id: string) => api.deleteLayout(workflowId as string, id));
+
+/* ------------------------------------------------------------------ */
+/* Parameter studies                                                   */
+/* ------------------------------------------------------------------ */
+
+export function useStudies() {
+  return useQuery({ queryKey: queryKeys.studies, queryFn: api.studies });
+}
+
+/**
+ * One study, polled while it is rendering.
+ *
+ * The rendering phase runs on the server and reports progress nowhere else, so
+ * the screen has to ask. Only while it is actually running: polling a finished
+ * study would be a request every two seconds for a number that cannot change.
+ */
+export function useStudy(id: string | null) {
+  return useQuery({
+    queryKey: queryKeys.study(id ?? ''),
+    queryFn: () => api.study(id as string),
+    enabled: id !== null,
+    refetchInterval: (query) => (query.state.data?.status === 'running' ? 2_000 : false),
+  });
+}
+
+export function useStudyFields(id: string | null) {
+  return useQuery({
+    queryKey: queryKeys.studyFields(id ?? ''),
+    queryFn: () => api.studyFields(id as string),
+    enabled: id !== null,
+  });
+}
+
+/** What the plan would cost, recomputed whenever the setup changes. */
+export function useStudyPreview(id: string | null, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.studyPreview(id ?? ''),
+    queryFn: () => api.studyPreview(id as string),
+    enabled: id !== null && enabled,
+  });
+}
+
+/**
+ * The next picture to rate.
+ *
+ * Never served from cache: the whole point is that each one is drawn fresh at
+ * random, and a cached "next" would show the same picture twice after a
+ * navigation.
+ */
+export function useNextStudyShot(id: string | null, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.studyNext(id ?? ''),
+    queryFn: () => api.nextStudyShot(id as string),
+    enabled: id !== null && enabled,
+    gcTime: 0,
+    staleTime: 0,
+  });
+}
+
+export function useStudyStats(id: string | null, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.studyStats(id ?? ''),
+    queryFn: () => api.studyStats(id as string),
+    enabled: id !== null && enabled,
+  });
+}
+
+export function useCreateStudy() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.createStudy,
+    onSuccess: () => void client.invalidateQueries({ queryKey: queryKeys.studies }),
+  });
+}
+
+export function useUpdateStudy(id: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: UpdateStudyRequest) => api.updateStudy(id, patch),
+    onSuccess: (study) => {
+      client.setQueryData(queryKeys.study(id), study);
+      void client.invalidateQueries({ queryKey: queryKeys.studies });
+      // The plan depends on every one of these, so its costing is now stale.
+      void client.invalidateQueries({ queryKey: queryKeys.studyPreview(id) });
+    },
+  });
+}
+
+export function useDeleteStudy() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteStudy(id),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.studies });
+      // A deleted study takes its pictures with it, and a kept one stays.
+      void client.invalidateQueries({ queryKey: queryKeys.gallery() });
+    },
+  });
+}
+
+/** Start, pause, or declare the rendering finished. */
+export function useStudyRun(id: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (action: 'start' | 'pause' | 'finish') =>
+      action === 'start'
+        ? api.startStudy(id)
+        : action === 'pause'
+          ? api.pauseStudy(id)
+          : api.finishStudy(id),
+    onSuccess: (study) => {
+      client.setQueryData(queryKeys.study(id), study);
+      void client.invalidateQueries({ queryKey: queryKeys.studies });
+    },
+  });
+}
+
+export function useRateStudyShot(studyId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ shotId, rating }: { shotId: string; rating: StudyRating | null }) =>
+      api.rateStudyShot(studyId, shotId, rating),
+    onSuccess: () => {
+      // A rating changes both how many are left and what the analysis says.
+      void client.invalidateQueries({ queryKey: queryKeys.studyNext(studyId) });
+      void client.invalidateQueries({ queryKey: queryKeys.studyStats(studyId) });
+      void client.invalidateQueries({ queryKey: queryKeys.study(studyId) });
+    },
+  });
+}
+
+export function useKeepStudyShot(studyId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (shotId: string) => api.keepStudyShot(studyId, shotId),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.favorites });
+      void client.invalidateQueries({ queryKey: queryKeys.gallery() });
+    },
+  });
+}
+

@@ -89,9 +89,22 @@ export const useLiveStore = create<LiveStore>((set, get) => ({
         // and it used to say "Done" over an empty frame.
         const wasWatching = get().live.job?.promptId === record.promptId;
         const ended = record.status === 'completed' || record.status === 'failed';
+
+        /*
+         * A parameter study's shots are not results you asked to see.
+         *
+         * The result sheet exists because a single render finishing while you
+         * look at the form was a picture you never got shown. A study renders
+         * hundreds unattended, and presenting each one would mean a sheet
+         * opening over whatever you were doing every few seconds — including
+         * over the study's own rating screen, where it lands on top of the
+         * thing you are tapping.
+         */
+        const fromStudy = record.source === 'study';
+
         if (record.status === 'cancelled' && get().finished?.id === record.id) {
           set({ finished: null });
-        } else if (ended && (wasWatching || get().finished?.id === record.id)) {
+        } else if (!fromStudy && ended && (wasWatching || get().finished?.id === record.id)) {
           set({ finished: record });
         }
         break;

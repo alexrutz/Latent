@@ -19,7 +19,9 @@ form. Nothing about your ComfyUI setup changes.
 ## What it does
 
 - **Any workflow you already have.** Point Latent at your ComfyUI folder and it
-  reads every workflow saved in it — the editor's own files, not just an
+  reads the workflows saved in it — the ones you marked, by default those whose
+  file name starts with `API_`, since an installation that has been used holds
+  every experiment anybody ever saved — the editor's own files, not just an
   *Export (API)*. For each one it works out which inputs are editable and builds
   a form: prompt, seed, steps, CFG, sampler, dimensions, model pickers. Model and
   sampler lists come from your server, so they are always the files you actually
@@ -76,6 +78,10 @@ form. Nothing about your ComfyUI setup changes.
   having is longer than one screen.
 - **A form you build.** Drag fields into the order you want, give each one half a
   row or a whole one, rename or hide anything — per workflow, saved under a name.
+- **Parameter studies.** Sweep a workflow's settings across hundreds of
+  pictures, rate them blind by tapping the top, middle or bottom of each one,
+  and get a statistical read-out of which settings actually mattered. The
+  pictures stay in the module rather than filling the gallery.
 - **A monitor.** VRAM, GPU, CPU and sampler speed over time, with the queue's own
   events marked on the same axis, so "why did that take so long" has an answer.
 - **Text outputs.** Whatever the graph printed rather than drew — an expanded
@@ -210,14 +216,28 @@ everything in known places under it, so the rest follows —
 ```
 
 Enter it under **Settings → ComfyUI folder** and tap **Read workflows**. That
-imports the lot, converting the editor's own save format on the way in: the
-positional widget lists those files use are walked against `/object_info`, so
-`20` is understood to be `steps` without anybody re-exporting anything.
+converts the editor's own save format on the way in: the positional widget lists
+those files use are walked against `/object_info`, so `20` is understood to be
+`steps` without anybody re-exporting anything.
 
-They arrive **switched off**. A long-running install holds dozens of workflows,
-most of them experiments, and a picker listing all of them is worse than one
-listing none — so each has a switch in Settings, and only the ones you turn on
-appear when you generate.
+**Only the marked ones are read.** An installation that has been used for a
+while holds every experiment anybody ever saved, and importing all of them makes
+a list nobody can find anything in. So a file has to start with a prefix —
+`API_` unless you change it, next to the folder setting — and the prefix is
+dropped from the name afterwards, since it marks the file on disk and repeating
+it on every row would waste the width. Clear the setting to read everything.
+
+Marking a workflow costs one rename in the editor and is something you do once.
+The alternative is scrolling past thirty experiments every time.
+
+They still arrive **switched off**, because "worth having on the phone" and
+"worth being in the picker right now" are different questions — each has a
+switch in Settings, and only the ones you turn on appear when you generate.
+
+The list groups itself. Workflows are named after the file they came from, so a
+real subfolder shows up as `portraits/closeup` and a naming scheme as
+`SDXL_fast`; both are treated as folders you can fold shut. A folder of one is
+not a folder — those stay in the flat list.
 
 An *Export (API)* file still imports one at a time through **Settings → Import**,
 and so does an editor file if you would rather pick it by hand.
@@ -846,6 +866,142 @@ asked for.
 goes back to it. The pace settings above apply either way — they belong to the
 app, not to the wording, so replacing the instructions does not silently lose
 them.
+
+## Parameter studies
+
+Everything else in Latent is built around making *a* picture. The **Study**
+module, behind the ⋯ tab, does the opposite: it makes hundreds on purpose, all
+nearly the same, and the pictures are not the output — the answer to *which of
+these settings actually matters* is.
+
+It runs in two phases, deliberately apart. Generating is a long unattended
+stretch the machine does on its own; rating is a short attentive one you do with
+your thumb. Doing them together would mean forming an opinion about a parameter
+while still choosing its values, which is how you confirm what you already
+believed rather than find anything out.
+
+### Setting one up
+
+Pick a workflow, then add the parameters to vary. Anything the form can edit is
+a candidate: numbers get a range, and combo fields — checkpoints, samplers,
+schedulers — vary over the options your server advertises, so nothing has to be
+typed by hand.
+
+**Numbers get bounds plus either a count or a step.** Both give a finite set of
+values on purpose. A continuous draw produces 7.318294 and 7.318301 as two
+separate "levels" with one observation each, and no statistic can say anything
+about that. The values a setting will actually take are listed under it, because
+a range and a sample count are two numbers that do not obviously mean
+"10, 20, 30, 40, 50" — and getting that wrong is a study of the wrong thing,
+discovered after it has finished rendering.
+
+**Four shapes to draw with.** *Uniform* spreads evenly. *Normal* clusters around
+a value you choose, for "mostly 25, occasionally 10 or 60". *Triangular* is the
+same idea with a hard edge. *Log-uniform* earns its place on anything spanning
+orders of magnitude: a flat draw over 4–100 steps spends nine tenths of its
+shots above 12, where the pictures have stopped differing.
+
+**Latin hypercube is the default**, and it is not a technicality. Simple random
+sampling needs more shots than anyone wants to render before it covers a range
+— with 40 shots you routinely get a hole where nothing was tried and a clump
+where four near-identical values were. Latin hypercube cuts each range into as
+many strata as there are shots, takes exactly one from each, and shuffles which
+shot gets which — with the shuffle drawn *per parameter*, so the columns come
+out close to uncorrelated. Same number of pictures, much better coverage. Simple
+random is there for when you want it.
+
+**Grade what each parameter costs to change.** This is the one setting that
+decides whether a study takes an afternoon or a weekend. Changing the checkpoint
+between two shots means loading a multi-gigabyte file and pushing the last one
+out of VRAM; changing the step count costs nothing. So the plan is ordered with
+the dearest parameters outermost — every shot on the first model, then every
+shot on the second — and 200 shots over four checkpoints load four checkpoints
+rather than two hundred. The setup screen shows how often each one will change
+before you commit.
+
+Parameters left at *Free* are deliberately **not** sorted on. Their drawn order
+is random, and keeping it that way means a study you stop at 60% is still a fair
+sample of them — the price of blocking the expensive ones, paid where it costs
+least.
+
+### Running it
+
+The plan is drawn once and stored shot by shot, so it survives the phone
+locking, the browser closing and the box rebooting. Pause it on Tuesday, resume
+on Thursday, and it continues the same run rather than starting over. The
+rendering happens on the server for the same reason endless generation does: a
+phone suspends its tabs within a minute, and a loop in the browser would stop
+with them.
+
+The queue is kept two deep. One would waste the seconds between a picture
+finishing and the next prompt arriving — over a thousand shots, an hour — and a
+deep queue would mean a pause that takes ten minutes to take effect.
+
+**Seeds are held fixed** unless you add the seed as a parameter yourself. A
+study asks what one setting does; re-rolling the seed every shot answers what
+the *seed* does, and its effect is larger than most of what is being measured,
+so it would swamp every correlation the second phase computes.
+
+The moment the last shot lands, the study turns itself over to rating. A study
+that finished overnight should not be sitting there saying "running" because
+nobody pressed a button.
+
+### Rating
+
+One picture at a time, full screen. **Tap the top third for good, the middle for
+middling, the bottom for poor.** Three zones because three is what you can hit
+without looking and without deliberating — and deliberating is what makes a
+hundred ratings take an hour instead of five minutes. The zones are on the
+picture rather than under it so your thumb never leaves the thing being judged,
+and the one you hit flashes, because otherwise a mis-tap is invisible until the
+statistics come out wrong.
+
+**The pictures arrive in random order**, and that is a methodological
+requirement rather than a flourish. The plan runs in cost order, so the frames
+come out grouped by checkpoint and by resolution; rating them in that order
+means judging forty pictures from one model in a row, and by the tenth you have
+recalibrated to it. What you would be measuring is drift in your own eye.
+
+**The settings are hidden while you judge.** Knowing this one is at 40 steps is
+exactly the knowledge that stops you looking at the picture.
+
+### The read-out
+
+Ratings are ordinal — three levels, enormous numbers of ties — which rules out
+the obvious tools. A Pearson correlation over three-valued data is meaningless,
+and a t-test between "sd15" and "flux" is not a thing. So:
+
+- **Numeric parameters** get **Spearman's rank correlation**, tie-corrected,
+  with a p-value from the t approximation. Positive means more of it rated
+  better.
+- **Categorical parameters** get **Kruskal–Wallis**, also tie-corrected, which
+  answers "do these checkpoints all perform the same" without having to invent
+  an ordering for them.
+
+The corrections are not optional at this shape of data. Spearman's shortcut
+formula gives 0.9 where the tie-corrected value is 0.9487, and Kruskal–Wallis
+without its correction reports 3.86 for two groups that do not overlap at all.
+
+Under each verdict is the **mean rating at every value tried**, with how many
+shots went into it. The correlation says "more is better"; this says how much
+better, and at which value it stops helping — which is the thing you actually
+change a setting from. Parameters are ranked by effect, so the one worth turning
+is at the top, and a parameter that did nothing is still listed, because knowing
+CFG made no difference is a result.
+
+Under a dozen ratings the read-out says so rather than pretending otherwise.
+
+### Where the pictures go
+
+A study is hundreds of frames that differ by one setting, which is exactly the
+pile the gallery's cleanup and its day sections exist to prevent — so they are
+kept out of it entirely and live only in the module. Use a workflow that writes
+to its own output folder and they stay out of the way on disk too.
+
+Every so often one of them is genuinely good. **Keep** on the rating screen is
+the door out: the run stops being a study run and becomes an ordinary one, so it
+appears in the gallery and the favourites with its bytes archived, and survives
+the study being deleted. Deleting a study takes its remaining pictures with it.
 
 ## Getting around
 

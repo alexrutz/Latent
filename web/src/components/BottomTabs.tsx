@@ -44,6 +44,7 @@ const MORE: Tab[] = [
   { to: '/blocks', label: 'Blocks', icon: '¶' },
   { to: '/variation', label: 'Random', icon: '⁂' },
   { to: '/monitor', label: 'Monitor', icon: '∿' },
+  { to: '/study', label: 'Study', icon: '⊞' },
 ];
 
 /** Where the "more" tab sits, so Chat keeps the middle. */
