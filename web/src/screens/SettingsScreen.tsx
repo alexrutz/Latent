@@ -153,14 +153,19 @@ export function SettingsScreen() {
   const device = status.data?.devices[0];
 
   /*
-   * Shown workflows first: after reading a whole installation the handful you
-   * actually use should not be somewhere in the middle of forty others.
+   * Grouped into folders, shown ones first.
+   *
+   * After reading a whole installation this list is long, and a flat forty
+   * rows is a list nobody scrolls twice. Workflows arrive named after the file
+   * they came from, so the leading segment is already the grouping their
+   * author intended — `portraits/closeup` and `portraits/wide` belong
+   * together, and so do `SDXL_fast` and `SDXL_detail`.
+   *
+   * Shown workflows stay first *within* their folder, and a folder holding one
+   * gets pulled to the top, so the handful you actually use is never buried.
    */
-  const orderedWorkflows = useMemo(
-    () =>
-      [...(workflows.data ?? [])].sort(
-        (a, b) => Number(b.visible) - Number(a.visible) || a.name.localeCompare(b.name),
-      ),
+  const workflowFolders = useMemo(
+    () => groupWorkflows(workflows.data ?? []),
     [workflows.data],
   );
 
@@ -246,9 +251,23 @@ export function SettingsScreen() {
         )}
 
         <div className="space-y-2">
-          {orderedWorkflows.map((workflow) => (
-            <WorkflowRow key={workflow.id} workflow={workflow} onEdit={() => setEditing(workflow.id)} />
-          ))}
+          {workflowFolders.map((folder) =>
+            folder.name === '' ? (
+              folder.workflows.map((workflow) => (
+                <WorkflowRow
+                  key={workflow.id}
+                  workflow={workflow}
+                  onEdit={() => setEditing(workflow.id)}
+                />
+              ))
+            ) : (
+              <WorkflowFolder
+                key={folder.name}
+                folder={folder}
+                onEdit={(id) => setEditing(id)}
+              />
+            ),
+          )}
         </div>
       </section>
 
@@ -451,6 +470,122 @@ export function SettingsScreen() {
       {editing && <FormEditorSheet workflowId={editing} onClose={() => setEditing(null)} />}
       {changingPassword && <PasswordSheet onClose={() => setChangingPassword(false)} />}
       {terminalOpen && <TerminalScreen onClose={() => setTerminalOpen(false)} />}
+    </div>
+  );
+}
+
+/** A run of workflows sharing a leading name segment. */
+interface WorkflowFolderGroup {
+  /** Empty for the ones that belong to no folder — they are listed flat. */
+  name: string;
+  workflows: WorkflowSummary[];
+  shown: number;
+}
+
+/**
+ * Split a workflow's name into its folder and the rest.
+ *
+ * Two conventions, because both are in use and neither is worth forcing: a
+ * real subfolder shows up as `portraits/closeup`, and a naming scheme inside
+ * one folder shows up as `SDXL_fast`. The slash wins when both are present,
+ * since it is the one the filesystem actually made.
+ *
+ * An underscore only counts when there is something on either side of it, so
+ * `_scratch` stays whole rather than becoming a folder with no name.
+ */
+export function splitWorkflowName(name: string): { folder: string; leaf: string } {
+  const slash = name.indexOf('/');
+  if (slash > 0) return { folder: name.slice(0, slash), leaf: name.slice(slash + 1) };
+
+  const underscore = name.indexOf('_');
+  if (underscore > 0 && underscore < name.length - 1) {
+    return { folder: name.slice(0, underscore), leaf: name.slice(underscore + 1) };
+  }
+  return { folder: '', leaf: name };
+}
+
+/**
+ * Group workflows by that folder, dropping groups of one.
+ *
+ * A "folder" holding a single workflow is not a folder, it is an extra tap and
+ * a line of chrome around one row — so those go back to the flat list.
+ */
+export function groupWorkflows(workflows: WorkflowSummary[]): WorkflowFolderGroup[] {
+  const byFolder = new Map<string, WorkflowSummary[]>();
+  for (const workflow of workflows) {
+    const { folder } = splitWorkflowName(workflow.name);
+    const bucket = byFolder.get(folder);
+    if (bucket) bucket.push(workflow);
+    else byFolder.set(folder, [workflow]);
+  }
+
+  const loose: WorkflowSummary[] = [...(byFolder.get('') ?? [])];
+  const folders: WorkflowFolderGroup[] = [];
+
+  for (const [name, group] of byFolder) {
+    if (name === '') continue;
+    if (group.length < 2) {
+      loose.push(...group);
+      continue;
+    }
+    folders.push({
+      name,
+      workflows: [...group].sort(byVisibleThenName),
+      shown: group.filter((workflow) => workflow.visible).length,
+    });
+  }
+
+  folders.sort((a, b) => Number(b.shown > 0) - Number(a.shown > 0) || a.name.localeCompare(b.name));
+
+  const flat: WorkflowFolderGroup[] = [
+    { name: '', workflows: loose.sort(byVisibleThenName), shown: 0 },
+  ];
+  // Folders holding something you use go above the loose ones; the rest below.
+  const used = folders.filter((folder) => folder.shown > 0);
+  const unused = folders.filter((folder) => folder.shown === 0);
+  return [...used, ...flat, ...unused].filter((group) => group.workflows.length > 0);
+}
+
+function byVisibleThenName(a: WorkflowSummary, b: WorkflowSummary): number {
+  return Number(b.visible) - Number(a.visible) || a.name.localeCompare(b.name);
+}
+
+/** One folder, shut until tapped. */
+function WorkflowFolder({
+  folder,
+  onEdit,
+}: {
+  folder: WorkflowFolderGroup;
+  onEdit: (id: string) => void;
+}) {
+  // Open when something inside is in use, since that is the one you came for.
+  const [open, setOpen] = useState(folder.shown > 0);
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-line">
+      <button
+        type="button"
+        data-testid="workflow-folder"
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 bg-surface-2 px-3 py-2 text-left active:bg-surface-3"
+      >
+        <span aria-hidden className="text-[10px] text-muted">
+          {open ? '▾' : '▸'}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">{folder.name}</span>
+        <span className="shrink-0 text-[11px] text-muted tabular-nums">
+          {folder.shown > 0 ? `${folder.shown}/${folder.workflows.length}` : folder.workflows.length}
+        </span>
+      </button>
+
+      {open && (
+        <div className="space-y-2 p-2">
+          {folder.workflows.map((workflow) => (
+            <WorkflowRow key={workflow.id} workflow={workflow} onEdit={() => onEdit(workflow.id)} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1481,10 +1616,21 @@ function ComfyFolderSection() {
   const updateSettings = useUpdateSettings();
   const scan = useScanWorkflows();
   const [path, setPath] = useState(settings.data?.comfyRoot ?? '');
+  const [prefix, setPrefix] = useState(settings.data?.workflowPrefix ?? '');
   const [saved, setSaved] = useState(false);
   const [scanned, setScanned] = useState<string | null>(null);
 
   const root = settings.data?.comfyRoot ?? null;
+
+  /*
+   * Adopt the stored prefix once it arrives, without stamping on typing in
+   * progress — the settings query refetches, and a field that resets itself
+   * mid-word is the bug this shape avoids.
+   */
+  const storedPrefix = settings.data?.workflowPrefix;
+  useEffect(() => {
+    if (storedPrefix !== undefined) setPrefix((current) => (current === '' ? storedPrefix : current));
+  }, [storedPrefix]);
 
   return (
     <section className="space-y-2">
@@ -1524,10 +1670,39 @@ function ComfyFolderSection() {
 
         {saved && <p className="text-xs text-muted">Saved.</p>}
 
+        {/*
+          Which files the scan is allowed to take.
+
+          An install that has been used holds dozens of experiments, and
+          reading all of them makes a list nobody can find anything in. A
+          prefix on the file name is a mark you make once in the editor, and it
+          turns the scan into exactly the handful you meant. It is dropped from
+          the name afterwards, so it costs no width in the app.
+        */}
         <div className="space-y-1.5 border-t border-line pt-3">
           <p className="text-xs text-muted">
-            Reads every workflow saved in that installation. They arrive switched off — turn on the
-            ones you use below, so the generate picker stays short.
+            Only workflows whose file name starts with this are read, and the prefix is hidden from
+            the name. Leave it empty to read everything.
+          </p>
+          <div className="flex gap-2">
+            <input
+              value={prefix}
+              onChange={(event) => setPrefix(event.target.value)}
+              onBlur={() => updateSettings.mutate({ workflowPrefix: prefix.trim() })}
+              placeholder="API_"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              aria-label="Workflow name prefix"
+              className="min-w-0 flex-1 rounded-xl border border-line bg-surface px-4 py-3 text-sm focus:border-accent focus:outline-none"
+            />
+          </div>
+        </div>
+
+        <div className="space-y-1.5 border-t border-line pt-3">
+          <p className="text-xs text-muted">
+            Reads every matching workflow saved in that installation. They arrive switched off —
+            turn on the ones you use below, so the generate picker stays short.
           </p>
           <Button
             variant="secondary"

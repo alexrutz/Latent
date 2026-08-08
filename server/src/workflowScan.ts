@@ -86,10 +86,31 @@ export class WorkflowScanner {
     const files = await collectFiles(directory);
     result.ok = true;
 
+    const prefix = this.store.getSettings().workflowPrefix?.trim() ?? '';
+
     for (const absolute of files) {
       const relativePath = relative(directory, absolute).split(sep).join('/');
 
       if (this.store.findWorkflowBySourcePath(absolute)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      /*
+       * Only the workflows meant for the phone.
+       *
+       * An install that has been used accumulates every experiment anybody
+       * ever saved, and importing all of them produces a list nobody can find
+       * anything in — the reason everything arrives hidden in the first place.
+       * A prefix on the file name is a mark you make once in the editor and
+       * costs nothing thereafter, and it turns the scan into exactly the
+       * handful you meant.
+       *
+       * Matched on the file's own name rather than the whole relative path, so
+       * a folder that happens to start with the prefix does not sweep in
+       * everything under it.
+       */
+      if (!matchesPrefix(relativePath, prefix)) {
         result.skipped += 1;
         continue;
       }
@@ -109,7 +130,9 @@ export class WorkflowScanner {
         }
 
         const schema = buildParamSchema(graph, objectInfo);
-        const name = relativePath.replace(/\.json$/i, '');
+        // The prefix marks the file on disk; repeating it on every row in the
+        // app would waste width that the name itself needs.
+        const name = stripPrefix(relativePath.replace(/\.json$/i, ''), prefix);
         const id = randomUUID();
 
         this.store.insertWorkflow({
@@ -131,9 +154,38 @@ export class WorkflowScanner {
 
     if (result.imported === 0 && result.failed.length === 0 && result.skipped === 0) {
       result.message = 'No workflow files in that folder.';
+    } else if (result.imported === 0 && prefix !== '' && result.failed.length === 0) {
+      // The commonest way to get nothing back, and the least obvious: the
+      // folder is full of workflows and none of them carries the prefix.
+      result.message = `Nothing there starts with “${prefix}”. Rename the workflows you want on the phone, or clear the prefix in Settings.`;
     }
     return result;
   }
+}
+
+/**
+ * Whether a workflow file is one of the marked ones.
+ *
+ * The check is on the file's own name, not the path: a folder called `API_old`
+ * should not quietly sweep in everything inside it. Case-insensitive, because
+ * `api_` and `API_` are the same intention typed on two different keyboards.
+ */
+export function matchesPrefix(relativePath: string, prefix: string): boolean {
+  if (prefix === '') return true;
+  const leaf = relativePath.split('/').pop() ?? relativePath;
+  return leaf.toLowerCase().startsWith(prefix.toLowerCase());
+}
+
+/** The name without its marker, folders left intact. */
+export function stripPrefix(name: string, prefix: string): string {
+  if (prefix === '') return name;
+  const cut = name.lastIndexOf('/');
+  const folder = cut < 0 ? '' : name.slice(0, cut + 1);
+  const leaf = cut < 0 ? name : name.slice(cut + 1);
+  if (!leaf.toLowerCase().startsWith(prefix.toLowerCase())) return name;
+  // A file called exactly `API_.json` would otherwise become nameless.
+  const stripped = leaf.slice(prefix.length).trim();
+  return stripped === '' ? name : folder + stripped;
 }
 
 function describe(error: unknown): string {

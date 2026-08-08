@@ -27,6 +27,7 @@ import type {
   StudyShotImage,
   StudyStats,
   WorkflowDetail,
+  WorkflowScanResult,
 } from '@latent/shared';
 import {
   sd15Txt2Img,
@@ -3255,6 +3256,135 @@ describe('gallery ordering', () => {
     const known = await json<GalleryPage>(api('/api/gallery?sort=oldest'));
     expect(Array.isArray(known.items)).toBe(true);
   });
+});
+
+describe('which workflows a scan takes', () => {
+  /**
+   * The prefix is what makes reading a whole installation usable.
+   *
+   * An install that has been used for a while holds dozens of experiments, and
+   * a scan that imports all of them produces a list nobody can find anything
+   * in. Marking the handful meant for the phone costs one rename each.
+   */
+  it('takes only the marked files, and drops the marker from the name', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'latent-prefix-'));
+    const workflows = join(root, 'user', 'default', 'workflows');
+    mkdirSync(join(workflows, 'portraits'), { recursive: true });
+    // A folder carrying the prefix must not sweep in what is inside it.
+    mkdirSync(join(workflows, 'API_scratch'), { recursive: true });
+
+    const graph = JSON.stringify(sd15Txt2Img);
+    writeFileSync(join(workflows, 'API_basic.json'), graph);
+    writeFileSync(join(workflows, 'portraits', 'API_closeup.json'), graph);
+    writeFileSync(join(workflows, 'experiment.json'), graph);
+    writeFileSync(join(workflows, 'API_scratch', 'wip.json'), graph);
+
+    const server = await bootIsolated({ comfyUrl: baseUrl });
+    try {
+      const claim = await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'prefix test' }),
+      });
+      const cookie = claim.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      await server.call('/api/settings', {
+        method: 'PATCH',
+        cookie,
+        body: JSON.stringify({ comfyRoot: root }),
+      });
+
+      const scan = (await (
+        await server.call('/api/workflows/scan', { method: 'POST', cookie })
+      ).json()) as WorkflowScanResult;
+      expect(scan.ok).toBe(true);
+      expect(scan.imported).toBe(2);
+
+      const names = ((await (
+        await server.call('/api/workflows', { cookie })
+      ).json()) as { name: string }[])
+        .map((workflow) => workflow.name)
+        .sort();
+
+      // The marker is gone from the name; the folder it lived in is not.
+      expect(names).toEqual(['basic', 'portraits/closeup']);
+    } finally {
+      await server.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  /**
+   * A folder full of workflows and nothing imported is the confusing outcome,
+   * so it has to say why rather than "no workflow files in that folder".
+   */
+  it('explains an empty scan caused by the prefix', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'latent-prefix-none-'));
+    const workflows = join(root, 'user', 'default', 'workflows');
+    mkdirSync(workflows, { recursive: true });
+    writeFileSync(join(workflows, 'nothing-marked.json'), JSON.stringify(sd15Txt2Img));
+
+    const server = await bootIsolated({ comfyUrl: baseUrl });
+    try {
+      const claim = await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'prefix test' }),
+      });
+      const cookie = claim.headers.get('set-cookie')?.split(';')[0] ?? '';
+      await server.call('/api/settings', {
+        method: 'PATCH',
+        cookie,
+        body: JSON.stringify({ comfyRoot: root }),
+      });
+
+      const scan = (await (
+        await server.call('/api/workflows/scan', { method: 'POST', cookie })
+      ).json()) as WorkflowScanResult;
+      expect(scan.imported).toBe(0);
+      expect(scan.message).toContain('API_');
+    } finally {
+      await server.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  /** Clearing the prefix goes back to reading everything, as installs did before. */
+  it('takes everything when the prefix is cleared', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'latent-prefix-off-'));
+    const workflows = join(root, 'user', 'default', 'workflows');
+    mkdirSync(workflows, { recursive: true });
+    writeFileSync(join(workflows, 'plain.json'), JSON.stringify(sd15Txt2Img));
+    writeFileSync(join(workflows, 'API_marked.json'), JSON.stringify(sd15Txt2Img));
+
+    const server = await bootIsolated({ comfyUrl: baseUrl });
+    try {
+      const claim = await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'prefix test' }),
+      });
+      const cookie = claim.headers.get('set-cookie')?.split(';')[0] ?? '';
+      await server.call('/api/settings', {
+        method: 'PATCH',
+        cookie,
+        body: JSON.stringify({ comfyRoot: root, workflowPrefix: '' }),
+      });
+
+      const scan = (await (
+        await server.call('/api/workflows/scan', { method: 'POST', cookie })
+      ).json()) as WorkflowScanResult;
+      expect(scan.imported).toBe(2);
+
+      const names = ((await (
+        await server.call('/api/workflows', { cookie })
+      ).json()) as { name: string }[])
+        .map((workflow) => workflow.name)
+        .sort();
+      // Nothing stripped either, since there is no marker to strip.
+      expect(names).toEqual(['API_marked', 'plain']);
+    } finally {
+      await server.dispose();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 40_000);
 });
 
 describe('parameter studies', () => {
