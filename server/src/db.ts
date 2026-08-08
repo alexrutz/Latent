@@ -24,6 +24,13 @@ import type {
   ParamValues,
   PromptBlock,
   PromptBlockInput,
+  StudyDetail,
+  StudyRating,
+  StudySamplingName,
+  StudyShot,
+  StudyShotStatus,
+  StudyStatus,
+  StudySummary,
   TextOutput,
   TileSpan,
   VariationPreset,
@@ -325,6 +332,60 @@ ALTER TABLE chat_messages ADD COLUMN generation_id TEXT;
  */
 MIGRATIONS.push(`
 ALTER TABLE chat_messages ADD COLUMN prompt TEXT;
+`);
+
+/**
+ * v13: parameter studies.
+ *
+ * A study is a plan plus a pile of ratings. The plan is drawn once, up front,
+ * and stored shot by shot rather than re-derived — it has to survive the phone
+ * locking, the browser closing and the box rebooting, and a study resumed on
+ * Thursday must continue the run started on Tuesday rather than draw a fresh
+ * one.
+ *
+ * The rating lives on the shot rather than on the image because it is a
+ * different kind of judgement from the gallery's stars: three ordinal levels,
+ * given blind and fast, meant to be counted rather than browsed.
+ *
+ * `generations.source` gains a third value, `study`, which is what keeps
+ * hundreds of near-identical frames out of the gallery. No schema change is
+ * needed for that — the column has been free text since v6.
+ */
+MIGRATIONS.push(`
+CREATE TABLE studies (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  workflow_id   TEXT REFERENCES workflows(id) ON DELETE SET NULL,
+  workflow_name TEXT NOT NULL DEFAULT '',
+  status        TEXT NOT NULL DEFAULT 'draft',
+  factors_json  TEXT NOT NULL DEFAULT '[]',
+  base_json     TEXT NOT NULL DEFAULT '{}',
+  sampling      TEXT NOT NULL DEFAULT 'lhs',
+  shot_count    INTEGER NOT NULL DEFAULT 40,
+  seed          INTEGER NOT NULL DEFAULT 0,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL
+);
+
+CREATE INDEX idx_studies_updated ON studies (updated_at DESC);
+
+CREATE TABLE study_shots (
+  id            TEXT PRIMARY KEY,
+  study_id      TEXT NOT NULL REFERENCES studies(id) ON DELETE CASCADE,
+  -- Position in the plan, which is already in cost order: running the study is
+  -- a walk from the lowest pending ordinal upwards.
+  ordinal       INTEGER NOT NULL,
+  values_json   TEXT NOT NULL DEFAULT '{}',
+  status        TEXT NOT NULL DEFAULT 'pending',
+  generation_id TEXT REFERENCES generations(id) ON DELETE SET NULL,
+  -- 1 poor, 2 middling, 3 good. NULL until it has been looked at.
+  rating        INTEGER,
+  rated_at      INTEGER,
+  UNIQUE (study_id, ordinal)
+);
+
+CREATE INDEX idx_study_shots_run ON study_shots (study_id, status, ordinal);
+CREATE INDEX idx_study_shots_rating ON study_shots (study_id, rating);
 `);
 
 interface ChatRow {
@@ -640,6 +701,12 @@ const DEFAULT_SETTINGS: AppSettings = {
   importRoot: null,
   inputRoot: null,
   autoDeleteHours: null,
+  /*
+   * The convention this ships with: mark the workflows meant for the phone
+   * `API_…` in the editor and the scan takes those and nothing else. Set it
+   * empty to go back to reading the whole installation.
+   */
+  workflowPrefix: 'API_',
 };
 
 export class Store {
@@ -946,12 +1013,21 @@ export class Store {
     values: ParamValues;
     seeds: Record<string, number>;
     params?: ParamSummaryItem[];
+    /**
+     * Where the run came from.
+     *
+     * `study` is what keeps a parameter study's hundreds of near-identical
+     * frames out of the gallery. Everything else about the row is ordinary,
+     * which is what lets a shot join the gallery later by changing this one
+     * column rather than by moving between tables.
+     */
+    source?: 'comfy' | 'study';
   }): void {
     this.db
       .prepare(
         `INSERT INTO generations
-           (id, prompt_id, workflow_id, workflow_name, status, error, values_json, seeds_json, params_json, title, created_at, completed_at)
-         VALUES (?, ?, ?, ?, 'queued', NULL, ?, ?, ?, ?, ?, NULL)`,
+           (id, prompt_id, workflow_id, workflow_name, status, error, values_json, seeds_json, params_json, title, created_at, completed_at, source)
+         VALUES (?, ?, ?, ?, 'queued', NULL, ?, ?, ?, ?, ?, NULL, ?)`,
       )
       .run(
         record.id,
@@ -963,6 +1039,7 @@ export class Store {
         JSON.stringify(record.params ?? []),
         record.title,
         Date.now(),
+        record.source ?? 'comfy',
       );
   }
 
@@ -1113,6 +1190,17 @@ export class Store {
       `(status <> 'cancelled'
         OR EXISTS (SELECT 1 FROM images WHERE images.generation_id = generations.id))`,
     );
+
+    /*
+     * A parameter study is not gallery material.
+     *
+     * Its whole method is producing hundreds of frames that differ by one
+     * setting — exactly the pile the gallery's cleanup and its day sections
+     * exist to prevent. They live in the study module, where a near-identical
+     * neighbour is the point, and a shot you decide to keep is re-marked
+     * `comfy` and joins the gallery properly.
+     */
+    where.push("source <> 'study'");
 
     const order =
       sort === 'oldest'
@@ -2170,6 +2258,285 @@ export class Store {
     };
   }
 
+  /* ---------------------------------------------------------------- */
+  /* Parameter studies                                                 */
+  /* ---------------------------------------------------------------- */
+
+  /** The counts both phases are measured by, as SQL both listings share. */
+  private static readonly SHOT_COUNTS = `
+    (SELECT COUNT(*) FROM study_shots s WHERE s.study_id = studies.id AND s.status = 'done')
+      AS rendered,
+    (SELECT COUNT(*) FROM study_shots s WHERE s.study_id = studies.id AND s.status = 'failed')
+      AS failed,
+    (SELECT COUNT(*) FROM study_shots s WHERE s.study_id = studies.id AND s.rating IS NOT NULL)
+      AS rated`;
+
+  listStudies(): StudySummary[] {
+    return this.db
+      .prepare<[], StudyRow & StudyCounts>(
+        `SELECT *, ${Store.SHOT_COUNTS} FROM studies ORDER BY updated_at DESC`,
+      )
+      .all()
+      .map(toStudySummary);
+  }
+
+  getStudy(id: string): StudyDetail | null {
+    const row = this.db
+      .prepare<[string], StudyRow & StudyCounts>(
+        `SELECT *, ${Store.SHOT_COUNTS} FROM studies WHERE id = ?`,
+      )
+      .get(id);
+    if (!row) return null;
+
+    return {
+      ...toStudySummary(row),
+      factors: parseJson<unknown[]>(row.factors_json, []),
+      base: parseJson<ParamValues>(row.base_json, {}),
+      seed: row.seed,
+    };
+  }
+
+  insertStudy(input: {
+    id: string;
+    name: string;
+    workflowId: string | null;
+    workflowName: string;
+    seed: number;
+  }): void {
+    const now = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO studies
+           (id, name, workflow_id, workflow_name, status, factors_json, base_json,
+            sampling, shot_count, seed, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'draft', '[]', '{}', 'lhs', 40, ?, ?, ?)`,
+      )
+      .run(input.id, input.name, input.workflowId, input.workflowName, input.seed, now, now);
+  }
+
+  updateStudy(
+    id: string,
+    patch: {
+      name?: string;
+      factors?: unknown[];
+      base?: ParamValues;
+      sampling?: StudySamplingName;
+      shotCount?: number;
+      seed?: number;
+      status?: StudyStatus;
+    },
+  ): void {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+
+    if (patch.name !== undefined) {
+      sets.push('name = ?');
+      params.push(patch.name);
+    }
+    if (patch.factors !== undefined) {
+      sets.push('factors_json = ?');
+      params.push(JSON.stringify(patch.factors));
+    }
+    if (patch.base !== undefined) {
+      sets.push('base_json = ?');
+      params.push(JSON.stringify(patch.base));
+    }
+    if (patch.sampling !== undefined) {
+      sets.push('sampling = ?');
+      params.push(patch.sampling);
+    }
+    if (patch.shotCount !== undefined) {
+      sets.push('shot_count = ?');
+      params.push(Math.max(1, Math.floor(patch.shotCount)));
+    }
+    if (patch.seed !== undefined) {
+      sets.push('seed = ?');
+      params.push(Math.floor(patch.seed));
+    }
+    if (patch.status !== undefined) {
+      sets.push('status = ?');
+      params.push(patch.status);
+    }
+    if (sets.length === 0) return;
+
+    sets.push('updated_at = ?');
+    params.push(Date.now(), id);
+    this.db.prepare(`UPDATE studies SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  /**
+   * Delete a study, and the pictures it made.
+   *
+   * `study_shots` cascades, but the generations do not — they are ordinary
+   * rows carrying `source = 'study'` — so they go explicitly. A shot promoted
+   * to a favourite is `comfy` by then and deliberately survives: keeping it
+   * was the whole point of promoting it.
+   */
+  deleteStudy(id: string): void {
+    const run = this.db.transaction(() => {
+      this.dropStudyGenerations(id);
+      this.db.prepare('DELETE FROM studies WHERE id = ?').run(id);
+    });
+    run();
+  }
+
+  /** Every picture a study made that has not been promoted out of it. */
+  private dropStudyGenerations(studyId: string): void {
+    const ids = this.db
+      .prepare<[string], { generation_id: string }>(
+        `SELECT generation_id FROM study_shots
+          WHERE study_id = ? AND generation_id IS NOT NULL`,
+      )
+      .all(studyId)
+      .map((row) => row.generation_id);
+
+    const drop = this.db.prepare("DELETE FROM generations WHERE id = ? AND source = 'study'");
+    for (const generationId of ids) drop.run(generationId);
+  }
+
+  /**
+   * Write a freshly drawn plan, replacing whatever was there.
+   *
+   * Replacing rather than appending, because re-planning is what you do after
+   * changing the factors — and the old shots were drawn against the old setup.
+   * Their pictures go with them; keeping them would silently mix two studies
+   * into one set of statistics.
+   */
+  replaceShots(studyId: string, shots: { id: string; values: ParamValues }[]): void {
+    const insert = this.db.prepare(
+      `INSERT INTO study_shots (id, study_id, ordinal, values_json, status)
+       VALUES (?, ?, ?, ?, 'pending')`,
+    );
+    const run = this.db.transaction(() => {
+      this.dropStudyGenerations(studyId);
+      this.db.prepare('DELETE FROM study_shots WHERE study_id = ?').run(studyId);
+      shots.forEach((shot, index) => {
+        insert.run(shot.id, studyId, index, JSON.stringify(shot.values));
+      });
+    });
+    run();
+  }
+
+  listShots(studyId: string): StudyShot[] {
+    return this.db
+      .prepare<[string], StudyShotRow>(
+        'SELECT * FROM study_shots WHERE study_id = ? ORDER BY ordinal',
+      )
+      .all(studyId)
+      .map(toStudyShot);
+  }
+
+  getShot(id: string): (StudyShot & { studyId: string }) | null {
+    const row = this.db
+      .prepare<[string], StudyShotRow>('SELECT * FROM study_shots WHERE id = ?')
+      .get(id);
+    return row ? { ...toStudyShot(row), studyId: row.study_id } : null;
+  }
+
+  /** The next shots to render, in plan order — which is already cost order. */
+  nextPendingShots(studyId: string, limit: number): StudyShot[] {
+    return this.db
+      .prepare<[string, number], StudyShotRow>(
+        `SELECT * FROM study_shots
+          WHERE study_id = ? AND status = 'pending'
+          ORDER BY ordinal LIMIT ?`,
+      )
+      .all(studyId, limit)
+      .map(toStudyShot);
+  }
+
+  setShotStatus(id: string, status: StudyShotStatus, generationId?: string | null): void {
+    this.db
+      .prepare(
+        `UPDATE study_shots
+            SET status = ?, generation_id = COALESCE(?, generation_id)
+          WHERE id = ?`,
+      )
+      .run(status, generationId ?? null, id);
+  }
+
+  /**
+   * Put every queued shot of a study back to pending.
+   *
+   * A shot marked queued whose prompt never reached ComfyUI — a crash, a lost
+   * connection, a pause landing mid-submit — would otherwise be skipped
+   * forever, leaving a hole in the plan that nothing fills. Pending is the
+   * safe reading: at worst a shot renders twice.
+   */
+  requeueStranded(studyId: string): number {
+    return this.db
+      .prepare("UPDATE study_shots SET status = 'pending' WHERE study_id = ? AND status = 'queued'")
+      .run(studyId).changes;
+  }
+
+  /** Which shot a finished generation belongs to, if any. */
+  findShotByGeneration(generationId: string): (StudyShot & { studyId: string }) | null {
+    const row = this.db
+      .prepare<[string], StudyShotRow>('SELECT * FROM study_shots WHERE generation_id = ?')
+      .get(generationId);
+    return row ? { ...toStudyShot(row), studyId: row.study_id } : null;
+  }
+
+  setShotRating(id: string, rating: number | null): void {
+    const clamped = rating === null ? null : Math.max(1, Math.min(3, Math.round(rating)));
+    this.db
+      .prepare('UPDATE study_shots SET rating = ?, rated_at = ? WHERE id = ?')
+      .run(clamped, clamped === null ? null : Date.now(), id);
+  }
+
+  /**
+   * A rendered shot nobody has rated, drawn at random.
+   *
+   * Random on purpose, and it is the one place in the app where that is a
+   * methodological requirement rather than a flourish. The plan runs in cost
+   * order, so the pictures arrive grouped by model and by resolution; rating
+   * them in that order means judging forty frames from one checkpoint in a
+   * row, and by the tenth you have recalibrated to it. What you would be
+   * measuring is drift in your own eye. Shuffling keeps the ratings comparable
+   * across the study rather than within a block of it.
+   */
+  randomUnratedShot(studyId: string): StudyShot | null {
+    const row = this.db
+      .prepare<[string], StudyShotRow>(
+        `SELECT * FROM study_shots
+          WHERE study_id = ? AND rating IS NULL AND status = 'done'
+            AND EXISTS (SELECT 1 FROM images WHERE images.generation_id = study_shots.generation_id)
+          ORDER BY RANDOM() LIMIT 1`,
+      )
+      .get(studyId);
+    return row ? toStudyShot(row) : null;
+  }
+
+  /** Every rated shot, for the statistics. */
+  ratedShots(studyId: string): { values: ParamValues; rating: StudyRating }[] {
+    return this.db
+      .prepare<[string], { values_json: string; rating: number }>(
+        'SELECT values_json, rating FROM study_shots WHERE study_id = ? AND rating IS NOT NULL',
+      )
+      .all(studyId)
+      .map((row) => ({
+        values: parseJson<ParamValues>(row.values_json, {}),
+        rating: row.rating as StudyRating,
+      }));
+  }
+
+  /**
+   * Move a study's picture into the gallery.
+   *
+   * One column. The run stops being a study run and becomes an ordinary one,
+   * after which every other part of the app — gallery, favourites, archive,
+   * the automatic cleanup — treats it like anything else, with no special case
+   * anywhere. That is the whole reason the exclusion is a `source` value
+   * rather than a separate table.
+   */
+  promoteStudyGeneration(generationId: string): boolean {
+    return (
+      this.db
+        .prepare("UPDATE generations SET source = 'comfy' WHERE id = ? AND source = 'study'")
+        .run(generationId).changes > 0
+    );
+  }
+
   /** Only into an empty library — never merged, so nothing is duplicated. */
   importPromptBlocks(state: BlockState, makeId: () => string): number {
     if (this.listPromptBlocks().length > 0) return 0;
@@ -2181,4 +2548,65 @@ export class Store {
     }
     return restored;
   }
+}
+
+interface StudyRow {
+  id: string;
+  name: string;
+  workflow_id: string | null;
+  workflow_name: string;
+  status: string;
+  factors_json: string;
+  base_json: string;
+  sampling: string;
+  shot_count: number;
+  seed: number;
+  created_at: number;
+  updated_at: number;
+}
+
+interface StudyCounts {
+  rendered: number;
+  failed: number;
+  rated: number;
+}
+
+interface StudyShotRow {
+  id: string;
+  study_id: string;
+  ordinal: number;
+  values_json: string;
+  status: string;
+  generation_id: string | null;
+  rating: number | null;
+  rated_at: number | null;
+}
+
+function toStudySummary(row: StudyRow & StudyCounts): StudySummary {
+  return {
+    id: row.id,
+    name: row.name,
+    workflowId: row.workflow_id,
+    workflowName: row.workflow_name,
+    status: row.status as StudyStatus,
+    sampling: (row.sampling as StudySamplingName) ?? 'lhs',
+    shotCount: row.shot_count,
+    rendered: row.rendered,
+    failed: row.failed,
+    rated: row.rated,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function toStudyShot(row: StudyShotRow): StudyShot {
+  return {
+    id: row.id,
+    ordinal: row.ordinal,
+    values: parseJson<ParamValues>(row.values_json, {}),
+    status: row.status as StudyShotStatus,
+    generationId: row.generation_id,
+    rating: row.rating === null ? null : (row.rating as StudyRating),
+    ratedAt: row.rated_at,
+  };
 }

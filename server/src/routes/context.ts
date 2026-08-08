@@ -9,6 +9,7 @@ import type { Importer } from '../importer.js';
 import type { InputLibrary } from '../inputLibrary.js';
 import type { Orchestrator } from '../orchestrator.js';
 import type { StateFiles } from '../statefile.js';
+import type { StudyRunner } from '../study.js';
 import type { Sweeper } from '../sweeper.js';
 import type { Vault } from '../vault.js';
 import type { WorkflowScanner } from '../workflowScan.js';
@@ -31,6 +32,8 @@ export interface AppContext {
   workflowScanner: WorkflowScanner;
   /** Keeps the queue fed while endless generation is switched on. */
   endless: Endless;
+  /** Walks a parameter study's plan, one shot at a time. */
+  studyRunner: StudyRunner;
 }
 
 /**

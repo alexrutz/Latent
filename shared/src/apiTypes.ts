@@ -1,6 +1,9 @@
 import type { RandomPromptConfig } from './randomPrompt.js';
 import type { ApiWorkflow, ComfyImageRef } from './comfyTypes.js';
 import type { FieldOverrides, ParamSchema, ParamValues } from './paramTypes.js';
+// The rating scale belongs to the analysis, which is where it is defined; the
+// wire types reuse it rather than restating three levels in two places.
+import type { StudyRating } from './studyStats.js';
 
 /* ------------------------------------------------------------------ */
 /* Workflows                                                           */
@@ -155,8 +158,15 @@ export interface GenerationRecord {
   texts: TextOutput[];
   createdAt: number;
   completedAt: number | null;
-  /** `comfy` for something generated here, `import` for a scanned folder. */
-  source: 'comfy' | 'import';
+  /**
+   * Where this run came from.
+   *
+   * `comfy` for something generated here, `import` for a scanned folder, and
+   * `study` for a parameter study — which is kept out of the gallery entirely,
+   * because a study is hundreds of deliberately near-identical frames and
+   * mixing them in would bury everything else you have ever made.
+   */
+  source: 'comfy' | 'import' | 'study';
 }
 
 /** One text output, kept with the node that produced it. */
@@ -680,6 +690,19 @@ export interface AppSettings {
    * this one is reference photos, sketches and masks going out to img2img.
    */
   inputRoot: string | null;
+  /**
+   * The prefix a saved workflow must carry to be read at all.
+   *
+   * A ComfyUI install accumulates every experiment anybody ever saved, and a
+   * scan that imports all of them makes a list nobody can find anything in.
+   * Naming the handful meant for the phone `API_…` costs nothing in the editor
+   * and turns the scan into exactly those.
+   *
+   * Stripped from the name once inside — it marks the file on disk, and
+   * repeating it on every row would waste the width. Empty means "take
+   * everything", which is what installs from before this did.
+   */
+  workflowPrefix: string;
 }
 
 /**
@@ -1039,3 +1062,106 @@ export type ChatStreamEvent =
   | { type: 'tool'; call: ChatToolCall }
   | { type: 'done'; messageId: string }
   | { type: 'error'; message: string };
+
+/* ------------------------------------------------------------------ */
+/* Parameter studies                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A study runs in two phases, and the status says which.
+ *
+ * They are deliberately separate. Generating is a long unattended stretch the
+ * machine does on its own; rating is a short attentive one you do with your
+ * thumb — and mixing them would mean forming an opinion about a parameter
+ * while still choosing its values, which is how you confirm what you already
+ * believed rather than find out.
+ */
+export type StudyStatus =
+  /** Being set up. Nothing drawn, nothing queued. */
+  | 'draft'
+  /** The plan is drawn and the shots are rendering. */
+  | 'running'
+  /** Stopped part-way. Everything already rendered is kept. */
+  | 'paused'
+  /** Every shot rendered. Ready to rate. */
+  | 'rating'
+  /** Rated as far as you care to. The results stand. */
+  | 'done';
+
+export type StudyShotStatus = 'pending' | 'queued' | 'done' | 'failed';
+
+export interface StudyShot {
+  id: string;
+  ordinal: number;
+  values: ParamValues;
+  status: StudyShotStatus;
+  generationId: string | null;
+  rating: StudyRating | null;
+  ratedAt: number | null;
+}
+
+/** A shot with the picture it produced, for the rating viewer. */
+export interface StudyShotImage {
+  shot: StudyShot;
+  image: GenerationImage;
+  /** The whole run, so the parameter overlay works as it does everywhere else. */
+  record: GenerationRecord;
+}
+
+/**
+ * Named separately from the sampler's own union so the wire format does not
+ * depend on importing the engine.
+ */
+export type StudySamplingName = 'lhs' | 'random';
+
+export interface StudySummary {
+  id: string;
+  name: string;
+  workflowId: string | null;
+  workflowName: string;
+  status: StudyStatus;
+  sampling: StudySamplingName;
+  shotCount: number;
+  /** How far the two phases have got. */
+  rendered: number;
+  failed: number;
+  rated: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface StudyDetail extends StudySummary {
+  /**
+   * The factors, as the sampler's `StudyFactor[]`.
+   *
+   * Deliberately opaque at this layer: the shape belongs to `studyPlan`, and
+   * restating it here would be two definitions to keep in step.
+   */
+  factors: unknown[];
+  /** Everything *not* being varied, typed once on the setup screen. */
+  base: ParamValues;
+  seed: number;
+}
+
+export interface CreateStudyRequest {
+  name: string;
+  workflowId: string;
+}
+
+export interface UpdateStudyRequest {
+  name?: string;
+  factors?: unknown[];
+  base?: ParamValues;
+  sampling?: StudySamplingName;
+  shotCount?: number;
+  seed?: number;
+}
+
+/** What the setup screen shows before anything is committed to. */
+export interface StudyPreview {
+  shots: number;
+  /** How often each factor changes across the plan, in run order. */
+  switches: { key: string; label: string; switches: number }[];
+  /** The first few shots, so a plan can be eyeballed rather than trusted. */
+  sample: ParamValues[];
+}

@@ -19,6 +19,7 @@ import { Store } from './db.js';
 import { Orchestrator } from './orchestrator.js';
 import { StateFiles } from './statefile.js';
 import { Endless } from './endless.js';
+import { StudyRunner } from './study.js';
 import { Sweeper } from './sweeper.js';
 import { WorkflowScanner } from './workflowScan.js';
 import { registerChatRoutes } from './routes/chat.js';
@@ -31,6 +32,7 @@ import { registerImportRoutes } from './routes/import.js';
 import { registerInputImageRoutes } from './routes/inputImages.js';
 import { registerLayoutRoutes } from './routes/layouts.js';
 import { registerMediaRoutes } from './routes/media.js';
+import { registerStudyRoutes } from './routes/studies.js';
 import { registerPromptBlockRoutes } from './routes/promptBlocks.js';
 import { registerPresetRoutes } from './routes/presets.js';
 import { registerQueueRoutes } from './routes/queue.js';
@@ -144,6 +146,15 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   // The context is built below and the runner needs it, so it is handed a
   // getter rather than the object — a cycle broken by a closure, not a cast.
   const endless = new Endless(store, orchestrator, () => ctx, app.log);
+  const studyRunner = new StudyRunner(store, orchestrator, app.log);
+  /*
+   * The runner has to hear about every run that settles, not only its own: it
+   * is how a shot moves from queued to done, and how the last shot of a study
+   * turns the study over to its rating phase. Filtering to study runs happens
+   * inside, where the shot lookup already is.
+   */
+  orchestrator.onSettled = (generationId, ok) =>
+    studyRunner.onGenerationSettled(generationId, ok);
 
   // With the password fixed in the environment there is nobody to wait for, so
   // the archive can be unsealed at boot. Otherwise it stays locked until the
@@ -163,6 +174,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     sweeper,
     workflowScanner,
     endless,
+    studyRunner,
   };
 
   /*
@@ -216,6 +228,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   registerImportRoutes(app, ctx);
   registerInputImageRoutes(app, ctx);
   registerMediaRoutes(app, ctx);
+  registerStudyRoutes(app, ctx);
 
   /**
    * The shell. Registered only when explicitly enabled — a route that does not
@@ -261,6 +274,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     await orchestrator.stop();
     stateFiles.stop();
     endless.stop();
+    studyRunner.pause();
     sweeper.stop();
     vault.lock();
     store.close();

@@ -21,6 +21,11 @@ import type {
   QueueState,
   ServerEvent,
   StatusResponse,
+  StudyDetail,
+  StudyPreview,
+  StudyShot,
+  StudyShotImage,
+  StudyStats,
   WorkflowDetail,
 } from '@latent/shared';
 import {
@@ -3250,6 +3255,342 @@ describe('gallery ordering', () => {
     const known = await json<GalleryPage>(api('/api/gallery?sort=oldest'));
     expect(Array.isArray(known.items)).toBe(true);
   });
+});
+
+describe('parameter studies', () => {
+  /**
+   * The whole loop, against a real workflow and a real ComfyUI: set up a
+   * study, run it, rate what it made, and read the analysis back.
+   *
+   * The sampler and the statistics are unit-tested to death elsewhere. What
+   * this covers is everything between them — the plan surviving in the
+   * database, the runner walking it, the pictures being kept out of the
+   * gallery, and the one door back into it.
+   */
+  it('plans, renders, rates and analyses — without touching the gallery', async () => {
+    const workflow = await json<WorkflowDetail>(
+      api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'study subject', graph: sd15Txt2Img }),
+      }),
+    );
+
+    const study = await json<StudyDetail>(
+      api('/api/studies', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'steps and sampler', workflowId: workflow.id }),
+      }),
+    );
+    expect(study.status).toBe('draft');
+    // The workflow's own last values come along, so the prompt is already set.
+    expect(Object.keys(study.base).length).toBeGreaterThan(0);
+
+    const factors = [
+      {
+        kind: 'numeric',
+        key: '3.steps',
+        label: 'Steps',
+        min: 2,
+        max: 4,
+        quantise: { mode: 'interval', step: 1 },
+        distribution: 'uniform',
+        integer: true,
+        cost: 0,
+      },
+      {
+        kind: 'categorical',
+        key: '3.sampler_name',
+        label: 'Sampler',
+        levels: ['euler', 'ddim'],
+        cost: 3,
+      },
+    ];
+
+    const configured = await json<StudyDetail>(
+      api(`/api/studies/${study.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ factors, shotCount: 6, sampling: 'lhs' }),
+      }),
+    );
+    expect(configured.shotCount).toBe(6);
+    expect(configured.factors).toHaveLength(2);
+
+    /*
+     * The preview is what makes the cost of a choice visible before paying it.
+     * Two samplers over six shots means the expensive factor changes once.
+     */
+    const preview = await json<StudyPreview>(api(`/api/studies/${study.id}/preview`));
+    expect(preview.shots).toBe(6);
+    expect(preview.switches.find((entry) => entry.key === '3.sampler_name')?.switches).toBe(1);
+
+    await api(`/api/studies/${study.id}/start`, { method: 'POST' });
+
+    // The runner walks the plan on its own, keeping the queue shallow.
+    const finished = await waitFor(async () => {
+      const detail = (await (await api(`/api/studies/${study.id}`)).json()) as StudyDetail;
+      return detail.rendered === 6 ? detail : null;
+    }, 90_000);
+    expect(finished.status).toBe('rating');
+    expect(finished.failed).toBe(0);
+
+    /*
+     * The point of the whole `source` column: six near-identical frames, and
+     * the gallery shows none of them.
+     */
+    const gallery = (await (await api('/api/gallery?limit=100')).json()) as GalleryPage;
+    expect(gallery.items.filter((item) => item.workflowName === 'study subject')).toHaveLength(0);
+
+    // Rate every shot, taking whatever the server offers — which is random.
+    const seen = new Set<string>();
+    for (let i = 0; i < 6; i += 1) {
+      const response = await api(`/api/studies/${study.id}/next`);
+      expect(response.status).toBe(200);
+      const next = (await response.json()) as StudyShotImage;
+      expect(next.image.filename).toBeTruthy();
+      expect(seen.has(next.shot.id)).toBe(false);
+      seen.add(next.shot.id);
+
+      // Better ratings for more steps, so the analysis has something to find.
+      const steps = Number(next.shot.values['3.steps']);
+      await api(`/api/studies/${study.id}/shots/${next.shot.id}/rating`, {
+        method: 'PUT',
+        body: JSON.stringify({ rating: steps >= 4 ? 3 : steps >= 3 ? 2 : 1 }),
+      });
+    }
+
+    // Nothing left to rate, and saying so is a 204 rather than an error.
+    expect((await api(`/api/studies/${study.id}/next`)).status).toBe(204);
+
+    const stats = (await (await api(`/api/studies/${study.id}/stats`)).json()) as StudyStats;
+    expect(stats.rated).toBe(6);
+    expect(stats.unrated).toBe(0);
+
+    const steps = stats.factors.find((factor) => factor.key === '3.steps');
+    expect(steps?.test).toBe('spearman');
+    // Ratings were made to rise with the step count, so it must find that.
+    expect(steps?.rho ?? 0).toBeGreaterThan(0.8);
+
+    const sampler = stats.factors.find((factor) => factor.key === '3.sampler_name');
+    expect(sampler?.test).toBe('kruskal-wallis');
+    expect(sampler?.rho).toBeNull();
+
+    /*
+     * The door out. One picture is worth keeping, and keeping it puts the run
+     * into the gallery and the favourites — with the bytes archived, so it
+     * survives the instance that made it going away.
+     */
+    const keeper = [...seen][0] as string;
+    const kept = await api(`/api/studies/${study.id}/shots/${keeper}/keep`, { method: 'POST' });
+    expect(kept.status).toBe(201);
+
+    const favorites = (await (await api('/api/favorites')).json()) as { generationId: string }[];
+    expect(favorites).toHaveLength(1);
+
+    const after = (await (await api('/api/gallery?limit=100')).json()) as GalleryPage;
+    const promoted = after.items.filter((item) => item.workflowName === 'study subject');
+    expect(promoted).toHaveLength(1);
+    expect(promoted[0]?.source).toBe('comfy');
+    expect(promoted[0]?.images[0]?.archived).toBe(true);
+
+    // And the other five are still hidden.
+    expect(after.items.length).toBe(gallery.items.length + 1);
+  }, 120_000);
+
+  /**
+   * Pausing has to be resumable, and resuming has to continue the same plan.
+   *
+   * The failure this guards against is a resume that re-draws: every picture
+   * already rendered would be thrown away, and a study interrupted twice would
+   * never finish at all.
+   */
+  it('keeps its place across a pause', async () => {
+    const workflow = await json<WorkflowDetail>(
+      api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'pause subject', graph: sd15Txt2Img }),
+      }),
+    );
+
+    const study = await json<StudyDetail>(
+      api('/api/studies', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'pausable', workflowId: workflow.id }),
+      }),
+    );
+
+    await api(`/api/studies/${study.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        shotCount: 8,
+        factors: [
+          {
+            kind: 'numeric',
+            key: '3.steps',
+            label: 'Steps',
+            min: 2,
+            max: 3,
+            quantise: { mode: 'interval', step: 1 },
+            distribution: 'uniform',
+            integer: true,
+            cost: 0,
+          },
+        ],
+      }),
+    });
+
+    await api(`/api/studies/${study.id}/start`, { method: 'POST' });
+
+    // Let a couple land, then stop.
+    await waitFor(async () => {
+      const detail = (await (await api(`/api/studies/${study.id}`)).json()) as StudyDetail;
+      return detail.rendered >= 1 ? detail : null;
+    }, 60_000);
+
+    const paused = await json<StudyDetail>(
+      api(`/api/studies/${study.id}/pause`, { method: 'POST' }),
+    );
+    expect(paused.status).toBe('paused');
+
+    const shotsAtPause = (await (
+      await api(`/api/studies/${study.id}/shots`)
+    ).json()) as StudyShot[];
+    const ids = shotsAtPause.map((shot) => shot.id).join(',');
+    const doneAtPause = shotsAtPause.filter((shot) => shot.status === 'done');
+    expect(doneAtPause.length).toBeGreaterThan(0);
+
+    await api(`/api/studies/${study.id}/start`, { method: 'POST' });
+
+    const resumed = (await (await api(`/api/studies/${study.id}/shots`)).json()) as StudyShot[];
+    // Same shots, same ids, same order: the plan was not re-drawn.
+    expect(resumed.map((shot) => shot.id).join(',')).toBe(ids);
+    // And nothing already rendered was reset to pending.
+    for (const shot of doneAtPause) {
+      expect(resumed.find((entry) => entry.id === shot.id)?.status).toBe('done');
+    }
+
+    await api(`/api/studies/${study.id}/pause`, { method: 'POST' });
+  }, 120_000);
+
+  /** Deleting a study takes its pictures with it, but not the one you kept. */
+  it('cleans up after itself', async () => {
+    const workflow = await json<WorkflowDetail>(
+      api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'disposable', graph: sd15Txt2Img }),
+      }),
+    );
+
+    const study = await json<StudyDetail>(
+      api('/api/studies', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'disposable', workflowId: workflow.id }),
+      }),
+    );
+
+    await api(`/api/studies/${study.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        shotCount: 2,
+        factors: [
+          {
+            kind: 'numeric',
+            key: '3.steps',
+            label: 'Steps',
+            min: 2,
+            max: 3,
+            quantise: { mode: 'interval', step: 1 },
+            distribution: 'uniform',
+            integer: true,
+            cost: 0,
+          },
+        ],
+      }),
+    });
+    await api(`/api/studies/${study.id}/start`, { method: 'POST' });
+
+    await waitFor(async () => {
+      const detail = (await (await api(`/api/studies/${study.id}`)).json()) as StudyDetail;
+      return detail.rendered === 2 ? detail : null;
+    }, 60_000);
+
+    const shots = (await (await api(`/api/studies/${study.id}/shots`)).json()) as StudyShot[];
+    const keeper = shots.find((shot) => shot.status === 'done');
+    expect(keeper).toBeDefined();
+    await api(`/api/studies/${study.id}/shots/${keeper?.id}/keep`, { method: 'POST' });
+
+    const before = (await (await api('/api/gallery?limit=100')).json()) as GalleryPage;
+    await api(`/api/studies/${study.id}`, { method: 'DELETE' });
+
+    expect((await api(`/api/studies/${study.id}`)).status).toBe(404);
+
+    // The kept picture is a gallery entry now, and survives its study.
+    const after = (await (await api('/api/gallery?limit=100')).json()) as GalleryPage;
+    expect(after.items.filter((item) => item.workflowName === 'disposable')).toHaveLength(1);
+    expect(after.items.length).toBe(before.items.length);
+  }, 120_000);
+
+  /**
+   * The factors arrive as opaque JSON and go straight into a sampler that will
+   * happily be asked for a range of NaN in steps of zero.
+   */
+  it('refuses nonsense factors rather than planning nothing', async () => {
+    const workflow = await json<WorkflowDetail>(
+      api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'sanitised', graph: sd15Txt2Img }),
+      }),
+    );
+    const study = await json<StudyDetail>(
+      api('/api/studies', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'sanitised', workflowId: workflow.id }),
+      }),
+    );
+
+    const patched = await json<StudyDetail>(
+      api(`/api/studies/${study.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          factors: [
+            { kind: 'numeric', key: '3.steps', min: 'abc', max: 40 },
+            { kind: 'categorical', key: '3.sampler_name', levels: [] },
+            { kind: 'numeric', key: '', min: 1, max: 2 },
+            {
+              kind: 'numeric',
+              key: '3.cfg',
+              label: 'CFG',
+              min: 1,
+              max: 12,
+              quantise: { mode: 'interval', step: -5 },
+              distribution: 'nonsense',
+              cost: 99,
+            },
+          ],
+        }),
+      }),
+    );
+
+    // Only the repairable one survives, and it is repaired rather than trusted.
+    expect(patched.factors).toHaveLength(1);
+    const cfg = patched.factors[0] as {
+      key: string;
+      quantise: { step: number };
+      distribution: string;
+      cost: number;
+    };
+    expect(cfg.key).toBe('3.cfg');
+    expect(cfg.quantise.step).toBeGreaterThan(0);
+    expect(cfg.distribution).toBe('uniform');
+    expect(cfg.cost).toBeLessThanOrEqual(5);
+
+    // A study with nothing valid to vary will not start.
+    await api(`/api/studies/${study.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ factors: [{ kind: 'categorical', key: 'x', levels: [] }] }),
+    });
+    const refused = await api(`/api/studies/${study.id}/start`, { method: 'POST' });
+    expect(refused.status).toBe(400);
+  }, 60_000);
 });
 
 describe('the queue policy', () => {

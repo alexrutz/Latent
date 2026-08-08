@@ -437,6 +437,8 @@ export class Orchestrator {
     seeds: Record<string, number>;
     /** Readable summary of the submitted values, for the queue listing. */
     params?: ParamSummaryItem[];
+    /** `study` keeps the run out of the gallery. See `Store.insertGeneration`. */
+    source?: 'comfy' | 'study';
   }): Promise<{ generationId: string; promptId: string }> {
     const inFlight = { title: input.title, workflowName: input.workflowName };
     this.inFlightSubmits.push(inFlight);
@@ -467,6 +469,7 @@ export class Orchestrator {
       values: input.values,
       seeds: input.seeds,
       params,
+      source: input.source ?? 'comfy',
     });
 
     const nodeTitles = new Map<string, string>();
@@ -796,6 +799,18 @@ export class Orchestrator {
     this.pushState(true);
   }
 
+  /**
+   * Called once per run as it settles, with whether it produced anything.
+   *
+   * Set by whoever needs it — today the study runner, which has to know the
+   * moment a shot lands so it can queue the next and, when it was the last,
+   * turn the study over to its rating phase by itself. A callback rather than
+   * a subscription to the event hub because this is server-internal
+   * bookkeeping, not something a client should be able to miss by having
+   * closed its tab.
+   */
+  onSettled: ((generationId: string, ok: boolean) => void) | null = null;
+
   /** Idempotent: ComfyUI can send both `executing:null` and `execution_success`. */
   private markFinished(
     promptId: string,
@@ -813,6 +828,7 @@ export class Orchestrator {
 
     this.store.setGenerationStatus(promptId, status, error);
     this.emitGeneration(promptId);
+    this.onSettled?.(existing.id, status === 'completed');
 
     // Keep the map from growing without bound over a long-running server.
     setTimeout(() => this.tracked.delete(promptId), 60_000).unref?.();
