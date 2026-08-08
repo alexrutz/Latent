@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 
-import type { CreateFavoriteRequest, FavoriteSort } from '@latent/shared';
+import type { ComfyImageRef, CreateFavoriteRequest, Favorite, FavoriteSort } from '@latent/shared';
 
 import type { AppContext } from './context.js';
 
@@ -14,6 +14,68 @@ const SORTS = new Set<FavoriteSort>(['rating', 'newest', 'oldest']);
  * the parameters rather than a reference to the gallery entry — deleting the
  * original, or the workflow, must not quietly empty the thing you saved.
  */
+/**
+ * Keep one picture, with the settings that made it.
+ *
+ * A function rather than only a route body because the parameter study needs
+ * exactly this and nothing about it is specific to the gallery — a second copy
+ * would be a second place to remember that favouriting has to archive, and it
+ * would drift the first time either changed.
+ *
+ * `created` is false when there already was one, which makes tapping the star
+ * twice harmless rather than a duplicate — and lets the route answer 200
+ * rather than 201, so a client can tell the two apart.
+ */
+export async function keepAsFavorite(
+  app: FastifyInstance,
+  ctx: AppContext,
+  input: { generationId: string; image: ComfyImageRef; note?: string | null },
+): Promise<{ favorite: Favorite; created: boolean } | null> {
+  const generation = ctx.store.getGeneration(input.generationId);
+  if (!generation) return null;
+
+  const row = ctx.store.findImage(input.image, input.generationId);
+  if (!row) return null;
+
+  const existing = ctx.store.findFavoriteByImage(row.id);
+  if (existing) return { favorite: existing, created: false };
+
+  /*
+   * A favourite is only useful if the picture is still there later, so
+   * favouriting archives the image exactly as rating does. Otherwise the
+   * favourites tab would fill with dead references the moment the rented
+   * instance went away.
+   */
+  if (!row.archived_path) {
+    try {
+      await ctx.archive.capture(ctx.orchestrator.client, row.id, input.image);
+    } catch (error) {
+      app.log.warn({ err: error }, 'Could not archive an image while favouriting it');
+    }
+  }
+
+  const id = randomUUID();
+  ctx.store.insertFavorite({
+    id,
+    imageId: row.id,
+    generationId: input.generationId,
+    workflowId: generation.workflowId,
+    title: generation.title,
+    note: input.note?.trim() || null,
+    values: generation.values,
+    image:
+      ctx.store.getGeneration(input.generationId)?.images.find(
+        (candidate) =>
+          candidate.filename === input.image.filename &&
+          candidate.subfolder === (input.image.subfolder ?? '') &&
+          candidate.type === (input.image.type ?? 'output'),
+      ) ?? null,
+  });
+
+  const favorite = ctx.store.getFavorite(id);
+  return favorite ? { favorite, created: true } : null;
+}
+
 export function registerFavoriteRoutes(app: FastifyInstance, ctx: AppContext): void {
   app.get<{ Querystring: { sort?: string } }>('/api/favorites', async (request) => {
     const requested = request.query.sort as FavoriteSort | undefined;
@@ -26,47 +88,13 @@ export function registerFavoriteRoutes(app: FastifyInstance, ctx: AppContext): v
       return reply.code(400).send({ error: 'Which image?' });
     }
 
-    const generation = ctx.store.getGeneration(generationId);
-    if (!generation) return reply.code(404).send({ error: 'Generation not found' });
-
-    const row = ctx.store.findImage(image, generationId ?? undefined);
-    if (!row) return reply.code(404).send({ error: 'That image is not in the gallery' });
-
-    const existing = ctx.store.findFavoriteByImage(row.id);
-    if (existing) return reply.code(200).send(existing);
-
-    /*
-     * A favourite is only useful if the picture is still there later, so
-     * favouriting archives the image exactly as rating does. Otherwise the
-     * favourites tab would fill with dead references the moment the rented
-     * instance went away.
-     */
-    if (!row.archived_path) {
-      try {
-        await ctx.archive.capture(ctx.orchestrator.client, row.id, image);
-      } catch (error) {
-        app.log.warn({ err: error }, 'Could not archive an image while favouriting it');
-      }
+    if (!ctx.store.getGeneration(generationId)) {
+      return reply.code(404).send({ error: 'Generation not found' });
     }
 
-    const id = randomUUID();
-    ctx.store.insertFavorite({
-      id,
-      imageId: row.id,
-      generationId,
-      workflowId: generation.workflowId,
-      title: generation.title,
-      note: note?.trim() || null,
-      values: generation.values,
-      image: ctx.store.getGeneration(generationId)?.images.find(
-        (candidate) =>
-          candidate.filename === image.filename &&
-          candidate.subfolder === (image.subfolder ?? '') &&
-          candidate.type === (image.type ?? 'output'),
-      ) ?? null,
-    });
-
-    return reply.code(201).send(ctx.store.getFavorite(id));
+    const kept = await keepAsFavorite(app, ctx, { generationId, image, note });
+    if (!kept) return reply.code(404).send({ error: 'That image is not in the gallery' });
+    return reply.code(kept.created ? 201 : 200).send(kept.favorite);
   });
 
   app.patch<{ Params: { id: string }; Body: { rating?: number; note?: string | null } }>(
