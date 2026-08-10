@@ -10,6 +10,7 @@ import {
   sd15Txt2ImgUi,
   sd15WithLoraInput,
   uiFormatWorkflow,
+  withLlamaServer,
   withTextPreview,
 } from '../shared/src/fixtures/workflows.js';
 import { renderPlaceholder } from '../server/src/mock/png.js';
@@ -3970,5 +3971,39 @@ test.describe('the twenty-fifth wave', () => {
     } finally {
       await llama.dispose();
     }
+  });
+
+  /**
+   * The workflows reach the same model server the chat does.
+   *
+   * The address is a widget on the node, so it lives inside the workflow — and
+   * a rented box gets a new one every time it is started. The form says where
+   * the value is coming from rather than offering a box about to be replaced.
+   */
+  test('shows a llama-server node’s address as the connection’s', async ({ page }) => {
+    await withApi(async (ctx) => {
+      await ctx.post('/api/workflows', {
+        data: { name: 'Asks a llama-server', graph: withLlamaServer },
+      });
+      const created = await ctx.post('/api/connections', {
+        data: {
+          kind: 'llama',
+          name: 'Rented model server',
+          url: 'http://127.0.0.1:8189',
+        },
+      });
+      const connection = (await created.json()) as { id: string };
+      await ctx.post(`/api/connections/${connection.id}/activate`);
+    });
+
+    await open(page, '/');
+    await page.getByRole('button', { name: 'Advanced' }).click();
+
+    // All five widgets that describe how to reach the server, not just one.
+    const marked = page.getByText('from the model server “Rented model server”');
+    await expect(marked.first()).toBeVisible();
+    await expect(marked).toHaveCount(5);
+    await expect(page.getByText('http://127.0.0.1:8189').first()).toBeVisible();
+    await page.screenshot({ path: 'test-results/75-model-server-field.png' });
   });
 });

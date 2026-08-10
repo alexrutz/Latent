@@ -247,6 +247,7 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
     if (interrupted) {
       send(clientId, 'execution_interrupted', { prompt_id: promptId, node_id: null });
       history.set(promptId, {
+        prompt: [0, promptId, workflow, {}, []],
         outputs,
         status: { status_str: 'error', completed: false, messages: [] },
       });
@@ -256,7 +257,13 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
     // End of prompt: ComfyUI sends `executing: null` and then execution_success.
     send(clientId, 'executing', { prompt_id: promptId, node: null });
     send(clientId, 'execution_success', { prompt_id: promptId, timestamp: Date.now() });
+    /*
+     * The graph that ran, the way ComfyUI records it: `[number, id, prompt,
+     * extra_data, outputs_to_execute]`. Latent does not read it, but a test
+     * asking what was actually submitted has nowhere else to look.
+     */
     history.set(promptId, {
+      prompt: [0, promptId, workflow, {}, []],
       outputs,
       status: { status_str: 'success', completed: true, messages: [] },
     });

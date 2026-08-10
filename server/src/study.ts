@@ -1,7 +1,12 @@
 import type { FastifyBaseLogger } from 'fastify';
 
-import { applyOverrides, applyParams, buildParamSummary } from '@latent/shared';
-import type { ParamValues } from '@latent/shared';
+import {
+  applyModelServer,
+  applyOverrides,
+  applyParams,
+  buildParamSummary,
+} from '@latent/shared';
+import type { ModelServerTarget, ParamValues } from '@latent/shared';
 
 import type { Store } from './db.js';
 import type { Orchestrator } from './orchestrator.js';
@@ -53,6 +58,18 @@ export class StudyRunner {
   private pausedUntil = 0;
   private studyId: string | null = null;
   private message: string | undefined;
+
+  /** Where the model server is, for any llama-server node in the graph. */
+  private modelServer(): ModelServerTarget | null {
+    const active = this.store.getActiveConnection('llama');
+    if (!active) return null;
+    return {
+      url: active.url,
+      authMode: active.authMode,
+      username: active.username,
+      secret: active.secret,
+    };
+  }
 
   constructor(
     private readonly store: Store,
@@ -199,7 +216,9 @@ export class StudyRunner {
 
         const submitted = { ...values, ...seeds };
         const result = await this.orchestrator.submit({
-          graph: workflow,
+          // A study runs the same graph hundreds of times; a llama-server node
+          // in it wants the same address the rest of the app is using.
+          graph: applyModelServer(workflow, this.modelServer()),
           workflowId: detail.id,
           workflowName: detail.name,
           title,

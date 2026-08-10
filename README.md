@@ -700,6 +700,19 @@ name), or **none**, plus the same switch for a certificate nothing signed.
 it is running wants, and Latent does not send a temperature of its own to
 override them.
 
+**The workflows use it too.** If a graph contains a
+[comfyllama](https://github.com/alexrutz/comfyllama) *Connect to llama-server*
+node, its address, auth mode and token are filled in from this connection when
+the job is submitted. Those nodes hold the address as a widget, so it is baked
+into the workflow — fine until the server is a rented box, whose address changes
+every time one is started, and following that by hand means opening every
+workflow that mentions it. The substitution happens in the copy being submitted:
+the stored workflow keeps whatever it said, and the token never reaches a file
+that holds widget values in plain text. Generate shows such a field as *from the
+model server “…”* rather than as a box that is about to be overwritten. With no
+model server chosen, the workflow's own address is used and the field stays
+yours to edit.
+
 **Thinking is on by default.** Reasoning models are what this is worth doing
 with, and a model that thinks before answering gives noticeably better prompts.
 It arrives folded up under a *Thinking* line you can open, because the answer is
@@ -1341,6 +1354,7 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 | `server/src/routes/chat.ts` | Conversations, the SSE reply stream, and tool decisions |
 | `web/src/state/chat.ts` | The conversation, held outside the screen so a tab switch cannot destroy it |
 | `shared/src/systemPrompts.ts` | Matching a named system prompt to the workflow field it belongs in |
+| `shared/src/modelServer.ts` | Putting the model server in use into a workflow's llama-server nodes |
 | `server/src/statefile.ts` | Mirrors the arrangement to the files above the project |
 | `server/src/sweeper.ts` | Deletes runs nobody kept, once they are old enough |
 | `shared/src/promptMatch.ts` | Matches an image's embedded graph to a stored workflow |

@@ -32,6 +32,7 @@ import type {
 } from '@latent/shared';
 import {
   sd15Txt2Img,
+  withLlamaServer,
   sd15Txt2ImgUi,
   uiFormatWorkflow,
   withTextPreview,
@@ -54,6 +55,8 @@ import { withPngText } from './images/png.js';
  */
 
 let mock: ReturnType<typeof createMockComfy>;
+/** The mock's own address, for the few tests that ask it what it received. */
+let mockUrl: string;
 let built: Awaited<ReturnType<typeof buildApp>>;
 let app: Awaited<ReturnType<typeof buildApp>>['app'];
 let baseUrl: string;
@@ -98,6 +101,7 @@ beforeAll(async () => {
   // intermediate frames, fast enough to keep the suite quick.
   mock = createMockComfy({ stepDelayMs: 15, logLevel: 'silent' });
   const mockAddress = await mock.listen(0);
+  mockUrl = mockAddress;
 
   dataDir = mkdtempSync(join(tmpdir(), 'latent-test-'));
 
@@ -3870,6 +3874,82 @@ describe('system prompts', () => {
     const list = await json<SystemPrompt[]>(api('/api/system-prompts'));
     expect(list.some((entry) => entry.name === 'Caption rules')).toBe(false);
   });
+});
+
+/**
+ * The llama-server nodes, pointed at the model server Latent is already using.
+ *
+ * Their address is a widget, so it lives inside the workflow — and a rented box
+ * gets a new one every time it is started. The point of this is that following
+ * it is one edit in one place rather than one per workflow, and that the token
+ * that goes with it never lands anywhere it would be stored.
+ */
+describe('llama-server nodes', () => {
+  it('fills in the active model server, and keeps its token out of the record', async () => {
+    const workflow = await json<WorkflowDetail>(
+      api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Asks a llama-server', graph: withLlamaServer }),
+      }),
+    );
+
+    const created = await json<{ id: string }>(
+      api('/api/connections', {
+        method: 'POST',
+        body: JSON.stringify({
+          kind: 'llama',
+          name: 'Rented model server',
+          url: 'http://127.0.0.1:8189',
+          authMode: 'bearer',
+          secret: 'sk-should-not-be-stored',
+        }),
+      }),
+    );
+    await api(`/api/connections/${created.id}/activate`, { method: 'POST' });
+
+    try {
+      const { generationIds, promptIds } = await json<GenerateResponse>(
+        api('/api/generate', {
+          method: 'POST',
+          body: JSON.stringify({
+            workflowId: workflow.id,
+            values: { '6.text': 'model server check' },
+          }),
+        }),
+      );
+
+      // What ComfyUI actually received, which is the only place this shows.
+      const submitted = await waitFor(async () => {
+        const history = (await (
+          await fetch(`${mockUrl}/history/${promptIds[0]}`)
+        ).json()) as Record<string, { prompt?: [number, string, Record<string, {
+          inputs: Record<string, unknown>;
+        }>] }>;
+        return history[promptIds[0]!]?.prompt?.[2];
+      }, 20_000);
+
+      expect(submitted['20']?.inputs.base_url).toBe('http://127.0.0.1:8189');
+      expect(submitted['20']?.inputs.auth).toBe('bearer');
+      expect(submitted['20']?.inputs.api_key).toBe('sk-should-not-be-stored');
+      // Everything else on the node is left as the workflow had it.
+      expect(submitted['20']?.inputs.timeout).toBe(300);
+
+      /*
+       * And nowhere else. The recorded values are shown in the gallery and kept
+       * as the workflow's last values, so a token in them would be a token in
+       * two places nobody would think to clear.
+       */
+      const record = await json<GenerationRecord>(api(`/api/gallery/${generationIds[0]}`));
+      expect(JSON.stringify(record)).not.toContain('sk-should-not-be-stored');
+
+      const stored = await json<WorkflowDetail>(api(`/api/workflows/${workflow.id}`));
+      expect(JSON.stringify(stored)).not.toContain('sk-should-not-be-stored');
+      // The stored graph still says what it said: substitution is per submit.
+      expect(stored.graph['20']?.inputs.base_url).toBe('http://127.0.0.1:8080');
+    } finally {
+      await api(`/api/connections/${created.id}`, { method: 'DELETE' });
+    }
+  }, 30_000);
 });
 
 /**

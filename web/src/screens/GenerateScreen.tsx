@@ -1,10 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { defaultValues, findFieldByRole, matchSystemPrompt, usesPointLine } from '@latent/shared';
-import type { ParamField, ParamValues, SystemPrompt, WidgetValue } from '@latent/shared';
+import {
+  defaultValues,
+  findFieldByRole,
+  isLlamaServerField,
+  matchSystemPrompt,
+  usesPointLine,
+} from '@latent/shared';
+import type {
+  ConnectionSummary,
+  ParamField,
+  ParamValues,
+  SystemPrompt,
+  WidgetValue,
+} from '@latent/shared';
 
 import {
+  useConnections,
   useDeletePreset,
   useSystemPrompts,
   useEndless,
@@ -73,11 +86,15 @@ function MainField({
 }) {
   const value = values[field.id] ?? field.defaultValue;
   const filled = useFilledFrom(field);
+  const server = useModelServer();
 
   // A field the prompt library owns is shown, not offered: whatever were typed
   // here would be replaced on the way to ComfyUI, which is a worse lie than
   // saying where the text comes from.
   if (filled) return <FilledFromPrompt field={field} prompt={filled} />;
+  if (server && isLlamaServerField(field)) {
+    return <FilledFromServer field={field} server={server} />;
+  }
 
   switch (field.role) {
     case 'prompt':
@@ -942,6 +959,46 @@ function FilledFromPrompt({
   );
 }
 
+/**
+ * A llama-server node's address, which comes from the connection in use.
+ *
+ * The [comfyllama](https://github.com/alexrutz/comfyllama) nodes hold the
+ * address as a widget, so it is stored inside the workflow — and a rented box
+ * gets a new one every time it is started. The chat already knows where the
+ * model server is; putting that address in on the way out means one place to
+ * change rather than one per workflow.
+ */
+function FilledFromServer({
+  field,
+  server,
+  showLabel = true,
+}: {
+  field: ParamField;
+  server: ConnectionSummary;
+  /** Off under Advanced, where the list already prints the field's name. */
+  showLabel?: boolean;
+}) {
+  return (
+    <div className="rounded-xl border border-line bg-surface-2/40 px-3 py-2">
+      <p className="text-[11px] text-muted">
+        {showLabel && <span className="text-body">{field.label} — </span>}
+        from the model server “{server.name}”
+      </p>
+      <p className="mt-1 truncate text-[11px] text-muted">{server.url}</p>
+    </div>
+  );
+}
+
+/** The model server in use, whose address those nodes are given. */
+function useModelServer(): ConnectionSummary | null {
+  const connections = useConnections();
+  return (
+    (connections.data ?? []).find(
+      (connection) => connection.kind === 'llama' && connection.isActive,
+    ) ?? null
+  );
+}
+
 /** The saved prompt that will fill this field, if one is named after it. */
 function useFilledFrom(field: ParamField): SystemPrompt | null {
   const prompts = useSystemPrompts();
@@ -959,8 +1016,14 @@ function AdvancedRow({
   onChange: (value: WidgetValue) => void;
 }) {
   const filled = useFilledFrom(field);
+  const server = useModelServer();
   if (filled) {
     return <FilledFromPrompt field={field} prompt={filled} showLabel={!isWideControl(field)} />;
+  }
+  if (server && isLlamaServerField(field)) {
+    return (
+      <FilledFromServer field={field} server={server} showLabel={!isWideControl(field)} />
+    );
   }
 
   if (isWideControl(field)) {

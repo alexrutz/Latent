@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 
 import {
   appendAlwaysBlocks,
+  applyModelServer,
   applyOverrides,
   applyParams,
   applySystemPrompts,
@@ -10,7 +11,12 @@ import {
   drawRandomParams,
   pickRandomBlocks,
 } from '@latent/shared';
-import type { GenerateRequest, GenerateResponse, ParamValues } from '@latent/shared';
+import type {
+  GenerateRequest,
+  GenerateResponse,
+  ModelServerTarget,
+  ParamValues,
+} from '@latent/shared';
 
 import { ComfyError } from '../comfy/client.js';
 import { deriveTitle, type AppContext } from './context.js';
@@ -133,6 +139,28 @@ async function runBatch(
    */
   const systemPrompts = ctx.store.listSystemPrompts();
 
+  /*
+   * And the model server the chat is talking to, for any llama-server node.
+   *
+   * Those nodes carry the address as a widget, so it is baked into the
+   * workflow — fine until the server is a rented box, whose address changes
+   * every time one is started. Following that by hand means opening every
+   * workflow that mentions it and editing the same field again, when Latent
+   * already knows where the server is: the chat is talking to it.
+   *
+   * Applied to the copy being submitted rather than to the stored graph, which
+   * also keeps the token out of a file that holds widget values in plain text.
+   */
+  const active = ctx.store.getActiveConnection('llama');
+  const modelServer: ModelServerTarget | null = active
+    ? {
+        url: active.url,
+        authMode: active.authMode,
+        username: active.username,
+        secret: active.secret,
+      }
+    : null;
+
   for (let i = 0; i < batchCount; i += 1) {
     let itemValues = applySystemPrompts(
       schema,
@@ -158,13 +186,20 @@ async function runBatch(
       lockedSeedFields: body.lockedSeedFields ?? [],
     });
 
+    /*
+     * The model server goes into the graph, not into the values: `submitted`
+     * is recorded in the gallery and kept as the workflow's last values, and a
+     * token has no business in either.
+     */
+    const graph = applyModelServer(workflow, modelServer);
+
     // Built per item, not once: each item in a batch gets its own seed, and
     // the seed is often the only thing distinguishing two queued jobs.
     const submitted = { ...itemValues, ...seeds };
 
     try {
       const result = await ctx.orchestrator.submit({
-        graph: workflow,
+        graph,
         workflowId: detail.id,
         workflowName: detail.name,
         title,

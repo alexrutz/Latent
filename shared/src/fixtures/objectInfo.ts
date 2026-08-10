@@ -212,4 +212,39 @@ export const objectInfoFixture: ObjectInfo = {
     output: ['CONDITIONING'],
     input: { required: { conditioning_1: ['CONDITIONING'], conditioning_2: ['CONDITIONING'] } },
   },
+  /**
+   * The comfyllama node that points the rest at a `llama-server`.
+   *
+   * Here because Latent fills its address in from the connection in use, which
+   * is only testable against a node that declares the widgets it fills.
+   */
+  LlamaServerConnect: {
+    display_name: 'Connect to llama-server',
+    output: ['LLAMA_SERVER', 'STRING'],
+    input: {
+      required: {
+        base_url: ['STRING', { default: 'http://127.0.0.1:8080', multiline: false }],
+        timeout: ['INT', { default: 300, min: 1, max: 3600 }],
+        check_connection: ['BOOLEAN', { default: true }],
+      },
+      optional: {
+        model: ['STRING', { default: 'auto' }],
+        auth: [['auto', 'bearer', 'basic', 'none'], { default: 'auto' }],
+        api_key: ['STRING', { default: '' }],
+        username: ['STRING', { default: '' }],
+        password: ['STRING', { default: '' }],
+      },
+    },
+  },
+  LlamaServerChat: {
+    display_name: 'Chat (llama-server)',
+    output: ['STRING', 'STRING', 'LLAMA_MESSAGES'],
+    input: {
+      required: {
+        server: ['LLAMA_SERVER'],
+        system: ['STRING', { default: 'You are a helpful assistant.', multiline: true }],
+        prompt: ['STRING', { default: '', multiline: true, dynamicPrompts: true }],
+      },
+    },
+  },
 };

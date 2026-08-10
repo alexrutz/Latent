@@ -241,6 +241,40 @@ export const sd15WithLoraInput = {
   },
 };
 
+/**
+ * A workflow that asks a `llama-server` for something on the way through.
+ *
+ * The [comfyllama](https://github.com/alexrutz/comfyllama) nodes hold the
+ * server's address as a widget, which is what Latent fills in from the
+ * connection it is already using for the chat.
+ */
+export const withLlamaServer: ApiWorkflow = {
+  ...sd15Txt2Img,
+  '20': {
+    class_type: 'LlamaServerConnect',
+    inputs: {
+      base_url: 'http://127.0.0.1:8080',
+      timeout: 300,
+      check_connection: true,
+      model: 'auto',
+      auth: 'auto',
+      api_key: '',
+      username: '',
+      password: '',
+    },
+    _meta: { title: 'Connect to llama-server' },
+  },
+  '21': {
+    class_type: 'LlamaServerChat',
+    inputs: {
+      server: ['20', 0],
+      system: 'Rewrite the prompt.',
+      prompt: 'a lighthouse',
+    },
+    _meta: { title: 'Rewrite' },
+  },
+};
+
 export const workflowFixtures = {
   sd15Txt2Img,
   sdxlBaseRefiner,
@@ -249,6 +283,7 @@ export const workflowFixtures = {
   combinedConditioning,
   unknownCustomNodes,
   withTextPreview,
+  withLlamaServer,
 };
 
 /**
