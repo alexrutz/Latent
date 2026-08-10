@@ -16,6 +16,8 @@ import {
   LlamaError,
   looksLikeAQuestionWithOptions,
 } from '../chat/llama.js';
+import type { ConnectionConfig } from '../comfy/connection.js';
+import { toConfig } from './connections.js';
 import type { AppContext } from './context.js';
 
 /**
@@ -32,25 +34,61 @@ import type { AppContext } from './context.js';
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENTS = 4;
 
-export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void {
-  const client = () => new LlamaClient(ctx.store.getSettings().chat);
+/** The model server in use, or nothing when none has been added yet. */
+function llamaConnection(ctx: AppContext): ConnectionConfig | null {
+  const active = ctx.store.getActiveConnection('llama');
+  return active ? toConfig(active) : null;
+}
 
+/**
+ * The instructions in force, resolved from the collection.
+ *
+ * By id, and empty when that id no longer exists: deleting the prompt the chat
+ * was using falls back to Latent's own wording rather than sending an empty
+ * system message, which some templates take as an instruction to say nothing.
+ */
+function systemPrompt(ctx: AppContext): string {
+  const id = ctx.store.getSettings().chat.systemPromptId;
+  if (!id) return '';
+  return ctx.store.getSystemPrompt(id)?.text ?? '';
+}
+
+/** A client for the model server in use, or nothing when none is configured. */
+function llamaClient(ctx: AppContext): LlamaClient | null {
+  const connection = llamaConnection(ctx);
+  if (!connection) return null;
+  return new LlamaClient(connection, ctx.store.getSettings().chat, systemPrompt(ctx));
+}
+
+export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void {
   /** Whether the model server is there, and what it has loaded. */
   app.get('/api/chat/status', async () => {
-    const settings = ctx.store.getSettings().chat;
+    const connection = llamaConnection(ctx);
+    if (!connection) {
+      return {
+        ok: false,
+        baseUrl: '',
+        models: [],
+        message: 'No model server chosen yet. Add one under Connections.',
+      };
+    }
+
+    const client = new LlamaClient(connection, ctx.store.getSettings().chat);
     try {
-      const models = await client().models();
-      return { ok: true, baseUrl: settings.baseUrl, models };
+      const models = await client.models();
+      return { ok: true, baseUrl: connection.url, models };
     } catch (error) {
       return {
         ok: false,
-        baseUrl: settings.baseUrl,
+        baseUrl: connection.url,
         models: [],
         message:
           error instanceof Error
             ? error.message
-            : `No answer from the model server at ${settings.baseUrl}.`,
+            : `No answer from the model server at ${connection.url}.`,
       };
+    } finally {
+      await client.close();
     }
   });
 
@@ -339,11 +377,24 @@ async function streamReply(
   };
   let thinking = '';
 
+  const client = llamaClient(ctx);
+  if (!client) {
+    // Inside the stream rather than as a status code: the chat screen already
+    // knows how to show an error frame, and a 4xx here would have to be
+    // translated separately at every call site.
+    send({
+      type: 'error',
+      message: 'No model server chosen yet. Add one under Connections in Settings.',
+    });
+    reply.raw.end();
+    return;
+  }
+
   try {
-    for await (const event of new LlamaClient(ctx.store.getSettings().chat).stream(
-      chat.messages,
-      { signal: controller.signal, ...(force ? { force } : {}) },
-    )) {
+    for await (const event of client.stream(chat.messages, {
+      signal: controller.signal,
+      ...(force ? { force } : {}),
+    })) {
       if (event.type === 'content') message.content += event.text;
       if (event.type === 'thinking') thinking += event.text;
       if (event.type === 'tool') message.toolCall = event.call;
@@ -410,6 +461,7 @@ async function streamReply(
     app.log.warn({ err: error }, 'Chat stream failed');
     send({ type: 'error', message: text });
   } finally {
+    await client.close();
     reply.raw.end();
   }
 }
@@ -431,6 +483,9 @@ async function runTurn(
   const chat = ctx.store.getChat(chatId);
   if (!chat) return null;
 
+  const client = llamaClient(ctx);
+  if (!client) return null;
+
   const message: ChatMessage = {
     id: randomUUID(),
     role: 'assistant',
@@ -438,15 +493,16 @@ async function runTurn(
     createdAt: Date.now(),
   };
 
-  for await (const event of new LlamaClient(ctx.store.getSettings().chat).stream(chat.messages, {
-    signal,
-    force,
-  })) {
-    if (event.type === 'content') message.content += event.text;
-    if (event.type === 'tool') message.toolCall = event.call;
-    // The reasoning of a forced turn is not worth showing: it is the model
-    // restating what it already said, in a box the user has to open.
-    if (event.type !== 'thinking') send(event);
+  try {
+    for await (const event of client.stream(chat.messages, { signal, force })) {
+      if (event.type === 'content') message.content += event.text;
+      if (event.type === 'tool') message.toolCall = event.call;
+      // The reasoning of a forced turn is not worth showing: it is the model
+      // restating what it already said, in a box the user has to open.
+      if (event.type !== 'thinking') send(event);
+    }
+  } finally {
+    await client.close();
   }
 
   if (!message.toolCall) return null;

@@ -19,6 +19,7 @@ import type {
   PromptBlockInput,
   RandomPromptConfig,
   StudyRating,
+  SystemPromptInput,
   TileSpan,
   UpdateStudyRequest,
 } from '@latent/shared';
@@ -35,6 +36,7 @@ export const queryKeys = {
   connections: ['connections'] as const,
   favorites: ['favorites'] as const,
   promptBlocks: ['prompt-blocks'] as const,
+  systemPrompts: ['system-prompts'] as const,
   promptMode: ['prompt-mode'] as const,
   variationPresets: ['variation-presets'] as const,
   importScan: ['import-scan'] as const,
@@ -267,6 +269,9 @@ function useConnectionMutation<TArgs>(fn: (args: TArgs) => Promise<unknown>) {
       // Model lists and every workflow's option set belong to the old endpoint.
       void client.invalidateQueries({ queryKey: ['workflow'] });
       void client.invalidateQueries({ queryKey: ['loras'] });
+      // Including the model server's: the chat's reachability and its list of
+      // models are answers about whichever connection is now in use.
+      void client.invalidateQueries({ queryKey: ['chat', 'status'] });
     },
   });
 }
@@ -541,6 +546,37 @@ export const useDeletePromptBlock = () =>
 
 export const useReorderPromptBlocks = () =>
   usePromptBlockMutation((ids: string[]) => api.reorderPromptBlocks(ids));
+
+/* ------------------------------------------------------------------ */
+/* System prompts                                                      */
+/* ------------------------------------------------------------------ */
+
+export function useSystemPrompts() {
+  return useQuery({ queryKey: queryKeys.systemPrompts, queryFn: api.systemPrompts });
+}
+
+function useSystemPromptMutation<TArgs>(fn: (args: TArgs) => Promise<unknown>) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.systemPrompts });
+      // Deleting the one the chat was using clears that setting server-side.
+      void client.invalidateQueries({ queryKey: queryKeys.settings });
+    },
+  });
+}
+
+export const useCreateSystemPrompt = () =>
+  useSystemPromptMutation((input: SystemPromptInput) => api.createSystemPrompt(input));
+
+export const useUpdateSystemPrompt = () =>
+  useSystemPromptMutation(({ id, input }: { id: string; input: Partial<SystemPromptInput> }) =>
+    api.updateSystemPrompt(id, input),
+  );
+
+export const useDeleteSystemPrompt = () =>
+  useSystemPromptMutation((id: string) => api.deleteSystemPrompt(id));
 
 /* ------------------------------------------------------------------ */
 /* Random prompt mode                                                  */

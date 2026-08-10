@@ -26,6 +26,8 @@ import type {
   PromptBlockInput,
   RandomPromptConfig,
   RandomPromptRoll,
+  SystemPrompt,
+  SystemPromptInput,
   TileSpan,
   VariationPreset,
   ConnectionInput,
@@ -297,6 +299,24 @@ export const api = {
 
   deletePromptBlock: (id: string) =>
     request<void>(`/api/prompt-blocks/${id}`, { method: 'DELETE' }),
+
+  /* ---------------------------------------------------------------- */
+  /* System prompts                                                    */
+  /* ---------------------------------------------------------------- */
+
+  systemPrompts: () => request<SystemPrompt[]>('/api/system-prompts'),
+
+  createSystemPrompt: (input: SystemPromptInput) =>
+    request<SystemPrompt>('/api/system-prompts', { method: 'POST', body: JSON.stringify(input) }),
+
+  updateSystemPrompt: (id: string, input: Partial<SystemPromptInput>) =>
+    request<SystemPrompt>(`/api/system-prompts/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }),
+
+  deleteSystemPrompt: (id: string) =>
+    request<void>(`/api/system-prompts/${id}`, { method: 'DELETE' }),
 
   reorderPromptBlocks: (ids: string[]) =>
     request<PromptBlock[]>('/api/prompt-blocks/reorder', {

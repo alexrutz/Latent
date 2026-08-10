@@ -7,6 +7,7 @@ import type {
   FieldOverrides,
   ParamField,
   QueuePolicy,
+  SystemPrompt,
   ToolEagerness,
   WidgetValue,
   WorkflowDetail,
@@ -24,9 +25,13 @@ import {
   useImportFiles,
   useImportWorkflow,
   useRescanWorkflow,
+  useCreateSystemPrompt,
+  useDeleteSystemPrompt,
   useSaveLayout,
   useScanWorkflows,
   useSettings,
+  useSystemPrompts,
+  useUpdateSystemPrompt,
   useStatus,
   useUpdateSettings,
   useUpdateWorkflow,
@@ -297,6 +302,8 @@ export function SettingsScreen() {
           </Card>
         </section>
       )}
+
+      <SystemPromptsSection />
 
       <ChatSection />
 
@@ -1011,21 +1018,227 @@ function PointNumber({
  * Read-only — Latent never writes here.
  */
 /**
- * How the chat module reaches the local model.
+ * The instructions, collected and named.
  *
- * A separate address from ComfyUI's on purpose: the two are different servers
- * doing different work, and on the usual setup only one of them is on a rented
- * box. `llama-server` listens on 8080 unless told otherwise.
+ * Workflows grow instructions — a paragraph telling a captioner how to describe
+ * a picture, the rules an Ollama node rewrites a prompt by — and inside the
+ * graph they are invisible from here and can only be changed by opening
+ * ComfyUI, editing the node and exporting the workflow again. Named and
+ * collected, one wording reaches every workflow with a field of that name, and
+ * editing it is three taps. The chat's own instructions are simply one of them.
+ */
+function SystemPromptsSection() {
+  const prompts = useSystemPrompts();
+  const create = useCreateSystemPrompt();
+  const settings = useSettings();
+  const [editing, setEditing] = useState<SystemPrompt | 'new' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const chosen = settings.data?.chat.systemPromptId ?? null;
+
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">System prompts</h2>
+        <Button variant="secondary" size="sm" onClick={() => setEditing('new')}>
+          Add
+        </Button>
+      </div>
+
+      <Card className="space-y-2">
+        <p className="text-xs text-muted">
+          Named blocks of instructions, kept out of the workflows that use them. A text field in a
+          workflow is filled from the prompt of the same name — matched against the field’s label,
+          its node’s title, or its raw input name — so the wording lives here rather than buried in
+          a graph. The chat picks one of these too.
+        </p>
+
+        <ErrorNote>{error}</ErrorNote>
+
+        {(prompts.data?.length ?? 0) === 0 ? (
+          <p className="text-xs text-muted">
+            None yet. Name one after the field it belongs in — “Caption”, “Style guide” — and it is
+            put there every time that workflow runs.
+          </p>
+        ) : (
+          <ul className="space-y-1">
+            {prompts.data?.map((prompt) => (
+              <li key={prompt.id}>
+                <button
+                  type="button"
+                  onClick={() => setEditing(prompt)}
+                  className="w-full rounded-lg px-2 py-2 text-left active:bg-surface-2"
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-sm">{prompt.name}</span>
+                    {prompt.id === chosen && (
+                      <span className="shrink-0 rounded-full bg-accent/20 px-2 py-0.5 text-[10px] text-accent">
+                        chat
+                      </span>
+                    )}
+                  </span>
+                  <span className="mt-0.5 block truncate text-[11px] text-muted">
+                    {prompt.text.trim() === ''
+                      ? 'Empty — the workflow keeps its own text'
+                      : prompt.text.replace(/\s+/g, ' ')}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      {editing && (
+        <SystemPromptSheet
+          prompt={editing === 'new' ? null : editing}
+          onClose={() => setEditing(null)}
+          onCreate={async (input) => {
+            setError(null);
+            try {
+              await create.mutateAsync(input);
+              setEditing(null);
+            } catch (cause) {
+              setError(cause instanceof Error ? cause.message : 'Could not save that prompt');
+            }
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+/**
+ * Writing one, with Latent's own chat instructions available as a starting
+ * point — they are the longest worked example of what one of these looks like.
+ */
+function SystemPromptSheet({
+  prompt,
+  onClose,
+  onCreate,
+}: {
+  prompt: SystemPrompt | null;
+  onClose: () => void;
+  onCreate: (input: { name: string; text: string }) => Promise<void>;
+}) {
+  const update = useUpdateSystemPrompt();
+  const remove = useDeleteSystemPrompt();
+
+  const [name, setName] = useState(prompt?.name ?? '');
+  const [text, setText] = useState(prompt?.text ?? '');
+  const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setError(null);
+    setSaving(true);
+    try {
+      if (prompt) {
+        await update.mutateAsync({ id: prompt.id, input: { name: name.trim(), text } });
+        onClose();
+      } else {
+        await onCreate({ name: name.trim(), text });
+      }
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not save that prompt');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Sheet open onClose={onClose} title={prompt ? prompt.name : 'New system prompt'} full>
+      <div className="space-y-4">
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-medium tracking-wide text-muted uppercase">
+            Name
+          </span>
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Caption"
+            aria-label="Prompt name"
+            className="w-full rounded-xl border border-line bg-surface px-4 py-3 focus:border-accent focus:outline-none"
+          />
+          <p className="mt-1.5 text-xs text-muted">
+            This is what matches it to a workflow: any text input called the same thing is filled
+            from here when the job is submitted.
+          </p>
+        </label>
+
+        <label className="block">
+          <span className="mb-1.5 flex items-baseline justify-between gap-2">
+            <span className="text-xs font-medium tracking-wide text-muted uppercase">Text</span>
+            <button
+              type="button"
+              onClick={async () => {
+                const { prompt: own } = await api.chatDefaultPrompt();
+                setText(own);
+              }}
+              className="text-[11px] text-accent"
+            >
+              Start from Latent’s own
+            </button>
+          </span>
+          <textarea
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            rows={14}
+            aria-label="Prompt text"
+            className="w-full resize-none rounded-xl border border-line bg-surface px-3 py-2 font-mono text-xs leading-relaxed focus:border-accent focus:outline-none"
+          />
+        </label>
+
+        <ErrorNote>{error}</ErrorNote>
+
+        <div className="flex gap-2">
+          <Button
+            variant="primary"
+            className="flex-1"
+            busy={saving}
+            disabled={name.trim() === ''}
+            onClick={save}
+          >
+            Save
+          </Button>
+          {prompt &&
+            (confirming ? (
+              <Button
+                variant="danger"
+                busy={remove.isPending}
+                onClick={async () => {
+                  await remove.mutateAsync(prompt.id);
+                  onClose();
+                }}
+              >
+                Really delete
+              </Button>
+            ) : (
+              <Button variant="ghost" onClick={() => setConfirming(true)}>
+                Delete
+              </Button>
+            ))}
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+/**
+ * What the chat says to the model, and how eagerly it reaches for a tool.
+ *
+ * Where to *find* the model is a connection now, set up in the same list as
+ * ComfyUI: on the usual setup both are on the same rented box, and asking the
+ * same five questions in two different places helped nobody.
  */
 function ChatSection() {
   const settings = useSettings();
   const updateSettings = useUpdateSettings();
+  const prompts = useSystemPrompts();
   const chat = settings.data?.chat;
 
-  const [baseUrl, setBaseUrl] = useState('');
-  const [systemPrompt, setSystemPrompt] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  const [username, setUsername] = useState('');
   const [probe, setProbe] = useState<{ ok: boolean; models: string[]; message?: string } | null>(
     null,
   );
@@ -1033,28 +1246,8 @@ function ChatSection() {
   const status = useChatStatus();
   /** The freshest list we have: what Check just returned, else what was fetched. */
   const models = probe?.models ?? status.data?.models ?? [];
-
-  // Seeded once the settings arrive, and not overwritten while being typed in.
-  useEffect(() => {
-    if (!chat) return;
-    setBaseUrl((current) => (current === '' ? chat.baseUrl : current));
-    setSystemPrompt((current) => (current === '' ? chat.systemPrompt : current));
-    setApiKey((current) => (current === '' ? (chat.apiKey ?? '') : current));
-    setUsername((current) => (current === '' ? (chat.username ?? '') : current));
-  }, [chat]);
-
-  /**
-   * Fill the box with Latent's own wording, to read or to edit.
-   *
-   * Fetched rather than duplicated here: there is one wording, it lives beside
-   * the tools it describes, and a copy in the browser would be wrong the first
-   * time either changed.
-   */
-  const loadDefault = async () => {
-    const { prompt } = await api.chatDefaultPrompt();
-    setSystemPrompt(prompt);
-    updateSettings.mutate({ chat: { ...chat!, systemPrompt: prompt } });
-  };
+  const reachable = probe?.ok ?? status.data?.ok ?? false;
+  const message = probe?.message ?? status.data?.message;
 
   if (!chat) return null;
 
@@ -1065,28 +1258,23 @@ function ChatSection() {
     <section className="space-y-2">
       <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Chat</h2>
       <Card className="space-y-3">
-        <p className="text-xs text-muted">
-          A local model to talk to about what to make. Anything offering llama.cpp’s
-          OpenAI-compatible routes works; the tools need a model that can call them, and images
-          need a multimodal one.
-        </p>
-
-        <div className="flex gap-2">
-          <input
-            value={baseUrl}
-            onChange={(event) => setBaseUrl(event.target.value)}
-            placeholder="http://127.0.0.1:8080"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-            aria-label="Model server"
-            className="min-w-0 flex-1 rounded-xl border border-line bg-surface px-4 py-3 text-sm focus:border-accent focus:outline-none"
-          />
+        {/*
+          No address here any more: the model server is a connection like
+          ComfyUI's, set up in one list above. What is left is what to say to
+          it, which is what this section was always actually about.
+        */}
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm">{reachable ? 'Model server reachable' : 'Not reachable'}</p>
+            <p className="truncate text-[11px] text-muted">
+              {status.data?.baseUrl || 'No model server chosen — add one under Connections.'}
+            </p>
+          </div>
           <Button
             variant="secondary"
+            size="sm"
             busy={checking}
             onClick={async () => {
-              patch({ baseUrl: baseUrl.trim() });
               setChecking(true);
               try {
                 setProbe(await api.chatStatus());
@@ -1099,87 +1287,7 @@ function ChatSection() {
           </Button>
         </div>
 
-        {probe && !probe.ok && <p className="text-xs text-warn">{probe.message}</p>}
-
-        {/*
-          The same three modes ComfyUI's connections offer.
-
-          It is the same proxy in front of the same rented box: vast.ai accepts
-          a bearer token or `vastai:<token>` as basic auth, and a certificate
-          nothing signed. Offering only one of those means the arrangement you
-          happen to have is the one that does not work.
-        */}
-        <div className="space-y-2">
-          <div className="flex gap-1">
-            {(
-              [
-                { value: 'none', label: 'No auth' },
-                { value: 'bearer', label: 'Bearer token' },
-                { value: 'basic', label: 'Username' },
-              ] as const
-            ).map((option) => {
-              const active = (chat.authMode ?? 'none') === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() => patch({ authMode: option.value })}
-                  className={cn(
-                    'flex-1 rounded-lg px-2 py-1.5 text-xs',
-                    active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
-                  )}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-
-          {(chat.authMode ?? 'none') !== 'none' && (
-            <div className="space-y-2">
-              {chat.authMode === 'basic' && (
-                <input
-                  value={username}
-                  onChange={(event) => setUsername(event.target.value)}
-                  onBlur={() => patch({ username: username.trim() })}
-                  placeholder="Username (vast.ai uses “vastai”)"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  aria-label="Model server username"
-                  className="w-full rounded-xl border border-line bg-surface px-4 py-3 text-sm focus:border-accent focus:outline-none"
-                />
-              )}
-              <input
-                value={apiKey}
-                onChange={(event) => setApiKey(event.target.value)}
-                onBlur={() => patch({ apiKey: apiKey.trim() })}
-                type="password"
-                placeholder={chat.authMode === 'basic' ? 'Password' : 'Token'}
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-                aria-label="Model server token"
-                className="w-full rounded-xl border border-line bg-surface px-4 py-3 text-sm focus:border-accent focus:outline-none"
-              />
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm">Allow a self-signed certificate</p>
-                  <p className="text-[11px] text-muted">
-                    Only for a box you rented. It turns off the check that a certificate is
-                    genuine, which on a hostile network is exactly the check that matters.
-                  </p>
-                </div>
-                <Toggle
-                  checked={chat.allowSelfSigned ?? false}
-                  onChange={(allowSelfSigned) => patch({ allowSelfSigned })}
-                  label="Allow a self-signed certificate"
-                />
-              </div>
-            </div>
-          )}
-        </div>
+        {!reachable && message && <p className="text-xs text-warn">{message}</p>}
 
         {/*
           Which model, when the server has more than one.
@@ -1247,68 +1355,66 @@ function ChatSection() {
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-2">
-          <label className="space-y-1">
-            <span className="block text-[11px] text-muted">Temperature</span>
-            <NumericInput
-              value={chat.temperature}
-              onChange={(temperature) => patch({ temperature })}
-              min={0}
-              max={2}
-              step={0.05}
-              aria-label="Temperature"
-              className="w-full rounded-lg border border-line bg-surface px-2 py-1.5 text-sm"
-            />
-          </label>
-          <label className="space-y-1">
-            <span className="block text-[11px] text-muted">Reply limit (0 = server’s)</span>
-            <NumericInput
-              value={chat.maxTokens}
-              onChange={(maxTokens) => patch({ maxTokens })}
-              integer
-              min={0}
-              max={32768}
-              aria-label="Reply limit"
-              className="w-full rounded-lg border border-line bg-surface px-2 py-1.5 text-sm"
-            />
-          </label>
-        </div>
+        <label className="space-y-1">
+          <span className="block text-[11px] text-muted">Reply limit (0 = server’s)</span>
+          <NumericInput
+            value={chat.maxTokens}
+            onChange={(maxTokens) => patch({ maxTokens })}
+            integer
+            min={0}
+            max={32768}
+            aria-label="Reply limit"
+            className="w-full rounded-lg border border-line bg-surface px-2 py-1.5 text-sm"
+          />
+        </label>
+        <p className="text-[11px] text-muted">
+          Sampling — temperature and the rest — is the model server’s own, set by the flags it was
+          started with. A model is launched with the settings it wants, and overriding them from
+          here was a worse answer that nobody could see being applied.
+        </p>
 
-        <div className="space-y-1">
-          <div className="flex items-baseline justify-between gap-2">
-            <span className="text-[11px] text-muted">
-              Instructions {systemPrompt.trim() === '' && '(Latent’s own)'}
-            </span>
+        {/*
+          Which of the saved prompts the chat is given, rather than a box of its
+          own. The instructions are a system prompt like any other, and having a
+          second copy here meant the one place you edited them was not the place
+          they were listed.
+        */}
+        <div className="space-y-1.5 border-t border-line pt-3">
+          <p className="text-sm">Instructions</p>
+          <div className="flex flex-wrap gap-1">
             <button
               type="button"
-              onClick={() => void loadDefault()}
-              className="text-[11px] text-accent"
+              aria-pressed={chat.systemPromptId === null}
+              onClick={() => patch({ systemPromptId: null })}
+              className={cn(
+                'rounded-lg px-2.5 py-1.5 text-xs',
+                chat.systemPromptId === null ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+              )}
             >
-              {systemPrompt.trim() === '' ? 'Show Latent’s own' : 'Start from Latent’s own'}
+              Latent’s own
             </button>
+            {(prompts.data ?? []).map((prompt) => (
+              <button
+                key={prompt.id}
+                type="button"
+                aria-pressed={chat.systemPromptId === prompt.id}
+                onClick={() => patch({ systemPromptId: prompt.id })}
+                className={cn(
+                  'max-w-full truncate rounded-lg px-2.5 py-1.5 text-xs',
+                  chat.systemPromptId === prompt.id
+                    ? 'bg-accent text-white'
+                    : 'bg-surface-2 text-muted',
+                )}
+              >
+                {prompt.name}
+              </button>
+            ))}
           </div>
-          <textarea
-            value={systemPrompt}
-            onChange={(event) => setSystemPrompt(event.target.value)}
-            onBlur={() => patch({ systemPrompt })}
-            rows={6}
-            aria-label="Instructions"
-            className="w-full resize-none rounded-xl border border-line bg-surface px-3 py-2 font-mono text-xs leading-relaxed focus:border-accent focus:outline-none"
-          />
           <p className="text-[11px] text-muted">
             Latent’s own describes the tools and how modern image models read a prompt — plain
-            prose rather than a pile of tags. Editing it replaces all of that;{' '}
-            <button
-              type="button"
-              onClick={() => {
-                setSystemPrompt('');
-                patch({ systemPrompt: '' });
-              }}
-              className="text-accent"
-            >
-              empty it
-            </button>{' '}
-            to go back. When each tool is reached for is set below and applies either way.
+            prose rather than a pile of tags. Replacing it replaces all of that. Write your own
+            under <strong className="text-body">System prompts</strong> above. When each tool is
+            reached for is set below and applies either way.
           </p>
         </div>
       </Card>

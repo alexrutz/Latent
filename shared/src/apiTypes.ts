@@ -305,8 +305,20 @@ export type ServerEvent =
  */
 export type ConnectionAuthMode = 'none' | 'bearer' | 'basic';
 
+/**
+ * Which server a connection points at.
+ *
+ * Two kinds, one list. They are different servers doing different work, but
+ * everything *about reaching them* is identical — an address that changes every
+ * time a box is rented, a token, often a self-signed certificate — so keeping
+ * them apart meant two screens asking the same five questions in two different
+ * ways. One kind is active at a time per kind.
+ */
+export type ConnectionKind = 'comfy' | 'llama';
+
 export interface ConnectionSummary {
   id: string;
+  kind: ConnectionKind;
   name: string;
   url: string;
   authMode: ConnectionAuthMode;
@@ -315,6 +327,7 @@ export interface ConnectionSummary {
   allowSelfSigned: boolean;
   /** The secret itself is never sent to the client — only whether one is stored. */
   hasSecret: boolean;
+  /** In use for its own kind. A ComfyUI and a model server are both active. */
   isActive: boolean;
   createdAt: number;
 }
@@ -322,6 +335,8 @@ export interface ConnectionSummary {
 export interface ConnectionInput {
   name: string;
   url: string;
+  /** Defaults to `comfy`, which is what every connection was before this existed. */
+  kind?: ConnectionKind;
   authMode?: ConnectionAuthMode;
   username?: string | null;
   /** Omit to keep the stored secret unchanged; empty string clears it. */
@@ -341,6 +356,8 @@ export interface ConnectionTestResult {
   /** A sentence the user can act on, not a stack trace. */
   message: string;
   comfyVersion?: string | null;
+  /** What a model server has loaded, when that is what answered. */
+  models?: string[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -453,6 +470,42 @@ export interface PromptBlockInput {
   name: string;
   text: string;
   category?: string;
+  position?: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* System prompts                                                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A named block of instructions, kept outside the thing that uses it.
+ *
+ * Workflows grow instructions: a captioner node with a paragraph telling it how
+ * to describe a picture, an Ollama node with the rules for rewriting a prompt.
+ * Buried in the graph they are invisible, unversioned and impossible to reuse —
+ * changing the wording means opening ComfyUI, finding the node and re-exporting
+ * the workflow. Collected here they are edited in one place and shared: any text
+ * input whose name matches this one's is filled from it at submit time, and the
+ * chat's own instructions are simply another entry in the list.
+ */
+export interface SystemPrompt {
+  id: string;
+  /**
+   * The name, and the key that matches it to a workflow's field.
+   *
+   * Matched case-insensitively against a field's label, its node's title and
+   * its raw input name, in that order.
+   */
+  name: string;
+  text: string;
+  position: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SystemPromptInput {
+  name: string;
+  text: string;
   position?: number;
 }
 
@@ -808,26 +861,8 @@ export interface EndlessState {
  * of the app can use.
  */
 export interface ChatSettings {
-  /** Where llama.cpp is listening. Its OpenAI-compatible routes hang off this. */
-  baseUrl: string;
   /** Empty means "whatever the server has loaded", which is the usual case. */
   model: string;
-  /**
-   * How the model server is authenticated, the same three ways ComfyUI is.
-   *
-   * A rented box puts the model behind the same proxy the GPU is behind, and
-   * that proxy wants either a bearer token or `user:token` basic auth — vast.ai
-   * accepts both. Anything less than the full choice means the one arrangement
-   * it does not cover is the one you have.
-   */
-  authMode: ConnectionAuthMode;
-  /** For basic auth. vast.ai wants `vastai` here. */
-  username: string;
-  /** The token or password, whichever mode is in use. */
-  apiKey: string;
-  /** Accept a certificate nothing signed. Only ever for a box you rented. */
-  allowSelfSigned: boolean;
-  temperature: number;
   /** Ceiling on one reply. 0 leaves it to the server. */
   maxTokens: number;
   /**
@@ -838,8 +873,16 @@ export interface ChatSettings {
    * about it first is measurably better at both.
    */
   thinking: boolean;
-  /** Prepended to every conversation. Empty uses Latent's own. */
-  systemPrompt: string;
+  /**
+   * Which of the saved system prompts is prepended to every conversation.
+   *
+   * An id into the shared collection rather than a block of text of its own:
+   * the chat's instructions are a system prompt like any other, and keeping a
+   * second copy here meant the one place they were edited was not the place
+   * they were listed. `null` — and an id that no longer exists — uses Latent's
+   * own wording.
+   */
+  systemPromptId: string | null;
   /** How readily each tool is reached for. */
   tools: ChatToolSettings;
   /** What a picture generated from the chat is used with. */

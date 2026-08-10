@@ -1,10 +1,12 @@
 import type {
   AppSettings,
   ConnectionAuthMode,
+  ConnectionKind,
   FieldOverrides,
   ParamValues,
   PromptBlock,
   RandomPromptConfig,
+  SystemPromptInput,
 } from '@latent/shared';
 
 /** Everything one workflow's form was arranged into. */
@@ -28,6 +30,8 @@ export interface UiState {
   savedAt: number;
   settings: AppSettings;
   connections: {
+    /** Absent in a file written before model servers lived in this list. */
+    kind?: ConnectionKind;
     name: string;
     url: string;
     authMode: ConnectionAuthMode;
@@ -36,6 +40,14 @@ export interface UiState {
     allowSelfSigned: boolean;
     active: boolean;
   }[];
+  /**
+   * The named instructions, which are worth more than the workflows using them.
+   *
+   * A paragraph telling a captioner how to describe a picture is written once
+   * and refined for months; losing it with the database would be losing the
+   * work, not the wiring.
+   */
+  systemPrompts?: SystemPromptInput[];
   variation: {
     config: RandomPromptConfig;
     presets: { name: string; config: RandomPromptConfig }[];

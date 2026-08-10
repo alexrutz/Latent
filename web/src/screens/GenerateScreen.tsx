@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { defaultValues, findFieldByRole, usesPointLine } from '@latent/shared';
-import type { ParamField, ParamValues, WidgetValue } from '@latent/shared';
+import { defaultValues, findFieldByRole, matchSystemPrompt, usesPointLine } from '@latent/shared';
+import type { ParamField, ParamValues, SystemPrompt, WidgetValue } from '@latent/shared';
 
 import {
   useDeletePreset,
+  useSystemPrompts,
   useEndless,
   useGenerate,
   usePresets,
@@ -71,6 +72,12 @@ function MainField({
   onSendToWorkflow: (id: string, text: string) => void;
 }) {
   const value = values[field.id] ?? field.defaultValue;
+  const filled = useFilledFrom(field);
+
+  // A field the prompt library owns is shown, not offered: whatever were typed
+  // here would be replaced on the way to ComfyUI, which is a worse lie than
+  // saying where the text comes from.
+  if (filled) return <FilledFromPrompt field={field} prompt={filled} />;
 
   switch (field.role) {
     case 'prompt':
@@ -903,6 +910,44 @@ function isWideControl(field: ParamField): boolean {
   return field.control === 'textarea' || field.control === 'text' || field.control === 'image';
 }
 
+/**
+ * A text input whose contents come from the collected system prompts.
+ *
+ * Shown rather than edited. The wording lives in one place — Settings, under
+ * System prompts — precisely so that five workflows needing the same
+ * instructions do not each carry their own copy of them.
+ */
+function FilledFromPrompt({
+  field,
+  prompt,
+  showLabel = true,
+}: {
+  field: ParamField;
+  prompt: SystemPrompt;
+  /** Off under Advanced, where the list already prints the field's name. */
+  showLabel?: boolean;
+}) {
+  return (
+    <div className="rounded-xl border border-line bg-surface-2/40 px-3 py-2">
+      <p className="text-[11px] text-muted">
+        {showLabel && <span className="text-body">{field.label} — </span>}
+        from the system prompt “{prompt.name}”
+      </p>
+      <p className="mt-1 line-clamp-2 text-[11px] text-muted">
+        {prompt.text.trim() === ''
+          ? 'Empty, so the workflow keeps its own text.'
+          : prompt.text.replace(/\s+/g, ' ')}
+      </p>
+    </div>
+  );
+}
+
+/** The saved prompt that will fill this field, if one is named after it. */
+function useFilledFrom(field: ParamField): SystemPrompt | null {
+  const prompts = useSystemPrompts();
+  return useMemo(() => matchSystemPrompt(field, prompts.data ?? []), [field, prompts.data]);
+}
+
 /** Advanced fields are rendered inline rather than behind another sheet. */
 function AdvancedRow({
   field,
@@ -913,6 +958,11 @@ function AdvancedRow({
   value: WidgetValue;
   onChange: (value: WidgetValue) => void;
 }) {
+  const filled = useFilledFrom(field);
+  if (filled) {
+    return <FilledFromPrompt field={field} prompt={filled} showLabel={!isWideControl(field)} />;
+  }
+
   if (isWideControl(field)) {
     // The label is already printed above the row, so hide the control's own.
     return (

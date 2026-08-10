@@ -1,20 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { CHAT_IMAGE_SIZES } from '@latent/shared';
-import type {
-  ChatConversationDetail,
-  ChatMessage,
-  ChatStreamEvent,
-  ChatToolCall,
-} from '@latent/shared';
+import type { ChatMessage, ChatToolCall } from '@latent/shared';
 
-import { ApiError, api, imageUrl } from '../api/client';
+import { api, imageUrl } from '../api/client';
 import { useGeneration, useSettings } from '../api/queries';
 import { ImageViewer } from '../components/ImageViewer';
 import { Markdown } from '../components/Markdown';
 import { PromptDiff, promptChanged } from '../components/PromptDiff';
 import { ToolDialog } from '../components/ToolDialog';
 import { Button, cn, ErrorNote, Sheet, Spinner } from '../components/ui';
+import { useChatStore } from '../state/chat';
 import { useLiveStore } from '../state/live';
 
 /**
@@ -28,18 +24,12 @@ import { useLiveStore } from '../state/live';
  *
  * Nothing a tool proposes takes effect on its own. Every one of them is a
  * dialog first.
+ *
+ * The conversation itself is in `state/chat`. See the note in `ChatScreen`.
  */
 
-const LAST_CHAT_KEY = 'latent.lastChatId';
-/** What was typed but not sent, kept across a tab switch. */
-const DRAFT_KEY = 'latent.chatDraft';
 /** Longest side an attachment is scaled to before it is sent. */
 const MAX_IMAGE_SIDE = 1024;
-
-interface Streaming {
-  content: string;
-  thinking: string;
-}
 
 /**
  * The prompt generated before this message, if there was one.
@@ -68,48 +58,35 @@ const TOOL_LABELS: Record<ChatToolCall['tool'], string> = {
 export function ChatScreen() {
   const settings = useSettings();
 
-  const [chat, setChat] = useState<ChatConversationDetail | null>(null);
-  const [streaming, setStreaming] = useState<Streaming | null>(null);
-  const [pendingCall, setPendingCall] = useState<{ messageId: string; call: ChatToolCall } | null>(
-    null,
-  );
+  /*
+   * The conversation itself lives in `state/chat`, not here.
+   *
+   * This screen is unmounted every time another tab is touched, and holding the
+   * transcript, the reply in flight and a half-decided tool dialog in component
+   * state meant a tap on Gallery destroyed all three — and that coming back
+   * re-opened the conversation from scratch, racing whatever was left. What
+   * stays here is what is genuinely about the screen: where it is scrolled, and
+   * which sheets are open.
+   */
+  const chat = useChatStore((state) => state.chat);
+  const streaming = useChatStore((state) => state.streaming);
+  const pendingCall = useChatStore((state) => state.pendingCall);
+  const draft = useChatStore((state) => state.draft);
+  const attachments = useChatStore((state) => state.attachments);
+  const error = useChatStore((state) => state.error);
+  const askedForPrompt = useChatStore((state) => state.askedForPrompt);
+  const store = useChatStore.getState;
+
   /** A prompt from further up, reopened to run again or to rewind to. */
   const [revisiting, setRevisiting] = useState<{
     messageId: string;
     call: ChatToolCall;
   } | null>(null);
-  /*
-   * What you were typing outlives the tab.
-   *
-   * Leaving the tab unmounts this screen, and a half-written sentence going
-   * with it is the same fault the Generate form had: you switch to the gallery
-   * to check something *about* the message you are writing, and lose it for
-   * looking. Kept on the device rather than the server — it is not part of the
-   * conversation until it is sent.
-   */
-  const [draft, setDraft] = useState(() => localStorage.getItem(DRAFT_KEY) ?? '');
-
-  useEffect(() => {
-    if (draft === '') localStorage.removeItem(DRAFT_KEY);
-    else localStorage.setItem(DRAFT_KEY, draft);
-  }, [draft]);
-  const [attachments, setAttachments] = useState<{ dataUrl: string; name: string }[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   /** Set while the transcript is at the end, which is when it follows a reply. */
   const [atBottom, setAtBottom] = useState(true);
-  /**
-   * True while the tool call in flight is one the button asked for.
-   *
-   * Only those are queued without being read. A prompt the model offered on its
-   * own is still shown first, whatever the button's setting says — the setting
-   * is about what the button does, not about what the model may do unattended.
-   */
-  const [askedForPrompt, setAskedForPrompt] = useState(false);
-
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
 
   /*
@@ -126,68 +103,31 @@ export function ChatScreen() {
       Math.min(Math.max(settings.data?.chat.imageSize ?? 3, 1), CHAT_IMAGE_SIZES.length) - 1
     ] ?? 0.7;
 
-  /**
-   * Open the conversation we were last in, or start one.
-   *
-   * A failed read used to fall through to creating a new conversation, which
-   * meant a moment's bad connection silently swapped an ongoing chat for an
-   * empty one — the old messages still on the server, just no longer the chat
-   * you were in. Only a conversation that is genuinely gone is replaced; any
-   * other failure says so and leaves the screen empty, which is recoverable.
-   */
+  // Idempotent: opens what was last in use, or starts one, and does nothing at
+  // all on the many mounts after the first. Nothing is aborted on the way out —
+  // that is the point.
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const remembered = localStorage.getItem(LAST_CHAT_KEY);
-      try {
-        if (remembered) {
-          const existing = await api.chat(remembered);
-          if (!cancelled) setChat(existing);
-          return;
-        }
-      } catch (cause: unknown) {
-        const missing = cause instanceof ApiError && cause.status === 404;
-        if (!missing) {
-          if (!cancelled) {
-            setError(cause instanceof Error ? cause.message : 'Could not open the chat');
-          }
-          return;
-        }
-        localStorage.removeItem(LAST_CHAT_KEY);
-      }
-
-      try {
-        const created = await api.createChat();
-        if (cancelled) return;
-        localStorage.setItem(LAST_CHAT_KEY, created.id);
-        setChat({ ...created, messages: [] });
-      } catch (cause) {
-        if (!cancelled) {
-          setError(cause instanceof Error ? cause.message : 'Could not open the chat');
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    void store().open();
+  }, [store]);
 
   /*
-   * Leaving the tab stops the stream.
+   * Catch up after being away.
    *
-   * Without this a reply kept arriving into a screen that no longer existed,
-   * and its final re-read raced whatever the screen did on the way back in —
-   * which is how a conversation could come back missing what had just been
-   * said. The server keeps what it had when the connection closes, so nothing
-   * is lost by stopping.
+   * A backgrounded tab is not a running one: a phone suspends the connection
+   * when the screen locks, and a stream killed mid-reply leaves this client
+   * holding a transcript the server has since moved past. Re-reading on the way
+   * back in is cheap, and it is what makes "it stopped showing messages"
+   * impossible.
    */
-  useEffect(
-    () => () => {
-      abortRef.current?.abort();
-      abortRef.current = null;
-    },
-    [],
-  );
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && !useChatStore.getState().streaming) {
+        void store().refresh();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [store]);
 
   /*
    * Follow the reply as it arrives — until you scroll away from the bottom.
@@ -210,8 +150,8 @@ export function ChatScreen() {
    * from the gallery so it is right even after a run has been swept, and so
    * the marking works the moment the dialog opens.
    */
-  const previousPrompt = [...(chat?.messages ?? [])].reverse().find((message) => message.prompt)
-    ?.prompt ?? '';
+  const previousPrompt =
+    [...(chat?.messages ?? [])].reverse().find((message) => message.prompt)?.prompt ?? '';
 
   /** Whether the transcript is scrolled to (or near) the end. */
   const onTranscriptScroll = () => {
@@ -223,210 +163,26 @@ export function ChatScreen() {
     setAtBottom(distance < 40);
   };
 
-  /** Read one server-sent stream to the end, updating as it goes. */
-  const consume = useCallback(
-    async (response: Response, chatId: string) => {
-      if (!response.ok || !response.body) {
-        const body = (await response.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `The chat request failed (${response.status})`);
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let call: { messageId: string; call: ChatToolCall } | null = null;
-      let pendingToolCall: ChatToolCall | null = null;
-
-      setStreaming({ content: '', thinking: '' });
-
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-
-          let split: number;
-          while ((split = buffer.indexOf('\n\n')) >= 0) {
-            const frame = buffer.slice(0, split);
-            buffer = buffer.slice(split + 2);
-            if (!frame.startsWith('data:')) continue;
-
-            let event: ChatStreamEvent;
-            try {
-              event = JSON.parse(frame.slice(5).trim()) as ChatStreamEvent;
-            } catch {
-              continue;
-            }
-
-            if (event.type === 'content') {
-              setStreaming((current) => ({
-                thinking: current?.thinking ?? '',
-                content: (current?.content ?? '') + event.text,
-              }));
-            } else if (event.type === 'thinking') {
-              setStreaming((current) => ({
-                content: current?.content ?? '',
-                thinking: (current?.thinking ?? '') + event.text,
-              }));
-            } else if (event.type === 'tool') {
-              pendingToolCall = event.call;
-            } else if (event.type === 'error') {
-              setError(event.message);
-            } else if (event.type === 'done' && pendingToolCall) {
-              call = { messageId: event.messageId, call: pendingToolCall };
-            }
-          }
-        }
-      } finally {
-        reader.releaseLock();
-        setStreaming(null);
-      }
-
-      // Re-read rather than patching locally: the server decided what was worth
-      // keeping, and a divergence here would show a message that is not stored.
-      const refreshed = await api.chat(chatId);
-      setChat(refreshed);
-      if (call) setPendingCall(call);
-    },
-    [],
-  );
-
-  const send = async () => {
-    const content = draft.trim();
-    if (!chat || (content === '' && attachments.length === 0) || streaming) return;
-
-    setError(null);
-    setDraft('');
-    const sending = attachments;
-    setAttachments([]);
-
-    /*
-     * Your own message goes up immediately.
-     *
-     * It used to appear only once the whole reply had finished, because the
-     * transcript was re-read from the server rather than patched — which is
-     * right for the *model's* messages and wrong for yours. Against a local
-     * model that is half a minute of watching your own sentence not be there,
-     * and it looked exactly like a message that had failed to send. The id is
-     * provisional; the re-read at the end of the stream replaces it with the
-     * stored one.
-     */
-    const provisional: ChatMessage = {
-      id: `pending-${Date.now()}`,
-      role: 'user',
-      content,
-      ...(sending.length > 0 ? { attachments: sending } : {}),
-      createdAt: Date.now(),
-    };
-    setChat((current) =>
-      current ? { ...current, messages: [...current.messages, provisional] } : current,
-    );
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      const response = await fetch(`/api/chat/conversations/${chat.id}/messages`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ content, attachments: sending }),
-        signal: controller.signal,
-      });
-      await consume(response, chat.id);
-    } catch (cause) {
-      setStreaming(null);
-      if (!controller.signal.aborted) {
-        setError(cause instanceof Error ? cause.message : 'The model did not answer');
-      }
-      // Either way the server is the authority on what was stored — including
-      // the provisional message above, which may or may not have got there.
-      await api.chat(chat.id).then(setChat).catch(() => {});
-    }
-  };
-
-  /**
-   * Cut the reply short.
-   *
-   * Small models get stuck: the same paragraph three times, a list that never
-   * ends, a tool call it keeps rewriting. Without this the only way out is to
-   * wait for the token limit. Aborting the request closes the stream, which the
-   * server takes as its cue to stop asking the model and keep what it has — so
-   * stopping a rambler leaves the useful first paragraph behind rather than
-   * throwing the turn away.
-   */
-  const stop = async () => {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setStreaming(null);
-    if (chat) await api.chat(chat.id).then(setChat).catch(() => {});
-  };
-
-  /**
-   * Ask for a prompt, because the button was pressed.
-   *
-   * A forced tool call rather than a message saying "write me a prompt": the
-   * second is a request the model weighs up against its pace setting, and the
-   * button is not a request. What happens to the result is the setting next to
-   * it — queued straight away, or shown first.
-   */
-  const askForPrompt = async () => {
-    if (!chat || streaming) return;
-    setError(null);
-    setAskedForPrompt(true);
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      const response = await fetch(`/api/chat/conversations/${chat.id}/build`, {
-        method: 'POST',
-        credentials: 'same-origin',
-        signal: controller.signal,
-      });
-      await consume(response, chat.id);
-    } catch (cause) {
-      setStreaming(null);
-      if (!controller.signal.aborted) {
-        setError(cause instanceof Error ? cause.message : 'The model did not answer');
-      }
-    }
-  };
-
-  /** After a decision, let the model say something about it. */
-  const continueAfterTool = async (chatId: string) => {
-    try {
-      const response = await fetch(`/api/chat/conversations/${chatId}/continue`, {
-        method: 'POST',
-        credentials: 'same-origin',
-      });
-      await consume(response, chatId);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'The model did not answer');
-    }
-  };
-
   const attach = async (files: FileList) => {
-    setError(null);
+    store().setError(null);
     for (const file of [...files].slice(0, 4)) {
       try {
-        setAttachments((current) => [...current, { dataUrl: '', name: file.name }]);
+        store().setAttachments((current) => [...current, { dataUrl: '', name: file.name }]);
         const dataUrl = await downscale(file);
-        setAttachments((current) =>
-          current.map((entry) => (entry.name === file.name && entry.dataUrl === '' ? { ...entry, dataUrl } : entry)),
+        store().setAttachments((current) =>
+          current.map((entry) =>
+            entry.name === file.name && entry.dataUrl === '' ? { ...entry, dataUrl } : entry,
+          ),
         );
       } catch {
-        setAttachments((current) => current.filter((entry) => entry.name !== file.name));
-        setError(`${file.name} could not be read as an image.`);
+        store().setAttachments((current) => current.filter((entry) => entry.name !== file.name));
+        store().setError(`${file.name} could not be read as an image.`);
       }
     }
   };
 
   const startNew = async () => {
-    const created = await api.createChat();
-    localStorage.setItem(LAST_CHAT_KEY, created.id);
-    setChat({ ...created, messages: [] });
-    setPendingCall(null);
+    await store().startNew();
     setShowHistory(false);
   };
 
@@ -541,7 +297,7 @@ export function ChatScreen() {
                 <button
                   type="button"
                   onClick={() =>
-                    setAttachments((current) => current.filter((_, at) => at !== index))
+                    store().setAttachments((current) => current.filter((_, at) => at !== index))
                   }
                   aria-label={`Remove ${attachment.name}`}
                   className="absolute -top-1 -right-1 grid size-5 place-items-center rounded-full bg-ink text-xs text-muted"
@@ -576,7 +332,7 @@ export function ChatScreen() {
 
           <textarea
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => store().setDraft(event.target.value)}
             rows={1}
             placeholder="Say something…"
             className="max-h-32 min-h-10 flex-1 resize-none rounded-xl border border-line bg-surface px-3 py-2 text-sm leading-relaxed focus:border-accent focus:outline-none"
@@ -588,7 +344,7 @@ export function ChatScreen() {
             <Button
               variant="secondary"
               className="size-10 shrink-0 rounded-xl p-0 text-base"
-              onClick={() => void askForPrompt()}
+              onClick={() => void store().askForPrompt()}
               aria-label="Build a prompt"
               title="Build a prompt from this conversation"
             >
@@ -603,7 +359,7 @@ export function ChatScreen() {
             <Button
               variant="secondary"
               className="size-10 shrink-0 rounded-xl p-0 text-base"
-              onClick={() => void stop()}
+              onClick={() => void store().stop()}
               aria-label="Stop"
             >
               ■
@@ -613,7 +369,7 @@ export function ChatScreen() {
           <Button
             variant="primary"
             className="size-10 shrink-0 rounded-xl p-0"
-            onClick={() => void send()}
+            onClick={() => void store().send()}
             disabled={streaming !== null || (draft.trim() === '' && attachments.length === 0)}
             aria-label="Send"
           >
@@ -632,16 +388,7 @@ export function ChatScreen() {
             askedForPrompt &&
             settings.data?.chat.promptButton === 'generate'
           }
-          onResolve={async (body) => {
-            setPendingCall(null);
-            setAskedForPrompt(false);
-            try {
-              await api.resolveTool(chat.id, { messageId: pendingCall.messageId, ...body });
-              await continueAfterTool(chat.id);
-            } catch (cause) {
-              setError(cause instanceof Error ? cause.message : 'Could not record that');
-            }
-          }}
+          onResolve={(body) => store().resolveTool(body)}
         />
       )}
 
@@ -662,9 +409,11 @@ export function ChatScreen() {
                   ...(generationId ? { generationId } : {}),
                   prompt,
                 });
-                setChat(await api.chat(chat.id));
+                await store().refresh();
               } catch (cause) {
-                setError(cause instanceof Error ? cause.message : 'Could not record that');
+                store().setError(
+                  cause instanceof Error ? cause.message : 'Could not record that',
+                );
               }
             },
             onRewind: async () => {
@@ -672,9 +421,9 @@ export function ChatScreen() {
               setRevisiting(null);
               try {
                 await api.rewindChat(chat.id, messageId);
-                setChat(await api.chat(chat.id));
+                await store().refresh();
               } catch (cause) {
-                setError(cause instanceof Error ? cause.message : 'Could not rewind');
+                store().setError(cause instanceof Error ? cause.message : 'Could not rewind');
               }
             },
           }}
@@ -685,9 +434,7 @@ export function ChatScreen() {
         <SavedChats
           currentId={chat.id}
           onOpen={async (id) => {
-            const opened = await api.chat(id);
-            localStorage.setItem(LAST_CHAT_KEY, id);
-            setChat(opened);
+            await store().openChat(id);
             setShowHistory(false);
           }}
           onNew={() => void startNew()}

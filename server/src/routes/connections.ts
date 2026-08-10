@@ -1,16 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 
-import type { ConnectionInput, ConnectionTestResult } from '@latent/shared';
+import type { ConnectionInput, ConnectionKind, ConnectionTestResult } from '@latent/shared';
 
+import { LlamaClient } from '../chat/llama.js';
 import { ComfyClient, ComfyError, isSelfSignedError } from '../comfy/client.js';
 import type { ConnectionConfig } from '../comfy/connection.js';
 import type { AppContext } from './context.js';
 
 const VALID_AUTH_MODES = new Set(['none', 'bearer', 'basic']);
+const VALID_KINDS = new Set(['comfy', 'llama']);
 
 function validate(body: ConnectionInput | undefined, requireAll: boolean): string | null {
   if (!body) return 'Missing request body';
+  if (body.kind !== undefined && !VALID_KINDS.has(body.kind)) {
+    return 'Unknown kind of connection';
+  }
 
   if (requireAll || body.name !== undefined) {
     if (typeof body.name !== 'string' || body.name.trim() === '') return 'A name is required';
@@ -39,7 +44,12 @@ function validate(body: ConnectionInput | undefined, requireAll: boolean): strin
  * wrong token, self-signed certificate — each need a different fix, and only one
  * of them is a mistake in the URL.
  */
-export async function testConnection(config: ConnectionConfig): Promise<ConnectionTestResult> {
+export async function testConnection(
+  config: ConnectionConfig,
+  kind: ConnectionKind = 'comfy',
+): Promise<ConnectionTestResult> {
+  if (kind === 'llama') return testLlama(config);
+
   const client = new ComfyClient(config);
   try {
     const stats = await client.systemStats();
@@ -78,6 +88,62 @@ export async function testConnection(config: ConnectionConfig): Promise<Connecti
   }
 }
 
+/**
+ * The same three questions, asked of a model server.
+ *
+ * `/v1/models` is the cheapest route that proves both that something is there
+ * and that it speaks the OpenAI API — and it answers with the list of models,
+ * which is exactly what the settings screen wants next anyway.
+ */
+async function testLlama(config: ConnectionConfig): Promise<ConnectionTestResult> {
+  const client = new LlamaClient(config, {
+    model: '',
+    maxTokens: 0,
+    thinking: false,
+    systemPromptId: null,
+    tools: { prompt_blocks: 'off', build_prompt: 'off', ask_user: 'off' },
+    generation: { workflowId: '', values: {} },
+    imageSize: 3,
+    promptButton: 'dialog',
+    showDiff: { inDialog: false, underPicture: false },
+  });
+
+  try {
+    const models = await client.models();
+    return {
+      outcome: 'ok',
+      message:
+        models.length > 0
+          ? `Connected. ${models.length === 1 ? models[0] : `${models.length} models available`}`
+          : 'Connected, but the server lists no models.',
+      models,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    if (/\b401\b|\b403\b/.test(message)) {
+      return {
+        outcome: 'unauthorized',
+        message: 'The server answered but rejected the credentials.',
+      };
+    }
+    if (isSelfSignedError(error) || /self-signed/i.test(message)) {
+      return {
+        outcome: 'self_signed',
+        message:
+          'The server uses a self-signed certificate. Turn on "Allow self-signed certificate".',
+      };
+    }
+    return {
+      outcome: 'unreachable',
+      message: message
+        ? `Could not reach that address: ${message}`
+        : 'Could not reach that address',
+    };
+  } finally {
+    await client.close();
+  }
+}
+
 export function registerConnectionRoutes(app: FastifyInstance, ctx: AppContext): void {
   app.get('/api/connections', async () => ctx.store.listConnections());
 
@@ -86,14 +152,16 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: AppContext):
     if (error) return reply.code(400).send({ error });
 
     const id = randomUUID();
+    const kind = request.body.kind ?? 'comfy';
     ctx.store.insertConnection(id, request.body);
 
-    // A first connection becomes the active one; otherwise the user would have
-    // to add it and then separately remember to select it.
-    if (ctx.store.countConnections() === 1) {
+    // The first of its kind becomes the one in use; otherwise the user would
+    // have to add it and then separately remember to select it. Per kind,
+    // because adding a model server must not leave ComfyUI unselected.
+    if (ctx.store.countConnections(kind) === 1) {
       ctx.store.activateConnection(id);
       const created = ctx.store.getConnectionWithSecret(id);
-      if (created) await ctx.orchestrator.switchConnection(toConfig(created));
+      if (created && kind === 'comfy') await ctx.orchestrator.switchConnection(toConfig(created));
     }
 
     return reply.code(201).send(ctx.store.getConnection(id));
@@ -111,9 +179,12 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: AppContext):
       ctx.store.updateConnection(request.params.id, request.body);
 
       // Editing the connection currently in use must take effect immediately,
-      // or the user fixes a wrong token and nothing changes.
+      // or the user fixes a wrong token and nothing changes. Only ComfyUI has a
+      // socket to re-open; the chat builds its client per request.
       const updated = ctx.store.getConnectionWithSecret(request.params.id);
-      if (updated?.isActive) await ctx.orchestrator.switchConnection(toConfig(updated));
+      if (updated?.isActive && updated.kind === 'comfy') {
+        await ctx.orchestrator.switchConnection(toConfig(updated));
+      }
 
       return ctx.store.getConnection(request.params.id);
     },
@@ -122,7 +193,14 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: AppContext):
   app.delete<{ Params: { id: string } }>('/api/connections/:id', async (request, reply) => {
     const existing = ctx.store.getConnection(request.params.id);
     if (!existing) return reply.code(404).send({ error: 'Connection not found' });
-    if (existing.isActive) {
+    /*
+     * Only ComfyUI's cannot be pulled out from under the app: the orchestrator
+     * holds a socket to it and every screen assumes there is one. A model
+     * server is asked for per request, so deleting the one in use simply leaves
+     * the chat with nothing to talk to — which is a state it already handles,
+     * and the honest thing to allow for a box you have stopped renting.
+     */
+    if (existing.isActive && existing.kind === 'comfy') {
       return reply
         .code(409)
         .send({ error: 'That connection is in use. Switch to another one first.' });
@@ -136,7 +214,7 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: AppContext):
     if (!target) return reply.code(404).send({ error: 'Connection not found' });
 
     ctx.store.activateConnection(target.id);
-    await ctx.orchestrator.switchConnection(toConfig(target));
+    if (target.kind === 'comfy') await ctx.orchestrator.switchConnection(toConfig(target));
     return ctx.store.listConnections();
   });
 
@@ -160,7 +238,7 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: AppContext):
           : {}),
       };
 
-      return testConnection(config);
+      return testConnection(config, overrides.kind ?? stored.kind);
     },
   );
 
@@ -169,15 +247,18 @@ export function registerConnectionRoutes(app: FastifyInstance, ctx: AppContext):
     const error = validate(request.body, true);
     if (error) return reply.code(400).send({ error });
 
-    return testConnection({
-      id: 'unsaved',
-      name: request.body.name,
-      url: request.body.url.replace(/\/+$/, ''),
-      authMode: request.body.authMode ?? 'none',
-      username: request.body.username ?? null,
-      secret: request.body.secret ?? null,
-      allowSelfSigned: request.body.allowSelfSigned ?? false,
-    });
+    return testConnection(
+      {
+        id: 'unsaved',
+        name: request.body.name,
+        url: request.body.url.replace(/\/+$/, ''),
+        authMode: request.body.authMode ?? 'none',
+        username: request.body.username ?? null,
+        secret: request.body.secret ?? null,
+        allowSelfSigned: request.body.allowSelfSigned ?? false,
+      },
+      request.body.kind ?? 'comfy',
+    );
   });
 }
 

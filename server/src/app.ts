@@ -37,6 +37,7 @@ import { registerPromptBlockRoutes } from './routes/promptBlocks.js';
 import { registerPresetRoutes } from './routes/presets.js';
 import { registerQueueRoutes } from './routes/queue.js';
 import { registerSystemRoutes } from './routes/system.js';
+import { registerSystemPromptRoutes } from './routes/systemPrompts.js';
 import { registerWorkflowRoutes } from './routes/workflows.js';
 import { attachTerminal } from './terminal.js';
 
@@ -61,7 +62,7 @@ function resolveConnection(store: Store, config: Config, app: FastifyInstance): 
   const active = store.getActiveConnection();
   if (active) return toConfig(active);
 
-  if (store.countConnections() === 0) {
+  if (store.countConnections('comfy') === 0) {
     const id = randomUUID();
     store.insertConnection(id, { name: 'Default', url: config.comfyUrl, authMode: 'none' });
     store.activateConnection(id);
@@ -72,7 +73,7 @@ function resolveConnection(store: Store, config: Config, app: FastifyInstance): 
 
   // Connections exist but none is active (someone deleted the active one
   // directly in the database). Fall back rather than starting up broken.
-  const first = store.listConnections()[0];
+  const first = store.listConnections().find((connection) => connection.kind === 'comfy');
   if (first) {
     store.activateConnection(first.id);
     const restored = store.getConnectionWithSecret(first.id);
@@ -140,6 +141,12 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
    */
   if (config.password) stateFiles.unlock(config.password);
   else stateFiles.restore();
+
+  /*
+   * After the files have been read, so a restored `chat.baseUrl` is carried
+   * across too rather than only one that was already in this database.
+   */
+  store.migrateChatSettings(randomUUID);
 
   const orchestrator = new Orchestrator(store, resolveConnection(store, config, app), app.log);
   const workflowScanner = new WorkflowScanner(store, orchestrator, stateFiles);
@@ -225,6 +232,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   registerGalleryRoutes(app, ctx);
   registerFavoriteRoutes(app, ctx);
   registerPromptBlockRoutes(app, ctx);
+  registerSystemPromptRoutes(app, ctx);
   registerImportRoutes(app, ctx);
   registerInputImageRoutes(app, ctx);
   registerMediaRoutes(app, ctx);

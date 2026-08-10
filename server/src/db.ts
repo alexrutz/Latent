@@ -11,6 +11,7 @@ import type {
   ComfyImageRef,
   ConnectionAuthMode,
   ConnectionInput,
+  ConnectionKind,
   ConnectionSummary,
   FieldOverrides,
   GenerationRecord,
@@ -31,6 +32,8 @@ import type {
   StudyShotStatus,
   StudyStatus,
   StudySummary,
+  SystemPrompt,
+  SystemPromptInput,
   TextOutput,
   TileSpan,
   VariationPreset,
@@ -388,6 +391,34 @@ CREATE INDEX idx_study_shots_run ON study_shots (study_id, status, ordinal);
 CREATE INDEX idx_study_shots_rating ON study_shots (study_id, rating);
 `);
 
+/**
+ * v14: one list of connections, and a collection of named system prompts.
+ *
+ * The model server used to be an address buried in the chat settings while
+ * ComfyUI had a whole screen of presets, which made no sense: they are the same
+ * problem — a box you rented an hour ago, a token, a certificate nobody signed —
+ * asked twice, in two different ways. `kind` puts them in one list, and
+ * `is_active` becomes "in use for its kind", so a ComfyUI and a model server are
+ * both active at once.
+ *
+ * System prompts move the other way: out of the things that used them and into
+ * a list of their own, matched back to a workflow's text input by name.
+ */
+MIGRATIONS.push(`
+ALTER TABLE connections ADD COLUMN kind TEXT NOT NULL DEFAULT 'comfy';
+
+CREATE TABLE system_prompts (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  text       TEXT NOT NULL DEFAULT '',
+  position   INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX idx_system_prompts_order ON system_prompts (position, created_at);
+`);
+
 interface ChatRow {
   id: string;
   title: string;
@@ -525,6 +556,7 @@ interface PromptBlockRow {
 
 interface ConnectionRow {
   id: string;
+  kind: string;
   name: string;
   url: string;
   auth_mode: string;
@@ -541,6 +573,26 @@ interface PresetRow {
   name: string;
   values_json: string;
   created_at: number;
+}
+
+interface SystemPromptRow {
+  id: string;
+  name: string;
+  text: string;
+  position: number;
+  created_at: number;
+  updated_at: number;
+}
+
+function toSystemPrompt(row: SystemPromptRow): SystemPrompt {
+  return {
+    id: row.id,
+    name: row.name,
+    text: row.text,
+    position: row.position,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 /** Tolerate a corrupt/legacy JSON column rather than crashing the whole request. */
@@ -560,6 +612,7 @@ function normaliseUrl(url: string): string {
 function toConnectionSummary(row: ConnectionRow): ConnectionSummary {
   return {
     id: row.id,
+    kind: row.kind === 'llama' ? 'llama' : 'comfy',
     name: row.name,
     url: row.url,
     authMode: row.auth_mode as ConnectionAuthMode,
@@ -662,17 +715,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   comfyRoot: null,
   queuePolicy: 'append',
   chat: {
-    // Where `llama-server` listens unless told otherwise.
-    baseUrl: 'http://127.0.0.1:8080',
     model: '',
-    authMode: 'none',
-    username: '',
-    apiKey: '',
-    allowSelfSigned: false,
-    temperature: 0.8,
     maxTokens: 0,
     thinking: true,
-    systemPrompt: '',
+    // Latent's own wording until a saved system prompt is chosen instead.
+    systemPromptId: null,
     /*
      * The defaults are what makes the module usable rather than annoying.
      *
@@ -1732,6 +1779,87 @@ export class Store {
   }
 
   /* ---------------------------------------------------------------- */
+  /* System prompts                                                    */
+  /* ---------------------------------------------------------------- */
+
+  listSystemPrompts(): SystemPrompt[] {
+    return this.db
+      .prepare<[], SystemPromptRow>(
+        'SELECT * FROM system_prompts ORDER BY position ASC, created_at ASC',
+      )
+      .all()
+      .map(toSystemPrompt);
+  }
+
+  getSystemPrompt(id: string): SystemPrompt | null {
+    const row = this.db
+      .prepare<[string], SystemPromptRow>('SELECT * FROM system_prompts WHERE id = ?')
+      .get(id);
+    return row ? toSystemPrompt(row) : null;
+  }
+
+  /**
+   * Look one up by name, the way a workflow's field does.
+   *
+   * Case-insensitive, because the name is matched against a label somebody
+   * typed into ComfyUI months ago and "Caption" and "caption" are the same
+   * instruction.
+   */
+  findSystemPromptByName(name: string): SystemPrompt | null {
+    const row = this.db
+      .prepare<[string], SystemPromptRow>(
+        'SELECT * FROM system_prompts WHERE lower(trim(name)) = ? LIMIT 1',
+      )
+      .get(name.trim().toLowerCase());
+    return row ? toSystemPrompt(row) : null;
+  }
+
+  insertSystemPrompt(id: string, input: SystemPromptInput): SystemPrompt {
+    const now = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO system_prompts (id, name, text, position, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, input.name.trim(), input.text, input.position ?? this.countSystemPrompts(), now, now);
+    return this.getSystemPrompt(id) as SystemPrompt;
+  }
+
+  updateSystemPrompt(id: string, input: Partial<SystemPromptInput>): void {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+
+    if (input.name !== undefined) {
+      sets.push('name = ?');
+      params.push(input.name.trim());
+    }
+    if (input.text !== undefined) {
+      sets.push('text = ?');
+      params.push(input.text);
+    }
+    if (input.position !== undefined) {
+      sets.push('position = ?');
+      params.push(input.position);
+    }
+    if (sets.length === 0) return;
+
+    sets.push('updated_at = ?');
+    params.push(Date.now(), id);
+    this.db.prepare(`UPDATE system_prompts SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  deleteSystemPrompt(id: string): void {
+    this.db.prepare('DELETE FROM system_prompts WHERE id = ?').run(id);
+  }
+
+  countSystemPrompts(): number {
+    const row = this.db
+      .prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM system_prompts')
+      .get();
+    return row?.count ?? 0;
+  }
+
+  /* ---------------------------------------------------------------- */
   /* Imported images                                                   */
   /* ---------------------------------------------------------------- */
 
@@ -1837,6 +1965,13 @@ export class Store {
   /* Connections                                                       */
   /* ---------------------------------------------------------------- */
 
+  /**
+   * Every connection, both kinds, oldest first.
+   *
+   * Kind is a column rather than a separate listing: they are shown as one list
+   * and the client decides how to group them, which is the only arrangement that
+   * survives a third kind ever existing.
+   */
   listConnections(): ConnectionSummary[] {
     return this.db
       .prepare<[], ConnectionRow>('SELECT * FROM connections ORDER BY created_at ASC')
@@ -1859,10 +1994,15 @@ export class Store {
     return row ? { ...toConnectionSummary(row), secret: row.secret } : null;
   }
 
-  getActiveConnection(): (ConnectionSummary & { secret: string | null }) | null {
+  /** The one in use for a kind. Both kinds have one at the same time. */
+  getActiveConnection(
+    kind: ConnectionKind = 'comfy',
+  ): (ConnectionSummary & { secret: string | null }) | null {
     const row = this.db
-      .prepare<[], ConnectionRow>('SELECT * FROM connections WHERE is_active = 1 LIMIT 1')
-      .get();
+      .prepare<[string], ConnectionRow>(
+        'SELECT * FROM connections WHERE is_active = 1 AND kind = ? LIMIT 1',
+      )
+      .get(kind);
     return row ? { ...toConnectionSummary(row), secret: row.secret } : null;
   }
 
@@ -1870,11 +2010,12 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO connections
-           (id, name, url, auth_mode, username, secret, allow_self_signed, is_active, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+           (id, kind, name, url, auth_mode, username, secret, allow_self_signed, is_active, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
       )
       .run(
         id,
+        input.kind === 'llama' ? 'llama' : 'comfy',
         input.name.trim(),
         normaliseUrl(input.url),
         input.authMode ?? 'none',
@@ -1889,6 +2030,10 @@ export class Store {
     const sets: string[] = [];
     const params: unknown[] = [];
 
+    if (input.kind !== undefined) {
+      sets.push('kind = ?');
+      params.push(input.kind === 'llama' ? 'llama' : 'comfy');
+    }
     if (input.name !== undefined) {
       sets.push('name = ?');
       params.push(input.name.trim());
@@ -1924,18 +2069,35 @@ export class Store {
     this.db.prepare('DELETE FROM connections WHERE id = ?').run(id);
   }
 
+  /**
+   * Put one connection in use, within its own kind.
+   *
+   * Only its own kind is stood down: choosing a model server must not switch
+   * ComfyUI off, which is exactly what a single global "active" flag would do
+   * now that both live in one table.
+   */
   activateConnection(id: string): void {
     const activate = this.db.transaction((target: string) => {
-      this.db.prepare('UPDATE connections SET is_active = 0').run();
+      const row = this.db
+        .prepare<[string], ConnectionRow>('SELECT * FROM connections WHERE id = ?')
+        .get(target);
+      if (!row) return;
+      this.db.prepare('UPDATE connections SET is_active = 0 WHERE kind = ?').run(row.kind);
       this.db.prepare('UPDATE connections SET is_active = 1 WHERE id = ?').run(target);
     });
     activate(id);
   }
 
-  countConnections(): number {
-    const row = this.db
-      .prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM connections')
-      .get();
+  countConnections(kind?: ConnectionKind): number {
+    const row = kind
+      ? this.db
+          .prepare<[string], { count: number }>(
+            'SELECT COUNT(*) AS count FROM connections WHERE kind = ?',
+          )
+          .get(kind)
+      : this.db
+          .prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM connections')
+          .get();
     return row?.count ?? 0;
   }
 
@@ -2078,7 +2240,7 @@ export class Store {
 
       /*
        * Most settings are a single value and are stored as text. A couple are
-       * a group of related ones — the chat's address, model and temperature
+       * a group of related ones — the chat's model, reply limit and tool pace
        * belong together and are always set together — and those are stored as
        * JSON under one key, merged over the defaults so a value added in a
        * later version appears rather than being undefined.
@@ -2110,8 +2272,8 @@ export class Store {
     for (const [key, value] of Object.entries(patch)) {
       if (!(key in DEFAULT_SETTINGS)) continue;
 
-      // Patched a field at a time, so setting the chat's temperature does not
-      // silently reset its address.
+      // Patched a field at a time, so setting the chat's model does not
+      // silently reset which system prompt it uses.
       if (isObjectSetting(key)) {
         upsert.run(
           key,
@@ -2122,6 +2284,62 @@ export class Store {
       upsert.run(key, value == null ? '' : String(value));
     }
     return this.getSettings();
+  }
+
+  /**
+   * Move the chat's address and instructions out of the settings blob.
+   *
+   * Both were fields on `chat` before the model server became an ordinary
+   * connection and system prompts became a collection. They are moved rather
+   * than dropped: the address is somebody's rented box, and the instructions are
+   * often months of tuning. Runs on every boot and does nothing once there is
+   * nothing left to move.
+   *
+   * `temperature` is deleted outright — sampling belongs to the model server's
+   * launch flags, and a stale number here would keep overriding them.
+   */
+  migrateChatSettings(makeId: () => string): void {
+    const row = this.db
+      .prepare<[string], { value: string }>('SELECT value FROM settings WHERE key = ?')
+      .get('chat');
+    if (!row) return;
+
+    const legacy = parseJson<Record<string, unknown>>(row.value, {});
+    const hasLegacy = ['baseUrl', 'systemPrompt', 'temperature'].some((key) => key in legacy);
+    if (!hasLegacy) return;
+
+    const baseUrl = typeof legacy.baseUrl === 'string' ? legacy.baseUrl.trim() : '';
+    const systemPrompt = typeof legacy.systemPrompt === 'string' ? legacy.systemPrompt : '';
+
+    const next = { ...legacy };
+    delete next.baseUrl;
+    delete next.systemPrompt;
+    delete next.temperature;
+
+    if (baseUrl !== '' && this.countConnections('llama') === 0) {
+      const id = makeId();
+      this.insertConnection(id, {
+        kind: 'llama',
+        name: 'Model server',
+        url: baseUrl,
+        authMode: 'none',
+      });
+      this.activateConnection(id);
+    }
+
+    if (systemPrompt.trim() !== '' && next.systemPromptId == null) {
+      const kept =
+        this.findSystemPromptByName('Chat') ??
+        this.insertSystemPrompt(makeId(), { name: 'Chat', text: systemPrompt });
+      next.systemPromptId = kept.id;
+    }
+
+    this.db
+      .prepare(
+        `INSERT INTO settings (key, value) VALUES ('chat', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(JSON.stringify(next));
   }
 
   /* ---------------------------------------------------------------- */
@@ -2154,6 +2372,7 @@ export class Store {
       savedAt: Date.now(),
       settings: this.getSettings(),
       connections: this.listConnections().map((connection) => ({
+        kind: connection.kind,
         name: connection.name,
         url: connection.url,
         authMode: connection.authMode,
@@ -2161,6 +2380,11 @@ export class Store {
         secret: this.getConnectionWithSecret(connection.id)?.secret ?? null,
         allowSelfSigned: connection.allowSelfSigned,
         active: connection.isActive,
+      })),
+      systemPrompts: this.listSystemPrompts().map(({ name, text, position }) => ({
+        name,
+        text,
+        position,
       })),
       variation: {
         config: this.getRandomPromptConfig(),
@@ -2194,6 +2418,7 @@ export class Store {
       for (const connection of state.connections ?? []) {
         const id = makeId();
         this.insertConnection(id, {
+          kind: connection.kind ?? 'comfy',
           name: connection.name,
           url: connection.url,
           authMode: connection.authMode,
@@ -2203,6 +2428,15 @@ export class Store {
         });
         if (connection.active) this.activateConnection(id);
       }
+    }
+
+    // Restored by name, one at a time: unlike connections, a half-populated
+    // collection is normal — you write the chat's instructions on day one and
+    // a workflow's captioning rules a month later.
+    for (const prompt of state.systemPrompts ?? []) {
+      if (!prompt?.name) continue;
+      if (this.findSystemPromptByName(prompt.name)) continue;
+      this.insertSystemPrompt(makeId(), prompt);
     }
 
     if (state.variation?.config) this.setRandomPromptConfig(state.variation.config);

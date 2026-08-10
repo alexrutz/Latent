@@ -123,6 +123,27 @@ async function resetState() {
     const blocks = (await (await ctx.get('/api/prompt-blocks')).json()) as { id: string }[];
     for (const block of blocks) await ctx.delete(`/api/prompt-blocks/${block.id}`);
 
+    /*
+     * System prompts reach into every workflow with a field of the same name,
+     * so one left behind would quietly rewrite a later test's text input. The
+     * chat's choice of one goes with them.
+     */
+    const prompts = (await (await ctx.get('/api/system-prompts')).json()) as { id: string }[];
+    for (const prompt of prompts) await ctx.delete(`/api/system-prompts/${prompt.id}`);
+
+    /*
+     * Model servers are connections now. The ComfyUI one is left alone — it is
+     * what the whole suite runs against — but a stale llama entry would point
+     * the chat at a port from a previous test.
+     */
+    const connections = (await (await ctx.get('/api/connections')).json()) as {
+      id: string;
+      kind: string;
+    }[];
+    for (const connection of connections) {
+      if (connection.kind === 'llama') await ctx.delete(`/api/connections/${connection.id}`);
+    }
+
     // Random prompt mode is server-side state; leaving it on would silently
     // rewrite the prompt in every test that follows.
     await ctx.patch('/api/prompt-mode', {
@@ -430,7 +451,9 @@ test.describe('the phone-specific fixes', () => {
     await expect(page.getByRole('heading', { name: 'Connections' })).toBeVisible();
     await expect(page.getByText('in use')).toBeVisible();
 
-    await page.getByRole('button', { name: 'Add', exact: true }).click();
+    // Both kinds of server live in this one section now, so the button says
+    // which one it adds.
+    await page.getByRole('button', { name: 'Add a ComfyUI connection' }).click();
     await expect(page.getByPlaceholder('https://12.34.56.78:8188')).toBeVisible();
     await expect(page.getByText(/Authorization: Bearer/)).toBeVisible();
 
@@ -2573,15 +2596,33 @@ test.describe('the chat module', () => {
     }
   };
 
+  /**
+   * Point the chat at the stand-in model server.
+   *
+   * A connection like any other now, in the same list as ComfyUI's — which is
+   * the whole point of the change: one list, one dialog, one way of saying
+   * "talk to this box".
+   */
+  const useLlama = async (url = LLAMA): Promise<string> => {
+    return withApi(async (ctx) => {
+      const created = await ctx.post('/api/connections', {
+        data: { kind: 'llama', name: `Model server ${url}`, url },
+      });
+      const connection = (await created.json()) as { id: string };
+      await ctx.post(`/api/connections/${connection.id}/activate`);
+      return connection.id;
+    });
+  };
+
   test.beforeEach(async () => {
     await resetState();
+    await useLlama();
     // The whole chat block, not a patch of it: settings merge, so a test that
     // switches a tool off would otherwise leave it off for everything after it.
     await withApi((ctx) =>
       ctx.patch('/api/settings', {
         data: {
           chat: {
-            baseUrl: LLAMA,
             thinking: true,
             generation: { workflowId: '', values: {} },
             // Pinned, all of it: settings merge, so anything a test changes
@@ -2775,7 +2816,6 @@ test.describe('the chat module', () => {
       ctx.patch('/api/settings', {
         data: {
           chat: {
-            baseUrl: LLAMA,
             tools: { build_prompt: 'off', prompt_blocks: 'settled', ask_user: 'settled' },
           },
         },
@@ -3075,7 +3115,7 @@ test.describe('the chat module', () => {
     await seedWorkflow();
     await withApi((ctx) =>
       ctx.patch('/api/settings', {
-        data: { chat: { baseUrl: LLAMA, promptButton: 'dialog' } },
+        data: { chat: { promptButton: 'dialog' } },
       }),
     );
     await script({
@@ -3379,9 +3419,6 @@ test.describe('the twenty-third wave', () => {
   test.beforeEach(async () => {
     await resetState();
     await seedWorkflow();
-    await withApi(async (ctx) => {
-      await ctx.patch('/api/settings', { data: { chat: { authMode: 'none', username: '', apiKey: '' } } });
-    });
   });
 
   /** Generate one picture and wait for it to land. */
@@ -3556,66 +3593,6 @@ test.describe('the twenty-third wave', () => {
     await page.screenshot({ path: 'test-results/66-gallery-sorted.png' });
   });
 
-  /*
-   * The model server behind a proxy, which is the rented-box case.
-   *
-   * What is asserted here is the shape of the form: a username only exists for
-   * basic auth, the token is never legible on screen, and the whole block is
-   * absent when there is nothing to authenticate against. Whether the right
-   * header goes out is a unit test, where it can be read directly.
-   */
-  test('asks for the model server’s password the way a connection does', async ({ page }) => {
-    await open(page, '/settings');
-
-    const username = page.getByLabel('Model server username');
-    const token = page.getByLabel('Model server token');
-
-    // Nothing to fill in until there is something to authenticate against.
-    await expect(token).toHaveCount(0);
-    await expect(username).toHaveCount(0);
-
-    await page.getByRole('button', { name: 'Bearer token' }).click();
-    await expect(token).toBeVisible();
-    await expect(username).toHaveCount(0);
-    // A token is a secret, and a phone screen is read over shoulders.
-    await expect(token).toHaveAttribute('type', 'password');
-
-    await token.fill('sk-rented-box');
-    await token.blur();
-
-    // Basic auth is the other thing vast.ai accepts, and it needs a name.
-    await page.getByRole('button', { name: 'Username', exact: true }).click();
-    await expect(username).toBeVisible();
-    await username.fill('vastai');
-    await username.blur();
-    await page.screenshot({ path: 'test-results/67-llama-auth.png' });
-
-    // Saved server-side, so the next request actually carries it.
-    await expect
-      .poll(async () =>
-        withApi(async (ctx) => {
-          const settings = (await (await ctx.get('/api/settings')).json()) as {
-            chat: { authMode: string; username: string; apiKey: string };
-          };
-          return settings.chat;
-        }),
-      )
-      .toMatchObject({ authMode: 'basic', username: 'vastai', apiKey: 'sk-rented-box' });
-
-    // Turning it off keeps the token rather than making you type it again.
-    await page.getByRole('button', { name: 'No auth' }).click();
-    await expect(token).toHaveCount(0);
-    await expect
-      .poll(async () =>
-        withApi(async (ctx) => {
-          const settings = (await (await ctx.get('/api/settings')).json()) as {
-            chat: { authMode: string; apiKey: string };
-          };
-          return settings.chat;
-        }),
-      )
-      .toMatchObject({ authMode: 'none', apiKey: 'sk-rented-box' });
-  });
 });
 
 
@@ -3839,5 +3816,159 @@ test.describe('workflow folders', () => {
     const prefix = page.getByLabel('Workflow name prefix');
     await expect(prefix).toBeVisible();
     await expect(prefix).toHaveValue('API_');
+  });
+});
+
+/**
+ * Wave 25: one list of servers, one collection of instructions.
+ *
+ * Three changes with one idea behind them — things that were scattered are
+ * collected: both kinds of server into one section with one dialog, every
+ * system prompt into a list of its own, and the chat's own state out of the
+ * screen that happens to be showing it.
+ */
+test.describe('the twenty-fifth wave', () => {
+  test.beforeEach(async () => {
+    await resetState();
+  });
+
+  /** Both kinds of server sit in one section and share one dialog. */
+  test('adds a model server through the same dialog as ComfyUI', async ({ page }) => {
+    await open(page, '/settings');
+
+    const connections = page.getByRole('heading', { name: 'Connections' });
+    await expect(connections).toBeVisible();
+
+    // One section, both kinds listed under it.
+    const section = page.locator('section', { has: connections });
+    await expect(section).toContainText('ComfyUI');
+    await expect(section).toContainText('Model server');
+
+    await section.getByRole('button', { name: 'Add a Model server connection' }).click();
+    const sheet = page.getByRole('dialog');
+    await expect(sheet).toBeVisible();
+
+    // The kind is pre-chosen from the button that opened it, and the rest of
+    // the form is the one ComfyUI uses.
+    await expect(
+      sheet.getByRole('button', { name: 'Model server', exact: true }),
+    ).toHaveAttribute('aria-pressed', 'true');
+    await sheet.getByPlaceholder('Rented GPU').fill('Downstairs box');
+    await sheet.getByPlaceholder('http://127.0.0.1:8080').fill('http://127.0.0.1:8189');
+    await sheet.getByRole('button', { name: 'None', exact: true }).click();
+    await sheet.getByRole('button', { name: 'Save' }).click();
+    await expect(sheet).toHaveCount(0);
+
+    // Added, in use, and it has not stood ComfyUI down.
+    const stored = await withApi(async (ctx) =>
+      (await (await ctx.get('/api/connections')).json()) as {
+        kind: string;
+        name: string;
+        isActive: boolean;
+      }[],
+    );
+    expect(stored.find((entry) => entry.name === 'Downstairs box')?.isActive).toBe(true);
+    expect(stored.some((entry) => entry.kind === 'comfy' && entry.isActive)).toBe(true);
+    await page.screenshot({ path: 'test-results/72-connections.png' });
+  });
+
+  /**
+   * The point of collecting the prompts: a workflow's text field is filled from
+   * the library rather than carrying its own copy of the wording.
+   */
+  test('fills a workflow’s text field from the prompt named after it', async ({ page }) => {
+    // The negative prompt node, titled after the prompt we are about to write.
+    const graph = JSON.parse(JSON.stringify(sd15Txt2Img)) as Record<string, unknown>;
+    (graph['7'] as { _meta?: unknown })._meta = { title: 'House rules' };
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'Named field', graph } }),
+    );
+
+    await open(page, '/settings');
+    const prompts = page.locator('section', {
+      has: page.getByRole('heading', { name: 'System prompts' }),
+    });
+    await prompts.getByRole('button', { name: 'Add' }).click();
+
+    const sheet = page.getByRole('dialog');
+    await sheet.getByLabel('Prompt name').fill('House rules');
+    await sheet.getByLabel('Prompt text').fill('no text, no watermark, no signature');
+    await sheet.getByRole('button', { name: 'Save' }).click();
+    await expect(sheet).toHaveCount(0);
+    await expect(prompts).toContainText('no text, no watermark');
+    await page.screenshot({ path: 'test-results/73-system-prompts.png' });
+
+    // The form says where that field's text comes from rather than offering a
+    // box whose contents would be replaced on the way out.
+    await open(page, '/');
+    await expect(page.getByText('from the system prompt “House rules”')).toBeVisible();
+
+    await page.getByPlaceholder('Describe the image…').fill('prompt library check');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    // What was actually submitted, which is where the substitution happens.
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const gallery = (await (await ctx.get('/api/gallery?limit=20')).json()) as {
+              items: { title: string; values: Record<string, unknown> }[];
+            };
+            return gallery.items.find((item) => item.title === 'prompt library check')?.values[
+              '7.text'
+            ];
+          }),
+        { timeout: 60_000 },
+      )
+      .toBe('no text, no watermark, no signature');
+  });
+
+  /**
+   * The instability this wave was mostly about.
+   *
+   * Leaving the chat used to abort the reply in flight and destroy everything
+   * the screen was holding — the transcript, a half-typed message, a tool
+   * dialog waiting on a decision. Coming back then re-opened the conversation
+   * from scratch and raced whatever was left, which is how messages went
+   * missing. The conversation lives outside the screen now, so this is a
+   * render rather than a reload.
+   */
+  test('keeps the conversation and the reply while another tab is visited', async ({ page }) => {
+    const llama = await apiRequest.newContext({ baseURL: 'http://127.0.0.1:8189' });
+    try {
+      await withApi(async (ctx) => {
+        const created = await ctx.post('/api/connections', {
+          data: { kind: 'llama', name: 'Mock model server', url: 'http://127.0.0.1:8189' },
+        });
+        const connection = (await created.json()) as { id: string };
+        await ctx.post(`/api/connections/${connection.id}/activate`);
+      });
+      await llama.post('/__script', { data: [{ content: 'A harbour at dawn, then.' }] });
+
+      await open(page, '/chat');
+      await page.getByPlaceholder('Say something…').fill('something calm');
+      await page.getByRole('button', { name: 'Send' }).click();
+      await expect(page.getByText('A harbour at dawn, then.')).toBeVisible({ timeout: 30_000 });
+
+      // A half-typed message survives the trip too — it is state about the
+      // conversation, not about the screen.
+      await page.getByPlaceholder('Say something…').fill('and maybe a lighthouse');
+
+      await page.getByRole('link', { name: 'Gallery' }).click();
+      await expect(page.getByPlaceholder('Say something…')).toHaveCount(0);
+      await page.getByRole('link', { name: 'Chat' }).click();
+
+      await expect(page.getByText('A harbour at dawn, then.')).toBeVisible();
+      // The paragraph in the transcript, not the heading the title also became.
+      await expect(
+        page.getByRole('paragraph').filter({ hasText: 'something calm' }),
+      ).toBeVisible();
+      await expect(page.getByPlaceholder('Say something…')).toHaveValue(
+        'and maybe a lighthouse',
+      );
+      await page.screenshot({ path: 'test-results/74-chat-return.png' });
+    } finally {
+      await llama.dispose();
+    }
   });
 });

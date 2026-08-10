@@ -1,6 +1,12 @@
 import { useState } from 'react';
 
-import type { ConnectionAuthMode, ConnectionInput, ConnectionSummary, ConnectionTestResult } from '@latent/shared';
+import type {
+  ConnectionAuthMode,
+  ConnectionInput,
+  ConnectionKind,
+  ConnectionSummary,
+  ConnectionTestResult,
+} from '@latent/shared';
 
 import { api } from '../api/client';
 import {
@@ -14,82 +20,134 @@ import { Toggle } from '../components/ParamControl';
 import { Button, Card, cn, ErrorNote, Sheet } from '../components/ui';
 
 /**
- * Saved ComfyUI endpoints.
+ * Every server Latent talks to, in one list.
  *
- * A rented GPU gets a new address every time you rent one, and reaching it means
- * a token and often a self-signed certificate. Presets make switching between a
- * local box and whatever is running today a single tap.
+ * ComfyUI and the model server used to live in different places — one a screen
+ * of presets, the other an address buried in the chat settings — which made no
+ * sense the moment both were on rented boxes. It is the same problem twice: an
+ * address that changes every time you rent one, a token, usually a certificate
+ * nobody signed. One list, one dialog, and one of each kind in use at a time.
  */
+
+const KINDS: { value: ConnectionKind; label: string; blurb: string; placeholder: string }[] = [
+  {
+    value: 'comfy',
+    label: 'ComfyUI',
+    blurb: 'Where the pictures are made.',
+    placeholder: 'https://12.34.56.78:8188',
+  },
+  {
+    value: 'llama',
+    label: 'Model server',
+    blurb:
+      'What the chat talks to. Anything offering llama.cpp’s OpenAI-compatible routes works; ' +
+      'the tools need a model that can call them, and images need a multimodal one.',
+    placeholder: 'http://127.0.0.1:8080',
+  },
+];
+
 export function ConnectionsScreen() {
   const connections = useConnections();
   const activate = useActivateConnection();
   const remove = useDeleteConnection();
-  const [editing, setEditing] = useState<ConnectionSummary | 'new' | null>(null);
+  const [editing, setEditing] = useState<ConnectionSummary | ConnectionKind | null>(null);
+
+  const all = connections.data ?? [];
 
   return (
     <section className="space-y-2">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Connections</h2>
-        <Button variant="secondary" size="sm" onClick={() => setEditing('new')}>
-          Add
-        </Button>
-      </div>
+      <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Connections</h2>
 
       <ErrorNote>{errorText(activate.error) ?? errorText(remove.error)}</ErrorNote>
 
-      <div className="space-y-2">
-        {connections.data?.map((connection) => (
-          <Card key={connection.id} className={cn(connection.isActive && 'border-accent/50')}>
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="flex items-center gap-2 truncate font-medium">
-                  {connection.name}
-                  {connection.isActive && (
-                    <span className="shrink-0 rounded-full bg-accent/20 px-2 py-0.5 text-[10px] text-accent">
-                      in use
-                    </span>
-                  )}
-                </p>
-                <p className="truncate text-xs text-muted">{connection.url}</p>
-                <p className="mt-0.5 text-xs text-muted">
-                  {connection.authMode === 'none' ? 'No auth' : `${connection.authMode} token`}
-                  {connection.allowSelfSigned && ' · self-signed OK'}
-                </p>
-              </div>
+      {/*
+        Grouped by kind and stacked, rather than two sections apart. The two are
+        set up together — you rent one box and reach both from it — and reading
+        down one list is how you check that both are actually connected.
+      */}
+      {KINDS.map((kind) => {
+        const mine = all.filter((connection) => connection.kind === kind.value);
+        return (
+          <div key={kind.value} className="space-y-2">
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <p className="min-w-0 text-xs text-muted">
+                <span className="text-body">{kind.label}</span> · {kind.blurb}
+              </p>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setEditing(kind.value)}
+                aria-label={`Add a ${kind.label} connection`}
+              >
+                Add
+              </Button>
             </div>
 
-            <div className="mt-3 flex flex-wrap gap-2">
-              {!connection.isActive && (
-                <Button
-                  variant="primary"
-                  size="sm"
-                  busy={activate.isPending}
-                  onClick={() => activate.mutate(connection.id)}
-                >
-                  Use this
-                </Button>
-              )}
-              <Button variant="secondary" size="sm" onClick={() => setEditing(connection)}>
-                Edit
-              </Button>
-              {!connection.isActive && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  busy={remove.isPending}
-                  onClick={() => remove.mutate(connection.id)}
-                >
-                  Delete
-                </Button>
-              )}
-            </div>
-          </Card>
-        ))}
-      </div>
+            {mine.length === 0 && (
+              <Card>
+                <p className="text-sm text-muted">Nothing added yet.</p>
+              </Card>
+            )}
+
+            {mine.map((connection) => (
+              <Card key={connection.id} className={cn(connection.isActive && 'border-accent/50')}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="flex items-center gap-2 truncate font-medium">
+                      {connection.name}
+                      {connection.isActive && (
+                        <span className="shrink-0 rounded-full bg-accent/20 px-2 py-0.5 text-[10px] text-accent">
+                          in use
+                        </span>
+                      )}
+                    </p>
+                    <p className="truncate text-xs text-muted">{connection.url}</p>
+                    <p className="mt-0.5 text-xs text-muted">
+                      {connection.authMode === 'none' ? 'No auth' : `${connection.authMode} token`}
+                      {connection.allowSelfSigned && ' · self-signed OK'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {!connection.isActive && (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      busy={activate.isPending}
+                      onClick={() => activate.mutate(connection.id)}
+                    >
+                      Use this
+                    </Button>
+                  )}
+                  <Button variant="secondary" size="sm" onClick={() => setEditing(connection)}>
+                    Edit
+                  </Button>
+                  {/* ComfyUI's cannot be deleted while it is the one in use —
+                      the app holds a socket to it. A model server can: it is
+                      asked for per request, and a box you have stopped renting
+                      should not be undeletable. */}
+                  {(!connection.isActive || connection.kind === 'llama') && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      busy={remove.isPending}
+                      onClick={() => remove.mutate(connection.id)}
+                    >
+                      Delete
+                    </Button>
+                  )}
+                </div>
+              </Card>
+            ))}
+          </div>
+        );
+      })}
 
       {editing && (
         <ConnectionSheet
-          connection={editing === 'new' ? null : editing}
+          connection={typeof editing === 'string' ? null : editing}
+          kind={typeof editing === 'string' ? editing : editing.kind}
           onClose={() => setEditing(null)}
         />
       )}
@@ -102,7 +160,7 @@ function errorText(error: unknown): string | null {
 }
 
 const AUTH_MODES: { value: ConnectionAuthMode; label: string; hint: string }[] = [
-  { value: 'none', label: 'None', hint: 'A ComfyUI with no proxy in front of it.' },
+  { value: 'none', label: 'None', hint: 'A server with no proxy in front of it.' },
   {
     value: 'bearer',
     label: 'Token',
@@ -115,16 +173,27 @@ const AUTH_MODES: { value: ConnectionAuthMode; label: string; hint: string }[] =
   },
 ];
 
+/**
+ * One dialog for both kinds.
+ *
+ * The kind is a choice at the top rather than two forms, because everything
+ * below it is identical — and because "this address is a model server, not a
+ * ComfyUI" is exactly the sort of thing you want to be able to correct without
+ * deleting and retyping the rest.
+ */
 function ConnectionSheet({
   connection,
+  kind: initialKind,
   onClose,
 }: {
   connection: ConnectionSummary | null;
+  kind: ConnectionKind;
   onClose: () => void;
 }) {
   const create = useCreateConnection();
   const update = useUpdateConnection();
 
+  const [kind, setKind] = useState<ConnectionKind>(connection?.kind ?? initialKind);
   const [name, setName] = useState(connection?.name ?? '');
   const [url, setUrl] = useState(connection?.url ?? '');
   const [authMode, setAuthMode] = useState<ConnectionAuthMode>(connection?.authMode ?? 'bearer');
@@ -136,7 +205,10 @@ function ConnectionSheet({
   const [result, setResult] = useState<ConnectionTestResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const chosen = KINDS.find((entry) => entry.value === kind)!;
+
   const payload = (): ConnectionInput => ({
+    kind,
     name: name.trim(),
     url: url.trim(),
     authMode,
@@ -183,6 +255,30 @@ function ConnectionSheet({
   return (
     <Sheet open onClose={onClose} title={connection ? 'Edit connection' : 'Add connection'} full>
       <div className="space-y-4">
+        <Field label="What is at this address" hint={chosen.blurb} group>
+          <div className="flex gap-2">
+            {KINDS.map((entry) => (
+              <button
+                key={entry.value}
+                type="button"
+                aria-pressed={kind === entry.value}
+                onClick={() => {
+                  setKind(entry.value);
+                  setResult(null);
+                }}
+                className={cn(
+                  'flex-1 rounded-xl border px-3 py-2.5 text-sm',
+                  kind === entry.value
+                    ? 'border-accent/50 bg-accent/15 text-accent'
+                    : 'border-line bg-surface text-muted',
+                )}
+              >
+                {entry.label}
+              </button>
+            ))}
+          </div>
+        </Field>
+
         <Field label="Name">
           <input
             value={name}
@@ -194,12 +290,16 @@ function ConnectionSheet({
 
         <Field
           label="Address"
-          hint="On vast.ai this is the host and port the instance portal shows for ComfyUI."
+          hint={
+            kind === 'comfy'
+              ? 'On vast.ai this is the host and port the instance portal shows for ComfyUI.'
+              : 'Where `llama-server` is listening. Its OpenAI-compatible routes hang off this.'
+          }
         >
           <input
             value={url}
             onChange={(event) => setUrl(event.target.value)}
-            placeholder="https://12.34.56.78:8188"
+            placeholder={chosen.placeholder}
             inputMode="url"
             autoCapitalize="none"
             autoCorrect="off"
@@ -208,7 +308,7 @@ function ConnectionSheet({
           />
         </Field>
 
-        <Field label="Authentication">
+        <Field label="Authentication" group>
           <div className="flex gap-2">
             {AUTH_MODES.map((mode) => (
               <button
@@ -308,22 +408,33 @@ function ConnectionSheet({
   );
 }
 
+/**
+ * A labelled row.
+ *
+ * `group` for a row of buttons rather than one input: a `<label>` wrapping
+ * three buttons hands its own text to every one of them, so each button ends up
+ * announcing itself as "Authentication None Token Basic" — the label belongs to
+ * the group, not to any of its members.
+ */
 function Field({
   label,
   hint,
+  group = false,
   children,
 }: {
   label: string;
   hint?: string;
+  group?: boolean;
   children: React.ReactNode;
 }) {
+  const Tag = group ? 'div' : 'label';
   return (
-    <label className="block">
+    <Tag className="block" {...(group ? { role: 'group', 'aria-label': label } : {})}>
       <span className="mb-1.5 block text-xs font-medium tracking-wide text-muted uppercase">
         {label}
       </span>
       {children}
       {hint && <p className="mt-1.5 text-xs text-muted">{hint}</p>}
-    </label>
+    </Tag>
   );
 }

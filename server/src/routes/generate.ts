@@ -4,6 +4,7 @@ import {
   appendAlwaysBlocks,
   applyOverrides,
   applyParams,
+  applySystemPrompts,
   buildParamSummary,
   composeRandomPrompt,
   drawRandomParams,
@@ -122,8 +123,22 @@ async function runBatch(
   const generationIds: string[] = [];
   const promptIds: string[] = [];
 
+  /*
+   * The collected instructions go in here, at submit time.
+   *
+   * Not when the form is filled: a system prompt is edited in one place and has
+   * to reach every route into a generation — this form, the chat, endless mode —
+   * without any of them re-saving anything. Read once per batch rather than per
+   * item, because nothing draws or varies them.
+   */
+  const systemPrompts = ctx.store.listSystemPrompts();
+
   for (let i = 0; i < batchCount; i += 1) {
-    let itemValues = applyAlways(drawingPrompt ? drawPrompts(values) : values);
+    let itemValues = applySystemPrompts(
+      schema,
+      applyAlways(drawingPrompt ? drawPrompts(values) : values),
+      systemPrompts,
+    );
 
     /*
      * Parameter variation, drawn per item like the prompt. Applied after the

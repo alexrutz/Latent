@@ -118,6 +118,8 @@ form. Nothing about your ComfyUI setup changes.
   mirrored to two files one directory above the checkout, and the database and
   image archive live there too — so a clean reinstall keeps your gallery, your
   layouts, your presets and your prompt library.
+- **System prompts, collected.** The instructions a workflow buries inside a node
+  live in one named list instead, and fill any text input of the same name.
 - **Optional terminal** for maintaining the host, off unless you enable it.
 
 ## Requirements
@@ -681,19 +683,22 @@ keyboard is worst at. The **Chat** tab connects Latent to a local
 anything else speaking its OpenAI-compatible API — so you can describe what you
 are after in prose, be talked out of it, and end up with a prompt.
 
-Set the address under **Settings → Chat** (the default is
-`http://127.0.0.1:8080`) and press Check; it reports the model it found. Nothing
-else is required — no key, no account, and the conversation never leaves your
-network.
+Add it under **Settings → Connections** — the same list ComfyUI's own address
+lives in, with the same dialog — as a **Model server**, and press Test; it
+reports the models it found. Nothing else is required: no key, no account, and
+the conversation never leaves your network. Several can be kept and switched
+between, the way ComfyUI's are.
 
 **Unless the model is on a rented box**, in which case it is behind the same
-proxy the GPU is behind, and that proxy wants a password. Settings → Chat offers
-the same three modes a [ComfyUI connection](#connecting-to-vastai) does —
-a **bearer token**, **basic auth** as `user:token` (vast.ai answers to both, and
-wants `vastai` as the name), or **none** — plus the same switch for a
-certificate nothing signed. Offering only one of those would mean the
-arrangement you happen to have is the one that does not work. Switching back to
-*No auth* keeps the token rather than making you type it in again.
+proxy the GPU is behind, and that proxy wants a password — which is exactly why
+it is a connection like any other. The dialog offers the same three modes a
+[ComfyUI connection](#connecting-to-vastai) does: a **bearer token**, **basic
+auth** as `user:token` (vast.ai answers to both, and wants `vastai` as the
+name), or **none**, plus the same switch for a certificate nothing signed.
+
+**Sampling is the server's.** `llama-server` is started with the flags the model
+it is running wants, and Latent does not send a temperature of its own to
+override them.
 
 **Thinking is on by default.** Reasoning models are what this is worth doing
 with, and a model that thinks before answering gives noticeably better prompts.
@@ -716,6 +721,11 @@ reply.
 to and a reply full of asterisks looks broken. A deliberate subset — headings,
 lists, quotes, code, the inline marks, links — parsed to elements rather than to
 HTML, so there is nothing for a model's output to inject into.
+
+**The instructions are a system prompt like any other.** Settings → Chat picks
+one out of the collection described below, or *Latent's own* — the default
+wording, which explains the tools and how modern image models actually read a
+prompt.
 
 **Pick the model** when the server has more than one. A plain `llama-server` has
 one loaded and its name is decoration; in router mode it fronts several and
@@ -836,7 +846,7 @@ is not in the request at all, so there is nothing to talk itself into.
 
 ### The instructions
 
-Also editable, and worth reading before you replace them. Latent's own say two
+Replaceable, and worth reading before you replace them. Latent's own say two
 things.
 
 The first is about pace: work the idea out together, and do not rush to a
@@ -862,10 +872,38 @@ more authentic one. Only the prompt — the conversation stays in your language,
 and text that should appear *in* the picture stays in whatever language you
 asked for.
 
-**Show Latent's own** fills the box so you can read or edit it; emptying the box
-goes back to it. The pace settings above apply either way — they belong to the
-app, not to the wording, so replacing the instructions does not silently lose
-them.
+To use your own, write one under **Settings → System prompts** and pick it in
+Settings → Chat; **Start from Latent's own** fills the box with this wording so
+you can read it or edit it rather than starting from nothing. The pace settings
+above apply either way — they belong to the app, not to the wording, so
+replacing the instructions does not silently lose them.
+
+## System prompts, out of the workflows
+
+Workflows grow instructions. A captioner node carries a paragraph telling it how
+to describe a picture; an Ollama node carries the rules by which it rewrites a
+prompt. Inside the graph that text is invisible from here, impossible to reuse,
+and changeable only by opening ComfyUI, editing the node and exporting the
+workflow again.
+
+**Settings → System prompts** is where they live instead. Each one has a name
+and a body, and the name is the whole mechanism: any text input in any workflow
+called the same thing is filled from it when the job is submitted — matched
+against the field's label, its node's title, or its raw input name, in that
+order, ignoring case. Five workflows needing the same house rules stop carrying
+five copies of them.
+
+The Generate form shows such a field as *from the system prompt “House rules”*
+rather than offering a box whose contents are about to be replaced. Substitution
+happens server-side at submit time, so it holds for every route into a
+generation — the form, the chat, endless mode — and editing the wording changes
+what the next run does without anything being re-saved.
+
+An empty prompt is skipped rather than blanking the field: "I have not written
+this yet" leaves the workflow's own text alone. Names are unique, because two
+prompts called *Caption* is not a convenience but a question nobody can answer.
+And the chat's own instructions are simply one of these entries, which is why
+they moved out of the chat settings.
 
 ## Parameter studies
 
@@ -1301,6 +1339,8 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 | `server/src/chat/llama.ts` | The llama.cpp client: streaming, reasoning tags, tool schemas, and the instructions and pace policy |
 | `shared/src/markdown.ts` | The Markdown subset a chat reply is rendered from |
 | `server/src/routes/chat.ts` | Conversations, the SSE reply stream, and tool decisions |
+| `web/src/state/chat.ts` | The conversation, held outside the screen so a tab switch cannot destroy it |
+| `shared/src/systemPrompts.ts` | Matching a named system prompt to the workflow field it belongs in |
 | `server/src/statefile.ts` | Mirrors the arrangement to the files above the project |
 | `server/src/sweeper.ts` | Deletes runs nobody kept, once they are old enough |
 | `shared/src/promptMatch.ts` | Matches an image's embedded graph to a stored workflow |

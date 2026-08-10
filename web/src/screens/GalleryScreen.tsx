@@ -840,6 +840,7 @@ function ViewerWithActions({
 
   const { record, image } = entry;
   const workflowExists = workflows.data?.some((item) => item.id === record.workflowId) ?? false;
+  const viewerOverlay = overlayValues(record, grid.viewerParams);
 
   /*
    * Whether *this* image is already a favourite.
@@ -955,10 +956,14 @@ function ViewerWithActions({
         something to have permanently across the bottom of every image.
       */
       overlay={
-        <ParamOverlayLine
-          items={overlayValues(record, grid.viewerParams)}
-          withLabels={grid.overlayLabels}
-        />
+        /*
+          Nothing chosen, nothing rendered — not an empty strip. The viewer
+          reserves room for whatever this is, so handing it a component that
+          draws nothing left a band of blank space over the picture.
+        */
+        viewerOverlay.length > 0 ? (
+          <ParamOverlayLine items={viewerOverlay} withLabels={grid.overlayLabels} />
+        ) : undefined
       }
       footer={
         <div className="space-y-2">

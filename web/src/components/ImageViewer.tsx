@@ -316,11 +316,20 @@ export function ImageViewer({
       </div>
 
       <div className="absolute inset-x-0 bottom-0 z-10">
-        {/* Over the picture, not below it: this is a glance, and the footer is
-            already carrying the actions. Hidden while zoomed, where it would
-            just be in the way of what you are inspecting. */}
+        {/*
+          Over the picture, not below it: this is a glance, and the footer is
+          already carrying the actions. Hidden while zoomed, where it would just
+          be in the way of what you are inspecting.
+
+          No wash behind it either. A gradient from black up to transparent
+          reads as a soft fade from above and as a hard edge from below — it has
+          to stop somewhere, and where it stopped was a line across the bottom
+          of every picture, the last remnant of the bar this used to be. The
+          text carries its own legibility instead, which costs nothing and
+          covers nothing.
+        */}
         {overlay && scale === 1 && (
-          <div className="pointer-events-none overflow-hidden bg-gradient-to-t from-black/70 to-transparent px-3 pt-6 pb-2">
+          <div className="pointer-events-none overflow-hidden px-3 pt-6 pb-2 [text-shadow:0_1px_3px_rgb(0_0_0/0.9)]">
             {/*
               Capped and scrollable rather than as tall as it likes. What a
               node prints can be a paragraph — a model's reasoning, an expanded

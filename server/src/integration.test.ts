@@ -26,6 +26,7 @@ import type {
   StudyShot,
   StudyShotImage,
   StudyStats,
+  SystemPrompt,
   WorkflowDetail,
   WorkflowScanResult,
 } from '@latent/shared';
@@ -3809,7 +3810,122 @@ describe('the queue policy', () => {
  * to decide about, and that accepting one actually does the thing — writes the
  * blocks, or queues the prompt.
  */
+/**
+ * Instructions kept outside the workflow that needs them.
+ *
+ * The point of the whole feature: a paragraph of rules for a captioner lives in
+ * one named place, and every workflow with a field of that name gets it — so
+ * changing the wording is three taps rather than an export from ComfyUI.
+ */
+describe('system prompts', () => {
+  it('fills a workflow’s text field with the prompt named after it', async () => {
+    // The same graph, with one text node titled after the prompt below.
+    const graph = JSON.parse(JSON.stringify(sd15Txt2Img)) as typeof sd15Txt2Img;
+    (graph['7'] as { _meta?: { title: string } })._meta = { title: 'Caption rules' };
+
+    const workflow = await json<WorkflowDetail>(
+      api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Named text field', graph }),
+      }),
+    );
+
+    const created = await api('/api/system-prompts', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Caption rules', text: 'Describe only what is there.' }),
+    });
+    expect(created.status).toBe(201);
+    const prompt = await json<SystemPrompt>(created);
+
+    try {
+      // A second one under the same name is an ambiguity, not a convenience.
+      const duplicate = await api('/api/system-prompts', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'caption RULES', text: 'other' }),
+      });
+      expect(duplicate.status).toBe(409);
+
+      const { generationIds } = await json<GenerateResponse>(
+        api('/api/generate', {
+          method: 'POST',
+          body: JSON.stringify({
+            workflowId: workflow.id,
+            // Deliberately typed here too: the library wins, which is what
+            // "the prompts are taken out of the workflow" has to mean.
+            values: { '6.text': 'a lighthouse', '7.text': 'whatever was exported' },
+          }),
+        }),
+      );
+
+      const record = await json<GenerationRecord>(api(`/api/gallery/${generationIds[0]}`));
+      expect(record.values['7.text']).toBe('Describe only what is there.');
+      // Nothing else is touched.
+      expect(record.values['6.text']).toBe('a lighthouse');
+    } finally {
+      await api(`/api/system-prompts/${prompt.id}`, { method: 'DELETE' });
+    }
+  }, 30_000);
+
+  it('leaves the workflow’s own text alone once the prompt is gone', async () => {
+    const list = await json<SystemPrompt[]>(api('/api/system-prompts'));
+    expect(list.some((entry) => entry.name === 'Caption rules')).toBe(false);
+  });
+});
+
+/**
+ * One list, two kinds of server.
+ *
+ * The thing worth pinning down is that they do not stand each other down:
+ * choosing a model server must leave ComfyUI exactly where it was.
+ */
+describe('connections of both kinds', () => {
+  it('keeps a ComfyUI and a model server active at the same time', async () => {
+    const before = await json<StatusResponse>(api('/api/status'));
+    expect(before.comfyOnline).toBe(true);
+
+    const created = await api('/api/connections', {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'llama', name: 'Some model server', url: 'http://127.0.0.1:1' }),
+    });
+    expect(created.status).toBe(201);
+    const connection = await json<{ id: string; kind: string; isActive: boolean }>(created);
+    // First of its kind, so it is in use without being asked to be.
+    expect(connection.kind).toBe('llama');
+    expect(connection.isActive).toBe(true);
+
+    const listed = await json<{ id: string; kind: string; isActive: boolean }[]>(
+      api('/api/connections'),
+    );
+    const comfy = listed.filter((entry) => entry.kind === 'comfy');
+    expect(comfy.some((entry) => entry.isActive)).toBe(true);
+
+    // And the chat now reports that address rather than one of its own.
+    const status = await json<{ baseUrl: string }>(api('/api/chat/status'));
+    expect(status.baseUrl).toBe('http://127.0.0.1:1');
+
+    await api(`/api/connections/${connection.id}`, { method: 'DELETE' });
+  }, 30_000);
+});
+
 describe('chat', () => {
+  /**
+   * Point the chat at a stand-in model server.
+   *
+   * A connection like any other now, rather than an address inside the chat
+   * settings — which is the whole point of the change: one list, one dialog,
+   * one way of saying "talk to this box".
+   */
+  const useLlama = async (url: string): Promise<string> => {
+    const created = await json<{ id: string }>(
+      api('/api/connections', {
+        method: 'POST',
+        body: JSON.stringify({ kind: 'llama', name: `Model server ${url}`, url }),
+      }),
+    );
+    await api(`/api/connections/${created.id}/activate`, { method: 'POST' });
+    return created.id;
+  };
+
   /** Read a server-sent stream to the end and hand back the events. */
   const readStream = async (response: Response): Promise<ChatStreamEvent[]> => {
     expect(response.status).toBe(200);
@@ -3825,9 +3941,10 @@ describe('chat', () => {
     const url = await llama.listen(0);
 
     try {
+      await useLlama(url);
       await api('/api/settings', {
         method: 'PATCH',
-        body: JSON.stringify({ chat: { baseUrl: url, thinking: true } }),
+        body: JSON.stringify({ chat: { thinking: true } }),
       });
 
       const chat = await json<{ id: string }>(
@@ -3891,10 +4008,7 @@ describe('chat', () => {
     const url = await llama.listen(0);
 
     try {
-      await api('/api/settings', {
-        method: 'PATCH',
-        body: JSON.stringify({ chat: { baseUrl: url } }),
-      });
+      await useLlama(url);
       const chat = await json<{ id: string }>(
         api('/api/chat/conversations', { method: 'POST' }),
       );
@@ -3970,10 +4084,7 @@ describe('chat', () => {
     const url = await llama.listen(0);
 
     try {
-      await api('/api/settings', {
-        method: 'PATCH',
-        body: JSON.stringify({ chat: { baseUrl: url } }),
-      });
+      await useLlama(url);
       const chat = await json<{ id: string }>(
         api('/api/chat/conversations', { method: 'POST' }),
       );
@@ -4013,10 +4124,7 @@ describe('chat', () => {
   }, 30_000);
 
   it('says plainly when the model server is not there', async () => {
-    await api('/api/settings', {
-      method: 'PATCH',
-      body: JSON.stringify({ chat: { baseUrl: 'http://127.0.0.1:1' } }),
-    });
+    await useLlama('http://127.0.0.1:1');
 
     const status = await json<{ ok: boolean; message?: string }>(api('/api/chat/status'));
     expect(status.ok).toBe(false);

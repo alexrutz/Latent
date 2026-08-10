@@ -12,6 +12,8 @@ import type {
   ToolEagerness,
 } from '@latent/shared';
 
+import { authHeaders, type ConnectionConfig } from '../comfy/connection.js';
+
 /**
  * Talking to a local llama.cpp server.
  *
@@ -353,31 +355,6 @@ export function enabledTools(tools: ChatToolSettings) {
   return TOOLS.filter((tool) => tools[tool.function.name as ChatToolName] !== 'off');
 }
 
-/**
- * Whatever the connection needs on every request.
- *
- * The same three modes ComfyUI's connection presets offer, because on a rented
- * box it is the same proxy in front of the same machine: a bearer token, basic
- * auth as `user:token` — vast.ai answers to both — or nothing at all, which is
- * the ordinary case of `llama-server` running where you are.
- *
- * `authMode` is read defensively because a settings blob written before this
- * existed has a token and no mode, and that has always meant bearer.
- */
-export function authHeader(
-  settings: Pick<ChatSettings, 'apiKey' | 'username'> & Partial<Pick<ChatSettings, 'authMode'>>,
-): Record<string, string> {
-  const key = settings.apiKey.trim();
-  const mode = settings.authMode ?? (key === '' ? 'none' : 'bearer');
-  if (key === '' || mode === 'none') return {};
-
-  if (mode === 'basic') {
-    const user = (settings.username ?? '').trim();
-    return { authorization: `Basic ${Buffer.from(`${user}:${key}`).toString('base64')}` };
-  }
-  return { authorization: `Bearer ${key}` };
-}
-
 export class LlamaError extends Error {
   override name = 'LlamaError';
 }
@@ -452,9 +429,19 @@ function userContent(text: string, attachments?: ChatAttachment[]): OpenAiMessag
   ];
 }
 
+/**
+ * One model server, reached the same way ComfyUI is.
+ *
+ * The address, the token and the certificate come from a `ConnectionConfig`,
+ * exactly as they do for ComfyUI, because the problem is the same one: the
+ * useful model servers are on rented boxes behind a proxy that wants an
+ * `Authorization` header and serves a certificate nobody signed. Everything
+ * about *what to say* stays in `ChatSettings`; everything about *how to reach
+ * it* is the connection.
+ */
 export class LlamaClient {
   /**
-   * Set only when the preset opts into an unsigned certificate.
+   * Set only when the connection opts into an unsigned certificate.
    *
    * The same arrangement ComfyUI's connections use, and for the same reason: a
    * rented box serves HTTPS with a certificate nothing signed, and there is no
@@ -463,40 +450,48 @@ export class LlamaClient {
    */
   private readonly dispatcher: Agent | undefined;
 
-  constructor(private readonly settings: ChatSettings) {
-    this.dispatcher = settings.allowSelfSigned
+  constructor(
+    private readonly connection: ConnectionConfig,
+    private readonly settings: ChatSettings,
+    /** The instructions in force, already resolved. Empty uses Latent's own. */
+    private readonly systemPrompt: string = '',
+  ) {
+    this.dispatcher = connection.allowSelfSigned
       ? new Agent({ connect: { rejectUnauthorized: false } })
       : undefined;
   }
 
   private url(path: string): string {
-    return new URL(path, this.settings.baseUrl.replace(/\/+$/, '') + '/').toString();
+    return new URL(path, this.connection.url.replace(/\/+$/, '') + '/').toString();
   }
 
-  private headers(extra: Record<string, string> = {}): Record<string, string> {
-    return { ...extra, ...authHeader(this.settings) };
+  /** Auth header and TLS agent, added to every request this client makes. */
+  private init(extra: RequestInit = {}): RequestInit {
+    // `Omit` then widen: @types/node declares `dispatcher` with its own bundled
+    // undici types, which do not line up with the installed package's `Agent`.
+    // They are the same object at runtime.
+    const init: Omit<RequestInit, 'dispatcher'> & { dispatcher?: unknown } = {
+      ...extra,
+      headers: { ...authHeaders(this.connection), ...(extra.headers ?? {}) },
+    };
+    if (this.dispatcher) init.dispatcher = this.dispatcher;
+    return init as RequestInit;
   }
 
-  /**
-   * Undici's dispatcher, which the global `fetch` accepts but does not type.
-   *
-   * The same cast the ComfyUI client makes: Node's `fetch` is undici's, and
-   * these are the same object at runtime.
-   */
-  private request(): Record<string, unknown> {
-    return this.dispatcher ? { dispatcher: this.dispatcher } : {};
+  /** Release the TLS agent's sockets. */
+  async close(): Promise<void> {
+    await this.dispatcher?.close().catch(() => undefined);
   }
 
   /** What the server has loaded. Used only to tell the user it is reachable. */
   async models(): Promise<string[]> {
-    const response = await fetch(this.url('v1/models'), {
-      headers: this.headers(),
-      signal: AbortSignal.timeout(5_000),
-      ...this.request(),
-    } as RequestInit);
+    const response = await fetch(
+      this.url('v1/models'),
+      this.init({ signal: AbortSignal.timeout(5_000) }),
+    );
     if (response.status === 401 || response.status === 403) {
       throw new LlamaError(
-        'The model server refused the token. Check the key under Settings → Chat.',
+        'The model server refused the token. Check it under Settings → Connections.',
       );
     }
     if (!response.ok) throw new LlamaError(`The model server answered ${response.status}.`);
@@ -531,10 +526,17 @@ export class LlamaClient {
       ...(this.settings.model ? { model: this.settings.model } : {}),
       messages: toApiMessages(
         messages,
-        (this.settings.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT) +
-          toolPolicy(this.settings.tools),
+        (this.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT) + toolPolicy(this.settings.tools),
       ),
-      temperature: this.settings.temperature,
+      /*
+       * No temperature, on purpose.
+       *
+       * llama.cpp is started with the sampling its model wants — the flags are
+       * in the launch command, and a Gemma and a Qwen do not want the same ones.
+       * Sending a number from here overrode all of that with whatever was last
+       * left in a settings box, which is a worse answer than the server's own
+       * and one nobody could see was being applied.
+       */
       ...(this.settings.maxTokens > 0 ? { max_tokens: this.settings.maxTokens } : {}),
       stream: true,
       ...(tools.length > 0
@@ -557,16 +559,18 @@ export class LlamaClient {
 
     let response: Response;
     try {
-      response = await fetch(this.url('v1/chat/completions'), {
-        method: 'POST',
-        headers: this.headers({ 'content-type': 'application/json' }),
-        body: JSON.stringify(body),
-        signal: options.signal ?? AbortSignal.timeout(TIMEOUT_MS),
-        ...this.request(),
-      } as RequestInit);
+      response = await fetch(
+        this.url('v1/chat/completions'),
+        this.init({
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: options.signal ?? AbortSignal.timeout(TIMEOUT_MS),
+        }),
+      );
     } catch (error) {
       throw new LlamaError(
-        `No answer from the model server at ${this.settings.baseUrl}. ` +
+        `No answer from the model server at ${this.connection.url}. ` +
           (error instanceof Error ? error.message : ''),
       );
     }
