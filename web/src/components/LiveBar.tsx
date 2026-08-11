@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 
 import type { GenerationRecord, JobStats, LiveJob } from '@latent/shared';
 
-import { api, imageUrl, thumbnailUrl } from '../api/client';
+import { api, thumbnailUrl } from '../api/client';
 import { formatSeconds, formatStepRate } from '../lib/format';
 import { useTicker } from '../lib/useTicker';
 import { useLiveStore } from '../state/live';
@@ -97,7 +97,7 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
    * own is the difference between watching a batch and watching an empty box.
    */
   const lastImage = finished?.images[0];
-  const holdover = !previewUrl && lastImage ? imageUrl(lastImage) : null;
+  const holdover = !previewUrl && lastImage ? thumbnailUrl(lastImage) : null;
 
   /*
    * The full detail, shared by both shapes. Whichever bar you tapped, the same
@@ -427,7 +427,10 @@ function ResultBar({
               }}
               className="block w-full overflow-hidden rounded-2xl border border-line bg-surface-2"
             >
-              <img src={imageUrl(image)} alt={record.title} className="w-full object-contain" />
+              {/* A preview, not the original: this sheet appears on its own
+                  after every render, and a 4000×4000 picture behind it is
+                  64 MB of bitmap for something the size of a phone screen. */}
+              <img src={thumbnailUrl(image)} alt={record.title} className="w-full object-contain" />
             </button>
           ) : (
             <div className="rounded-2xl border border-line bg-surface-2 p-6 text-center text-sm text-muted">

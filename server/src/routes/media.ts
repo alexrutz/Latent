@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { ComfyImageRef, UploadImageResponse } from '@latent/shared';
 
 import { ComfyError } from '../comfy/client.js';
+import type { DerivedThumbnail } from '../images/thumbnails.js';
 import { ArchiveUnreadableError, VaultLockedError } from '../vault.js';
 import type { AppContext } from './context.js';
 
@@ -31,9 +32,9 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
    * Streams an image out of ComfyUI.
    *
    * The browser never reaches ComfyUI directly, so this is the only way images
-   * get to the phone. `preview` asks ComfyUI for a resized copy — a big win for
-   * gallery scrolling over mobile data — and is silently dropped if the server
-   * is too old to support it.
+   * get to the phone. `preview` asks for a small copy — which is made here,
+   * because ComfyUI's own `preview=` only re-encodes and leaves the pixels
+   * alone. See `ThumbnailCache`.
    */
   app.get<{
     Querystring: {
@@ -71,13 +72,37 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
       Number.isFinite(rowId) && rowId > 0 ? { ...params, id: rowId } : params,
     );
     if (known?.archived_path) {
+      /*
+       * A stored `.webp` thumbnail is not one.
+       *
+       * Archiving used to file whatever ComfyUI answered `preview=webp;70`
+       * with, believing it had been resized. It had not, so every archive
+       * written before this holds full-size pictures under a name that says
+       * otherwise. They are ignored rather than migrated: the original is
+       * beside them and can be shrunk properly, which repairs an existing
+       * archive by using it.
+       */
+      const stored = known.thumb_path?.endsWith('.png') ? known.thumb_path : null;
       // A `preview` request must never fall back to the full-size file: the
       // gallery grid asks for previews specifically to avoid pulling megabytes
       // over mobile data.
-      const wantsThumbnail = Boolean(preview) && Boolean(known.thumb_path);
-      const path = wantsThumbnail ? (known.thumb_path as string) : known.archived_path;
+      const wantsThumbnail = Boolean(preview) && Boolean(stored);
+      const path = wantsThumbnail ? (stored as string) : known.archived_path;
 
       try {
+        if (preview && !wantsThumbnail) {
+          const derived = await ctx.thumbnails.get(`archive:${known.archived_path}`, () =>
+            ctx.archive.read(known.archived_path as string),
+          );
+          if (derived) {
+            return reply
+              .header('content-type', derived.contentType)
+              .header('cache-control', 'private, max-age=86400')
+              .header('x-latent-source', 'derived-thumb')
+              .send(derived.data);
+          }
+        }
+
         const bytes = await ctx.archive.read(path);
         if (bytes) {
           return reply
@@ -114,6 +139,43 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
         return reply.code(423).send({ error: new VaultLockedError().message, locked: true });
       }
       return reply.code(404).send({ error: 'That image is not in the local archive' });
+    }
+
+    /*
+     * A preview has to be small, and only this end can promise that.
+     *
+     * ComfyUI's `preview=` re-encodes the file and moves not one pixel — a
+     * 4000×4000 output comes back 4000×4000, which is a couple of megabytes on
+     * the wire and 64 MB of bitmap once the browser has decoded it. A grid of
+     * those is what was killing the tab. So the original is fetched once and
+     * shrunk here, and the result is kept for every tile after the first.
+     */
+    if (preview) {
+      const key =
+        Number.isFinite(rowId) && rowId > 0
+          ? `id:${rowId}`
+          : `${type}/${subfolder}/${filename}`;
+
+      let thumbnail: DerivedThumbnail | null;
+      try {
+        thumbnail = await ctx.thumbnails.get(key, async () => {
+          const original = await ctx.orchestrator.client.view(params);
+          if (!original.body) return null;
+          return Buffer.from(await original.arrayBuffer());
+        });
+      } catch (error) {
+        return sendImageError(reply, error);
+      }
+
+      if (thumbnail) {
+        return reply
+          .header('content-type', thumbnail.contentType)
+          .header('cache-control', 'private, max-age=86400')
+          .header('x-latent-source', 'derived-thumb')
+          .send(thumbnail.data);
+      }
+      // Nothing we can decode — a JPEG, a 16-bit or interlaced PNG. Fall
+      // through and let ComfyUI's own re-encode do what little it can.
     }
 
     let response: Response;

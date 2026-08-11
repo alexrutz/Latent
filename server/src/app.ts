@@ -10,6 +10,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 
 import { Archive } from './archive.js';
 import { Auth } from './auth.js';
+import { ThumbnailCache } from './images/thumbnails.js';
 import { Importer } from './importer.js';
 import { InputLibrary } from './inputLibrary.js';
 import { Vault } from './vault.js';
@@ -182,6 +183,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     workflowScanner,
     endless,
     studyRunner,
+    thumbnails: new ThumbnailCache(),
   };
 
   /*

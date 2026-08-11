@@ -8,7 +8,15 @@ import { createMockLlama } from './llama.js';
 const port = Number(process.env.MOCK_PORT ?? 8188);
 const stepDelayMs = Number(process.env.MOCK_STEP_MS ?? 35);
 
-const mock = createMockComfy({ stepDelayMs, logLevel: process.env.LOG_LEVEL ?? 'warn' });
+// Bigger than a thumbnail on purpose: a browser test can only tell a thumbnail
+// from the original when the two are different sizes.
+const outputSize = Number(process.env.MOCK_OUTPUT_SIZE ?? 1024);
+
+const mock = createMockComfy({
+  stepDelayMs,
+  outputSize,
+  logLevel: process.env.LOG_LEVEL ?? 'warn',
+});
 const address = await mock.listen(port, process.env.MOCK_HOST ?? '127.0.0.1');
 
 console.log(`Mock ComfyUI listening on ${address} (${stepDelayMs}ms per simulated step)`);

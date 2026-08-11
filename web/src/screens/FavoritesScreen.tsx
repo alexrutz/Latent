@@ -5,7 +5,7 @@ import type { Favorite, FavoriteSort } from '@latent/shared';
 
 import { useQueryClient } from '@tanstack/react-query';
 
-import { api, imageUrl } from '../api/client';
+import { api, thumbnailUrl } from '../api/client';
 import {
   queryKeys,
   useDeleteFavorite,
@@ -259,7 +259,9 @@ function FavoriteSheet({ favorite, onClose }: { favorite: Favorite; onClose: () 
             onClick={() => setViewing(true)}
             className="block w-full overflow-hidden rounded-2xl border border-line bg-surface-2"
           >
-            <img src={imageUrl(favorite.image)} alt={favorite.title} className="w-full" />
+            {/* A preview: tapping it opens the viewer, which is where the
+                full-size picture belongs. */}
+            <img src={thumbnailUrl(favorite.image)} alt={favorite.title} className="w-full" />
           </button>
         )}
 

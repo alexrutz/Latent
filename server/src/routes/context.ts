@@ -5,6 +5,7 @@ import type { Auth } from '../auth.js';
 import type { Config } from '../config.js';
 import type { Endless } from '../endless.js';
 import type { Store } from '../db.js';
+import type { ThumbnailCache } from '../images/thumbnails.js';
 import type { Importer } from '../importer.js';
 import type { InputLibrary } from '../inputLibrary.js';
 import type { Orchestrator } from '../orchestrator.js';
@@ -34,6 +35,13 @@ export interface AppContext {
   endless: Endless;
   /** Walks a parameter study's plan, one shot at a time. */
   studyRunner: StudyRunner;
+  /**
+   * Small copies of big pictures, so the gallery never sends full-size ones.
+   *
+   * Held on the context rather than made per request because the whole point
+   * is that the work is done once: see `ThumbnailCache`.
+   */
+  thumbnails: ThumbnailCache;
 }
 
 /**

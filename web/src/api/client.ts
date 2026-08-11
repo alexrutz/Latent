@@ -115,7 +115,14 @@ export function imageUrl(image: ComfyImageRef & { id?: number }, preview?: strin
   return `/api/view?${params.toString()}`;
 }
 
-/** A downscaled variant, so a gallery grid doesn't pull full-size PNGs. */
+/**
+ * A downscaled variant, so a grid never pulls full-size pictures.
+ *
+ * The one way to ask for a small image. Latent's own server makes it — asking
+ * ComfyUI for `preview=` gets a re-encoded file at the *original* dimensions,
+ * which the browser then decodes to 64 MB of bitmap for a 4000×4000 output and
+ * a gigabyte for a screenful of them.
+ */
 export function thumbnailUrl(image: ComfyImageRef & { id?: number }): string {
   return imageUrl(image, 'webp;70');
 }

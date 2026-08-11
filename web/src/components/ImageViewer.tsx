@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { GenerationImage, GenerationRecord } from '@latent/shared';
 
-import { imageUrl } from '../api/client';
+import { imageUrl, thumbnailUrl } from '../api/client';
 import { useBlur } from '../state/blur';
 import { cn } from './ui';
 
@@ -405,7 +405,7 @@ export function Thumb({
         <span className="grid size-full place-items-center text-xs text-muted">missing</span>
       ) : (
         <img
-          src={imageUrl(image, 'webp;70')}
+          src={thumbnailUrl(image)}
           alt={alt}
           loading="lazy"
           decoding="async"

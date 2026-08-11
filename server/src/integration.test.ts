@@ -46,6 +46,7 @@ import { Store } from './db.js';
 import { Vault } from './vault.js';
 import { createMockComfy } from './mock/comfy.js';
 import { createMockLlama } from './mock/llama.js';
+import { readImageSize } from './images/png.js';
 import { renderPlaceholder } from './mock/png.js';
 import { withPngText } from './images/png.js';
 
@@ -100,7 +101,9 @@ async function waitFor<T>(
 beforeAll(async () => {
   // Slow enough that the server's 100ms progress coalescing actually emits
   // intermediate frames, fast enough to keep the suite quick.
-  mock = createMockComfy({ stepDelayMs: 15, logLevel: 'silent' });
+  // Bigger than a thumbnail, so archiving actually has something to shrink —
+  // at 384 the output *is* thumbnail-sized and the whole path is skipped.
+  mock = createMockComfy({ stepDelayMs: 15, logLevel: 'silent', outputSize: 512 });
   const mockAddress = await mock.listen(0);
   mockUrl = mockAddress;
 
@@ -1269,7 +1272,8 @@ describe('encrypted archive', () => {
    * feature. These tests read the actual files, not the API.
    */
   it('writes ciphertext to disk and needs a sign-in to read it back', async () => {
-    const comfy = createMockComfy({ stepDelayMs: 2, logLevel: 'silent' });
+    // Bigger than a thumbnail, so one is genuinely made and encrypted.
+    const comfy = createMockComfy({ stepDelayMs: 2, logLevel: 'silent', outputSize: 512 });
     const comfyUrl = await comfy.listen(0);
     const dir = mkdtempSync(join(tmpdir(), 'latent-vault-'));
 
@@ -2992,6 +2996,106 @@ describe('images with the same name', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+/**
+ * A preview is small, whatever the picture behind it is.
+ *
+ * ComfyUI's `/view?preview=webp;70` re-encodes the file and moves not one
+ * pixel, which nobody noticed because the mock used to resize — so the gallery
+ * looked right here and shipped 4000×4000 pictures to a phone in the field. A
+ * browser decodes one of those to 64 MB of bitmap; a grid of them is over a
+ * gigabyte, and the tab dies. Hence: its own mock, rendering big.
+ */
+describe('previews of a big picture', () => {
+  it('never sends the gallery more pixels than a thumbnail', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-thumbs-'));
+    // The upscaled outputs that provoked this. Not 4000, which would spend a
+    // second of the suite on rendering, but well past the thumbnail size.
+    const big = createMockComfy({ stepDelayMs: 1, logLevel: 'silent', outputSize: 1024 });
+    const bigUrl = await big.listen(0);
+
+    const instance = await buildApp({
+      comfyUrl: bigUrl,
+      dbPath: join(dir, 'latent.db'),
+      dataDir: dir,
+      stateDir: join(dir, 'state'),
+      webDir: join(dir, 'no-web'),
+      password: 'thumbs-password',
+      logLevel: 'silent',
+    });
+    await instance.app.listen({ port: 0, host: '127.0.0.1' });
+    const address = instance.app.server.address();
+    if (!address || typeof address === 'string') throw new Error('No port');
+    const url = `http://127.0.0.1:${address.port}`;
+
+    const login = await fetch(`${url}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'thumbs-password' }),
+    });
+    const session = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+    const call = (path: string, init?: RequestInit) =>
+      fetch(`${url}${path}`, {
+        ...init,
+        headers: {
+          ...(init?.body ? { 'content-type': 'application/json' } : {}),
+          cookie: session,
+          ...(init?.headers ?? {}),
+        },
+      });
+
+    try {
+      const workflow = await json<WorkflowDetail>(
+        call('/api/workflows', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'Big pictures', graph: sd15Txt2Img }),
+        }),
+      );
+      const { generationIds } = await json<GenerateResponse>(
+        call('/api/generate', {
+          method: 'POST',
+          body: JSON.stringify({ workflowId: workflow.id, values: {} }),
+        }),
+      );
+
+      const image = await waitFor(async () => {
+        const record = await json<GenerationRecord>(call(`/api/gallery/${generationIds[0]}`));
+        return record.images[0];
+      }, 20_000);
+
+      const query =
+        `filename=${encodeURIComponent(image.filename)}&subfolder=&type=output` +
+        `&id=${image.id}`;
+
+      // The picture itself is what the viewer opens, and it is untouched.
+      const full = await call(`/api/view?${query}`);
+      expect(readImageSize(Buffer.from(await full.arrayBuffer()))).toEqual({
+        width: 1024,
+        height: 1024,
+      });
+
+      // The gallery's is not.
+      const preview = await call(`/api/view?${query}&preview=webp%3B70`);
+      expect(preview.status).toBe(200);
+      expect(preview.headers.get('x-latent-source')).toBe('derived-thumb');
+
+      const bytes = Buffer.from(await preview.arrayBuffer());
+      const size = readImageSize(bytes);
+      expect(size).toEqual({ width: 384, height: 384 });
+      // The decoded bitmap is what kills a browser, and this is a seventh of
+      // one — the ratio a 4000×4000 output would see is a hundredth.
+      expect(size!.width * size!.height).toBeLessThan(1024 * 1024 * 0.2);
+
+      // Derived once: the second tile is answered from memory.
+      const again = await call(`/api/view?${query}&preview=webp%3B70`);
+      expect(Buffer.from(await again.arrayBuffer())).toEqual(bytes);
+    } finally {
+      await instance.app.close();
+      await big.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 40_000);
 });
 
 /**

@@ -39,6 +39,14 @@ export interface MockComfyOptions {
    * authenticated-connection path without renting a GPU.
    */
   requireToken?: string;
+  /**
+   * Longest side of a rendered output.
+   *
+   * Raised by tests that care what happens to a big picture — an upscaled
+   * 4000×4000 is what makes a gallery grid unsurvivable, and the default here
+   * is deliberately small enough that nothing needs shrinking.
+   */
+  outputSize?: number;
 }
 
 export interface MockComfy {
@@ -51,6 +59,7 @@ const OUTPUT_SIZE = 384;
 const PREVIEW_SIZE = 96;
 
 export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
+  const outputSize = options.outputSize ?? OUTPUT_SIZE;
   const stepDelayMs = options.stepDelayMs ?? 35;
   const previewsEnabled = options.previews ?? true;
 
@@ -220,7 +229,10 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
            * never repeats an output filename, and neither should the mock.
            */
           const filename = `Latent_${String(job.number).padStart(5, '0')}_${nodeId}_${i}.png`;
-          files.set(`output//${filename}`, renderPlaceholder(OUTPUT_SIZE, OUTPUT_SIZE, `${seed}#${i}`));
+          files.set(
+            `output//${filename}`,
+            renderPlaceholder(outputSize, outputSize, `${seed}#${i}`),
+          );
           images.push({ filename, subfolder: '', type: 'output' });
         }
         outputs[nodeId] = { images };
@@ -477,12 +489,17 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       const stored = files.get(key);
       if (!stored) return reply.code(404).send({ error: 'not found' });
 
-      // ComfyUI resizes server-side when `preview` is given; approximate that by
-      // re-rendering smaller so the size difference is real and observable.
-      if (query.preview) {
-        const small = renderPlaceholder(128, 128, key);
-        return reply.header('content-type', 'image/png').send(small);
-      }
+      /*
+       * `preview` re-encodes and does *not* resize — read the real thing:
+       * ComfyUI opens the file, saves it as webp or jpeg at the given quality,
+       * and every pixel stays where it was. This mock used to answer with a
+       * 128×128 image, which quietly made the whole gallery look correct while
+       * the real one was shipping full-size pictures to a phone.
+       *
+       * Real ComfyUI hands back webp; this hands back the same PNG, because
+       * what matters downstream is the dimensions and there is no webp encoder
+       * here to be honest with.
+       */
       return reply.header('content-type', 'image/png').send(stored);
     });
 

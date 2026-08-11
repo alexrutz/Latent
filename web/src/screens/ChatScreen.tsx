@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { CHAT_IMAGE_SIZES } from '@latent/shared';
 import type { ChatMessage, ChatToolCall } from '@latent/shared';
 
-import { api, imageUrl } from '../api/client';
+import { api, thumbnailUrl } from '../api/client';
 import { useGeneration, useSettings } from '../api/queries';
 import { ImageViewer } from '../components/ImageViewer';
 import { Markdown } from '../components/Markdown';
@@ -644,7 +644,7 @@ function GeneratedRun({
             className="overflow-hidden rounded-xl bg-surface-2 active:opacity-80"
           >
             <img
-              src={imageUrl(image, 'webp;80')}
+              src={thumbnailUrl(image)}
               alt=""
               // `h-auto` so each picture keeps its own shape: a portrait and a
               // landscape from one batch should not be cropped into agreeing

@@ -144,16 +144,14 @@ export class Archive {
   /**
    * Store image bytes, with a thumbnail alongside them.
    *
-   * `thumbnailSource` is the small preview fetched from ComfyUI when one was
-   * available; otherwise a thumbnail is generated locally. Storing one either
-   * way is what lets the gallery grid load without pulling full-size images.
+   * The thumbnail is made here, always. It used to prefer whatever ComfyUI
+   * answered `preview=webp;70` with, on the belief that it had already done the
+   * resizing — it has not. That endpoint re-encodes and moves not one pixel, so
+   * what got filed as the thumbnail of a 4000×4000 picture was a 4000×4000
+   * webp, and it passed the "smaller than the original" check every time
+   * because webp is always smaller than PNG at the same size.
    */
-  async storeBytes(
-    imageId: number,
-    filename: string,
-    data: Buffer,
-    thumbnailSource?: Buffer | null,
-  ): Promise<StoredImage> {
+  async storeBytes(imageId: number, filename: string, data: Buffer): Promise<StoredImage> {
     if (!this.vault.isUnlocked) throw new VaultLockedError();
 
     const hash = createHash('sha256').update(data).digest('hex');
@@ -166,21 +164,13 @@ export class Archive {
 
     const size = readImageSize(data);
 
-    // Prefer what ComfyUI resized for us; fall back to doing it here.
-    let thumbnail = thumbnailSource ?? null;
-    let thumbExtension = '.webp';
-    if (!thumbnail) {
-      const generated = makeThumbnail(data, THUMBNAIL_SIZE);
-      if (generated) {
-        thumbnail = generated.data;
-        thumbExtension = '.png';
-      }
-    }
+    const generated = makeThumbnail(data, THUMBNAIL_SIZE);
+    const thumbnail = generated?.data ?? null;
 
     let thumbPath: string | null = null;
     let thumbBytes: number | null = null;
-    if (thumbnail && thumbnail.length > 0 && thumbnail.length < data.length) {
-      thumbPath = this.pathFor(hash, thumbExtension, '_t');
+    if (thumbnail && thumbnail.length > 0) {
+      thumbPath = this.pathFor(hash, '.png', '_t');
       if (!(await this.readable(thumbPath))) {
         await this.writeEncrypted(thumbPath, thumbnail);
       }
@@ -216,21 +206,9 @@ export class Archive {
   async capture(client: ComfyClient, imageId: number, ref: ComfyImageRef): Promise<StoredImage> {
     const response = await client.view(ref);
     const buffer = Buffer.from(await response.arrayBuffer());
-
-    // Ask ComfyUI for the small version too — it already has the decoder, and
-    // this is far cheaper than resizing here.
-    let preview: Buffer | null = null;
-    try {
-      const previewResponse = await client.view({ ...ref, preview: `webp;70` });
-      const previewBuffer = Buffer.from(await previewResponse.arrayBuffer());
-      if (previewBuffer.length > 0 && previewBuffer.length < buffer.length) {
-        preview = previewBuffer;
-      }
-    } catch {
-      // Not every ComfyUI build implements `preview=`; we'll resize locally.
-    }
-
-    return this.storeBytes(imageId, ref.filename, buffer, preview);
+    // One download, not two: the second one used to ask for `preview=` in the
+    // belief that it came back resized, and it never did.
+    return this.storeBytes(imageId, ref.filename, buffer);
   }
 
   /**

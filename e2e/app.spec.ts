@@ -514,15 +514,17 @@ test.describe('gallery, favourites and the prompt builder', () => {
 
     /*
      * And the bytes really are the small version. Asserting the URL alone would
-     * pass even if the server quietly served the full-size file, so check what
-     * the browser actually decoded: the mock renders results at 384px and
-     * previews at 128px.
+     * pass even if the server quietly served the full-size file — which is
+     * exactly what it did for months, because ComfyUI's `preview=` re-encodes
+     * without resizing and the mock used to hide that by resizing. So check
+     * what the browser actually decoded: the mock renders results at 1024px,
+     * and a thumbnail is 384.
      */
     const decoded = await page
       .locator('img[alt*="thumbnail check"]')
       .first()
       .evaluate((image: HTMLImageElement) => image.naturalWidth);
-    expect(decoded).toBe(128);
+    expect(decoded).toBe(384);
   });
 
   /**

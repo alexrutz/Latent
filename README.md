@@ -1382,7 +1382,7 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 | `server/src/sweeper.ts` | Deletes runs nobody kept, once they are old enough |
 | `shared/src/promptMatch.ts` | Matches an image's embedded graph to a stored workflow |
 | `server/src/vault.ts` | Archive encryption: master key, wrapping, unlock on sign-in |
-| `server/src/images/` | A dependency-free PNG decoder/resizer for thumbnails and image sizes |
+| `server/src/images/` | A dependency-free PNG decoder/resizer, and the thumbnail cache the gallery is served from |
 | `server/src/mock/` | The mock ComfyUI — and a scriptable stand-in for `llama-server` — used for development and tests |
 | `web/` | React + Vite PWA |
 | `e2e/` | Playwright tests |
@@ -1396,8 +1396,11 @@ editing one that has shipped.
   cannot reorder them, so neither can Latent.
 - **No graph editing.** Latent runs workflows; it does not author them. Build
   them in ComfyUI and import.
-- **Thumbnails** use ComfyUI's `preview=` parameter where available and fall
-  back to full-size images where it isn't.
+- **Thumbnails are made by Latent, not by ComfyUI.** ComfyUI's `/view?preview=`
+  re-encodes a file and moves not one pixel — a 4000×4000 output comes back
+  4000×4000, which is 64 MB of bitmap once a browser has decoded it and over a
+  gigabyte for a gallery page. So the original is fetched once, downscaled to
+  384 px here, and the result is kept in memory for every tile after the first.
 - **Connection tokens are stored in plain text** in the local SQLite database.
   Encrypting them with a key sitting next to that database would be theatre;
   treat the data directory as sensitive.
@@ -1405,9 +1408,9 @@ editing one that has shipped.
   be built for your platform, the terminal reports that instead of opening;
   nothing else is affected.
 - **Thumbnails are generated for PNG only.** ComfyUI writes PNG by default, so
-  this covers nearly everything; a JPEG or WebP without a ComfyUI-side preview
-  is served at full size. This avoids a large native image library for what is
-  otherwise a small job.
+  this covers nearly everything; a workflow that saves JPEG or WebP is served at
+  full size, and a gallery of very large ones will be heavy on the browser. This
+  avoids a large native image library for what is otherwise a small job.
 - **Lose the password, lose the archived images.** Deliberately — see above.
 
 ## Licence
