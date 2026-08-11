@@ -119,6 +119,52 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
     return { ok: true };
   });
 
+  /**
+   * Unseal the archive without signing out first.
+   *
+   * The session cookie outlives a restart — it is an HMAC over the stored
+   * password hash, so it keeps verifying — but the archive key does not: it is
+   * derived from the password and only ever held in memory. A restarted server
+   * therefore leaves you signed in with the archive shut, and importing or
+   * keeping an image answers 423 for a reason you cannot act on. Signing out
+   * and back in was the only way through, and nothing said so.
+   *
+   * Behind the session guard, so this is a re-entry of a password you already
+   * have rather than a second way in.
+   */
+  app.post<{ Body: { password?: string } }>('/api/auth/unlock', async (request, reply) => {
+    if (ctx.vault.isUnlocked) return { ok: true };
+
+    const clientKey = request.ip;
+    if (!ctx.auth.registerLoginAttempt(clientKey)) {
+      return reply.code(429).send({ error: 'Too many attempts. Wait a minute and try again.' });
+    }
+
+    const password = request.body?.password;
+    /*
+     * Checked against the stored hash before the vault sees it. `Vault.unlock`
+     * treats an uninitialised vault as "create one under this password", which
+     * for a typo here would key the archive to a guess.
+     */
+    if (typeof password !== 'string' || !ctx.auth.checkPassword(password)) {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      return reply.code(401).send({ error: 'Incorrect password' });
+    }
+    ctx.auth.clearLoginAttempts(clientKey);
+
+    if (!ctx.vault.unlock(password)) {
+      return reply.code(409).send({
+        error:
+          'That is the right password, but it does not open this archive — the files were ' +
+          'written under a different one.',
+      });
+    }
+    // Encrypted under the same password, and this is the first moment they can
+    // be read again.
+    ctx.stateFiles.unlock(password);
+    return { ok: true };
+  });
+
   app.post<{ Body: { currentPassword?: string; newPassword?: string } }>(
     '/api/auth/password',
     async (request, reply) => {

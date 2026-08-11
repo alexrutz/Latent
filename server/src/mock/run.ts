@@ -8,9 +8,13 @@ import { createMockLlama } from './llama.js';
 const port = Number(process.env.MOCK_PORT ?? 8188);
 const stepDelayMs = Number(process.env.MOCK_STEP_MS ?? 35);
 
-// Bigger than a thumbnail on purpose: a browser test can only tell a thumbnail
-// from the original when the two are different sizes.
-const outputSize = Number(process.env.MOCK_OUTPUT_SIZE ?? 1024);
+/*
+ * Bigger than a thumbnail on purpose: a browser test can only tell a thumbnail
+ * from the original when the two are different sizes. Only a little bigger,
+ * though — every pixel here is rendered in JavaScript, and a batch of eight at
+ * 1024² was slow enough to change what a test was looking at.
+ */
+const outputSize = Number(process.env.MOCK_OUTPUT_SIZE ?? 512);
 
 const mock = createMockComfy({
   stepDelayMs,

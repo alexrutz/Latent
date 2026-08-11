@@ -62,6 +62,20 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Told when the server says the archive is sealed.
+ *
+ * 423 is not an error the calling screen can do anything about — it is the same
+ * answer everywhere, and the only response to it is a password. Routing it to
+ * one place means the dialog opens the moment it happens rather than at the
+ * next poll of `/api/status`.
+ */
+let onArchiveLocked: (() => void) | null = null;
+
+export function setArchiveLockedHandler(handler: (() => void) | null): void {
+  onArchiveLocked = handler;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     credentials: 'same-origin',
@@ -75,6 +89,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
 
   if (!response.ok) {
+    if (response.status === 423) onArchiveLocked?.();
     // The server sends `{ error }` for everything it handles; fall back to the
     // status text for anything that got past it (a proxy error, say).
     let message = response.statusText || `Request failed (${response.status})`;
@@ -151,6 +166,13 @@ export const api = {
     }),
 
   logout: () => request<{ ok: true }>('/api/auth/logout', { method: 'POST' }),
+
+  /** Re-enter the password to unseal the archive after a server restart. */
+  unlockArchive: (password: string) =>
+    request<{ ok: true }>('/api/auth/unlock', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
 
   changePassword: (currentPassword: string, newPassword: string) =>
     request<{ ok: true }>('/api/auth/password', {

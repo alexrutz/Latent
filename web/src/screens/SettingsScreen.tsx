@@ -42,6 +42,7 @@ import {
 import { NumericInput } from '../components/NumericInput';
 import { SortableList, type DragHandleProps } from '../components/SortableList';
 import { FieldChip, Toggle, WorkflowScope } from '../components/ParamControl';
+import { UnlockArchiveDialog } from '../components/UnlockArchive';
 import { Button, Card, cn, ErrorNote, Row, Sheet, Spinner } from '../components/ui';
 import { useBlur } from '../state/blur';
 import { ConnectionsScreen } from './ConnectionsScreen';
@@ -134,6 +135,7 @@ export function SettingsScreen() {
   const [editing, setEditing] = useState<string | null>(null);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [changingPassword, setChangingPassword] = useState(false);
+  const [unlocking, setUnlocking] = useState(false);
   const [pruning, setPruning] = useState(false);
   const [pruneResult, setPruneResult] = useState<string | null>(null);
 
@@ -456,6 +458,24 @@ export function SettingsScreen() {
       {/* Session ---------------------------------------------------- */}
       <section className="space-y-2">
         <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Session</h2>
+        {/*
+          The archive key is derived from the password and held only in memory,
+          so a restarted server leaves you signed in with the archive shut. This
+          is the way back that does not involve signing out to fix something
+          that is not a sign-in problem.
+        */}
+        {status.data?.archiveLocked && (
+          <Card className="space-y-3">
+            <p className="text-xs text-warn">
+              The image archive is locked, so importing and keeping images are unavailable. It
+              needs the same password you signed in with.
+            </p>
+            <Button variant="primary" onClick={() => setUnlocking(true)}>
+              Unlock the archive
+            </Button>
+          </Card>
+        )}
+
         <div className="flex flex-wrap gap-2">
           <Button variant="secondary" onClick={() => setChangingPassword(true)}>
             Change password
@@ -476,6 +496,7 @@ export function SettingsScreen() {
 
       {editing && <FormEditorSheet workflowId={editing} onClose={() => setEditing(null)} />}
       {changingPassword && <PasswordSheet onClose={() => setChangingPassword(false)} />}
+      <UnlockArchiveDialog open={unlocking} onClose={() => setUnlocking(false)} />
       {terminalOpen && <TerminalScreen onClose={() => setTerminalOpen(false)} />}
     </div>
   );

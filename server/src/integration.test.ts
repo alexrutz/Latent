@@ -1424,6 +1424,46 @@ describe('encrypted archive', () => {
         });
         expect((await fetch(`${restartedUrl}/api/view?${params}`, { headers: { cookie } })).status).toBe(423);
 
+        /*
+         * The session outlives the restart — the cookie is an HMAC over the
+         * stored password hash — so the browser is signed in against an archive
+         * that is shut, which is the state people actually meet. Re-entering
+         * the password opens it without signing out.
+         */
+        const wrongUnlock = await fetch(`${restartedUrl}/api/auth/unlock`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie },
+          body: JSON.stringify({ password: 'not the password' }),
+        });
+        expect(wrongUnlock.status).toBe(401);
+        expect((await fetch(`${restartedUrl}/api/view?${params}`, { headers: { cookie } })).status)
+          .toBe(423);
+
+        const unlock = await fetch(`${restartedUrl}/api/auth/unlock`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie },
+          body: JSON.stringify({ password: 'vault password' }),
+        });
+        expect(unlock.status).toBe(200);
+        // The same cookie, now working: no new session was needed.
+        expect((await fetch(`${restartedUrl}/api/view?${params}`, { headers: { cookie } })).status)
+          .toBe(200);
+        const afterUnlock = (await (
+          await fetch(`${restartedUrl}/api/status`)
+        ).json()) as StatusResponse;
+        expect(afterUnlock.archiveLocked).toBe(false);
+
+        // Unauthenticated, it is not a second front door.
+        expect(
+          (
+            await fetch(`${restartedUrl}/api/auth/unlock`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ password: 'vault password' }),
+            })
+          ).status,
+        ).toBe(401);
+
         // The right one does.
         const login = await fetch(`${restartedUrl}/api/auth/login`, {
           method: 'POST',

@@ -1,8 +1,11 @@
+import { useEffect, useState } from 'react';
 import { Route, Routes, useLocation } from 'react-router-dom';
 
+import { setArchiveLockedHandler } from './api/client';
 import { useLiveCacheSync, useStatus } from './api/queries';
 import { BottomTabs } from './components/BottomTabs';
 import { LiveBar } from './components/LiveBar';
+import { ArchiveLockedBar, UnlockArchiveDialog } from './components/UnlockArchive';
 import { cn, Spinner } from './components/ui';
 import { BlocksScreen } from './screens/BlocksScreen';
 import { ChatScreen } from './screens/ChatScreen';
@@ -35,6 +38,22 @@ export function App() {
   useLiveSocket(authenticated);
   useLiveCacheSync();
 
+  /*
+   * The archive can be shut while the session is perfectly good — its key is
+   * derived from the password and lives only in memory, so a server restart
+   * takes it and leaves the cookie working. Anything that answers 423 opens the
+   * dialog straight away; the bar below covers noticing it before you try.
+   */
+  const [unlocking, setUnlocking] = useState(false);
+  const archiveLocked = Boolean(status.data?.archiveLocked);
+  useEffect(() => {
+    setArchiveLockedHandler(() => {
+      setUnlocking(true);
+      void status.refetch();
+    });
+    return () => setArchiveLockedHandler(null);
+  }, [status]);
+
   if (status.isLoading) {
     return (
       <div className="grid h-[100dvh] place-items-center">
@@ -57,6 +76,8 @@ export function App() {
     // 100dvh (not vh) so the layout tracks the collapsing mobile URL bar
     // instead of hiding the tab bar behind it.
     <div className="flex h-[100dvh] flex-col overflow-hidden">
+      {archiveLocked && <ArchiveLockedBar onUnlock={() => setUnlocking(true)} />}
+
       <main
         ref={registerScrollContainer}
         className={cn(
@@ -88,6 +109,8 @@ export function App() {
       */}
       {!onGenerate && !onChat && <LiveBar />}
       <BottomTabs />
+
+      <UnlockArchiveDialog open={unlocking} onClose={() => setUnlocking(false)} />
     </div>
   );
 }

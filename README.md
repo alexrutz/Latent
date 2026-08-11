@@ -340,6 +340,16 @@ back up leaves them undecryptable. Latent refuses to overwrite a file it could
 not read, and says so in the log, rather than quietly destroying what it holds.
 Changing the password rewrites both files under the new key.
 
+**Unlocking after a restart.** The archive key is derived from the password and
+only ever held in memory, so restarting the Latent server takes it. The *session*
+survives — the cookie is signed against the stored password hash, so it keeps
+verifying — which leaves the app signed in, generating perfectly well, and unable
+to import or keep an image. When that happens a bar appears across the top and
+Settings → Session offers **Unlock the archive**; both ask for the same password
+you sign in with, and anything that fails because the archive is shut opens the
+same dialog on the spot. Signing out is not needed and never was the point.
+Setting `LATENT_PASSWORD` skips all of this: the archive is unsealed at boot.
+
 ## What the graph printed
 
 Not every output is a picture. A **"preview as text"** node — `PreviewAny`,

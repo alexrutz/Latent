@@ -517,7 +517,7 @@ test.describe('gallery, favourites and the prompt builder', () => {
      * pass even if the server quietly served the full-size file — which is
      * exactly what it did for months, because ComfyUI's `preview=` re-encodes
      * without resizing and the mock used to hide that by resizing. So check
-     * what the browser actually decoded: the mock renders results at 1024px,
+     * what the browser actually decoded: the mock renders results at 512px,
      * and a thumbnail is 384.
      */
     const decoded = await page
