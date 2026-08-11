@@ -54,6 +54,7 @@ export function ToolDialog({
   settings,
   onResolve,
   revisit,
+  onMinimize,
   previousPrompt = '',
   autoAccept = false,
 }: {
@@ -62,6 +63,15 @@ export function ToolDialog({
   onResolve: (decision: ToolDecision) => void | Promise<void>;
   /** Set when this is an old call being looked at again rather than decided. */
   revisit?: RevisitActions;
+  /**
+   * Fold the dialog away without deciding it.
+   *
+   * Given only where there is something to come back to. Deciding is often not
+   * the next thing you want to do — the answer is in the gallery, or in what
+   * was said further up, and both are behind this. Omitted for a call being
+   * revisited, which closes without consequence.
+   */
+  onMinimize?: () => void;
   /** The last prompt this conversation generated, for marking what changed. */
   previousPrompt?: string;
   /**
@@ -83,6 +93,23 @@ export function ToolDialog({
       <div className="absolute inset-0 bg-ink/50 backdrop-blur-sm" role="presentation" />
 
       <div className="animate-rise relative flex max-h-[85svh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl">
+        {/*
+          Floating over whichever body is rendered rather than living in three
+          headers. It is the same action whatever the call is about, and none
+          of the bodies has a header shaped to hold it.
+        */}
+        {onMinimize && (
+          <button
+            type="button"
+            onClick={onMinimize}
+            aria-label="Put this aside"
+            title="Put this aside and come back to it"
+            className="absolute top-2 right-2 z-10 grid size-8 place-items-center rounded-full bg-surface-2/80 text-lg leading-none text-muted backdrop-blur-sm active:bg-surface-3"
+          >
+            −
+          </button>
+        )}
+
         {call.tool === 'build_prompt' ? (
           <BuildPromptBody
             call={call}

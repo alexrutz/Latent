@@ -3256,6 +3256,114 @@ test.describe('the chat module', () => {
     expect(blocks.map((block) => block.name).sort()).toEqual(['Golden hour', 'Overcast']);
     expect(blocks.find((block) => block.name === 'Overcast')?.text).toBe('flat grey daylight');
   });
+
+  /**
+   * The dialog covers the screen, and the answer is often behind it.
+   *
+   * "Is this different from the last one?" and "what did I say five messages
+   * ago?" are both questions the transcript answers, and the transcript is what
+   * the dialog is sitting on top of. Putting it aside has to leave the call
+   * exactly where it was.
+   */
+  test('puts a tool call aside and brings it back', async ({ page }) => {
+    await seedWorkflow();
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', { data: { chat: { promptButton: 'dialog' } } }),
+    );
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a lighthouse in fog', reason: 'Quiet.' },
+      },
+    });
+
+    await open(page, '/chat');
+    await page.getByRole('button', { name: 'Build a prompt' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('chat-transcript')).toHaveClass(/blur-sm/);
+
+    await dialog.getByRole('button', { name: 'Put this aside' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    // The conversation is readable again, not merely uncovered.
+    await expect(page.getByTestId('chat-transcript')).not.toHaveClass(/blur-sm/);
+    await page.screenshot({ path: 'test-results/77-tool-call-aside.png' });
+
+    // And the way back is pinned where it cannot scroll away.
+    const pill = page.getByRole('button', { name: /Proposed a prompt/ });
+    await expect(pill).toBeVisible();
+    await pill.click();
+
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'The prompt' })).toHaveValue(
+      'a lighthouse in fog',
+    );
+  });
+
+  /**
+   * Nothing said about a picture until there is a picture.
+   *
+   * The model's turn after an accepted prompt is *about* the render, and it
+   * used to be asked for the moment the job was queued — so it described, and
+   * often proposed changing, something that did not exist yet.
+   */
+  test('waits for the render before the model speaks again', async ({ page }) => {
+    /*
+     * Sixty steps rather than twenty, so the render lasts long enough to be
+     * observed. At the default the whole thing is over in well under a second,
+     * which is short enough that "replied too early" and "replied on time"
+     * look the same from here.
+     */
+    const slow = JSON.parse(JSON.stringify(sd15Txt2Img)) as Record<
+      string,
+      { inputs: Record<string, unknown> }
+    >;
+    slow['3']!.inputs.steps = 60;
+    await withApi((ctx) => ctx.post('/api/workflows', { data: { name: WORKFLOW_NAME, graph: slow } }));
+
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', { data: { chat: { promptButton: 'dialog' } } }),
+    );
+    await script(
+      {
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+        },
+      },
+      { content: 'That one came out well.' },
+    );
+
+    await open(page, '/chat');
+    await page.getByRole('button', { name: 'Build a prompt' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    await dialog.getByRole('button', { name: 'Generate', exact: true }).click();
+
+    // Said out loud, so the pause does not read as the chat having died.
+    await expect(page.getByText(/Rendering — the reply comes once/)).toBeVisible({
+      timeout: 30_000,
+    });
+    // And nothing from the model while that is up.
+    await expect(page.getByText('That one came out well.')).toHaveCount(0);
+
+    await expect(page.getByText('That one came out well.')).toBeVisible({ timeout: 60_000 });
+
+    /*
+     * The check that matters: by the time the reply is on screen the run it is
+     * about has already finished. Before this, the reply arrived within a
+     * fraction of a second of queueing, while the run was still sampling.
+     */
+    const status = await withApi(async (ctx) => {
+      const gallery = (await (await ctx.get('/api/gallery?limit=10')).json()) as {
+        items: { title: string; status: string }[];
+      };
+      return gallery.items.find((item) => item.title.includes('harbour'))?.status ?? '';
+    });
+    expect(status).toBe('completed');
+  });
 });
 
 /**

@@ -390,10 +390,25 @@ async function streamReply(
     return;
   }
 
+  /*
+   * The turn straight after a picture says something; it does not ask for
+   * another one.
+   *
+   * A model handed its tools back the moment a render was accepted would open
+   * a second proposal on top of the first — before anyone has seen what the
+   * first one made, and therefore before there is anything to say about it.
+   * What is wanted there is a sentence, so the tools are simply not offered
+   * for that one turn. Decided from the transcript rather than from a flag on
+   * the request, so a reload lands on the same answer.
+   */
+  const last = chat.messages[chat.messages.length - 1];
+  const afterGeneration = last?.role === 'tool' && Boolean(last.generationId);
+
   try {
     for await (const event of client.stream(chat.messages, {
       signal: controller.signal,
       ...(force ? { force } : {}),
+      ...(!force && afterGeneration ? { withoutTools: true } : {}),
     })) {
       if (event.type === 'content') message.content += event.text;
       if (event.type === 'thinking') thinking += event.text;

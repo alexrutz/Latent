@@ -4515,6 +4515,125 @@ describe('chat', () => {
     }
   }, 30_000);
 
+  /**
+   * The turn after a picture is a sentence, not another proposal.
+   *
+   * Handed its tools back the moment a render was accepted, a model opens a
+   * second prompt on top of the first — before anyone has seen what the first
+   * one made, which is the only thing there would be to say about it.
+   */
+  it('offers no tools in the turn straight after a generation', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      const chat = await json<{ id: string }>(
+        api('/api/chat/conversations', { method: 'POST' }),
+      );
+
+      llama.script({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a harbour at dawn', reason: 'Calm and blue.' },
+        },
+      });
+      const events = await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'build me a prompt' }),
+        }),
+      );
+      const messageId = events.find(
+        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
+      )?.messageId;
+
+      // Accepted, and it started a run — which is what makes the next turn
+      // "after a generation" rather than after any other decision.
+      await api(`/api/chat/conversations/${chat.id}/tool`, {
+        method: 'POST',
+        body: JSON.stringify({
+          messageId,
+          decision: 'accepted',
+          generationId: 'gen-from-the-chat',
+          prompt: 'a harbour at dawn',
+        }),
+      });
+
+      llama.script({ content: 'That came out well.' });
+      await readStream(
+        await api(`/api/chat/conversations/${chat.id}/continue`, { method: 'POST' }),
+      );
+
+      const sent = llama.requests[llama.requests.length - 1] as {
+        tools?: unknown[];
+        tool_choice?: unknown;
+      };
+      expect(sent.tools).toBeUndefined();
+      expect(sent.tool_choice).toBeUndefined();
+
+      // And only for that one turn: saying something else puts them back.
+      llama.script({ content: 'Anything else?' });
+      await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'make it colder' }),
+        }),
+      );
+      const after = llama.requests[llama.requests.length - 1] as { tools?: unknown[] };
+      expect(after.tools?.length).toBeGreaterThan(0);
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
+  /** A decision that started nothing is answered straight away, tools and all. */
+  it('keeps its tools after a decision that did not generate anything', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      const chat = await json<{ id: string }>(
+        api('/api/chat/conversations', { method: 'POST' }),
+      );
+
+      llama.script({
+        toolCall: {
+          name: 'ask_user',
+          arguments: {
+            reason: 'It changes the framing.',
+            questions: [{ question: 'Portrait or landscape?', options: ['Portrait'] }],
+          },
+        },
+      });
+      const events = await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'something calm' }),
+        }),
+      );
+      const messageId = events.find(
+        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
+      )?.messageId;
+
+      await api(`/api/chat/conversations/${chat.id}/tool`, {
+        method: 'POST',
+        body: JSON.stringify({ messageId, decision: 'accepted', note: 'Portrait' }),
+      });
+
+      llama.script({ content: 'Portrait it is.' });
+      await readStream(
+        await api(`/api/chat/conversations/${chat.id}/continue`, { method: 'POST' }),
+      );
+
+      const sent = llama.requests[llama.requests.length - 1] as { tools?: unknown[] };
+      expect(sent.tools?.length).toBeGreaterThan(0);
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
   it('says plainly when the model server is not there', async () => {
     await useLlama('http://127.0.0.1:1');
 

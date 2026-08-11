@@ -563,7 +563,7 @@ export class LlamaClient {
    */
   async *stream(
     messages: ChatMessage[],
-    options: { signal?: AbortSignal; force?: ChatToolName } = {},
+    options: { signal?: AbortSignal; force?: ChatToolName; withoutTools?: boolean } = {},
   ): AsyncGenerator<ChatStreamEvent> {
     /*
      * A forced tool is offered even when its setting is `off`.
@@ -574,7 +574,9 @@ export class LlamaClient {
      */
     const tools = options.force
       ? TOOLS.filter((tool) => tool.function.name === options.force)
-      : enabledTools(this.settings.tools);
+      : options.withoutTools
+        ? []
+        : enabledTools(this.settings.tools);
 
     const history = toApiMessages(
       messages,

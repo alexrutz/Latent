@@ -6,9 +6,11 @@ import type {
   ChatMessage,
   ChatStreamEvent,
   ChatToolCall,
+  GenerationRecord,
 } from '@latent/shared';
 
 import { ApiError, api } from '../api/client';
+import { useLiveStore } from './live';
 
 /**
  * The conversation, held outside the screen that shows it.
@@ -59,6 +61,28 @@ interface ChatStore {
    */
   askedForPrompt: boolean;
 
+  /**
+   * The run the model is waiting on before it says anything else.
+   *
+   * Accepting a prompt used to be followed straight away by the model's next
+   * turn, which meant it commented on — and often proposed a change to — a
+   * picture that did not exist yet. Nothing it said then could be about the
+   * result, because the result was still being sampled.
+   */
+  waitingFor: string | null;
+
+  /**
+   * The tool dialog has been folded away without being decided.
+   *
+   * It covers the screen and blurs everything behind it, which is right while
+   * you are deciding and wrong the moment you want to check something first.
+   * The call itself is untouched — this is only whether it is on screen.
+   */
+  callMinimized: boolean;
+
+  minimizeCall: () => void;
+  restoreCall: () => void;
+
   open: () => Promise<void>;
   openChat: (id: string) => Promise<void>;
   startNew: () => Promise<void>;
@@ -88,6 +112,64 @@ const DRAFT_KEY = 'latent.chatDraft';
 let inFlight: AbortController | null = null;
 /** Guards `open` against being run twice by two mounts of the same screen. */
 let opening: Promise<void> | null = null;
+
+/** How often to ask the server, when no live event has told us. */
+const SETTLE_POLL_MS = 2_000;
+/**
+ * Long enough for any render, short enough that a lost job cannot silence the
+ * conversation for good. Reaching it carries on rather than giving up.
+ */
+const SETTLE_CEILING_MS = 30 * 60 * 1000;
+
+/**
+ * Wait for one run to stop being in progress.
+ *
+ * Two sources, because neither alone is enough. The live socket is the fast
+ * one, and it is also the one that is not there after a reconnect or while a
+ * phone's screen is locked; polling the record is slow but always true. Whether
+ * the picture came out is not this function's business — a failed render is
+ * still something for the model to respond to.
+ */
+async function waitForGeneration(id: string, stillWanted: () => boolean): Promise<void> {
+  const done = (record: GenerationRecord | null): boolean =>
+    record?.id === id &&
+    (record.status === 'completed' || record.status === 'failed' || record.status === 'cancelled');
+
+  if (done(useLiveStore.getState().lastGeneration)) return;
+
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      unsubscribe();
+      clearInterval(poll);
+      clearTimeout(ceiling);
+      resolve();
+    };
+
+    const unsubscribe = useLiveStore.subscribe((state) => {
+      if (done(state.lastGeneration)) finish();
+    });
+
+    const poll = setInterval(() => {
+      if (!stillWanted()) {
+        finish();
+        return;
+      }
+      void api
+        .generation(id)
+        .then((record) => {
+          if (done(record)) finish();
+        })
+        // A 404 means the run is not there to wait for — swept, or never
+        // recorded. Either way nothing is coming.
+        .catch(() => finish());
+    }, SETTLE_POLL_MS);
+
+    const ceiling = setTimeout(finish, SETTLE_CEILING_MS);
+  });
+}
 
 export const useChatStore = create<ChatStore>((set, get) => {
   /**
@@ -166,7 +248,9 @@ export const useChatStore = create<ChatStore>((set, get) => {
     // keeping, and a divergence here would show a message that is not stored.
     const refreshed = await api.chat(chatId);
     if (!mine()) return;
-    set({ chat: refreshed, ...(call ? { pendingCall: call } : {}) });
+    // A new proposal is always shown: folding one away is a decision about
+    // that call, not a preference to keep the next one hidden too.
+    set({ chat: refreshed, ...(call ? { pendingCall: call, callMinimized: false } : {}) });
   };
 
   /** Run one request that produces a stream, cancelling any earlier one. */
@@ -201,6 +285,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     error: null,
     loading: false,
     askedForPrompt: false,
+    waitingFor: null,
+    callMinimized: false,
+
+    minimizeCall: () => set({ callMinimized: true }),
+    restoreCall: () => set({ callMinimized: false }),
 
     setDraft: (draft) => {
       set({ draft });
@@ -265,7 +354,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       inFlight?.abort();
       const opened = await api.chat(id);
       localStorage.setItem(LAST_CHAT_KEY, id);
-      set({ chat: opened, streaming: null, pendingCall: null, error: null });
+      set({
+        chat: opened,
+        streaming: null,
+        pendingCall: null,
+        callMinimized: false,
+        waitingFor: null,
+        error: null,
+      });
     },
 
     startNew: async () => {
@@ -276,6 +372,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         chat: { ...created, messages: [] },
         streaming: null,
         pendingCall: null,
+        callMinimized: false,
+        waitingFor: null,
         askedForPrompt: false,
         error: null,
         attachments: [],
@@ -374,12 +472,29 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const { chat, pendingCall } = get();
       if (!chat || !pendingCall) return;
 
-      set({ pendingCall: null, askedForPrompt: false });
+      set({ pendingCall: null, askedForPrompt: false, callMinimized: false });
       try {
         await api.resolveTool(chat.id, { messageId: pendingCall.messageId, ...body });
       } catch (cause) {
         set({ error: cause instanceof Error ? cause.message : 'Could not record that' });
         return;
+      }
+
+      /*
+       * A decision that started a render is answered when the render is over.
+       *
+       * The model's turn after an accepted prompt is *about* the picture — and
+       * replying while it is still sampling meant talking about something
+       * nobody had seen, including itself. The wait lives here rather than on
+       * the screen because the screen is unmounted the moment you look at the
+       * gallery, which is exactly what you do while a picture renders.
+       */
+      const startedRun = body.generationId;
+      if (typeof startedRun === 'string' && startedRun !== '') {
+        set({ waitingFor: startedRun });
+        await waitForGeneration(startedRun, () => get().chat?.id === chat.id);
+        if (get().chat?.id !== chat.id) return;
+        set({ waitingFor: null });
       }
 
       // After a decision the model usually has something short to say about it.

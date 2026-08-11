@@ -75,6 +75,8 @@ export function ChatScreen() {
   const attachments = useChatStore((state) => state.attachments);
   const error = useChatStore((state) => state.error);
   const askedForPrompt = useChatStore((state) => state.askedForPrompt);
+  const callMinimized = useChatStore((state) => state.callMinimized);
+  const waitingFor = useChatStore((state) => state.waitingFor);
   const store = useChatStore.getState;
 
   /** A prompt from further up, reopened to run again or to rewind to. */
@@ -230,10 +232,11 @@ export function ChatScreen() {
       */}
       <div
         ref={transcriptRef}
+        data-testid="chat-transcript"
         onScroll={onTranscriptScroll}
         className={cn(
           'min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-2',
-          pendingCall && 'pointer-events-none blur-sm',
+          pendingCall && !callMinimized && 'pointer-events-none blur-sm',
         )}
       >
         {chat.messages.length === 0 && !streaming && (
@@ -258,6 +261,19 @@ export function ChatScreen() {
             />
           ))}
 
+          {/*
+            Said plainly, because otherwise this looks like the chat has
+            stopped answering. It has not — it is waiting for the picture it
+            was asked about, and anything it said before that landed would be
+            about something nobody has seen.
+          */}
+          {waitingFor && !streaming && (
+            <div className="flex items-center gap-2 py-1 text-xs text-muted">
+              <Spinner className="size-3" />
+              <span>Rendering — the reply comes once the picture is done.</span>
+            </div>
+          )}
+
           {streaming && (
             <div className="space-y-1">
               {streaming.thinking !== '' && (
@@ -276,6 +292,27 @@ export function ChatScreen() {
       </div>
 
       <ErrorNote>{error}</ErrorNote>
+
+      {/*
+        What was put aside, and the way back to it.
+
+        Pinned to the composer rather than left in the transcript: the point of
+        folding the dialog away is to go and look at something, and a marker
+        that scrolls out of sight with everything else is not a way back.
+      */}
+      {pendingCall && callMinimized && (
+        <button
+          type="button"
+          onClick={() => store().restoreCall()}
+          className="mx-3 mb-1 flex items-center gap-2 rounded-xl border border-accent/40 bg-accent/10 px-3 py-2 text-left text-xs text-accent active:bg-accent/20"
+        >
+          <span aria-hidden>◳</span>
+          <span className="min-w-0 flex-1 truncate">
+            {TOOL_LABELS[pendingCall.call.tool]} — waiting on you
+          </span>
+          <span className="shrink-0 font-medium underline">Open</span>
+        </button>
+      )}
 
       {/* Composer */}
       <div className="shrink-0 border-t border-line bg-ink px-3 pt-2 pb-2">
@@ -378,9 +415,10 @@ export function ChatScreen() {
         </div>
       </div>
 
-      {pendingCall && (
+      {pendingCall && !callMinimized && (
         <ToolDialog
           call={pendingCall.call}
+          onMinimize={() => store().minimizeCall()}
           settings={settings.data ?? null}
           previousPrompt={previousPrompt}
           autoAccept={

@@ -799,6 +799,22 @@ to use a tool the reply stops, the conversation behind it goes out of focus, and
 accept or you refuse, and refusing is an ordinary turn in the conversation —
 the model is told, and you carry on refining.
 
+**A dialog can be put aside** with the − in its corner, and comes back from a
+line above the composer. Deciding is often not the next thing you want to do:
+the answer is in the gallery, or five messages up, and both are behind the very
+thing asking. Folding it away leaves the call exactly as it was — the model is
+still waiting, nothing has been accepted or refused — and the transcript
+becomes readable again in the meantime.
+
+**Nothing is said about a picture until there is one.** Accepting a prompt used
+to be followed immediately by the model's next turn, which meant it described,
+and often proposed changing, a render that was still being sampled. Now that
+turn waits for the run to finish, with a line in the transcript saying so, and
+when it comes it is offered **no tools** — so the reply after a picture is a
+sentence about it rather than another proposal on top of it. Both hold while
+you are elsewhere in the app; the conversation lives outside the screen that
+shows it.
+
 **Build a prompt** is the one this module exists for. Ask for a prompt from what
 you have been discussing and you get it in an editable box — with **Reject** and
 **Generate** at the very top, and the settings it would run with listed small
