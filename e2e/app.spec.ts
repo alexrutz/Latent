@@ -77,16 +77,15 @@ async function open(page: Page, path = '/') {
 /**
  * Put away the result sheet.
  *
- * A finished run now presents its picture rather than waiting to be tapped, so
- * anything that generates and then goes on to use the app has to close it
- * first — exactly as a person would.
+ * Only open when the progress bar was left open — see the rule in `LiveBar` —
+ * so for most tests there is nothing here to close. Short on purpose: when it
+ * is up it is up the moment the run ends, so a long wait here would only be
+ * time spent proving a negative.
  */
 async function dismissResult(page: Page) {
   const dismiss = page.getByRole('button', { name: 'Dismiss' });
   try {
-    // Tolerant on purpose: a reload clears the result, so whether the sheet is
-    // up depends on when the last picture landed relative to the navigation.
-    await dismiss.waitFor({ state: 'visible', timeout: 10_000 });
+    await dismiss.waitFor({ state: 'visible', timeout: 1_500 });
   } catch {
     return;
   }
@@ -373,13 +372,20 @@ test.describe('the phone-specific fixes', () => {
     await expect(field).toHaveValue('120');
   });
 
-  test('keeps the finished image on screen instead of closing', async ({ page }) => {
+  test('keeps the finished image reachable instead of closing', async ({ page }) => {
     await open(page, '/');
     await page.getByPlaceholder('Describe the image…').fill('a result that stays put');
     await page.getByRole('button', { name: /^Generate/ }).click();
 
-    // The result now presents itself rather than waiting to be tapped: the
-    // picture is the thing that was being waited for.
+    /*
+     * The run ending used to unmount this bar, which dumped you back on the
+     * form at the exact moment the picture became available. It stays — one
+     * tap from the picture rather than in front of it, which is the rule the
+     * twenty-sixth wave covers.
+     */
+    await page.getByRole('button', { name: 'Show the finished picture' }).click({
+      timeout: 60_000,
+    });
     await expect(page.getByRole('button', { name: 'Open gallery' })).toBeVisible({
       timeout: 60_000,
     });
@@ -1870,7 +1876,8 @@ test.describe('keeping, deleting and looking closely', () => {
     await page.getByPlaceholder('Describe the image…').fill(prompt);
     await page.getByRole('button', { name: /^Generate/ }).click();
 
-    // The result opens itself now, and it sits over everything else.
+    // Nothing covers the screen any more, but a stray sheet from an earlier
+    // step would, so this stays.
     await dismissResult(page);
 
     await page.getByRole('link', { name: 'Gallery' }).click();
@@ -1878,16 +1885,20 @@ test.describe('keeping, deleting and looking closely', () => {
   }
 
   /**
-   * Waiting for a render and then being handed a one-line bar you have to tap
-   * is the wrong end of the interaction. The picture is the point.
+   * The finished run stays reachable without taking the screen: the bar carries
+   * the thumbnail, and the sheet it opens is the same one as before.
    */
-  test('opens the finished picture without being asked', async ({ page }) => {
+  test('offers the finished picture from the bar, one tap away', async ({ page }) => {
     await open(page, '/');
     await page.getByPlaceholder('Describe the image…').fill('show me straight away');
     await page.getByRole('button', { name: /^Generate/ }).click();
 
-    // The result sheet, not the collapsed bar.
-    await expect(page.getByRole('dialog').getByText('Rate it')).toBeVisible({ timeout: 60_000 });
+    // The bar carries the thumbnail; the sheet is behind one tap.
+    const bar = page.getByRole('button', { name: 'Show the finished picture' });
+    await expect(bar).toBeVisible({ timeout: 60_000 });
+    await bar.click();
+
+    await expect(page.getByRole('dialog').getByText('Rate it')).toBeVisible();
     await expect(page.getByRole('dialog').getByRole('img')).toBeVisible();
     await page.screenshot({ path: 'test-results/36-result-opens.png' });
   });
@@ -4150,5 +4161,69 @@ test.describe('the twenty-fifth wave', () => {
     await expect(page.getByRole('button', { name: 'Rewrite', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Preset 3', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Preset 4', exact: true })).toHaveCount(0);
+  });
+});
+
+/**
+ * The result sheet, and when it is allowed to take the screen.
+ *
+ * Presenting the picture unasked was right for the case it was written for —
+ * watching a render finish — and wrong for the one that actually happens more:
+ * you queue something and carry straight on typing the next prompt, and a sheet
+ * lands over the keyboard for a picture you were not waiting to look at.
+ */
+test.describe('the twenty-sixth wave', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+  });
+
+  test('leaves a finished picture in the bar while you are doing something else', async ({
+    page,
+  }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('quiet result');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    // The bar says so, and nothing has covered the form.
+    const bar = page.getByRole('button', { name: 'Show the finished picture' });
+    await expect(bar).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole('button', { name: 'Dismiss' })).toHaveCount(0);
+    // Still where you were, with what you typed.
+    await expect(page.getByPlaceholder('Describe the image…')).toHaveValue('quiet result');
+    await page.screenshot({ path: 'test-results/78-quiet-result.png' });
+
+    // And the picture is one tap away rather than gone.
+    await bar.click();
+    await expect(page.getByRole('button', { name: 'Dismiss' })).toBeVisible();
+  });
+
+  test('shows the result at once when the progress bar was left open', async ({ page }) => {
+    /*
+     * Sixty steps, so there is time to open the bar before the run is over —
+     * at the default the whole thing is finished inside a second.
+     */
+    const slow = JSON.parse(JSON.stringify(sd15Txt2Img)) as Record<
+      string,
+      { inputs: Record<string, unknown> }
+    >;
+    slow['3']!.inputs.steps = 60;
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: WORKFLOW_NAME, graph: slow } }),
+    );
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('watched result');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    // Watching it: the progress sheet, opened by hand.
+    await page.getByRole('button', { name: 'Generation progress' }).click();
+    await expect(page.getByRole('button', { name: 'Cancel this run' })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    // The same sheet becomes the result rather than closing and re-opening.
+    await expect(page.getByRole('button', { name: 'Dismiss' })).toBeVisible({ timeout: 60_000 });
+    await page.screenshot({ path: 'test-results/79-watched-result.png' });
   });
 });

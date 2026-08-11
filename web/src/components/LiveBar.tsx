@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import type { GenerationRecord, JobStats, LiveJob } from '@latent/shared';
@@ -32,25 +32,21 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
   const [expanded, setExpanded] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const openedFor = useRef<string | null>(null);
 
   // Only ticks while something is running, so an idle app repaints never.
   const now = useTicker(Boolean(job));
 
   /*
-   * Show the picture without being asked.
+   * The result opens by itself only if you were already watching.
    *
-   * Waiting for a render and then being handed a one-line bar you have to tap
-   * is the wrong end of the interaction — the image is the entire point. Only
-   * when the queue has drained, though: popping a sheet after every item of a
-   * batch of eight would be unusable.
+   * `expanded` is one flag across both states of this bar, so a progress sheet
+   * left open simply becomes the result sheet when the job ends — which is the
+   * whole of the rule. Opening it regardless was the old behaviour, and it was
+   * wrong for the commonest case there is: you queue something, then carry on
+   * typing the next prompt, and a sheet lands over the keyboard for a picture
+   * you were not waiting to look at. Collapsed, the bar still shows the
+   * thumbnail and says Done, one tap from the same sheet.
    */
-  useEffect(() => {
-    if (!finished || job || queueRemaining > 0) return;
-    if (openedFor.current === finished.id) return;
-    openedFor.current = finished.id;
-    if (finished.images.length > 0) setExpanded(true);
-  }, [finished, job, queueRemaining]);
 
   if (!job && !finished) return null;
 
@@ -384,9 +380,17 @@ function ResultBar({
 
   return (
     <>
+      {/*
+        Labelled by what it does, not by what it contains.
+
+        Read off its contents the name came out as "Done <title> View" — which
+        announces a state where a button should announce an action, and collides
+        with the Done that closes every sheet in the app.
+      */}
       <button
         type="button"
         onClick={onExpand}
+        aria-label={failed ? 'Show what went wrong' : 'Show the finished picture'}
         className={cn(
           'block w-full border-t px-4 py-2.5 text-left backdrop-blur',
           failed ? 'border-danger/40 bg-danger/10' : 'border-line bg-surface/95',

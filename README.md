@@ -31,9 +31,9 @@ form. Nothing about your ComfyUI setup changes.
   all handled — see [Connecting to vast.ai](#connecting-to-vastai).
 - **Live progress, with numbers.** A persistent bar shows the live preview, the
   sampler's step rate and **how much longer it has to go**, follows you between
-  tabs, and **stays on screen when the run finishes** so you actually see the
-  picture you waited for. A tap opens the full timing breakdown without covering
-  the app.
+  tabs, and **becomes the finished picture when the run ends** rather than
+  vanishing — one tap from the result, and never in front of what you were
+  typing. A tap opens the full timing breakdown without covering the app.
 - **A queue you can actually manage.** Every waiting job lists the settings it
   was submitted with — including its seed — so you can tell eight variations of
   one prompt apart and cancel the one you regret. One switch expands them all
@@ -1254,11 +1254,18 @@ list has anything in it.
 
 ## Timings and the queue
 
-**The result presents itself.** When the queue drains, the finished picture opens
-rather than waiting to be tapped — it is the thing you were waiting for. During a
-batch it does not: what happens instead is that the *last* picture stays on screen
-until the next one has a preview frame of its own, so a batch of eight is
-something you can watch rather than an empty box between renders.
+**The result waits in the bar unless you were watching it.** When a run ends the
+bar turns into the finished picture — thumbnail, title, one tap to the full
+sheet with its rating and actions. It does not open by itself, because the
+commonest thing to be doing when a render lands is typing the next prompt, and a
+sheet arriving over the keyboard for a picture you were not waiting to look at is
+something to dismiss rather than something to see.
+
+If the progress sheet was open — you *were* watching — it simply becomes the
+result sheet, which is what makes the rule feel like one rule rather than two
+behaviours. During a batch the *last* picture stays on screen until the next has
+a preview frame of its own, so a batch of eight is something you can watch rather
+than an empty box between renders.
 
 **A lost connection resolves itself.** ComfyUI going away mid-queue used to leave
 this app describing a machine that no longer existed: a queue badge that never
