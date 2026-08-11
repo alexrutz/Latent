@@ -11,6 +11,7 @@ export * from './randomPrompt.js';
 export * from './studyPlan.js';
 export * from './studyStats.js';
 export * from './modelServer.js';
+export * from './presetChat.js';
 export * from './systemPrompts.js';
 export * from './apiTypes.js';
 export * from './markdown.js';

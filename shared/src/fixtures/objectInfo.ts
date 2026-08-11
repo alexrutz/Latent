@@ -57,6 +57,23 @@ export const UPSCALE_MODELS = ['RealESRGAN_x4plus.pth', '4x-UltraSharp.pth'];
 
 export const INPUT_IMAGES = ['example.png', 'photo.jpg'];
 
+/** The ratios comfyllama's aspect-ratio latent offers, in its own order. */
+export const ASPECT_RATIOS = [
+  '1:1',
+  '2:3',
+  '3:2',
+  '3:4',
+  '4:3',
+  '4:5',
+  '5:4',
+  '9:16',
+  '16:9',
+  '9:21',
+  '21:9',
+  '1:2',
+  '2:1',
+];
+
 export const objectInfoFixture: ObjectInfo = {
   KSampler: {
     display_name: 'KSampler',
@@ -244,6 +261,69 @@ export const objectInfoFixture: ObjectInfo = {
         server: ['LLAMA_SERVER'],
         system: ['STRING', { default: 'You are a helpful assistant.', multiline: true }],
         prompt: ['STRING', { default: '', multiline: true, dynamicPrompts: true }],
+      },
+    },
+  },
+  /**
+   * Six system prompts in one node, switched by `active`.
+   *
+   * The slots are declared as `Preset 1…6` and renamed in the graph, which is
+   * the whole reason `applyPresetChat` exists — a form built from this
+   * definition alone offers names nobody uses.
+   */
+  LlamaServerPresetChat: {
+    display_name: 'Chat with Prompt Presets (llama-server)',
+    output: ['STRING', 'STRING', 'STRING'],
+    input: {
+      required: {
+        server: ['LLAMA_SERVER'],
+        prompt: ['STRING', { default: '', multiline: true, dynamicPrompts: true }],
+        active: [
+          ['passthrough', 'Preset 1', 'Preset 2', 'Preset 3', 'Preset 4', 'Preset 5', 'Preset 6'],
+          { default: 'passthrough' },
+        ],
+        slot_count: ['INT', { default: 3, min: 1, max: 6 }],
+        max_tokens: ['INT', { default: 512, min: 1, max: 32768 }],
+        seed: ['INT', { default: 0, min: 0, max: SEED_MAX }],
+        name_1: ['STRING', { default: 'Preset 1' }],
+        system_1: ['STRING', { default: '', multiline: true }],
+        name_2: ['STRING', { default: 'Preset 2' }],
+        system_2: ['STRING', { default: '', multiline: true }],
+        name_3: ['STRING', { default: 'Preset 3' }],
+        system_3: ['STRING', { default: '', multiline: true }],
+        name_4: ['STRING', { default: 'Preset 4' }],
+        system_4: ['STRING', { default: '', multiline: true }],
+        name_5: ['STRING', { default: 'Preset 5' }],
+        system_5: ['STRING', { default: '', multiline: true }],
+        name_6: ['STRING', { default: 'Preset 6' }],
+        system_6: ['STRING', { default: '', multiline: true }],
+      },
+      optional: {
+        extra_separator: ['STRING', { default: '\\n\\n' }],
+      },
+    },
+  },
+  /**
+   * An empty latent sized by ratio rather than by width and height.
+   *
+   * `divisible_by` is the numeric combo in the suite: its choices arrive as
+   * numbers, and the node compares against numbers.
+   */
+  EmptyLatentByAspectRatio: {
+    display_name: 'Empty Latent (Aspect Ratio)',
+    output: ['LATENT', 'INT', 'INT'],
+    input: {
+      required: {
+        aspect_ratio: [ASPECT_RATIOS, { default: '1:1' }],
+        megapixels: ['FLOAT', { default: 1.0, min: 0.01, max: 64.0, step: 0.01 }],
+        divisible_by: [[8, 16, 32, 64], { default: 8 }],
+        batch_size: ['INT', { default: 1, min: 1, max: 4096 }],
+      },
+      optional: {
+        latent_format: [
+          ['SD1.5 / SDXL (4 channels)', 'SD3 / Flux (16 channels)'],
+          { default: 'SD1.5 / SDXL (4 channels)' },
+        ],
       },
     },
   },

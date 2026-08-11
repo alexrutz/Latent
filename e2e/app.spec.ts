@@ -11,6 +11,7 @@ import {
   sd15WithLoraInput,
   uiFormatWorkflow,
   withLlamaServer,
+  withPresetChat,
   withTextPreview,
 } from '../shared/src/fixtures/workflows.js';
 import { renderPlaceholder } from '../server/src/mock/png.js';
@@ -4005,5 +4006,39 @@ test.describe('the twenty-fifth wave', () => {
     await expect(marked).toHaveCount(5);
     await expect(page.getByText('http://127.0.0.1:8189').first()).toBeVisible();
     await page.screenshot({ path: 'test-results/75-model-server-field.png' });
+  });
+
+  /**
+   * The preset-chat node's form, which its own values decide.
+   *
+   * `/object_info` says `Preset 1…6`; the graph says what they were renamed to,
+   * and `slot_count` says how many of them exist. A form built from the
+   * definition alone offers a dropdown of names nobody uses and twelve text
+   * boxes for six prompts that are not there.
+   */
+  test('names the preset-chat slots and hides the ones not in use', async ({ page }) => {
+    await withApi(async (ctx) => {
+      await ctx.post('/api/workflows', {
+        data: { name: 'Preset chat', graph: withPresetChat },
+      });
+    });
+
+    await open(page, '/');
+    await page.getByRole('button', { name: 'Advanced' }).click();
+
+    // Each system prompt is headed by its own slot's name.
+    await expect(page.getByText('Caption', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('Rewrite', { exact: true }).first()).toBeVisible();
+    // Three of six slots are in use, so the rest are not on screen at all.
+    await expect(page.getByText('System 4', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Name 5', { exact: true })).toHaveCount(0);
+    await page.screenshot({ path: 'test-results/76-preset-chat-slots.png' });
+
+    // And the picker offers those same names rather than the declared ones.
+    await page.getByRole('button', { name: /^Active/ }).click();
+    await expect(page.getByRole('button', { name: 'passthrough', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Rewrite', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Preset 3', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Preset 4', exact: true })).toHaveCount(0);
   });
 });

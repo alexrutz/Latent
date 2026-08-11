@@ -16,6 +16,15 @@ export type ParamRole =
   | 'vae'
   | 'width'
   | 'height'
+  /**
+   * The other way to say how big the picture is.
+   *
+   * comfyllama's `EmptyLatentByAspectRatio` gives a ratio and an area instead
+   * of two edge lengths. It is the same decision, so it belongs in the same
+   * place on the form and on a gallery card.
+   */
+  | 'aspect_ratio'
+  | 'megapixels'
   | 'batch_size'
   | 'steps'
   | 'cfg'
@@ -45,6 +54,14 @@ export interface ParamField {
   defaultValue: WidgetValue;
   /** Allowed values when `control === 'combo'`. */
   options?: string[];
+  /**
+   * The combo's choices were numbers, not strings.
+   *
+   * A node may declare its list numerically — `divisible_by: ([8, 16, 32, 64],
+   * …)` — and then it wants a number back. The options are carried as text
+   * because that is what a picker offers; this is what converts them again.
+   */
+  numericOptions?: boolean;
   /** Hard limits, straight from `/object_info`. Typed input is clamped to these. */
   min?: number;
   max?: number;

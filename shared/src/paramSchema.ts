@@ -1,6 +1,7 @@
 import type {
   ApiWorkflow,
   ApiWorkflowNode,
+  ComboChoices,
   InputOptions,
   InputSpec,
   NodeLink,
@@ -37,7 +38,7 @@ function isWidgetValue(value: unknown): value is WidgetValue {
   return t === 'string' || t === 'number' || t === 'boolean' || value === null;
 }
 
-function specType(spec: InputSpec | undefined): string | string[] | undefined {
+function specType(spec: InputSpec | undefined): string | ComboChoices | undefined {
   return spec?.[0];
 }
 
@@ -354,6 +355,8 @@ function detectRole(
   if (inputName === 'denoise') return 'denoise';
   if (inputName === 'width') return 'width';
   if (inputName === 'height') return 'height';
+  if (inputName === 'aspect_ratio') return 'aspect_ratio';
+  if (inputName === 'megapixels') return 'megapixels';
   if (inputName === 'batch_size') return 'batch_size';
   if (LORA_INPUTS.has(inputName)) return 'lora';
   if (VAE_INPUTS.has(inputName)) return 'vae';
@@ -374,6 +377,8 @@ const MAIN_ROLE_ORDER: ParamRole[] = [
   'lora',
   'width',
   'height',
+  'aspect_ratio',
+  'megapixels',
   'batch_size',
   'steps',
   'cfg',
@@ -390,6 +395,7 @@ const MAIN_ROLE_ORDER: ParamRole[] = [
 interface TypedControl {
   control: ControlKind;
   options?: string[];
+  numericOptions?: boolean;
   min?: number;
   max?: number;
   step?: number;
@@ -406,10 +412,21 @@ function typeControl(
   const type = specType(spec);
 
   if (Array.isArray(type)) {
-    const opts = type.filter((v): v is string => typeof v === 'string');
+    /*
+     * A combo's choices are usually strings, but they are allowed to be
+     * numbers — `divisible_by: ([8, 16, 32, 64], …)`. Dropping those left the
+     * field with no choices at all, which reads exactly like the dynamic
+     * combos some nodes declare empty, so the picker turned into a free-text
+     * box. They are shown as text and converted back on the way out.
+     */
+    const usable = type.filter(
+      (value): value is string | number => typeof value === 'string' || typeof value === 'number',
+    );
+    const numericOptions = usable.length > 0 && usable.every((v) => typeof v === 'number');
+    const opts = usable.map(String);
     // An image combo on LoadImage is really a file picker.
     if (role === 'image_input') return { control: 'image', options: opts };
-    return { control: 'combo', options: opts };
+    return { control: 'combo', options: opts, numericOptions };
   }
 
   switch (type) {
@@ -471,6 +488,9 @@ const PRACTICAL_RANGES: Partial<Record<ParamRole, [number, number]>> = {
   denoise: [0, 1],
   width: [256, 2048],
   height: [256, 2048],
+  // 0.26 MP is SD1.5's native size, 1.0 SDXL's and Flux's; past 4 the node is
+  // being asked for something no consumer card renders in one pass.
+  megapixels: [0.25, 4],
   batch_size: [1, 8],
 };
 
@@ -543,6 +563,8 @@ const ROLE_LABELS: Partial<Record<ParamRole, string>> = {
   vae: 'VAE',
   width: 'Width',
   height: 'Height',
+  aspect_ratio: 'Aspect ratio',
+  megapixels: 'Megapixels',
   batch_size: 'Batch size',
   steps: 'Steps',
   cfg: 'CFG',
@@ -639,6 +661,7 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
         control: typed.control,
         defaultValue: value,
         ...(typed.options ? { options: typed.options } : {}),
+        ...(typed.numericOptions ? { numericOptions: true } : {}),
         ...(typed.min !== undefined ? { min: typed.min } : {}),
         ...(typed.max !== undefined ? { max: typed.max } : {}),
         ...(soft.softMin !== undefined ? { softMin: soft.softMin } : {}),
@@ -776,7 +799,16 @@ function coerce(field: ParamField, value: WidgetValue): WidgetValue {
     case 'boolean':
       if (typeof value === 'boolean') return value;
       return value === 'true' || value === 1;
-    case 'combo':
+    case 'combo': {
+      if (value === null || value === undefined) return field.defaultValue;
+      // A combo of numbers is shown as text and has to go back as a number:
+      // the node compares against its own list, where `8` is not `"8"`.
+      if (field.numericOptions) {
+        const n = Number(value);
+        return Number.isFinite(n) ? n : field.defaultValue;
+      }
+      return String(value);
+    }
     case 'image':
     case 'text':
     case 'textarea':

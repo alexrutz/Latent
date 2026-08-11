@@ -33,6 +33,7 @@ import type {
 import {
   sd15Txt2Img,
   withLlamaServer,
+  withPresetChat,
   sd15Txt2ImgUi,
   uiFormatWorkflow,
   withTextPreview,
@@ -3192,7 +3193,11 @@ describe('gallery ordering', () => {
       store.addImages(`p-${id}`, '9', [{ filename: `${id}.png`, subfolder: '', type: 'output' }]);
 
       const image = store.getGeneration(id)?.images[0];
-      if (image && stars[id]) store.setImageRating(image.id, stars[id] as number);
+      // The id is optional on the type — a favourite recorded before it existed
+      // has none — but a row just written always has one.
+      if (image?.id !== undefined && stars[id]) {
+        store.setImageRating(image.id, stars[id] as number);
+      }
     }
 
     const stamp = new Database(path);
@@ -3949,6 +3954,56 @@ describe('llama-server nodes', () => {
     } finally {
       await api(`/api/connections/${created.id}`, { method: 'DELETE' });
     }
+  }, 30_000);
+
+  /**
+   * The preset-chat node, whose form cannot be read off `/object_info` alone.
+   *
+   * Its slots are named in the graph and only `slot_count` of them exist, so a
+   * picker left on one that has since been renamed names nothing — and the node
+   * answers that with an error, after the job has been queued. This is the
+   * settling that keeps a stale choice from costing a run.
+   */
+  it('settles the preset picker and submits a numeric combo as a number', async () => {
+    const workflow = await json<WorkflowDetail>(
+      api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Preset chat', graph: withPresetChat }),
+      }),
+    );
+
+    // The slots on screen are Rewrite, Caption and Preset 3. Renaming the first
+    // one leaves the stored `active` naming a preset that no longer exists.
+    const { promptIds } = await json<GenerateResponse>(
+      api('/api/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          workflowId: workflow.id,
+          values: {
+            '6.text': 'a lighthouse',
+            '22.name_1': 'Expand',
+            '22.active': 'Rewrite',
+            '5.divisible_by': '32',
+          },
+        }),
+      }),
+    );
+
+    const submitted = await waitFor(async () => {
+      const history = (await (
+        await fetch(`${mockUrl}/history/${promptIds[0]}`)
+      ).json()) as Record<string, { prompt?: [number, string, Record<string, {
+        inputs: Record<string, unknown>;
+      }>] }>;
+      return history[promptIds[0]!]?.prompt?.[2];
+    }, 20_000);
+
+    expect(submitted['22']?.inputs.active).toBe('passthrough');
+    expect(submitted['22']?.inputs.name_1).toBe('Expand');
+    // A combo declared as numbers goes back as a number: the node matches
+    // against its own list, where 32 is not "32".
+    expect(submitted['5']?.inputs.divisible_by).toBe(32);
+    expect(submitted['5']?.inputs.aspect_ratio).toBe('3:2');
   }, 30_000);
 });
 

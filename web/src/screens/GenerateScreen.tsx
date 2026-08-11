@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import {
+  applyPresetChat,
   defaultValues,
   findFieldByRole,
   isLlamaServerField,
@@ -362,9 +363,20 @@ function GenerateForm({
     });
   }, [detail, consumePending, setDraft]);
 
+  /*
+   * The preset-chat node's slots are named in the form itself, so its picker
+   * only knows what to offer once the values are in hand — and it has to be
+   * re-derived as they change, because renaming a slot is what the dropdown
+   * below it is supposed to reflect.
+   */
+  const schema = useMemo(
+    () => (detail ? applyPresetChat(detail.schema, values) : null),
+    [detail, values],
+  );
+
   const fields = useMemo(
-    () => (detail ? detail.schema.fields.filter((field) => !field.hidden) : []),
-    [detail],
+    () => (schema ? schema.fields.filter((field) => !field.hidden) : []),
+    [schema],
   );
 
   const byRole = (role: ParamField['role']) => fields.filter((field) => field.role === role);

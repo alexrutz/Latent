@@ -5,6 +5,8 @@ import {
   applyModelServer,
   applyOverrides,
   applyParams,
+  applyPresetActive,
+  applyPresetChat,
   applySystemPrompts,
   buildParamSummary,
   composeRandomPrompt,
@@ -53,8 +55,15 @@ async function runBatch(
   detail: NonNullable<ReturnType<AppContext['store']['getWorkflow']>>,
   body: GenerateRequest,
 ): Promise<QueueBatchResult> {
-  const schema = applyOverrides(detail.schema, detail.overrides);
   const values = body.values ?? {};
+  /*
+   * The preset-chat node's slots are named in the form, so the schema it
+   * implies depends on the values that came with the request — and it has to be
+   * the *same* reshaping the form did, or a system prompt that filled a slot
+   * named "Rewrite" on screen would land nowhere here. The overrides go on top,
+   * so a label typed in the form editor still wins over the slot's name.
+   */
+  const schema = applyOverrides(applyPresetChat(detail.schema, values), detail.overrides);
   const batchCount = Math.min(Math.max(Math.floor(body.batchCount ?? 1) || 1, 1), MAX_BATCH_COUNT);
 
   // Remember what the user last typed so the form reopens where they left it.
@@ -176,6 +185,11 @@ async function runBatch(
     if (drawingParams) {
       itemValues = { ...itemValues, ...drawRandomParams(schema, randomConfig.params) };
     }
+
+    // Last, because a drawn value could have moved the picker: the preset-chat
+    // node rejects an `active` that names no live slot, and it does so after
+    // the job has been queued.
+    itemValues = applyPresetActive(schema, itemValues);
 
     // Re-derived per item: with a drawn prompt the title differs each time, and
     // the title is what the gallery and queue show.

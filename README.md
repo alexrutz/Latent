@@ -713,6 +713,28 @@ model server “…”* rather than as a box that is about to be overwritten. Wi
 model server chosen, the workflow's own address is used and the field stays
 yours to edit.
 
+**The preset-chat node keeps its names.** comfyllama's *Chat with Prompt
+Presets* carries six system prompts in one node and switches between them with
+an `active` dropdown — but what the slots are called, and how many of them
+exist, are decided by the node's own values rather than by its definition. In
+ComfyUI a small web extension rewrites the dropdown; Latent never loads
+extensions, so it does the same reshaping from the values it already has. The
+picker offers `passthrough` and the slot names as they have been typed, the
+slots above `slot_count` are left off the form rather than shown as twelve dead
+text boxes, and each system prompt is headed by its own slot's name — which
+means a [saved system prompt](#system-prompts-out-of-the-workflows) called
+*Rewrite* fills the slot
+called *Rewrite*, through the same name matching every other text field uses. A
+picker left on a slot that has since been renamed or put out of reach is settled
+back to `passthrough` on the way to the graph, because the alternative is a node
+that raises an error after the job has been queued.
+
+**A combo of numbers stays a picker.** comfyllama's *Empty Latent (Aspect
+Ratio)* declares `divisible_by` as `[8, 16, 32, 64]` — numbers, not strings —
+and expects a number back. `aspect_ratio` and `megapixels` are read as the size
+of the picture, so they sit with width and height on the form and on a gallery
+card.
+
 **Thinking is on by default.** Reasoning models are what this is worth doing
 with, and a model that thinks before answering gives noticeably better prompts.
 It arrives folded up under a *Thinking* line you can open, because the answer is
@@ -1355,6 +1377,7 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 | `web/src/state/chat.ts` | The conversation, held outside the screen so a tab switch cannot destroy it |
 | `shared/src/systemPrompts.ts` | Matching a named system prompt to the workflow field it belongs in |
 | `shared/src/modelServer.ts` | Putting the model server in use into a workflow's llama-server nodes |
+| `shared/src/presetChat.ts` | Reshaping the preset-chat node's form against its own slot names |
 | `server/src/statefile.ts` | Mirrors the arrangement to the files above the project |
 | `server/src/sweeper.ts` | Deletes runs nobody kept, once they are old enough |
 | `shared/src/promptMatch.ts` | Matches an image's embedded graph to a stored workflow |

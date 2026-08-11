@@ -275,6 +275,68 @@ export const withLlamaServer: ApiWorkflow = {
   },
 };
 
+/**
+ * The two nodes comfyllama grew most recently, in one graph.
+ *
+ * The preset-chat node with its slots renamed and only three of six in use, and
+ * the aspect-ratio latent whose `divisible_by` is a combo of numbers. Both are
+ * cases where the form cannot be read off `/object_info` alone.
+ */
+export const withPresetChat: ApiWorkflow = {
+  ...sd15Txt2Img,
+  // Replaces the plain empty latent, so the picture's size comes from the ratio.
+  '5': {
+    class_type: 'EmptyLatentByAspectRatio',
+    inputs: {
+      aspect_ratio: '3:2',
+      megapixels: 1,
+      divisible_by: 64,
+      batch_size: 1,
+      latent_format: 'SD1.5 / SDXL (4 channels)',
+    },
+    _meta: { title: 'Empty Latent (Aspect Ratio)' },
+  },
+  '20': {
+    class_type: 'LlamaServerConnect',
+    inputs: {
+      base_url: 'http://127.0.0.1:8080',
+      timeout: 300,
+      check_connection: true,
+      model: 'auto',
+      auth: 'auto',
+      api_key: '',
+      username: '',
+      password: '',
+    },
+    _meta: { title: 'Connect to llama-server' },
+  },
+  '22': {
+    class_type: 'LlamaServerPresetChat',
+    inputs: {
+      server: ['20', 0],
+      prompt: 'a lighthouse',
+      active: 'Rewrite',
+      slot_count: 3,
+      max_tokens: 512,
+      seed: 0,
+      name_1: 'Rewrite',
+      system_1: 'Rewrite the idea as one vivid prompt.',
+      name_2: 'Caption',
+      system_2: 'Describe the picture in one sentence.',
+      name_3: 'Preset 3',
+      system_3: '',
+      name_4: 'Preset 4',
+      system_4: '',
+      name_5: 'Preset 5',
+      system_5: '',
+      name_6: 'Preset 6',
+      system_6: '',
+      extra_separator: '\\n\\n',
+    },
+    _meta: { title: 'Chat with Prompt Presets' },
+  },
+};
+
 export const workflowFixtures = {
   sd15Txt2Img,
   sdxlBaseRefiner,
@@ -284,6 +346,7 @@ export const workflowFixtures = {
   unknownCustomNodes,
   withTextPreview,
   withLlamaServer,
+  withPresetChat,
 };
 
 /**

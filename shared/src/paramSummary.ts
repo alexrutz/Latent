@@ -31,6 +31,8 @@ const ROLE_ORDER: ParamRole[] = [
   'seed',
   'width',
   'height',
+  'aspect_ratio',
+  'megapixels',
   'batch_size',
   'model',
   'lora',
@@ -55,6 +57,10 @@ const PRIMARY_ROLES: ParamRole[] = [
   'seed',
   'width',
   'height',
+  // The other way a workflow says how big the picture is; a card that shows
+  // neither shape nor size says nothing about the picture at all.
+  'aspect_ratio',
+  'megapixels',
   'model',
 ];
 

@@ -4,6 +4,8 @@ import {
   applyModelServer,
   applyOverrides,
   applyParams,
+  applyPresetActive,
+  applyPresetChat,
   buildParamSummary,
 } from '@latent/shared';
 import type { ModelServerTarget, ParamValues } from '@latent/shared';
@@ -187,7 +189,12 @@ export class StudyRunner {
 
     this.busy = true;
     try {
-      const schema = applyOverrides(detail.schema, detail.overrides);
+      // Reshaped against the study's own base, which is where its preset-chat
+      // slots were named — the same schema the setup screen was filled against.
+      const schema = applyOverrides(
+        applyPresetChat(detail.schema, study.base),
+        detail.overrides,
+      );
 
       for (const shot of shots) {
         /*
@@ -196,7 +203,10 @@ export class StudyRunner {
          * settings being held constant, and a factor must always win — that is
          * what makes it the thing being varied.
          */
-        const values: ParamValues = { ...study.base, ...shot.values };
+        const values: ParamValues = applyPresetActive(schema, {
+          ...study.base,
+          ...shot.values,
+        });
         const title = deriveTitle(schema, values, `${study.name} #${shot.ordinal + 1}`);
 
         /*

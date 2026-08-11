@@ -32,7 +32,15 @@ export type ApiWorkflow = Record<string, ApiWorkflowNode>;
  * for a combo box whose first element is the list of allowed values. Some
  * custom nodes omit the options object entirely.
  */
-export type InputSpec = [string | string[], InputOptions?] | [string | string[]];
+export type InputSpec = [string | ComboChoices, InputOptions?] | [string | ComboChoices];
+
+/**
+ * The choices of a combo input.
+ *
+ * Usually strings, but a node is free to declare numbers — `divisible_by:
+ * ([8, 16, 32, 64], …)` is a real one — and then it expects a number back.
+ */
+export type ComboChoices = (string | number | boolean)[];
 
 export interface InputOptions {
   default?: WidgetValue;
