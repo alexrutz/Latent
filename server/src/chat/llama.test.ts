@@ -1,13 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ChatStreamEvent, ChatToolSettings } from '@latent/shared';
+import type {
+  ChatMessage,
+  ChatStreamEvent,
+  ChatToolCall,
+  ChatToolSettings,
+} from '@latent/shared';
 
 import {
   enabledTools,
   inlineReasoning,
   looksLikeAQuestionWithOptions,
   parseCall,
+  toApiMessages,
   toolPolicy,
+  withForcedInstruction,
 } from './llama.js';
 
 /**
@@ -311,3 +318,107 @@ describe('pulling reasoning out of the content stream', () => {
   });
 });
 
+
+/**
+ * What the model is shown of its own past turns.
+ *
+ * A conversation is replayed on every request, so anything wrong here is wrong
+ * for the rest of the conversation rather than for one turn.
+ */
+describe('replaying the transcript', () => {
+  const call: ChatToolCall = {
+    callId: 'call_1',
+    tool: 'build_prompt',
+    prompt: 'a lighthouse at dusk',
+    reason: 'The conversation settled on weather.',
+  };
+
+  const message = (over: Partial<ChatMessage>): ChatMessage => ({
+    id: 'm',
+    role: 'user',
+    content: '',
+    createdAt: 0,
+    ...over,
+  });
+
+  it('sends a tool call’s arguments and not Latent’s own fields', () => {
+    const [, assistant] = toApiMessages(
+      [message({ role: 'assistant', content: '', toolCall: call })],
+      'instructions',
+    );
+
+    const args = JSON.parse(assistant!.tool_calls![0]!.function.arguments) as Record<
+      string,
+      unknown
+    >;
+    expect(args).toEqual({
+      prompt: 'a lighthouse at dusk',
+      reason: 'The conversation settled on weather.',
+    });
+    // The name and the envelope belong to the call, not to its arguments.
+    expect(assistant!.tool_calls![0]!.function.name).toBe('build_prompt');
+    expect(assistant!.tool_calls![0]!.id).toBe('call_1');
+  });
+
+  it('leaves notes out — they are transcript, not conversation', () => {
+    const out = toApiMessages(
+      [message({ role: 'note', content: 'Generated again' }), message({ content: 'hello' })],
+      'instructions',
+    );
+    expect(out.map((entry) => entry.role)).toEqual(['system', 'user']);
+  });
+});
+
+/**
+ * The ✦ button, which asks for a prompt without saying anything.
+ *
+ * Forcing the tool is not enough: with nothing added, the request ends on the
+ * assistant's own last message, and a model asked to speak straight after
+ * itself repeats what it just said.
+ */
+describe('asking for a prompt with the button', () => {
+  const conversation = (content: string, role: ChatMessage['role'] = 'user'): ChatMessage[] => [
+    { id: 'm', role, content, createdAt: 0 },
+  ];
+
+  it('adds a turn saying what was asked for', () => {
+    const out = withForcedInstruction(
+      toApiMessages(conversation('Something calm.', 'assistant'), 'instructions'),
+      'build_prompt',
+    );
+
+    const last = out[out.length - 1]!;
+    expect(last.role).toBe('user');
+    expect(last.content).toContain('build_prompt');
+  });
+
+  it('folds it into the last turn when that is already the user’s', () => {
+    const history = toApiMessages(conversation('A lighthouse.'), 'instructions');
+    const out = withForcedInstruction(history, 'build_prompt');
+
+    // Two user turns in a row is what several chat templates refuse.
+    expect(out).toHaveLength(history.length);
+    expect(out[out.length - 1]!.content).toContain('A lighthouse.');
+    expect(out[out.length - 1]!.content).toContain('build_prompt');
+  });
+
+  it('keeps a picture attached to that turn', () => {
+    const withImage: ChatMessage[] = [
+      {
+        id: 'm',
+        role: 'user',
+        content: 'Like this.',
+        attachments: [{ name: 'a.png', dataUrl: 'data:image/png;base64,AA' }],
+        createdAt: 0,
+      },
+    ];
+    const out = withForcedInstruction(
+      toApiMessages(withImage, 'instructions'),
+      'build_prompt',
+    );
+
+    const parts = out[out.length - 1]!.content as { type: string; text?: string }[];
+    expect(parts.some((part) => part.type === 'image_url')).toBe(true);
+    expect(parts.filter((part) => part.type === 'text')).toHaveLength(2);
+  });
+});

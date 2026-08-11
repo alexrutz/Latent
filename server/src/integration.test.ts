@@ -4258,6 +4258,119 @@ describe('chat', () => {
     }
   }, 30_000);
 
+  /**
+   * The ✦ button, which says nothing and asks for everything.
+   *
+   * It adds no turn of its own, so without help the request ends on the
+   * assistant's own last message — and a model asked to speak straight after
+   * itself repeats what it just said, which is what the button looked like it
+   * was doing.
+   */
+  it('asks for a prompt as an instruction rather than as a bare continuation', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      const chat = await json<{ id: string }>(
+        api('/api/chat/conversations', { method: 'POST' }),
+      );
+
+      llama.script({ content: 'A harbour at dawn, then.' });
+      await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'something calm' }),
+        }),
+      );
+
+      llama.script({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a harbour at dawn, soft light', reason: 'Calm and blue.' },
+        },
+      });
+      const events = await readStream(
+        await api(`/api/chat/conversations/${chat.id}/build`, { method: 'POST' }),
+      );
+      expect(events.some((event) => event.type === 'tool')).toBe(true);
+
+      const sent = llama.requests[1] as {
+        messages: { role: string; content: string }[];
+        tool_choice?: { function?: { name?: string } };
+        tools?: { function: { name: string } }[];
+      };
+
+      // The tool is forced, and it is the only one on offer.
+      expect(sent.tool_choice?.function?.name).toBe('build_prompt');
+      expect(sent.tools?.map((tool) => tool.function.name)).toEqual(['build_prompt']);
+
+      // And the conversation ends on a turn the model can answer, rather than
+      // on its own last message.
+      const last = sent.messages[sent.messages.length - 1]!;
+      expect(last.role).toBe('user');
+      expect(last.content).toContain('build_prompt');
+      expect(last.content).not.toContain('A harbour at dawn, then.');
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
+   * What the model is shown of a tool call it made earlier.
+   *
+   * Replayed on every request from then on, so a call carrying fields the tool
+   * never declared teaches it to make the same malformed call again.
+   */
+  it('replays a tool call as its arguments alone', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      const chat = await json<{ id: string }>(
+        api('/api/chat/conversations', { method: 'POST' }),
+      );
+
+      llama.script({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a harbour at dawn', reason: 'Calm and blue.' },
+        },
+      });
+      await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'build me a prompt' }),
+        }),
+      );
+
+      llama.script({ content: 'Anything else?' });
+      await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'thanks' }),
+        }),
+      );
+
+      const sent = llama.requests[1] as {
+        messages: {
+          role: string;
+          tool_calls?: { id: string; function: { name: string; arguments: string } }[];
+        }[];
+      };
+      const replayed = sent.messages.find((message) => message.tool_calls)?.tool_calls?.[0];
+      expect(replayed?.function.name).toBe('build_prompt');
+      expect(replayed?.id).toBe('call_mock_1');
+      expect(JSON.parse(replayed!.function.arguments)).toEqual({
+        prompt: 'a harbour at dawn',
+        reason: 'Calm and blue.',
+      });
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
   it('says plainly when the model server is not there', async () => {
     await useLlama('http://127.0.0.1:1');
 

@@ -390,19 +390,17 @@ export function toApiMessages(messages: ChatMessage[], systemPrompt: string): Op
     }
 
     if (message.role === 'assistant') {
+      const call = message.toolCall;
       out.push({
         role: 'assistant',
         content: message.content,
-        ...(message.toolCall
+        ...(call
           ? {
               tool_calls: [
                 {
-                  id: message.toolCall.callId,
+                  id: call.callId,
                   type: 'function' as const,
-                  function: {
-                    name: message.toolCall.tool,
-                    arguments: JSON.stringify(message.toolCall),
-                  },
+                  function: { name: call.tool, arguments: JSON.stringify(toolArguments(call)) },
                 },
               ],
             }
@@ -415,6 +413,61 @@ export function toApiMessages(messages: ChatMessage[], systemPrompt: string): Op
   }
 
   return out;
+}
+
+/**
+ * A tool call as the model wrote it: the arguments, and nothing else.
+ *
+ * `tool` is the function's name and `callId` is the envelope llama.cpp put it
+ * in — Latent's own fields, neither declared in the tool's parameters. Sending
+ * them back as if the model had produced them shows it, every turn from then
+ * on, an example of a call it would never make.
+ */
+function toolArguments(call: ChatToolCall): Record<string, unknown> {
+  const args: Record<string, unknown> = { ...call };
+  delete args.callId;
+  delete args.tool;
+  return args;
+}
+
+/**
+ * What the button asked for, said as a turn the model can answer.
+ *
+ * Forcing the tool is not enough on its own. Pressing ✦ adds nothing to the
+ * conversation, so the request that goes out ends on the assistant's own last
+ * message — and asked to speak again straight after itself, a model repeats
+ * what it just said. That is the whole of the "it just sends the last message
+ * again" fault: there was no turn saying what had been asked for.
+ */
+const FORCED_INSTRUCTIONS: Record<ChatToolName, string> = {
+  build_prompt:
+    'Write the image prompt now, with the `build_prompt` tool, from everything said so ' +
+    'far. Do not answer in words and do not ask anything first.',
+  prompt_blocks:
+    'Propose the prompt blocks now, with the `prompt_blocks` tool. Do not answer in words.',
+  ask_user: 'Ask what you still need to know now, with the `ask_user` tool.',
+};
+
+/**
+ * Add that turn, folding it into the last one when that is already the user's.
+ *
+ * Two user messages in a row is something several chat templates refuse
+ * outright — Mistral's raises rather than rendering — and the instruction is
+ * the same instruction either way.
+ */
+export function withForcedInstruction(
+  messages: OpenAiMessage[],
+  force: ChatToolName,
+): OpenAiMessage[] {
+  const text = FORCED_INSTRUCTIONS[force];
+  const last = messages[messages.length - 1];
+  if (last?.role !== 'user') return [...messages, { role: 'user', content: text }];
+
+  const merged: OpenAiMessage =
+    typeof last.content === 'string'
+      ? { ...last, content: `${last.content}\n\n${text}` }
+      : { ...last, content: [...last.content, { type: 'text', text }] };
+  return [...messages.slice(0, -1), merged];
 }
 
 /** Plain text when there are no pictures, so a text-only model is unbothered. */
@@ -522,12 +575,19 @@ export class LlamaClient {
     const tools = options.force
       ? TOOLS.filter((tool) => tool.function.name === options.force)
       : enabledTools(this.settings.tools);
+
+    const history = toApiMessages(
+      messages,
+      (this.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT) + toolPolicy(this.settings.tools),
+    );
+    // A forced call needs a turn of its own to answer; see the comment there.
+    const conversation = options.force
+      ? withForcedInstruction(history, options.force)
+      : history;
+
     const body = {
       ...(this.settings.model ? { model: this.settings.model } : {}),
-      messages: toApiMessages(
-        messages,
-        (this.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT) + toolPolicy(this.settings.tools),
-      ),
+      messages: conversation,
       /*
        * No temperature, on purpose.
        *
