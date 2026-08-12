@@ -69,6 +69,7 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
     return (
       <ResultBar
         record={finished}
+        inline={inline}
         expanded={expanded}
         onExpand={() => setExpanded(true)}
         onDismiss={dismiss}
@@ -351,11 +352,14 @@ function JobStatsPanel({
 
 function ResultBar({
   record,
+  inline,
   expanded,
   onExpand,
   onDismiss,
 }: {
   record: GenerationRecord;
+  /** In the Generate screen's button row rather than across the screen. */
+  inline: boolean;
   expanded: boolean;
   onExpand: () => void;
   onDismiss: () => void;
@@ -378,43 +382,73 @@ function ResultBar({
     }
   };
 
+  /*
+   * Labelled by what it does, not by what it contains.
+   *
+   * Read off its contents the name came out as "Done <title> View" — which
+   * announces a state where a button should announce an action, and collides
+   * with the Done that closes every sheet in the app.
+   */
+  const label = failed ? 'Show what went wrong' : 'Show the finished picture';
+
+  const thumbnail = image ? (
+    <img src={thumbnailUrl(image)} alt="" className="size-full object-cover" />
+  ) : (
+    <div className="grid size-full place-items-center text-sm">{failed ? '!' : '✓'}</div>
+  );
+
+  /*
+   * Two shapes, the same as the progress bar has.
+   *
+   * The Generate screen puts this in the row with its button, and a bar that is
+   * `w-full` in a flex row with a full-width button leaves the button a sliver
+   * — which is exactly what it did, because this one shape was used in both
+   * places and the case never came up while the sheet opened over it.
+   */
+  const bar = inline ? (
+    <button
+      type="button"
+      onClick={onExpand}
+      aria-label={label}
+      className={cn(
+        'flex min-w-0 flex-1 items-center gap-2 rounded-xl border px-2 py-1.5 text-left',
+        failed ? 'border-danger/40 bg-danger/10' : 'border-line bg-surface',
+      )}
+    >
+      <span className="size-8 shrink-0 overflow-hidden rounded-md bg-surface-2">{thumbnail}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[11px] font-medium">
+          {failed ? 'Failed' : 'Done'}
+        </span>
+        <span className="block truncate text-[11px] text-muted">{record.title}</span>
+      </span>
+    </button>
+  ) : (
+    <button
+      type="button"
+      onClick={onExpand}
+      aria-label={label}
+      className={cn(
+        'block w-full border-t px-4 py-2.5 text-left backdrop-blur',
+        failed ? 'border-danger/40 bg-danger/10' : 'border-line bg-surface/95',
+      )}
+    >
+      <div className="flex items-center gap-3">
+        <div className="size-10 shrink-0 overflow-hidden rounded-lg bg-surface-2">{thumbnail}</div>
+
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium">{failed ? 'Generation failed' : 'Done'}</p>
+          <p className="truncate text-xs text-muted">{record.title}</p>
+        </div>
+
+        <span className="shrink-0 text-xs text-accent">View</span>
+      </div>
+    </button>
+  );
+
   return (
     <>
-      {/*
-        Labelled by what it does, not by what it contains.
-
-        Read off its contents the name came out as "Done <title> View" — which
-        announces a state where a button should announce an action, and collides
-        with the Done that closes every sheet in the app.
-      */}
-      <button
-        type="button"
-        onClick={onExpand}
-        aria-label={failed ? 'Show what went wrong' : 'Show the finished picture'}
-        className={cn(
-          'block w-full border-t px-4 py-2.5 text-left backdrop-blur',
-          failed ? 'border-danger/40 bg-danger/10' : 'border-line bg-surface/95',
-        )}
-      >
-        <div className="flex items-center gap-3">
-          <div className="size-10 shrink-0 overflow-hidden rounded-lg bg-surface-2">
-            {image ? (
-              <img src={thumbnailUrl(image)} alt="" className="size-full object-cover" />
-            ) : (
-              <div className="grid size-full place-items-center text-sm">{failed ? '!' : '✓'}</div>
-            )}
-          </div>
-
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium">
-              {failed ? 'Generation failed' : 'Done'}
-            </p>
-            <p className="truncate text-xs text-muted">{record.title}</p>
-          </div>
-
-          <span className="shrink-0 text-xs text-accent">View</span>
-        </div>
-      </button>
+      {bar}
 
       <Sheet
         open={expanded}

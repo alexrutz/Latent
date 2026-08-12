@@ -4193,6 +4193,34 @@ test.describe('the twenty-sixth wave', () => {
     await expect(page.getByPlaceholder('Describe the image…')).toHaveValue('quiet result');
     await page.screenshot({ path: 'test-results/78-quiet-result.png' });
 
+    /*
+     * And the row it shares with Generate still fits on the screen.
+     *
+     * The bar used to render its full-width shape here — the one meant to span
+     * the app above the tab bar — next to a Generate button also asking for the
+     * whole row, plus the endless switch. The three together overflowed, and the
+     * footer clips what overflows, so the buttons went under the edge.
+     */
+    const generate = page.getByRole('button', { name: /^Generate/ });
+    const endless = page.getByRole('button', { name: 'Endless generation' });
+    const [barBox, buttonBox, endlessBox] = await Promise.all([
+      bar.boundingBox(),
+      generate.boundingBox(),
+      endless.boundingBox(),
+    ]);
+    const viewport = page.viewportSize()!;
+
+    // One row: same top, in order, nothing past the right edge.
+    expect(Math.abs(barBox!.y - buttonBox!.y)).toBeLessThan(4);
+    expect(Math.abs(barBox!.y - endlessBox!.y)).toBeLessThan(4);
+    expect(barBox!.x + barBox!.width).toBeLessThanOrEqual(buttonBox!.x + 1);
+    expect(buttonBox!.x + buttonBox!.width).toBeLessThanOrEqual(endlessBox!.x + 1);
+    expect(endlessBox!.x + endlessBox!.width).toBeLessThanOrEqual(viewport.width);
+
+    // It still queues, which is the whole point of it being reachable.
+    await generate.click();
+    await expect(page.getByRole('button', { name: /Queued|Generate/ })).toBeVisible();
+
     // And the picture is one tap away rather than gone.
     await bar.click();
     await expect(page.getByRole('button', { name: 'Dismiss' })).toBeVisible();

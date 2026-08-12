@@ -279,6 +279,14 @@ function GenerateForm({
   const randomMode = usePromptMode();
   const setPending = usePendingStore((state) => state.setPending);
   const job = useLiveStore((state) => state.live.job);
+  /*
+   * A finished run sits in the same row as the button until it is dismissed,
+   * so it counts for the layout exactly as a running one does. Reading only
+   * `job` here left the button asking for the whole row while the result bar
+   * was already in it, and flex gave the button what was left — a sliver.
+   */
+  const finished = useLiveStore((state) => state.finished);
+  const barInRow = Boolean(job || finished);
   const comfyOnline = useLiveStore((state) => state.live.comfyOnline);
 
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -715,16 +723,16 @@ function GenerateForm({
           Progress and Generate share one row.
           Stacked, they cost two rows of a phone screen for two things you look
           at together — and the form is what the space is for. The bar only
-          appears while something is running, so an idle screen still gives the
-          button the full width.
+          appears while something is running or has just finished, so an idle
+          screen still gives the button the full width.
         */}
         <div className="flex items-stretch gap-2">
           <LiveBar inline />
           <Button
             variant="primary"
             size="lg"
-            fullWidth={!job}
-            className={job ? 'shrink-0' : undefined}
+            fullWidth={!barInRow}
+            className={barInRow ? 'shrink-0' : undefined}
             onClick={submit}
             busy={generate.isPending || setEndless.isPending}
             disabled={!comfyOnline}
