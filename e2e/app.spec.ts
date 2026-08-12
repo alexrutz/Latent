@@ -4278,12 +4278,25 @@ test.describe('the twenty-sixth wave', () => {
     expect(decoded.height).toBeLessThanOrEqual(Math.round(viewport.height * ratio));
     await page.screenshot({ path: 'test-results/80-view-sized.png' });
 
-    // And the setting is the way back to the file itself.
+    // Half the screen's resolution is half the box, and still a box.
     await page.getByRole('button', { name: 'Close' }).click();
     await page.getByRole('button', { name: 'Grid layout' }).click();
-    await page
-      .getByRole('switch', { name: 'Full resolution in the viewer' })
-      .click();
+    await page.getByRole('radio', { name: '0.5×' }).click();
+    await page.keyboard.press('Escape');
+
+    requested.length = 0;
+    await page.locator('main img').first().click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+    await expect.poll(() => requested.filter((url) => url.includes('fit=')).length).toBeGreaterThan(0);
+    const halved = new URL(requested.find((url) => url.includes('fit='))!).searchParams.get('fit')!;
+    expect(halved).toBe(
+      `${Math.round((viewport.width * ratio) / 2)}x${Math.round((viewport.height * ratio) / 2)}`,
+    );
+
+    // And the last step is the way back to the file itself: no box at all.
+    await page.getByRole('button', { name: 'Close' }).click();
+    await page.getByRole('button', { name: 'Grid layout' }).click();
+    await page.getByRole('radio', { name: 'The file' }).click();
     await page.keyboard.press('Escape');
 
     requested.length = 0;

@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { regionFraction, viewBox, visibleRegion, worthRendering } from '@latent/shared';
+import {
+  regionFraction,
+  viewBox,
+  viewerScaleOf,
+  visibleRegion,
+  worthRendering,
+} from '@latent/shared';
 import type { GenerationImage, GenerationRecord, ViewTransform } from '@latent/shared';
 
 import { imageUrl, thumbnailUrl, viewUrl } from '../api/client';
@@ -70,7 +76,15 @@ function useViewSources(
   onFittedLoad: (element: HTMLImageElement) => void;
 } {
   const [grid] = useGridSettings();
-  const native = grid.viewerNativeResolution;
+  /**
+   * How much of the screen's resolution to render at, as a multiple of it.
+   *
+   * `0` is the file itself, which is the one step that is not a box at all —
+   * there is nothing to ask the server to fit, and nothing to crop, because
+   * every pixel is already there.
+   */
+  const scale = viewerScaleOf(grid);
+  const native = scale === 0;
   const [detail, setDetail] = useState<string | null>(null);
   /**
    * The size of the copy that actually arrived.
@@ -91,11 +105,12 @@ function useViewSources(
       viewBox(
         { width: window.innerWidth, height: window.innerHeight },
         window.devicePixelRatio,
+        scale,
       ),
     // Re-measured per picture rather than per frame: a rotation closes and
     // reopens nothing, but it does change which picture is being looked at
     // rarely enough that the extra work is not worth a resize listener.
-    [image?.filename, image?.id],
+    [image?.filename, image?.id, scale],
   );
 
   /*

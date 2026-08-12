@@ -818,18 +818,57 @@ export interface GridSettings {
   /** Prefix each overlay value with a two-letter abbreviation of its name. */
   overlayLabels: boolean;
   /**
-   * Open the original in the viewer instead of a copy sized for the screen.
+   * How much of the screen's resolution the enlarged picture is rendered at.
    *
-   * Off, because on a recent workflow the original is sixteen megapixels and a
-   * phone screen is two: the other fourteen are fetched, decoded and discarded,
-   * which is seconds of waiting and a browser under memory pressure while it is
-   * probably also rendering the next picture. On for the times you genuinely
-   * want to inspect the file rather than look at the picture.
+   * A multiple of the display's own pixels: `1` is exactly what the screen can
+   * resolve, `0.5` half of it, `2` twice. `0` means the file itself, at
+   * whatever size it was made.
+   *
+   * Stepped rather than free, because the numbers in between mean nothing you
+   * could see. And a scale rather than a switch, because the two ends are both
+   * real answers and so is the middle: below 1 for a slow connection, where a
+   * picture that arrives is worth more than a sharp one that does not; above 1
+   * so the first moments of a zoom are already sharp, before the crop lands.
    *
    * Per device rather than per account, like the rest of these — it is a
-   * property of the screen you are holding.
+   * property of the screen you are holding and the line it is on.
    */
-  viewerNativeResolution: boolean;
+  viewerScale: number;
+
+  /**
+   * The old switch, kept only so an existing setting is not silently dropped.
+   *
+   * @deprecated Read `viewerScale`. Written by no version; still read once,
+   * where `true` becomes a scale of `0` — the file itself, which is what it
+   * meant.
+   */
+  viewerNativeResolution?: boolean;
+}
+
+/**
+ * The steps the viewer's resolution can be set to, as multiples of the screen.
+ *
+ * `0` is the file itself and is deliberately last: it is the one step that is
+ * not a multiple of anything, and it is where the scale stops being about the
+ * screen at all.
+ */
+export const VIEWER_SCALE_STEPS = [0.5, 0.75, 1, 1.5, 2, 0] as const;
+
+/** What one step is called. Shared so a label cannot drift from its number. */
+export function viewerScaleLabel(scale: number): string {
+  if (scale === 0) return 'The file';
+  return `${scale}×`;
+}
+
+/** The stored scale as one of the steps, for a value from an older install. */
+export function viewerScaleOf(settings: Partial<GridSettings>): number {
+  if (typeof settings.viewerScale === 'number') {
+    return VIEWER_SCALE_STEPS.includes(settings.viewerScale as (typeof VIEWER_SCALE_STEPS)[number])
+      ? settings.viewerScale
+      : 1;
+  }
+  // The switch this replaced. `true` meant "open the file".
+  return settings.viewerNativeResolution ? 0 : 1;
 }
 
 export const DEFAULT_GRID_SETTINGS: GridSettings = {
@@ -841,7 +880,7 @@ export const DEFAULT_GRID_SETTINGS: GridSettings = {
   gridParams: [],
   viewerParams: [],
   overlayLabels: true,
-  viewerNativeResolution: false,
+  viewerScale: 1,
 };
 
 /**

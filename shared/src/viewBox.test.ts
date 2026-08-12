@@ -9,6 +9,7 @@ import {
   visibleRegion,
   worthRendering,
 } from './viewBox.js';
+import { VIEWER_SCALE_STEPS, viewerScaleLabel, viewerScaleOf } from './apiTypes.js';
 
 /**
  * The arithmetic behind "show me what this screen can actually use".
@@ -153,5 +154,52 @@ describe('naming a rectangle', () => {
     expect(regionKey({ x: 0, y: 0, width: 0.5, height: 0.5 })).not.toBe(
       regionKey({ x: 0.1, y: 0, width: 0.5, height: 0.5 }),
     );
+  });
+});
+
+describe('how much of the screen’s resolution to render at', () => {
+  it('is the screen itself at one', () => {
+    expect(viewBox(PHONE, 3, 1)).toEqual({ width: 1170, height: 2532 });
+  });
+
+  it('scales the box in both directions', () => {
+    expect(viewBox(PHONE, 2, 0.5)).toEqual({ width: 390, height: 844 });
+    expect(viewBox(PHONE, 1, 2)).toEqual({ width: 780, height: 1688 });
+  });
+
+  it('still stops at the cap, however large the step', () => {
+    expect(viewBox(PHONE, 3, 2)).toEqual({ width: 2340, height: MAX_VIEW_EDGE });
+  });
+
+  it('treats a missing or nonsense step as one', () => {
+    expect(viewBox(PHONE, 1)).toEqual(viewBox(PHONE, 1, 1));
+    expect(viewBox(PHONE, 1, Number.NaN)).toEqual(viewBox(PHONE, 1, 1));
+    // Zero is "the file itself", which is not a box — the viewer never asks for
+    // one, and if it somehow did, the screen's own size is the safe answer.
+    expect(viewBox(PHONE, 1, 0)).toEqual(viewBox(PHONE, 1, 1));
+  });
+});
+
+describe('reading the stored viewer scale', () => {
+  it('takes a step it recognises', () => {
+    expect(viewerScaleOf({ viewerScale: 0.5 })).toBe(0.5);
+    expect(viewerScaleOf({ viewerScale: 0 })).toBe(0);
+  });
+
+  it('falls back to the screen for a number that is not a step', () => {
+    expect(viewerScaleOf({ viewerScale: 3.7 })).toBe(1);
+  });
+
+  it('still understands the switch it replaced', () => {
+    // `true` meant "open the file", which is the last step.
+    expect(viewerScaleOf({ viewerNativeResolution: true })).toBe(0);
+    expect(viewerScaleOf({ viewerNativeResolution: false })).toBe(1);
+    expect(viewerScaleOf({})).toBe(1);
+  });
+
+  it('every step has a name, and only one of them is not a multiple', () => {
+    const labels = VIEWER_SCALE_STEPS.map((step) => viewerScaleLabel(step));
+    expect(new Set(labels).size).toBe(VIEWER_SCALE_STEPS.length);
+    expect(labels.filter((label) => !label.endsWith('×'))).toEqual(['The file']);
   });
 });

@@ -1253,8 +1253,18 @@ after the first fetch, and the decoding is serialised with the thumbnails' —
 several hundred milliseconds of straight-line JavaScript that nothing else can
 run during, spread out rather than run in a batch that stalls the ComfyUI socket.
 
-Settings → *Grid layout* → **Full resolution in the viewer** turns this off and
-opens the file itself. Off by default; on when you want to inspect the pixels.
+Gallery → *Grid layout* → **Viewer resolution** sets how much of the screen's
+own resolution to render at, in steps: `0.5×`, `0.75×`, `1×`, `1.5×`, `2×`, and
+**The file**. `1×` is the default and is exactly what the screen can resolve.
+
+A scale rather than a switch, because both ends are real answers and so is the
+middle. Below one is for a slow line, where a picture that arrives beats a sharp
+one that does not. Above one is not the waste it sounds like: it is what makes
+the first moments of a zoom sharp, before the crop for it has been fetched. And
+**The file** is the one step that is not a box at all — it fetches the picture
+whole, for inspecting pixels rather than looking at a picture. The cap on a
+single edge still applies, so a large step on a large screen quietly stops
+rather than asking for something absurd.
 
 **A tap closes it** — the gesture everyone tries first. Zoomed in, the first tap
 zooms back out instead, because closing on a stray tap while inspecting detail

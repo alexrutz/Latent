@@ -1,7 +1,12 @@
 import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { textOutputLabel } from '@latent/shared';
+import {
+  textOutputLabel,
+  VIEWER_SCALE_STEPS,
+  viewerScaleLabel,
+  viewerScaleOf,
+} from '@latent/shared';
 import type {
   GallerySort,
   GenerationImage,
@@ -206,6 +211,9 @@ export function GalleryScreen() {
     { record: GenerationRecord; image: GenerationImage } | null
   >(null);
   const [settings, updateSettings] = useGridSettings();
+  // Read through the helper so a setting written by the switch this replaced
+  // still means what it meant.
+  const viewerScale = viewerScaleOf(settings);
   const [showLayout, setShowLayout] = useState(false);
   const blurred = useBlur((state) => state.blurred);
   const toggleBlur = useBlur((state) => state.toggle);
@@ -506,23 +514,47 @@ export function GalleryScreen() {
           />
         </div>
 
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <p className="text-sm">Full resolution in the viewer</p>
-            <p className="mt-0.5 text-xs text-muted">
-              Off by default: opening a picture fetches a copy sized for this
-              screen, and zooming in fetches that part of it the same way. A
-              recent output is sixteen megapixels and this screen is about two,
-              so the rest is downloaded and thrown away — which is most of the
-              wait, and most of the memory, while the next render is running.
-              Turn it on to inspect the file itself.
-            </p>
+        {/*
+          A scale rather than a switch. Both ends are real answers and so is the
+          middle — below one for a slow line, where a picture that arrives beats
+          a sharp one that does not; above one so the first moments of a zoom
+          are already sharp, before the crop for it has been fetched.
+        */}
+        <div className="space-y-1.5">
+          <div className="flex items-baseline justify-between gap-3">
+            <p className="text-sm">Viewer resolution</p>
+            <span className="text-xs text-muted">{viewerScaleLabel(viewerScale)}</span>
           </div>
-          <Toggle
-            label="Full resolution in the viewer"
-            checked={settings.viewerNativeResolution}
-            onChange={(viewerNativeResolution) => updateSettings({ viewerNativeResolution })}
-          />
+          <div role="radiogroup" aria-label="Viewer resolution" className="flex flex-wrap gap-1">
+            {VIEWER_SCALE_STEPS.map((step) => {
+              const active = viewerScale === step;
+              return (
+                <button
+                  key={step}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  aria-label={viewerScaleLabel(step)}
+                  onClick={() => updateSettings({ viewerScale: step })}
+                  className={cn(
+                    'min-w-11 rounded-lg px-2.5 py-1.5 text-xs tabular-nums',
+                    active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                  )}
+                >
+                  {viewerScaleLabel(step)}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-xs text-muted">
+            A multiple of what this screen can resolve. At <strong className="text-body">1×</strong>
+            {' '}opening a picture fetches a copy sized for the screen, and zooming in fetches
+            that part of it the same way — a recent output is sixteen megapixels and this screen
+            is about two, so the rest would be downloaded and thrown away, which is most of the
+            wait and most of the memory while the next render is going.{' '}
+            <strong className="text-body">The file</strong> fetches it whole, for when you want to
+            inspect the pixels rather than look at the picture.
+          </p>
         </div>
       </div>
     </Sheet>

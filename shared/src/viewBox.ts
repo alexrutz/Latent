@@ -43,12 +43,19 @@ export const MAX_VIEW_EDGE = 4096;
  * The viewport times the device's pixel ratio: that is the most a screen can
  * actually resolve, and asking for more is asking to throw it away. Capped,
  * because `devicePixelRatio` is whatever the browser says it is.
+ *
+ * `scale` multiplies that, for the setting that says how much of the screen's
+ * resolution to render at. Above 1 is not waste in the way it sounds: it is
+ * what makes the first moments of a zoom sharp, before the crop for it has
+ * been fetched. The cap still applies, so a large scale on a large screen
+ * quietly stops rather than asking for something absurd.
  */
-export function viewBox(viewport: Size, pixelRatio: number): Size {
+export function viewBox(viewport: Size, pixelRatio: number, scale = 1): Size {
   const ratio = Number.isFinite(pixelRatio) && pixelRatio > 0 ? pixelRatio : 1;
+  const factor = Number.isFinite(scale) && scale > 0 ? scale : 1;
   return {
-    width: Math.max(1, Math.min(Math.round(viewport.width * ratio), MAX_VIEW_EDGE)),
-    height: Math.max(1, Math.min(Math.round(viewport.height * ratio), MAX_VIEW_EDGE)),
+    width: Math.max(1, Math.min(Math.round(viewport.width * ratio * factor), MAX_VIEW_EDGE)),
+    height: Math.max(1, Math.min(Math.round(viewport.height * ratio * factor), MAX_VIEW_EDGE)),
   };
 }
 
