@@ -285,21 +285,41 @@ export const objectInfoFixture: ObjectInfo = {
         slot_count: ['INT', { default: 3, min: 1, max: 6 }],
         max_tokens: ['INT', { default: 512, min: 1, max: 32768 }],
         seed: ['INT', { default: 0, min: 0, max: SEED_MAX }],
+      },
+      /*
+       * Optional, exactly as the node has them. The web extension hides the
+       * slots above `slot_count`, and a hidden widget does not survive an
+       * "export (API)" — so declaring these required made such a workflow fail
+       * validation before any request was made.
+       */
+      optional: {
         name_1: ['STRING', { default: 'Preset 1' }],
         system_1: ['STRING', { default: '', multiline: true }],
+        model_1: ['STRING', { default: '' }],
         name_2: ['STRING', { default: 'Preset 2' }],
         system_2: ['STRING', { default: '', multiline: true }],
+        model_2: ['STRING', { default: '' }],
         name_3: ['STRING', { default: 'Preset 3' }],
         system_3: ['STRING', { default: '', multiline: true }],
+        model_3: ['STRING', { default: '' }],
         name_4: ['STRING', { default: 'Preset 4' }],
         system_4: ['STRING', { default: '', multiline: true }],
+        model_4: ['STRING', { default: '' }],
         name_5: ['STRING', { default: 'Preset 5' }],
         system_5: ['STRING', { default: '', multiline: true }],
+        model_5: ['STRING', { default: '' }],
         name_6: ['STRING', { default: 'Preset 6' }],
         system_6: ['STRING', { default: '', multiline: true }],
-      },
-      optional: {
+        model_6: ['STRING', { default: '' }],
         extra_separator: ['STRING', { default: '\\n\\n' }],
+        /*
+         * Every chat node can take an image now, not just the vision ones. The
+         * two encoding controls are widgets, so they are exported whether or
+         * not anything is wired to `image` — see `idleImageControl`.
+         */
+        image: ['IMAGE'],
+        image_max_size: ['INT', { default: 1024, min: 0, max: 4096, step: 64 }],
+        image_quality: ['INT', { default: 90, min: 30, max: 100 }],
       },
     },
   },
@@ -321,7 +341,7 @@ export const objectInfoFixture: ObjectInfo = {
       },
       optional: {
         latent_format: [
-          ['SD1.5 / SDXL (4 channels)', 'SD3 / Flux (16 channels)'],
+          ['SD1.5 / SDXL (4 channels)', 'SD3 / Flux (16 channels)', 'Krea 2 (16 channels)'],
           { default: 'SD1.5 / SDXL (4 channels)' },
         ],
       },

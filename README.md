@@ -739,6 +739,18 @@ picker left on a slot that has since been renamed or put out of reach is settled
 back to `passthrough` on the way to the graph, because the alternative is a node
 that raises an error after the job has been queued.
 
+Each slot's `model_N` box is hidden and shown with the rest of its slot, but it
+is deliberately *not* headed by the slot's name: it is a text field like the
+system prompt, and naming it the same thing would let a saved system prompt
+called *Rewrite* land in the *Rewrite* slot's model box. The name matching
+cannot tell the two apart, and which of them should win is obvious.
+
+**Image controls only when there is an image.** Every comfyllama chat node now
+takes an optional picture, with a size and a quality beside it. Those two are
+widgets, so an "export (API)" writes them out whether or not anything is wired
+to `image` — and on a text-only chat node they are settings that cannot change
+the result. Latent hides them until something is connected.
+
 **A combo of numbers stays a picker.** comfyllama's *Empty Latent (Aspect
 Ratio)* declares `divisible_by` as `[8, 16, 32, 64]` — numbers, not strings —
 and expects a number back. `aspect_ratio` and `megapixels` are read as the size

@@ -79,6 +79,34 @@ describe('applyPresetChat', () => {
     expect(field(`${NODE}.system_6`, shaped)?.hidden).toBe(true);
   });
 
+  it('hides the per-slot model box with the rest of its slot', () => {
+    /*
+     * `model_N` arrived with router mode: each slot can name the model it wants
+     * from a server serving several. It hides with its slot, the way the node's
+     * own extension hides it.
+     */
+    const shaped = applyPresetChat(schema, {});
+    expect(field(`${NODE}.model_3`, shaped)?.hidden).toBeFalsy();
+    expect(field(`${NODE}.model_4`, shaped)?.hidden).toBe(true);
+    expect(field(`${NODE}.model_6`, shaped)?.hidden).toBe(true);
+  });
+
+  it('leaves the model box out of the slot naming', () => {
+    /*
+     * It is a text field, so labelling it with the slot's name would hand it to
+     * the system-prompt matching — and a prompt called "Rewrite" would be
+     * written into that slot's *model* box rather than its instructions.
+     */
+    const shaped = applyPresetChat(schema, {});
+    expect(field(`${NODE}.model_1`, shaped)?.label).not.toBe('Rewrite');
+
+    const filled = applySystemPrompts(shaped, {}, [
+      { id: 'p1', name: 'Rewrite', text: 'One vivid paragraph.', createdAt: 0 },
+    ]);
+    expect(filled[`${NODE}.system_1`]).toBe('One vivid paragraph.');
+    expect(filled[`${NODE}.model_1`]).toBeUndefined();
+  });
+
   it('reveals more slots when the count goes up', () => {
     const shaped = applyPresetChat(schema, { [`${NODE}.slot_count`]: 5 });
     expect(field(`${NODE}.system_5`, shaped)?.hidden).toBeFalsy();
@@ -212,5 +240,31 @@ describe('the aspect-ratio latent', () => {
     const megapixels = field('5.megapixels');
     expect(megapixels?.softMin).toBe(0.25);
     expect(megapixels?.softMax).toBe(4);
+  });
+});
+
+describe('the image controls every chat node now carries', () => {
+  /*
+   * comfyllama gave each chat node an optional `image` with a size and a
+   * quality beside it. The two knobs are widgets, so an "export (API)" writes
+   * them out whether or not a picture is wired in — and on a text-only chat
+   * node they are two settings that cannot change anything.
+   */
+  it('hides them when no picture is connected', () => {
+    expect(field('22.image_max_size')?.hidden).toBe(true);
+    expect(field('22.image_quality')?.hidden).toBe(true);
+  });
+
+  it('shows them as soon as one is', () => {
+    const withImage = {
+      ...withPresetChat,
+      '22': {
+        ...withPresetChat['22']!,
+        inputs: { ...withPresetChat['22']!.inputs, image: ['9', 0] },
+      },
+    };
+    const wired = buildParamSchema(withImage, objectInfoFixture);
+    expect(field('22.image_max_size', wired)?.hidden).toBe(false);
+    expect(field('22.image_quality', wired)?.hidden).toBe(false);
   });
 });

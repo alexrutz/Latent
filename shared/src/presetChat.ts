@@ -112,7 +112,7 @@ export function applyPresetChat(schema: ParamSchema, values: ParamValues): Param
       return { ...field, options: [PRESET_PASSTHROUGH, ...node.names], numericOptions: false };
     }
 
-    const slot = /^(name|system)_(\d+)$/.exec(field.inputName);
+    const slot = /^(name|system|model)_(\d+)$/.exec(field.inputName);
     if (!slot) return field;
 
     const index = Number(slot[2]);
@@ -125,6 +125,11 @@ export function applyPresetChat(schema: ParamSchema, values: ParamValues): Param
      * the node does — and it means a saved system prompt called "Rewrite"
      * fills the slot called "Rewrite", through the same name matching every
      * other text field uses. An explicit rename in the form editor wins.
+     *
+     * Only the system prompt. `model_N` is a text field too, so naming it
+     * after the slot would put a saved system prompt called "Rewrite" into the
+     * slot's *model* box — the matching cannot tell the two apart, and the one
+     * that should win is obvious.
      */
     if (slot[1] === 'system' && unnamed(field.label, field.inputName)) {
       return { ...field, label: node.names[index - 1] ?? field.label };

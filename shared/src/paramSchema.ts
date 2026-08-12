@@ -592,6 +592,23 @@ function nodeTitleOf(node: ApiWorkflowNode, objectInfo: ObjectInfo): string {
 /* Schema construction                                                 */
 /* ------------------------------------------------------------------ */
 
+/** How an image is encoded before being sent — meaningless without one. */
+const IMAGE_ENCODING_INPUTS = new Set(['image_max_size', 'image_quality']);
+
+/**
+ * A control for an image the node has not been given.
+ *
+ * comfyllama's chat nodes each grew an optional `image` alongside a size and a
+ * quality, so any of them can be multimodal. The two knobs are widgets and are
+ * therefore exported whether or not anything is wired to `image` — which on a
+ * text-only chat node is two settings that cannot affect the result, on a form
+ * where a screenful is four of them.
+ */
+function idleImageControl(node: { inputs?: Record<string, unknown> }, inputName: string): boolean {
+  if (!IMAGE_ENCODING_INPUTS.has(inputName)) return false;
+  return !isNodeLink(node.inputs?.image);
+}
+
 /**
  * Turn an API-format workflow into a mobile form definition.
  *
@@ -672,7 +689,7 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
         group,
         // `control_after_generate` is ComfyUI's own seed-randomiser widget; our
         // seed control replaces it, so hide it rather than showing a duplicate.
-        hidden: inputName === 'control_after_generate',
+        hidden: inputName === 'control_after_generate' || idleImageControl(node, inputName),
         order: group === 'main' ? mainIndex : fields.length,
         unknownNodeType,
       });
