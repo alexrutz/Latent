@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import type { GenerationImage, GenerationRecord } from '@latent/shared';
+import { regionFraction, viewBox, visibleRegion, worthRendering } from '@latent/shared';
+import type { GenerationImage, GenerationRecord, ViewTransform } from '@latent/shared';
 
-import { imageUrl, thumbnailUrl } from '../api/client';
+import { imageUrl, thumbnailUrl, viewUrl } from '../api/client';
 import { useBlur } from '../state/blur';
+import { useGridSettings } from '../state/grid';
 import { cn } from './ui';
 
 /** One image in the viewer's flat list, with the run it came from. */
@@ -43,6 +45,108 @@ const TAP_SLOP = 10;
  * fixed-position overlay does not get native pinch-zoom, and the alternative
  * (letting the page zoom) breaks the surrounding UI.
  */
+/** How long the transform has to hold still before the detail is fetched. */
+const DETAIL_SETTLE_MS = 220;
+
+/**
+ * The two sources the viewer draws from.
+ *
+ * `fitted` is the whole picture at the size this screen can show — that alone
+ * is the difference between opening a recent output in a moment and waiting
+ * several seconds for twenty megabytes that the browser then holds as sixty-four
+ * of bitmap. `detail` is the rectangle you have zoomed into, rendered the same
+ * way, and it is fetched only once the gesture has settled: a pinch produces a
+ * transform every frame, and a request per frame would be worse than the
+ * problem it solves.
+ *
+ * Both fall back to the original when the setting asks for it.
+ */
+function useViewSources(
+  image: GenerationImage | undefined,
+  transform: ViewTransform,
+): {
+  fitted: string | undefined;
+  detail: string | null;
+  onFittedLoad: (element: HTMLImageElement) => void;
+} {
+  const [grid] = useGridSettings();
+  const native = grid.viewerNativeResolution;
+  const [detail, setDetail] = useState<string | null>(null);
+  /**
+   * The size of the copy that actually arrived.
+   *
+   * Measured rather than looked up. The stored `width`/`height` are a hint
+   * recorded by whoever saw the picture first, and since thumbnails started
+   * being derived on the server that "whoever" was often looking at a 384-pixel
+   * copy — so trusting the field would put every crop in the wrong coordinate
+   * space. This is the picture on screen, so it is right by construction, and
+   * it doubles as the answer to "did the server have to shrink it": a copy that
+   * came back below the box in both directions is one it declined to enlarge,
+   * which means the file has nothing more to show.
+   */
+  const [rendered, setRendered] = useState<{ width: number; height: number } | null>(null);
+
+  const box = useMemo(
+    () =>
+      viewBox(
+        { width: window.innerWidth, height: window.innerHeight },
+        window.devicePixelRatio,
+      ),
+    // Re-measured per picture rather than per frame: a rotation closes and
+    // reopens nothing, but it does change which picture is being looked at
+    // rarely enough that the extra work is not worth a resize listener.
+    [image?.filename, image?.id],
+  );
+
+  /*
+   * The base layer needs no knowledge of how big the file is: the server
+   * discovers that when it decodes, and never enlarges.
+   */
+  const fitted = !image ? undefined : native ? imageUrl(image) : viewUrl(image, box);
+
+  const onFittedLoad = useCallback((element: HTMLImageElement) => {
+    if (element.naturalWidth > 0) {
+      setRendered({ width: element.naturalWidth, height: element.naturalHeight });
+    }
+  }, []);
+
+  // A different picture invalidates the measurement before its own load fires.
+  useEffect(() => setRendered(null), [image?.filename, image?.id]);
+
+  /*
+   * The rectangle, once the gesture stops moving.
+   *
+   * Cleared on every change so the stale crop is never shown over a picture it
+   * no longer matches — the stretched `fitted` copy takes over in the meantime,
+   * which is the ordinary progressive-detail behaviour.
+   */
+  useEffect(() => {
+    setDetail(null);
+    if (!image || !rendered || native) return;
+
+    const region = visibleRegion(rendered, {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    }, transform);
+    if (!worthRendering(region, rendered, box)) return;
+
+    const timer = window.setTimeout(() => {
+      setDetail(viewUrl(image, box, regionFraction(region, rendered)));
+    }, DETAIL_SETTLE_MS);
+    return () => window.clearTimeout(timer);
+  }, [
+    image,
+    rendered,
+    native,
+    box,
+    transform.scale,
+    transform.offsetX,
+    transform.offsetY,
+  ]);
+
+  return { fitted, detail, onFittedLoad };
+}
+
 export function ImageViewer({
   entries,
   index,
@@ -57,6 +161,11 @@ export function ImageViewer({
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
+  const { fitted, detail, onFittedLoad } = useViewSources(image, {
+    scale,
+    offsetX: offset.x,
+    offsetY: offset.y,
+  });
   /*
    * The blur is reachable from here as well as from the grid. Full screen is
    * exactly where somebody sitting down next to you sees the most, and going
@@ -269,9 +378,10 @@ export function ImageViewer({
       >
         <img
           data-testid="viewer-image"
-          src={imageUrl(image)}
+          src={fitted}
           alt={record.title}
           draggable={false}
+          onLoad={(event) => onFittedLoad(event.currentTarget)}
           className={cn(
             'size-full origin-center object-contain select-none',
             !dragging && 'transition-transform duration-150',
@@ -280,6 +390,25 @@ export function ImageViewer({
             transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})`,
           }}
         />
+
+        {/*
+          The zoomed-in rectangle, rendered at the screen's own resolution and
+          laid straight over the viewport.
+
+          It is only ever requested for a rectangle wholly inside the picture,
+          which is exactly when it covers the viewport edge to edge — so it
+          needs no transform of its own. Until it arrives the stretched copy
+          underneath is what you see, which is blurry rather than blank.
+        */}
+        {detail && (
+          <img
+            data-testid="viewer-detail"
+            src={detail}
+            alt=""
+            draggable={false}
+            className="pointer-events-none absolute inset-0 size-full object-cover select-none"
+          />
+        )}
       </div>
 
       {/*

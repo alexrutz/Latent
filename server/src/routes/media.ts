@@ -5,6 +5,8 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { ComfyImageRef, UploadImageResponse } from '@latent/shared';
 
 import { ComfyError } from '../comfy/client.js';
+import { readImageSize } from '../images/png.js';
+import type { Region } from '../images/png.js';
 import type { DerivedThumbnail } from '../images/thumbnails.js';
 import { ArchiveUnreadableError, VaultLockedError } from '../vault.js';
 import type { AppContext } from './context.js';
@@ -42,10 +44,14 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
       subfolder?: string;
       type?: string;
       preview?: string;
+      /** `WIDTHxHEIGHT`: the box a rendered view has to fit inside. */
+      fit?: string;
+      /** `X,Y,W,H` as fractions of the picture. Only meaningful with `fit`. */
+      crop?: string;
       id?: string;
     };
   }>('/api/view', async (request, reply) => {
-    const { filename, subfolder = '', type = 'output', preview, id } = request.query;
+    const { filename, subfolder = '', type = 'output', preview, fit, crop, id } = request.query;
 
     if (!filename || !isSafePathPart(filename) || !isSafePathPart(subfolder)) {
       return reply.code(400).send({ error: 'Invalid image path' });
@@ -71,6 +77,72 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
     const known = ctx.store.findImage(
       Number.isFinite(rowId) && rowId > 0 ? { ...params, id: rowId } : params,
     );
+
+    /**
+     * Note the picture's real size, while we are holding the actual file.
+     *
+     * The browser used to do this, by measuring what `preview=` gave it. That
+     * stopped being the original the moment thumbnails started being derived
+     * here — a 4000×4000 output would be recorded as 384×384 — so the
+     * measurement moved to the only place that still sees the whole thing. The
+     * client's report survives as the fallback for formats this cannot decode,
+     * which are exactly the ones it is still sent at full size.
+     */
+    const measure = (bytes: Buffer | null): Buffer | null => {
+      if (!bytes || !known || (known.width && known.height)) return bytes;
+      const size = readImageSize(bytes);
+      if (size) ctx.store.setImageDimensions(known.id, size.width, size.height);
+      return bytes;
+    };
+
+    /** Whatever this picture's bytes are, from wherever they live. */
+    const loadOriginal = async (): Promise<Buffer | null> => {
+      if (known?.archived_path) return measure(await ctx.archive.read(known.archived_path));
+      if (!UPSTREAM_TYPES.has(type)) return null;
+      const upstream = await ctx.orchestrator.client.view(params);
+      if (!upstream.body) return null;
+      return measure(Buffer.from(await upstream.arrayBuffer()));
+    };
+
+    /*
+     * A view sized for the screen looking at it.
+     *
+     * The viewer used to open the original, which for a 4000×4000 output is
+     * twenty megabytes to fetch and sixty-four to hold decoded — on a phone
+     * that is also watching the next render. A screen has two million pixels;
+     * everything past that is paid for and thrown away. `crop` is the same
+     * request while zoomed in: a smaller rectangle at the same box, which is
+     * how detail arrives without the whole frame ever being sent.
+     */
+    if (fit) {
+      const box = parseBox(fit);
+      const region = parseRegion(crop);
+      if (!box) return reply.code(400).send({ error: 'Invalid fit box' });
+
+      const key = viewKey(rowId, params);
+      try {
+        const view = await ctx.views.render(key, loadOriginal, box, region);
+        if (view) {
+          return reply
+            .header('content-type', view.contentType)
+            // The rectangle is part of the URL, so a view never goes stale —
+            // and panning back to one already seen costs nothing.
+            .header('cache-control', 'private, max-age=86400')
+            .header('x-latent-source', 'view')
+            .send(view.data);
+        }
+      } catch (error) {
+        if (error instanceof VaultLockedError) {
+          return reply.code(423).send({ error: error.message, locked: true });
+        }
+        if (error instanceof ArchiveUnreadableError) {
+          return reply.code(409).send({ error: error.message });
+        }
+        return sendImageError(reply, error);
+      }
+      // Undecodable here, so fall through and send whatever the original is.
+    }
+
     if (known?.archived_path) {
       /*
        * A stored `.webp` thumbnail is not one.
@@ -91,8 +163,8 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
 
       try {
         if (preview && !wantsThumbnail) {
-          const derived = await ctx.thumbnails.get(`archive:${known.archived_path}`, () =>
-            ctx.archive.read(known.archived_path as string),
+          const derived = await ctx.thumbnails.get(`archive:${known.archived_path}`, async () =>
+            measure(await ctx.archive.read(known.archived_path as string)),
           );
           if (derived) {
             return reply
@@ -161,7 +233,7 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
         thumbnail = await ctx.thumbnails.get(key, async () => {
           const original = await ctx.orchestrator.client.view(params);
           if (!original.body) return null;
-          return Buffer.from(await original.arrayBuffer());
+          return measure(Buffer.from(await original.arrayBuffer()));
         });
       } catch (error) {
         return sendImageError(reply, error);
@@ -305,6 +377,46 @@ function sendImageError(reply: FastifyReply, error: unknown) {
 }
 
 /** Thumbnails come from ComfyUI as WebP, or from our own encoder as PNG. */
+/** Longest side a view is ever asked for, whatever the client claims. */
+const MAX_VIEW_EDGE = 4096;
+
+/** `WIDTHxHEIGHT`, clamped — the box comes from a browser and is not trusted. */
+export function parseBox(raw: string): { width: number; height: number } | null {
+  const match = /^(\d{1,5})x(\d{1,5})$/.exec(raw.trim());
+  if (!match) return null;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (width < 1 || height < 1) return null;
+  return { width: Math.min(width, MAX_VIEW_EDGE), height: Math.min(height, MAX_VIEW_EDGE) };
+}
+
+/**
+ * `X,Y,W,H` as fractions of the picture, or nothing for the whole of it.
+ *
+ * Anything malformed is *nothing* rather than an error: a crop is an
+ * optimisation, and answering with the whole picture is always right.
+ */
+export function parseRegion(raw: string | undefined): Region | null {
+  if (!raw) return null;
+  const parts = raw.split(',').map((value) => Number(value.trim()));
+  if (parts.length !== 4 || parts.some((value) => !Number.isFinite(value))) return null;
+  const [x, y, width, height] = parts as [number, number, number, number];
+  if (width <= 0 || height <= 0) return null;
+  return {
+    x: Math.max(0, Math.min(x, 1)),
+    y: Math.max(0, Math.min(y, 1)),
+    width: Math.min(width, 1),
+    height: Math.min(height, 1),
+  };
+}
+
+/** What identifies the picture a view is of — the row when there is one. */
+function viewKey(rowId: number, params: { type: string; subfolder: string; filename: string }): string {
+  return Number.isFinite(rowId) && rowId > 0
+    ? `id:${rowId}`
+    : `${params.type}/${params.subfolder}/${params.filename}`;
+}
+
 function thumbnailContentType(path: string): string {
   return path.endsWith('.webp') ? 'image/webp' : 'image/png';
 }

@@ -101,7 +101,7 @@ export function readImageSize(buffer: Buffer): Dimensions | null {
 /* Decoding                                                            */
 /* ------------------------------------------------------------------ */
 
-interface DecodedPng extends Dimensions {
+export interface DecodedPng extends Dimensions {
   /** RGB triples, one byte per channel. */
   pixels: Uint8Array;
 }
@@ -355,6 +355,122 @@ export function resizeRgb(
     for (let x = 0; x < targetWidth; x += 1) {
       const x0 = Math.floor(x * xRatio);
       const x1 = Math.max(x0 + 1, Math.min(source.width, Math.floor((x + 1) * xRatio)));
+
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let count = 0;
+
+      for (let sy = y0; sy < y1; sy += 1) {
+        for (let sx = x0; sx < x1; sx += 1) {
+          const index = (sy * source.width + sx) * 3;
+          r += source.pixels[index] as number;
+          g += source.pixels[index + 1] as number;
+          b += source.pixels[index + 2] as number;
+          count += 1;
+        }
+      }
+
+      const target = (y * targetWidth + x) * 3;
+      output[target] = Math.round(r / count);
+      output[target + 1] = Math.round(g / count);
+      output[target + 2] = Math.round(b / count);
+    }
+  }
+
+  return output;
+}
+
+/** A rectangle of the source, in its own pixels. */
+/**
+ * A rectangle of a picture, as fractions of it — each value between 0 and 1.
+ *
+ * Fractions rather than pixels because the client asking for one has never seen
+ * the file: it is looking at a copy scaled down to its screen, so it knows the
+ * shape of the picture but not its size. The size is known exactly here, one
+ * line after decoding, so the conversion belongs here.
+ */
+export interface Region {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** A rectangle in real pixels. */
+type PixelRegion = Region;
+
+/** The fraction as pixels, clamped to what is actually there. */
+function clampRegion(source: DecodedPng, region: Region | null): PixelRegion {
+  if (!region) return { x: 0, y: 0, width: source.width, height: source.height };
+  const x = Math.max(0, Math.min(Math.floor(region.x * source.width), source.width - 1));
+  const y = Math.max(0, Math.min(Math.floor(region.y * source.height), source.height - 1));
+  return {
+    x,
+    y,
+    width: Math.max(1, Math.min(Math.round(region.width * source.width), source.width - x)),
+    height: Math.max(1, Math.min(Math.round(region.height * source.height), source.height - y)),
+  };
+}
+
+/**
+ * One rectangle of a decoded picture, scaled to fit a box.
+ *
+ * This is what a viewer actually needs: a screen has a couple of million
+ * pixels, and handing it sixteen million costs the download, the decode and
+ * then the memory to hold the bitmap — three times over on a phone that is also
+ * rendering. Zooming asks for a smaller rectangle at the same box, which is
+ * detail without ever paying for the whole frame.
+ *
+ * Never enlarges: a region already smaller than the box is returned at its own
+ * size, because upscaling here would only move the interpolation from the GPU
+ * to this thread and make the transfer bigger for it.
+ */
+export function renderRegion(
+  source: DecodedPng,
+  region: Region | null,
+  maxWidth: number,
+  maxHeight: number,
+): Thumbnail {
+  const box = clampRegion(source, region);
+  const scale = Math.min(maxWidth / box.width, maxHeight / box.height, 1);
+  const width = Math.max(1, Math.round(box.width * scale));
+  const height = Math.max(1, Math.round(box.height * scale));
+
+  return { data: encodePng(width, height, resizeRegion(source, box, width, height)), width, height };
+}
+
+/**
+ * Box-average one region down to a size, the way `resizeRgb` does the whole.
+ *
+ * Averaging every source pixel that lands in an output pixel rather than
+ * sampling one of them: at the ratios involved — 4000 pixels into 400 — nearest
+ * neighbour turns fine detail into aliasing noise, which on a picture is
+ * exactly the thing being looked at.
+ */
+export function resizeRegion(
+  source: DecodedPng,
+  region: PixelRegion,
+  targetWidth: number,
+  targetHeight: number,
+): Uint8Array {
+  const output = new Uint8Array(targetWidth * targetHeight * 3);
+  const xRatio = region.width / targetWidth;
+  const yRatio = region.height / targetHeight;
+
+  for (let y = 0; y < targetHeight; y += 1) {
+    const y0 = region.y + Math.floor(y * yRatio);
+    const y1 = Math.max(
+      y0 + 1,
+      Math.min(region.y + region.height, region.y + Math.floor((y + 1) * yRatio)),
+    );
+
+    for (let x = 0; x < targetWidth; x += 1) {
+      const x0 = region.x + Math.floor(x * xRatio);
+      const x1 = Math.max(
+        x0 + 1,
+        Math.min(region.x + region.width, region.x + Math.floor((x + 1) * xRatio)),
+      );
 
       let r = 0;
       let g = 0;

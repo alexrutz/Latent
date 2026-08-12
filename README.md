@@ -1232,6 +1232,30 @@ no longer read as a tap.
 flat list, so a flick keeps going past the end of a batch instead of stopping
 dead at a boundary that means nothing while you are browsing.
 
+**Opening a picture fetches a picture-sized copy, not the file.** A phone screen
+is about two megapixels; a recent output is sixteen, and an upscaled one is
+rather more. The rest is downloaded, decoded, held as a bitmap and thrown away —
+which is most of the wait when you tap a thumbnail, and most of the memory,
+while the machine behind it is often still rendering. So the viewer asks for the
+whole picture scaled into the screen, and **zooming asks for the rectangle you
+are looking at, scaled the same way**: detail arrives without the frame it came
+from ever being sent. Until a crop arrives the stretched copy underneath is what
+you see, which is blurry rather than blank.
+
+The rectangle is named as *fractions* of the picture rather than in pixels. The
+browser is looking at a copy and has no idea how big the file is — asking it to
+work in the file's pixels means trusting a number it cannot check, and a crop in
+the wrong coordinate space is a picture that jumps somewhere else as you zoom.
+The server multiplies by the size it just decoded, one line after decoding it.
+
+Two decoded pictures are held server-side, so panning around one costs nothing
+after the first fetch, and the decoding is serialised with the thumbnails' —
+several hundred milliseconds of straight-line JavaScript that nothing else can
+run during, spread out rather than run in a batch that stalls the ComfyUI socket.
+
+Settings → *Grid layout* → **Full resolution in the viewer** turns this off and
+opens the file itself. Off by default; on when you want to inspect the pixels.
+
 **A tap closes it** — the gesture everyone tries first. Zoomed in, the first tap
 zooms back out instead, because closing on a stray tap while inspecting detail
 would be maddening. Double tap still toggles zoom; the single tap waits out the

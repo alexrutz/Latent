@@ -3139,6 +3139,133 @@ describe('previews of a big picture', () => {
 });
 
 /**
+ * The viewer's own request: this rectangle, at this size.
+ *
+ * Opening a picture used to fetch the original — twenty megabytes for a recent
+ * output, and sixty-four of bitmap once decoded, on a phone that is usually
+ * also watching the next render. A screen has two million pixels; the rest is
+ * fetched and thrown away.
+ */
+describe('views sized for the screen', () => {
+  it('renders the whole picture into the box, and a zoomed part at the same size', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-views-'));
+    const big = createMockComfy({ stepDelayMs: 1, logLevel: 'silent', outputSize: 1024 });
+    const bigUrl = await big.listen(0);
+
+    const instance = await buildApp({
+      comfyUrl: bigUrl,
+      dbPath: join(dir, 'latent.db'),
+      dataDir: dir,
+      stateDir: join(dir, 'state'),
+      webDir: join(dir, 'no-web'),
+      password: 'views-password',
+      logLevel: 'silent',
+    });
+    await instance.app.listen({ port: 0, host: '127.0.0.1' });
+    const address = instance.app.server.address();
+    if (!address || typeof address === 'string') throw new Error('No port');
+    const url = `http://127.0.0.1:${address.port}`;
+
+    const login = await fetch(`${url}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: 'views-password' }),
+    });
+    const session = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+    const call = (path: string, init?: RequestInit) =>
+      fetch(`${url}${path}`, {
+        ...init,
+        headers: {
+          ...(init?.body ? { 'content-type': 'application/json' } : {}),
+          cookie: session,
+          ...(init?.headers ?? {}),
+        },
+      });
+
+    try {
+      const workflow = await json<WorkflowDetail>(
+        call('/api/workflows', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'Big pictures', graph: sd15Txt2Img }),
+        }),
+      );
+      const { generationIds } = await json<GenerateResponse>(
+        call('/api/generate', {
+          method: 'POST',
+          body: JSON.stringify({ workflowId: workflow.id, values: {} }),
+        }),
+      );
+      const image = await waitFor(async () => {
+        const record = await json<GenerationRecord>(call(`/api/gallery/${generationIds[0]}`));
+        return record.images[0];
+      }, 20_000);
+
+      const query =
+        `filename=${encodeURIComponent(image.filename)}&subfolder=&type=output&id=${image.id}`;
+
+      // A portrait phone at 3x: the whole picture fits inside that box.
+      const fitted = await call(`/api/view?${query}&fit=390x844`);
+      expect(fitted.status).toBe(200);
+      expect(fitted.headers.get('x-latent-source')).toBe('view');
+      const fittedSize = readImageSize(Buffer.from(await fitted.arrayBuffer()))!;
+      expect(fittedSize.width).toBe(390);
+      expect(fittedSize.height).toBe(390);
+
+      /*
+       * Zoomed in: the middle quarter of the picture, asked for at the same
+       * box. The point of the whole thing — more detail per pixel without the
+       * frame ever being sent. The rectangle is fractions of the picture, so
+       * a caller that has only ever seen a scaled copy can still name it.
+       */
+      const zoomed = await call(`/api/view?${query}&fit=390x844&crop=0.25,0.25,0.5,0.5`);
+      const zoomedSize = readImageSize(Buffer.from(await zoomed.arrayBuffer()))!;
+      expect(zoomedSize).toEqual({ width: 390, height: 390 });
+
+      // Never enlarged: a rectangle already smaller than the box comes back at
+      // its own size rather than interpolated up on this thread. 1/16th of
+      // 1024 is 64.
+      const tiny = await call(`/api/view?${query}&fit=390x844&crop=0.1,0.1,0.0625,0.0625`);
+      expect(readImageSize(Buffer.from(await tiny.arrayBuffer()))).toEqual({
+        width: 64,
+        height: 64,
+      });
+
+      // Nonsense is the whole picture rather than an error: a crop is only ever
+      // an optimisation, so there is nothing a failure would buy.
+      const broken = await call(`/api/view?${query}&fit=390x844&crop=oops`);
+      expect(readImageSize(Buffer.from(await broken.arrayBuffer()))).toEqual({
+        width: 390,
+        height: 390,
+      });
+
+      // And the original is still the original, for the setting that asks.
+      const native = await call(`/api/view?${query}`);
+      expect(readImageSize(Buffer.from(await native.arrayBuffer()))).toEqual({
+        width: 1024,
+        height: 1024,
+      });
+
+      /*
+       * The size on record is the file's, not a thumbnail's.
+       *
+       * The browser used to measure this from `preview=`, which stopped being
+       * the original once thumbnails were derived here — so a 1024×1024 output
+       * would have been filed as 384×384. The server now notes it while it has
+       * the actual bytes.
+       */
+      const thumbed = await call(`/api/view?${query}&preview=webp;70`);
+      expect(readImageSize(Buffer.from(await thumbed.arrayBuffer()))!.width).toBe(384);
+      const record = await json<GenerationRecord>(call(`/api/gallery/${generationIds[0]}`));
+      expect(record.images[0]).toMatchObject({ width: 1024, height: 1024 });
+    } finally {
+      await instance.app.close();
+      await big.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 40_000);
+});
+
+/**
  * A clean start with the archive kept.
  *
  * The whole reason the archive lives outside the project is that you can delete

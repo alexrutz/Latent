@@ -505,6 +505,25 @@ export function GalleryScreen() {
             onChange={(uniformTiles) => updateSettings({ uniformTiles })}
           />
         </div>
+
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm">Full resolution in the viewer</p>
+            <p className="mt-0.5 text-xs text-muted">
+              Off by default: opening a picture fetches a copy sized for this
+              screen, and zooming in fetches that part of it the same way. A
+              recent output is sixteen megapixels and this screen is about two,
+              so the rest is downloaded and thrown away — which is most of the
+              wait, and most of the memory, while the next render is running.
+              Turn it on to inspect the file itself.
+            </p>
+          </div>
+          <Toggle
+            label="Full resolution in the viewer"
+            checked={settings.viewerNativeResolution}
+            onChange={(viewerNativeResolution) => updateSettings({ viewerNativeResolution })}
+          />
+        </div>
       </div>
     </Sheet>
   );

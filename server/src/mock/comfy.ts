@@ -220,6 +220,7 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
 
       if (isOutput) {
         const batch = typeof findBatchSize(workflow) === 'number' ? findBatchSize(workflow) : 1;
+        const size = findOutputSize(workflow);
         const images: ComfyImageRef[] = [];
         for (let i = 0; i < batch; i += 1) {
           /*
@@ -231,7 +232,7 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
           const filename = `Latent_${String(job.number).padStart(5, '0')}_${nodeId}_${i}.png`;
           files.set(
             `output//${filename}`,
-            renderPlaceholder(outputSize, outputSize, `${seed}#${i}`),
+            renderPlaceholder(size, size, `${seed}#${i}`),
           );
           images.push({ filename, subfolder: '', type: 'output' });
         }
@@ -287,6 +288,27 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       if (typeof value === 'number' && value > 0) return Math.min(value, 8);
     }
     return 1;
+  }
+
+  /**
+   * The size the graph asked for, when it asked for a bigger one.
+   *
+   * Real ComfyUI produces an output the size of its latent, and a test about
+   * what happens to a *big* picture has no other way to ask for one — the
+   * default here is deliberately small, because every pixel is drawn in
+   * JavaScript and a suite full of megapixel renders is a slow suite. Only ever
+   * upwards, so nothing that does not ask is affected. Capped, because a typo
+   * in a workflow should not hang the mock.
+   */
+  function findOutputSize(workflow: ApiWorkflow): number {
+    let largest = outputSize;
+    for (const node of Object.values(workflow)) {
+      for (const key of ['width', 'height'] as const) {
+        const value = node.inputs?.[key];
+        if (typeof value === 'number' && value > largest) largest = Math.min(value, 4096);
+      }
+    }
+    return largest;
   }
 
   async function drain(): Promise<void> {

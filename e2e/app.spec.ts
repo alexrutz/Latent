@@ -4226,6 +4226,138 @@ test.describe('the twenty-sixth wave', () => {
     await expect(page.getByRole('button', { name: 'Dismiss' })).toBeVisible();
   });
 
+  /**
+   * Opening a picture fetches what this screen can show, not the original.
+   *
+   * On a recent workflow that is the difference between a moment and several
+   * seconds — and between two megapixels of bitmap in the browser and sixteen,
+   * while it is probably also rendering the next one.
+   */
+  test('opens a picture at the size of the screen, not the file', async ({ page }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a big one');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await page.getByRole('link', { name: 'Gallery' }).click();
+
+    const requested: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/api/view')) requested.push(request.url());
+    });
+
+    await page.locator('main img').first().click({ timeout: 60_000 });
+    const viewer = page.getByTestId('viewer-image');
+    await expect(viewer).toBeVisible();
+
+    /*
+     * The whole point, stated as a request: the viewer names a box and never
+     * asks for the file. A `/api/view` with no `fit` is the old behaviour —
+     * twenty megabytes for a screen that can show two — and there must not be
+     * one, which is why this asserts on the absence rather than on a pixel
+     * count. The mock renders 512², under this phone's 1170-pixel box, and the
+     * server refuses to enlarge, so the size that comes back proves nothing.
+     */
+    await expect
+      .poll(() => requested.filter((url) => url.includes('fit=')).length)
+      .toBeGreaterThan(0);
+    expect(requested.filter((url) => !url.includes('fit=') && !url.includes('preview='))).toEqual(
+      [],
+    );
+
+    const viewport = page.viewportSize()!;
+    const ratio = await page.evaluate(() => window.devicePixelRatio);
+    const box = requested.find((url) => url.includes('fit='))!;
+    expect(new URL(box).searchParams.get('fit')).toBe(
+      `${Math.round(viewport.width * ratio)}x${Math.round(viewport.height * ratio)}`,
+    );
+
+    const decoded = await viewer.evaluate((image: HTMLImageElement) => ({
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+    }));
+    expect(decoded.width).toBeLessThanOrEqual(Math.round(viewport.width * ratio));
+    expect(decoded.height).toBeLessThanOrEqual(Math.round(viewport.height * ratio));
+    await page.screenshot({ path: 'test-results/80-view-sized.png' });
+
+    // And the setting is the way back to the file itself.
+    await page.getByRole('button', { name: 'Close' }).click();
+    await page.getByRole('button', { name: 'Grid layout' }).click();
+    await page
+      .getByRole('switch', { name: 'Full resolution in the viewer' })
+      .click();
+    await page.keyboard.press('Escape');
+
+    requested.length = 0;
+    await page.locator('main img').first().click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+    await expect
+      .poll(() => requested.filter((url) => !url.includes('fit=') && !url.includes('preview=')).length)
+      .toBeGreaterThan(0);
+  });
+
+  test('fetches the zoomed-in part at the screen’s resolution too', async ({ page }) => {
+    /*
+     * A picture with more pixels than this screen, which is the only case where
+     * a crop can add anything. The mock renders the size its latent asks for,
+     * and 2048² against a 1170-pixel box leaves plenty to zoom into — at the
+     * default 512 the server would refuse to enlarge and the viewer would
+     * correctly decide a crop was pointless.
+     */
+    const big = JSON.parse(JSON.stringify(sd15Txt2Img)) as Record<
+      string,
+      { inputs: Record<string, unknown> }
+    >;
+    big['5']!.inputs.width = 2048;
+    big['5']!.inputs.height = 2048;
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: WORKFLOW_NAME, graph: big } }),
+    );
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('something to zoom into');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await page.getByRole('link', { name: 'Gallery' }).click();
+
+    const requested: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/api/view')) requested.push(request.url());
+    });
+
+    await page.locator('main img').first().click({ timeout: 60_000 });
+    const viewer = page.getByTestId('viewer-image');
+    await expect(viewer).toBeVisible();
+    // The base layer has to have arrived: the crop is worked out from the copy
+    // that was actually delivered, not from anything on record.
+    await expect
+      .poll(() => viewer.evaluate((image: HTMLImageElement) => image.naturalWidth))
+      .toBeGreaterThan(0);
+
+    // Double-tap to zoom, which is the gesture a phone actually uses.
+    const box = (await viewer.boundingBox())!;
+    const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    await page.touchscreen.tap(centre.x, centre.y);
+    await page.touchscreen.tap(centre.x, centre.y);
+
+    await expect
+      .poll(() => requested.filter((url) => url.includes('crop=')).length, { timeout: 20_000 })
+      .toBeGreaterThan(0);
+
+    /*
+     * The rectangle is fractions of the picture, and a zoom about the centre
+     * asks for the middle of it. Pixels would mean the browser had to know how
+     * big the file is — which it does not, having only ever seen a copy.
+     */
+    const crop = new URL(requested.find((url) => url.includes('crop='))!).searchParams.get('crop')!;
+    const [x, y, width, height] = crop.split(',').map(Number) as [number, number, number, number];
+    expect(width).toBeGreaterThan(0);
+    expect(width).toBeLessThan(1);
+    expect(x).toBeGreaterThan(0);
+    expect(x + width).toBeLessThanOrEqual(1);
+    expect(y + height).toBeLessThanOrEqual(1);
+
+    await expect(page.getByTestId('viewer-detail')).toBeVisible();
+    await page.screenshot({ path: 'test-results/81-view-zoomed.png' });
+  });
+
   test('shows the result at once when the progress bar was left open', async ({ page }) => {
     /*
      * Sixty steps, so there is time to open the bar before the run is over —

@@ -817,6 +817,19 @@ export interface GridSettings {
   viewerParams: string[];
   /** Prefix each overlay value with a two-letter abbreviation of its name. */
   overlayLabels: boolean;
+  /**
+   * Open the original in the viewer instead of a copy sized for the screen.
+   *
+   * Off, because on a recent workflow the original is sixteen megapixels and a
+   * phone screen is two: the other fourteen are fetched, decoded and discarded,
+   * which is seconds of waiting and a browser under memory pressure while it is
+   * probably also rendering the next picture. On for the times you genuinely
+   * want to inspect the file rather than look at the picture.
+   *
+   * Per device rather than per account, like the rest of these — it is a
+   * property of the screen you are holding.
+   */
+  viewerNativeResolution: boolean;
 }
 
 export const DEFAULT_GRID_SETTINGS: GridSettings = {
@@ -828,6 +841,7 @@ export const DEFAULT_GRID_SETTINGS: GridSettings = {
   gridParams: [],
   viewerParams: [],
   overlayLabels: true,
+  viewerNativeResolution: false,
 };
 
 /**

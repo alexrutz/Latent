@@ -5,7 +5,7 @@ import type { Auth } from '../auth.js';
 import type { Config } from '../config.js';
 import type { Endless } from '../endless.js';
 import type { Store } from '../db.js';
-import type { ThumbnailCache } from '../images/thumbnails.js';
+import type { ThumbnailCache, ViewRenderer } from '../images/thumbnails.js';
 import type { Importer } from '../importer.js';
 import type { InputLibrary } from '../inputLibrary.js';
 import type { Orchestrator } from '../orchestrator.js';
@@ -42,6 +42,13 @@ export interface AppContext {
    * is that the work is done once: see `ThumbnailCache`.
    */
   thumbnails: ThumbnailCache;
+  /**
+   * Views of one picture at the size a screen can use, for the viewer.
+   *
+   * Apart from the thumbnail cache because it holds something else: decoded
+   * pictures, so the next rectangle of the one being pinched is cheap.
+   */
+  views: ViewRenderer;
 }
 
 /**

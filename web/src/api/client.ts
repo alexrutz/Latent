@@ -44,6 +44,7 @@ import type {
   GenerationRecord,
   ParamValues,
   QueueState,
+  RegionFraction,
   StatusResponse,
   UploadImageResponse,
   WorkflowDetail,
@@ -51,6 +52,7 @@ import type {
   WorkflowScanResult,
   WorkflowSummary,
 } from '@latent/shared';
+import { regionKey } from '@latent/shared';
 
 export class ApiError extends Error {
   override name = 'ApiError';
@@ -140,6 +142,31 @@ export function imageUrl(image: ComfyImageRef & { id?: number }, preview?: strin
  */
 export function thumbnailUrl(image: ComfyImageRef & { id?: number }): string {
   return imageUrl(image, 'webp;70');
+}
+
+/**
+ * The picture at the size this screen can show, optionally only one part of it.
+ *
+ * What the viewer opens. `box` is in device pixels — the viewport times the
+ * pixel ratio — and `region` is the part of the picture being looked at, as
+ * fractions of it, which is how zooming gets detail without ever fetching the
+ * whole frame. Fractions rather than pixels because the browser is looking at a
+ * copy and does not know how big the file is; see `regionFraction`.
+ */
+export function viewUrl(
+  image: ComfyImageRef & { id?: number },
+  box: { width: number; height: number },
+  region?: RegionFraction | null,
+): string {
+  const params = new URLSearchParams({
+    filename: image.filename,
+    subfolder: image.subfolder ?? '',
+    type: image.type ?? 'output',
+    fit: `${Math.round(box.width)}x${Math.round(box.height)}`,
+  });
+  if (typeof image.id === 'number') params.set('id', String(image.id));
+  if (region) params.set('crop', regionKey(region));
+  return `/api/view?${params.toString()}`;
 }
 
 /** A file in the configured input folder. `preview` keeps a picker grid cheap. */

@@ -1,4 +1,5 @@
-import { isPng, makeThumbnail, readImageSize } from './png.js';
+import { decodePng, isPng, makeThumbnail, readImageSize, renderRegion } from './png.js';
+import type { DecodedPng, Region } from './png.js';
 
 /**
  * Small copies of big pictures, made here because nobody else will.
@@ -20,6 +21,17 @@ export const THUMBNAIL_SIZE = 384;
 
 /** How much of these to keep. They are ~130 kB each at 384px. */
 const DEFAULT_BUDGET = 64 * 1024 * 1024;
+
+/**
+ * How many decoded pictures to hold, for the viewer.
+ *
+ * Two: the one on screen and the one you just swiped past. A decoded 4000×4000
+ * is 48 MB, so this is the expensive cache and the number is small on purpose.
+ * It exists because zooming asks for a new rectangle of the *same* picture
+ * several times a second, and decoding a big PNG in JavaScript is a few hundred
+ * milliseconds — once is fine, once per gesture is not.
+ */
+const DECODED_SLOTS = 2;
 
 export interface DerivedThumbnail {
   data: Buffer;
@@ -137,5 +149,94 @@ export class ThumbnailCache {
     }
 
     return value;
+  }
+}
+
+/**
+ * Views of one picture, at the size a screen can actually use.
+ *
+ * Separate from the thumbnail cache because what it holds is different: that
+ * one keeps small finished images, this one keeps *decoded* pictures so the
+ * next rectangle of the same one is cheap. A gallery grid wants the first; a
+ * viewer being pinched wants the second.
+ */
+export class ViewRenderer {
+  /** Insertion-ordered, oldest first, like the thumbnail cache. */
+  private readonly decoded = new Map<string, DecodedPng>();
+  private readonly inFlight = new Map<string, Promise<DecodedPng | null>>();
+  private tail: Promise<unknown> = Promise.resolve();
+
+  constructor(private readonly slots: number = DECODED_SLOTS) {}
+
+  /** Drop everything, for a test or to give the memory back. */
+  clear(): void {
+    this.decoded.clear();
+  }
+
+  get held(): number {
+    return this.decoded.size;
+  }
+
+  /**
+   * One rectangle of a picture, scaled into a box.
+   *
+   * `null` when the source cannot be decoded here — a JPEG, a 16-bit or
+   * interlaced PNG — and the caller should send the original instead.
+   */
+  async render(
+    key: string,
+    load: () => Promise<Buffer | null>,
+    box: { width: number; height: number },
+    region: Region | null,
+  ): Promise<DerivedThumbnail | null> {
+    const source = await this.source(key, load);
+    if (!source) return null;
+
+    const rendered = await this.serialise(() =>
+      renderRegion(source, region, Math.max(1, box.width), Math.max(1, box.height)),
+    );
+    return { data: rendered.data, contentType: 'image/png' };
+  }
+
+  /** The decoded picture, decoding it once however many ask at the same time. */
+  private async source(key: string, load: () => Promise<Buffer | null>): Promise<DecodedPng | null> {
+    const held = this.decoded.get(key);
+    if (held) {
+      // Re-insert to move it to the young end of the map.
+      this.decoded.delete(key);
+      this.decoded.set(key, held);
+      return held;
+    }
+
+    const existing = this.inFlight.get(key);
+    if (existing) return existing;
+
+    const work = (async () => {
+      const original = await load();
+      if (!original || original.length === 0) return null;
+      const image = await this.serialise(() => decodePng(original));
+      if (!image) return null;
+
+      this.decoded.set(key, image);
+      // Oldest first; the one just added is at the young end and stays.
+      for (const oldest of this.decoded.keys()) {
+        if (this.decoded.size <= this.slots) break;
+        this.decoded.delete(oldest);
+      }
+      return image;
+    })().finally(() => this.inFlight.delete(key));
+
+    this.inFlight.set(key, work);
+    return work;
+  }
+
+  /** The same one-at-a-time rule the thumbnail cache uses, for the same reason. */
+  private serialise<T>(task: () => T): Promise<T> {
+    const next = this.tail.then(async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+      return task();
+    });
+    this.tail = next.catch(() => undefined);
+    return next;
   }
 }
