@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 
 import type { ConnectionInput, ConnectionKind, ConnectionTestResult } from '@latent/shared';
+import { defaultSampling } from '@latent/shared';
 
 import { LlamaClient } from '../chat/llama.js';
 import { ComfyClient, ComfyError, isSelfSignedError } from '../comfy/client.js';
@@ -106,6 +107,8 @@ async function testLlama(config: ConnectionConfig): Promise<ConnectionTestResult
     imageSize: 3,
     promptButton: 'dialog',
     showDiff: { inDialog: false, underPicture: false },
+    // Nothing is generated here — this asks `/v1/models` and hangs up.
+    sampling: defaultSampling(),
   });
 
   try {

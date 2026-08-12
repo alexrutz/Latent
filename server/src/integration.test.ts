@@ -7,6 +7,7 @@ import WebSocket from 'ws';
 
 import type {
   ChatMessage,
+  ChatSettings,
   ChatStreamEvent,
   ChatToolCall,
   GalleryPage,
@@ -30,6 +31,7 @@ import type {
   WorkflowDetail,
   WorkflowScanResult,
 } from '@latent/shared';
+import { defaultSampling } from '@latent/shared';
 import {
   sd15Txt2Img,
   withLlamaServer,
@@ -4756,6 +4758,74 @@ describe('chat', () => {
 
       const sent = llama.requests[llama.requests.length - 1] as { tools?: unknown[] };
       expect(sent.tools?.length).toBeGreaterThan(0);
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
+   * The parameter it was asked for, and nothing else.
+   *
+   * The failure this guards against is the one that used to be here: a full set
+   * of sampling values sent every time, overriding the flags llama-server was
+   * launched with — a worse answer than its own, and one nobody could see being
+   * applied. So the untouched request has to stay bare.
+   */
+  it('sends only the sampling parameters that were switched on', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      const chat = await json<{ id: string }>(
+        api('/api/chat/conversations', { method: 'POST' }),
+      );
+
+      llama.script({ content: 'Sure.' });
+      await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'hello' }),
+        }),
+      );
+
+      const untouched = llama.requests[0] as Record<string, unknown>;
+      expect(untouched.temperature).toBeUndefined();
+      expect(untouched.top_p).toBeUndefined();
+      expect(untouched.min_p).toBeUndefined();
+      expect(untouched.seed).toBeUndefined();
+
+      const settings = await json<{ chat: ChatSettings }>(api('/api/settings'));
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: {
+            ...settings.chat,
+            sampling: {
+              ...defaultSampling(),
+              temperature: { on: true, value: 0.35 },
+              // Out of range on purpose: the clamping cannot live only in the
+              // dialog, because settings are JSON and get edited by hand.
+              top_k: { on: true, value: 9999 },
+              // Carries a value but is off, so it stays out of the request.
+              min_p: { on: false, value: 0.2 },
+            },
+          },
+        }),
+      });
+
+      llama.script({ content: 'Colder, then.' });
+      await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'make it colder' }),
+        }),
+      );
+
+      const sent = llama.requests[llama.requests.length - 1] as Record<string, unknown>;
+      expect(sent.temperature).toBe(0.35);
+      expect(sent.top_k).toBe(200);
+      expect(sent.min_p).toBeUndefined();
     } finally {
       await llama.close();
     }

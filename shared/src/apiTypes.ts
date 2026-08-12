@@ -959,6 +959,339 @@ export interface ChatSettings {
   promptButton: 'generate' | 'dialog';
   /** Where changes against the conversation's previous prompt are marked. */
   showDiff: { inDialog: boolean; underPicture: boolean };
+  /**
+   * Sampling, one parameter at a time, each off until you turn it on.
+   *
+   * Off is not "no sampling" — it is *the server's own*, which is the flags
+   * llama.cpp was launched with, chosen for the model behind it. That remains
+   * the right default, and it is why every parameter here is opt-in rather
+   * than a box pre-filled with a number that would silently override it.
+   *
+   * Individually, rather than one switch over the lot, because the reason to
+   * reach for these is usually a single one: a model that repeats itself wants
+   * a DRY penalty and nothing else touched.
+   */
+  sampling: ChatSampling;
+}
+
+/**
+ * One sampling parameter's override.
+ *
+ * The value is kept while the switch is off, so turning a parameter off to
+ * compare and back on again does not lose what you had dialled in.
+ */
+export interface SamplingSetting {
+  /** Off leaves the parameter out of the request entirely. */
+  on: boolean;
+  value: number;
+}
+
+/** Every parameter the sampling dialog offers, by its llama.cpp name. */
+export type SamplingKey =
+  | 'temperature'
+  | 'top_k'
+  | 'top_p'
+  | 'min_p'
+  | 'typical_p'
+  | 'repeat_penalty'
+  | 'repeat_last_n'
+  | 'presence_penalty'
+  | 'frequency_penalty'
+  | 'dry_multiplier'
+  | 'dry_base'
+  | 'dry_allowed_length'
+  | 'dry_penalty_last_n'
+  | 'xtc_probability'
+  | 'xtc_threshold'
+  | 'mirostat'
+  | 'mirostat_tau'
+  | 'mirostat_eta'
+  | 'seed';
+
+export type ChatSampling = Record<SamplingKey, SamplingSetting>;
+
+/** Which group of the dialog a parameter belongs in. */
+export type SamplingGroup = 'core' | 'repetition' | 'dry' | 'xtc' | 'mirostat' | 'seed';
+
+export interface SamplingParam {
+  key: SamplingKey;
+  group: SamplingGroup;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  /** Where the switch starts it, which is llama.cpp's own default. */
+  value: number;
+  /** What it does, in one line, because none of these names say. */
+  hint: string;
+}
+
+/**
+ * The parameters, as data.
+ *
+ * A list rather than nineteen hand-written rows: the dialog, the defaults and
+ * the clamping all read from here, so a parameter cannot end up with a slider
+ * that allows what the request then has rejected.
+ *
+ * The names are llama.cpp's own and go on the wire unchanged. Its
+ * OpenAI-compatible endpoint accepts both the standard names and its own
+ * extensions, which is why `presence_penalty` and `min_p` sit side by side.
+ */
+export const SAMPLING_PARAMS: readonly SamplingParam[] = [
+  {
+    key: 'temperature',
+    group: 'core',
+    label: 'Temperature',
+    min: 0,
+    max: 2,
+    step: 0.05,
+    value: 0.8,
+    hint: 'How far down the list of likely words it is willing to go. 0 always picks the most likely one.',
+  },
+  {
+    key: 'top_k',
+    group: 'core',
+    label: 'Top-k',
+    min: 0,
+    max: 200,
+    step: 1,
+    value: 40,
+    hint: 'Only ever consider this many candidates. 0 turns it off.',
+  },
+  {
+    key: 'top_p',
+    group: 'core',
+    label: 'Top-p',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    value: 0.95,
+    hint: 'Keep the likeliest candidates until they add up to this much probability.',
+  },
+  {
+    key: 'min_p',
+    group: 'core',
+    label: 'Min-p',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    value: 0.05,
+    hint: 'Drop anything less likely than this fraction of the best candidate. Usually the one to reach for instead of top-p.',
+  },
+  {
+    key: 'typical_p',
+    group: 'core',
+    label: 'Typical-p',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    value: 1,
+    hint: 'Prefers words of average surprise over both the obvious and the wild. 1 turns it off.',
+  },
+  {
+    key: 'repeat_penalty',
+    group: 'repetition',
+    label: 'Repeat penalty',
+    min: 1,
+    max: 2,
+    step: 0.01,
+    value: 1.1,
+    hint: 'Marks down words that have already appeared. 1 turns it off.',
+  },
+  {
+    key: 'repeat_last_n',
+    group: 'repetition',
+    label: 'Repeat window',
+    min: 0,
+    max: 4096,
+    step: 16,
+    value: 64,
+    hint: 'How far back the repeat penalty looks, in tokens.',
+  },
+  {
+    key: 'presence_penalty',
+    group: 'repetition',
+    label: 'Presence penalty',
+    min: -2,
+    max: 2,
+    step: 0.05,
+    value: 0,
+    hint: 'A flat markdown for any word already used, however often.',
+  },
+  {
+    key: 'frequency_penalty',
+    group: 'repetition',
+    label: 'Frequency penalty',
+    min: -2,
+    max: 2,
+    step: 0.05,
+    value: 0,
+    hint: 'A markdown that grows with how often a word has been used.',
+  },
+  {
+    key: 'dry_multiplier',
+    group: 'dry',
+    label: 'DRY multiplier',
+    min: 0,
+    max: 5,
+    step: 0.1,
+    value: 0.8,
+    hint: 'Penalises repeating a whole *sequence* rather than a word. 0 turns DRY off; this is the switch for the group.',
+  },
+  {
+    key: 'dry_base',
+    group: 'dry',
+    label: 'DRY base',
+    min: 1,
+    max: 4,
+    step: 0.05,
+    value: 1.75,
+    hint: 'How sharply the penalty grows with the length of the repeat.',
+  },
+  {
+    key: 'dry_allowed_length',
+    group: 'dry',
+    label: 'DRY allowed length',
+    min: 0,
+    max: 20,
+    step: 1,
+    value: 2,
+    hint: 'A repeat shorter than this is not penalised at all.',
+  },
+  {
+    key: 'dry_penalty_last_n',
+    group: 'dry',
+    label: 'DRY window',
+    min: -1,
+    max: 8192,
+    step: 64,
+    value: -1,
+    hint: 'How far back DRY looks. -1 is the whole context.',
+  },
+  {
+    key: 'xtc_probability',
+    group: 'xtc',
+    label: 'XTC probability',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    value: 0,
+    hint: 'How often to drop the most likely candidates on purpose, for less predictable prose. 0 turns XTC off.',
+  },
+  {
+    key: 'xtc_threshold',
+    group: 'xtc',
+    label: 'XTC threshold',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    value: 0.1,
+    hint: 'Only candidates above this likelihood are eligible to be dropped.',
+  },
+  {
+    key: 'mirostat',
+    group: 'mirostat',
+    label: 'Mirostat',
+    min: 0,
+    max: 2,
+    step: 1,
+    value: 0,
+    hint: 'Steers towards a fixed surprise instead of using top-k/top-p. 0 off, 1 and 2 are the two versions.',
+  },
+  {
+    key: 'mirostat_tau',
+    group: 'mirostat',
+    label: 'Mirostat τ',
+    min: 0,
+    max: 10,
+    step: 0.1,
+    value: 5,
+    hint: 'The surprise it aims for. Lower is more focused.',
+  },
+  {
+    key: 'mirostat_eta',
+    group: 'mirostat',
+    label: 'Mirostat η',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    value: 0.1,
+    hint: 'How quickly it corrects towards that target.',
+  },
+  {
+    key: 'seed',
+    group: 'seed',
+    label: 'Seed',
+    min: 0,
+    max: 2_147_483_647,
+    step: 1,
+    value: 0,
+    hint: 'Fixes the randomness, so the same conversation gives the same reply. Off is a new one each time.',
+  },
+];
+
+/** What each group of the dialog is called, and why it is a group. */
+export const SAMPLING_GROUPS: readonly { key: SamplingGroup; label: string; hint: string }[] = [
+  {
+    key: 'core',
+    label: 'Which words it picks from',
+    hint: 'The shortlist each next word is chosen out of. Temperature and one narrowing parameter is usually the whole story.',
+  },
+  {
+    key: 'repetition',
+    label: 'Saying the same thing twice',
+    hint: 'Marks down words already used. Blunt, and worth trying before DRY only because every build supports it.',
+  },
+  {
+    key: 'dry',
+    label: 'DRY',
+    hint: 'Penalises a repeated *sequence* rather than a repeated word, so a model that loops out of a phrase is caught without flattening ordinary language.',
+  },
+  {
+    key: 'xtc',
+    label: 'XTC',
+    hint: 'Drops the most likely candidates on purpose. For prose that reads less like a model; not for anything that has to be right.',
+  },
+  {
+    key: 'mirostat',
+    label: 'Mirostat',
+    hint: 'An alternative to the shortlist entirely: it steers towards a fixed level of surprise. Turning it on makes top-k and top-p irrelevant.',
+  },
+  {
+    key: 'seed',
+    label: 'Repeatability',
+    hint: 'For comparing two settings on the same conversation rather than on two different rolls of the dice.',
+  },
+];
+
+/** Every parameter off: the server keeps the sampling it was started with. */
+export function defaultSampling(): ChatSampling {
+  return Object.fromEntries(
+    SAMPLING_PARAMS.map((param) => [param.key, { on: false, value: param.value }]),
+  ) as ChatSampling;
+}
+
+/**
+ * The parameters to put in a request, clamped to what each one allows.
+ *
+ * Only what is switched on, so a request carries nothing the user did not ask
+ * for and the server's own flags survive untouched. Clamped here rather than
+ * only in the dialog: settings are stored as JSON and edited by hand often
+ * enough that the sanitising has to live where the request is built.
+ */
+export function samplingOverrides(sampling: Partial<ChatSampling> | undefined): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!sampling) return out;
+
+  for (const param of SAMPLING_PARAMS) {
+    const setting = sampling[param.key];
+    if (!setting?.on) continue;
+    const value = Number(setting.value);
+    if (!Number.isFinite(value)) continue;
+    const clamped = Math.min(param.max, Math.max(param.min, value));
+    out[param.key] = param.step >= 1 ? Math.round(clamped) : clamped;
+  }
+  return out;
 }
 
 /**

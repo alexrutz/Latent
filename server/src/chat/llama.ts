@@ -11,6 +11,7 @@ import type {
   ProposedBlock,
   ToolEagerness,
 } from '@latent/shared';
+import { samplingOverrides } from '@latent/shared';
 
 import { authHeaders, type ConnectionConfig } from '../comfy/connection.js';
 
@@ -591,14 +592,18 @@ export class LlamaClient {
       ...(this.settings.model ? { model: this.settings.model } : {}),
       messages: conversation,
       /*
-       * No temperature, on purpose.
+       * Sampling: only what was explicitly switched on.
        *
        * llama.cpp is started with the sampling its model wants — the flags are
-       * in the launch command, and a Gemma and a Qwen do not want the same ones.
-       * Sending a number from here overrode all of that with whatever was last
-       * left in a settings box, which is a worse answer than the server's own
-       * and one nobody could see was being applied.
+       * in the launch command, and a Gemma and a Qwen do not want the same
+       * ones. Sending a full set from here would override all of that with
+       * whatever was last left in a settings box, which is a worse answer than
+       * the server's own and one nobody could see being applied. So each
+       * parameter is off until asked for, and an untouched install sends none
+       * of them — the request is byte-for-byte what it was before any of this
+       * existed.
        */
+      ...samplingOverrides(this.settings.sampling),
       ...(this.settings.maxTokens > 0 ? { max_tokens: this.settings.maxTokens } : {}),
       stream: true,
       ...(tools.length > 0

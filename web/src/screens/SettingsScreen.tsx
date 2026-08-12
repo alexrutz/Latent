@@ -1,8 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { CHAT_IMAGE_SIZES, fieldPoints, fieldPointValues, usesPointLine } from '@latent/shared';
+import {
+  CHAT_IMAGE_SIZES,
+  defaultSampling,
+  fieldPoints,
+  fieldPointValues,
+  SAMPLING_GROUPS,
+  SAMPLING_PARAMS,
+  usesPointLine,
+} from '@latent/shared';
 import type {
+  ChatSampling,
   ChatSettings,
+  SamplingKey,
+  SamplingSetting,
   FieldOverride,
   FieldOverrides,
   ParamField,
@@ -1264,6 +1275,7 @@ function ChatSection() {
     null,
   );
   const [checking, setChecking] = useState(false);
+  const [showSampling, setShowSampling] = useState(false);
   const status = useChatStatus();
   /** The freshest list we have: what Check just returned, else what was fetched. */
   const models = probe?.models ?? status.data?.models ?? [];
@@ -1274,6 +1286,10 @@ function ChatSection() {
 
   const patch = (change: Partial<typeof chat>) =>
     updateSettings.mutate({ chat: { ...chat, ...change } });
+
+  /** What is stored, filled in for a parameter added since it was written. */
+  const sampling = { ...defaultSampling(), ...(chat.sampling ?? {}) };
+  const samplingOn = SAMPLING_PARAMS.filter((param) => sampling[param.key]?.on).length;
 
   return (
     <section className="space-y-2">
@@ -1388,11 +1404,32 @@ function ChatSection() {
             className="w-full rounded-lg border border-line bg-surface px-2 py-1.5 text-sm"
           />
         </label>
-        <p className="text-[11px] text-muted">
-          Sampling — temperature and the rest — is the model server’s own, set by the flags it was
-          started with. A model is launched with the settings it wants, and overriding them from
-          here was a worse answer that nobody could see being applied.
-        </p>
+        {/*
+          Sampling behind a dialog, and every parameter off until asked for.
+
+          The default is still the server's own, which is what its launch flags
+          chose for the model behind it — nineteen boxes pre-filled with numbers
+          would override all of that with whatever was last left in them, which
+          is the failure this used to have. Opting in one at a time keeps the
+          untouched case byte-for-byte what it was.
+        */}
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-sm">Sampling</p>
+            <p className="text-[11px] text-muted">
+              {samplingOn === 0
+                ? 'The model server’s own, from the flags it was started with.'
+                : `${samplingOn} ${samplingOn === 1 ? 'parameter' : 'parameters'} overriding the server’s own.`}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowSampling(true)}
+            className="shrink-0 rounded-lg bg-surface-2 px-3 py-1.5 text-xs text-body"
+          >
+            Adjust…
+          </button>
+        </div>
 
         {/*
           Which of the saved prompts the chat is given, rather than a box of its
@@ -1626,7 +1663,130 @@ function ChatSection() {
 
         <ChatGenerationSettingsEditor chat={chat} onPatch={patch} />
       </Card>
+
+      <SamplingSheet
+        open={showSampling}
+        sampling={sampling}
+        onClose={() => setShowSampling(false)}
+        onChange={(next) => patch({ sampling: next })}
+      />
     </section>
+  );
+}
+
+/**
+ * Sampling, one parameter at a time.
+ *
+ * Every one is off until switched on, and off means *the server's own* — the
+ * flags llama.cpp was launched with, chosen for the model behind it. That is
+ * why this is a dialog of switches rather than a page of boxes: a box has to
+ * hold some number, and whatever number that is would be overriding a better
+ * one silently. A switch can say "not mine to decide", which for most of these,
+ * most of the time, is the right answer.
+ *
+ * Grouped, because the groups are alternatives rather than a list: turning
+ * Mirostat on makes the shortlist parameters above it irrelevant, and DRY and
+ * the repeat penalty are two answers to the same complaint.
+ */
+function SamplingSheet({
+  open,
+  sampling,
+  onClose,
+  onChange,
+}: {
+  open: boolean;
+  sampling: ChatSampling;
+  onClose: () => void;
+  onChange: (next: ChatSampling) => void;
+}) {
+  const set = (key: SamplingKey, change: Partial<SamplingSetting>) =>
+    onChange({ ...sampling, [key]: { ...sampling[key], ...change } });
+
+  const anyOn = SAMPLING_PARAMS.some((param) => sampling[param.key]?.on);
+
+  return (
+    <Sheet open={open} onClose={onClose} title="Sampling" full>
+      <div className="space-y-4">
+        <p className="text-xs text-muted">
+          Each of these is off until you turn it on, and off means the model server’s own — the
+          flags it was started with, chosen for the model behind it. An untouched setting here
+          sends nothing at all, which is almost always the better answer. Turn one on when you
+          have a specific complaint about the replies.
+        </p>
+
+        {anyOn && (
+          <button
+            type="button"
+            onClick={() => onChange(defaultSampling())}
+            className="w-full rounded-xl bg-surface-2 py-2 text-xs text-body"
+          >
+            Hand all of it back to the server
+          </button>
+        )}
+
+        {SAMPLING_GROUPS.map((group) => (
+          <div key={group.key} className="space-y-2 border-t border-line pt-3">
+            <div>
+              <p className="text-sm">{group.label}</p>
+              <p className="mt-0.5 text-[11px] text-muted">{group.hint}</p>
+            </div>
+
+            {SAMPLING_PARAMS.filter((param) => param.group === group.key).map((param) => {
+              const setting = sampling[param.key];
+              return (
+                <div key={param.key} className="space-y-1.5 rounded-xl bg-surface-2 p-2.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm">{param.label}</p>
+                      <p className="truncate font-mono text-[10px] text-muted">{param.key}</p>
+                    </div>
+                    <Toggle
+                      checked={setting.on}
+                      onChange={(on) => set(param.key, { on })}
+                      label={param.label}
+                    />
+                  </div>
+
+                  {/*
+                    The number and its hint only once it is being overridden.
+                    Nineteen sliders on screen at once is a wall; nineteen
+                    switches is a list you can read.
+                  */}
+                  {setting.on && (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="range"
+                          min={param.min}
+                          max={param.max}
+                          step={param.step}
+                          value={setting.value}
+                          aria-label={`${param.label} slider`}
+                          onChange={(event) =>
+                            set(param.key, { value: Number(event.target.value) })
+                          }
+                          className="h-1 min-w-0 flex-1 accent-accent"
+                        />
+                        <NumericInput
+                          value={setting.value}
+                          onChange={(value) => set(param.key, { value })}
+                          integer={param.step >= 1}
+                          min={param.min}
+                          max={param.max}
+                          aria-label={param.label}
+                          className="w-20 shrink-0 rounded-lg border border-line bg-surface px-2 py-1 text-right text-sm tabular-nums"
+                        />
+                      </div>
+                      <p className="text-[11px] text-muted">{param.hint}</p>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </Sheet>
   );
 }
 

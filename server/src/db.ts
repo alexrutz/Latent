@@ -42,7 +42,11 @@ import type {
   WorkflowSummary,
 } from '@latent/shared';
 import type { ApiWorkflow, RandomPromptConfig } from '@latent/shared';
-import { DEFAULT_RANDOM_PROMPT_CONFIG, normaliseRandomPromptConfig } from '@latent/shared';
+import {
+  DEFAULT_RANDOM_PROMPT_CONFIG,
+  defaultSampling,
+  normaliseRandomPromptConfig,
+} from '@latent/shared';
 
 import type { BlockState, UiState, WorkflowUiState } from './uiState.js';
 
@@ -744,6 +748,12 @@ const DEFAULT_SETTINGS: AppSettings = {
     imageSize: 3,
     promptButton: 'generate',
     showDiff: { inDialog: true, underPicture: true },
+    /*
+     * Nothing switched on: the model server keeps the sampling it was launched
+     * with, which was chosen for the model behind it. Every parameter is opt-in
+     * from there.
+     */
+    sampling: defaultSampling(),
   },
   importRoot: null,
   inputRoot: null,

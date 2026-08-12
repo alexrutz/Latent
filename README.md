@@ -706,9 +706,34 @@ it is a connection like any other. The dialog offers the same three modes a
 auth** as `user:token` (vast.ai answers to both, and wants `vastai` as the
 name), or **none**, plus the same switch for a certificate nothing signed.
 
-**Sampling is the server's.** `llama-server` is started with the flags the model
-it is running wants, and Latent does not send a temperature of its own to
-override them.
+**Sampling is the server's until you say otherwise.** `llama-server` is started
+with the flags the model it is running wants, and an untouched Latent sends
+nothing that would override them — the request is bare.
+
+Settings → *Chat* → **Sampling** opens the full set anyway, because sometimes
+you do know better: nineteen parameters, grouped, **each with its own switch**.
+That is the important part. A box has to hold some number, and whatever number
+that is would be silently overriding a better one — which is exactly the failure
+this used to have. A switch can say *not mine to decide*, and every one of them
+starts there. Only what is switched on goes on the wire.
+
+| Group | What it is for |
+| --- | --- |
+| Which words it picks from | `temperature`, `top_k`, `top_p`, `min_p`, `typical_p` — the shortlist each next word comes out of |
+| Saying the same thing twice | `repeat_penalty`, `repeat_last_n`, `presence_penalty`, `frequency_penalty` |
+| DRY | `dry_multiplier`, `dry_base`, `dry_allowed_length`, `dry_penalty_last_n` — penalises a repeated *sequence* rather than a repeated word |
+| XTC | `xtc_probability`, `xtc_threshold` — drops likely candidates on purpose, for prose that reads less like a model |
+| Mirostat | `mirostat`, `mirostat_tau`, `mirostat_eta` — steers to a fixed surprise instead of using a shortlist at all |
+| Repeatability | `seed` |
+
+Grouped that way because the groups are alternatives rather than a list: turning
+Mirostat on makes the shortlist above it irrelevant, and DRY and the repeat
+penalty are two answers to the same complaint. The names are llama.cpp's own and
+go on the wire unchanged — its OpenAI-compatible endpoint takes both the standard
+names and its own extensions, which is why `presence_penalty` and `min_p` sit
+side by side. Values are clamped where the request is built, not only at the
+slider, because settings are JSON and get edited by hand. **Hand all of it back
+to the server** switches the lot off again.
 
 **The workflows use it too.** If a graph contains a
 [comfyllama](https://github.com/alexrutz/comfyllama) *Connect to llama-server*

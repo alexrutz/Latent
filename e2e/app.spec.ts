@@ -14,6 +14,7 @@ import {
   withPresetChat,
   withTextPreview,
 } from '../shared/src/fixtures/workflows.js';
+import { defaultSampling } from '../shared/src/apiTypes.js';
 import { renderPlaceholder } from '../server/src/mock/png.js';
 
 /**
@@ -4398,5 +4399,71 @@ test.describe('the twenty-sixth wave', () => {
     // The same sheet becomes the result rather than closing and re-opening.
     await expect(page.getByRole('button', { name: 'Dismiss' })).toBeVisible({ timeout: 60_000 });
     await page.screenshot({ path: 'test-results/79-watched-result.png' });
+  });
+});
+
+test.describe('the twenty-seventh wave', () => {
+  /**
+   * Sampling is opt-in, one parameter at a time.
+   *
+   * The thing worth driving through a browser is the *shape* of the dialog:
+   * that a parameter is a switch first and a number second, and that switching
+   * one on does not switch the rest on with it. An untouched install sending
+   * nothing is what keeps the model server's own launch flags meaningful.
+   */
+  test('turns on one sampling parameter without touching the others', async ({ page }) => {
+    /*
+     * Settings live on the server, so a test that changes them has to start
+     * from a state it chose rather than from whatever ran before it.
+     */
+    await withApi(async (ctx) => {
+      const settings = (await (await ctx.get('/api/settings')).json()) as {
+        chat: Record<string, unknown>;
+      };
+      await ctx.patch('/api/settings', {
+        data: { chat: { ...settings.chat, sampling: defaultSampling() } },
+      });
+    });
+
+    await open(page, '/settings');
+
+    // The summary says what is happening before the dialog is opened at all.
+    await expect(
+      page.getByText('The model server’s own, from the flags it was started with.'),
+    ).toBeVisible();
+
+    await page.getByRole('button', { name: 'Adjust…' }).click();
+    await expect(page.getByRole('heading', { name: 'Sampling' })).toBeVisible();
+
+    // A parameter that is off shows no number to argue with.
+    await expect(page.getByRole('textbox', { name: 'Temperature', exact: true })).toHaveCount(0);
+
+    await page.getByRole('switch', { name: 'Temperature' }).click();
+    const temperature = page.getByRole('textbox', { name: 'Temperature', exact: true });
+    await expect(temperature).toBeVisible();
+    await temperature.fill('0,35');
+
+    // And its neighbours stayed out of it.
+    await expect(page.getByRole('textbox', { name: 'Top-p', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('textbox', { name: 'Min-p', exact: true })).toHaveCount(0);
+    await page.screenshot({ path: 'test-results/82-sampling.png' });
+
+    await page.getByRole('button', { name: 'Done' }).click();
+    await expect(
+      page.getByText('1 parameter overriding the server’s own.'),
+    ).toBeVisible();
+
+    // It survives a reload, which is the only proof it reached the server.
+    await open(page, '/settings');
+    await page.getByRole('button', { name: 'Adjust…' }).click();
+    await expect(page.getByRole('textbox', { name: 'Temperature', exact: true })).toHaveValue('0.35');
+
+    // And one button hands the whole lot back.
+    await page.getByRole('button', { name: 'Hand all of it back to the server' }).click();
+    await expect(page.getByRole('textbox', { name: 'Temperature', exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Done' }).click();
+    await expect(
+      page.getByText('The model server’s own, from the flags it was started with.'),
+    ).toBeVisible();
   });
 });
