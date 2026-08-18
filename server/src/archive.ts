@@ -1,0 +1,240 @@
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { dirname, extname, join, relative, resolve, sep } from 'node:path';
+
+import type { ComfyImageRef } from '@latent/shared';
+
+import type { ComfyClient } from './comfy/client.js';
+import type { ImageRow, Store } from './db.js';
+import { makeThumbnail, readImageSize } from './images/png.js';
+import { ArchiveUnreadableError, Vault, VaultLockedError } from './vault.js';
+
+/**
+ * A local, encrypted copy of images worth keeping.
+ *
+ * Two problems solved at once:
+ *
+ * 1. A gallery row normally just references a file inside ComfyUI's output
+ *    directory. When that ComfyUI is a rented vast.ai box, the directory ceases
+ *    to exist the moment the instance is destroyed. Rating an image copies the
+ *    bytes here, onto the machine actually running Latent.
+ *
+ * 2. Those copies then sit on a disk indefinitely. Everything written here is
+ *    encrypted with a key that only exists while somebody is signed in, so
+ *    access to the machine — or to a backup of it — does not mean access to the
+ *    pictures.
+ *
+ * Files are content-addressed, so rating the same image twice is free and two
+ * identical outputs share one file.
+ */
+
+/** Longest side of a stored thumbnail. Enough for a 2-up grid on a phone at 3x. */
+const THUMBNAIL_SIZE = 384;
+
+export interface StoredImage {
+  path: string;
+  bytes: number;
+  thumbPath: string | null;
+  thumbBytes: number | null;
+  width: number | null;
+  height: number | null;
+}
+
+export class Archive {
+  constructor(
+    private readonly root: string,
+    private readonly store: Store,
+    private readonly vault: Vault,
+  ) {}
+
+  /** Absolute path for a stored relative path, guarded against traversal. */
+  resolvePath(relativePath: string): string | null {
+    const absolute = resolve(this.root, relativePath);
+    // A poisoned database row must not be able to read arbitrary files.
+    const within = relative(this.root, absolute);
+    if (within.startsWith('..') || within.startsWith(sep) || resolve(absolute) !== absolute) {
+      return null;
+    }
+    return absolute;
+  }
+
+  async exists(relativePath: string): Promise<boolean> {
+    const absolute = this.resolvePath(relativePath);
+    if (!absolute) return false;
+    try {
+      await stat(absolute);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Read a stored file back as plaintext.
+   *
+   * Throws `VaultLockedError` when the archive is locked, so callers can answer
+   * with "sign in" rather than a broken image. Files written before encryption
+   * existed are returned as-is.
+   */
+  async read(relativePath: string): Promise<Buffer | null> {
+    const absolute = this.resolvePath(relativePath);
+    if (!absolute) return null;
+
+    let raw: Buffer;
+    try {
+      raw = await readFile(absolute);
+    } catch {
+      return null;
+    }
+
+    if (!Vault.isEncrypted(raw)) return raw;
+
+    try {
+      return this.vault.decrypt(raw);
+    } catch (error) {
+      // A locked vault is a different problem from a file we will never be able
+      // to read, and the caller needs to tell the user which one it is.
+      if (error instanceof VaultLockedError) throw error;
+      throw new ArchiveUnreadableError();
+    }
+  }
+
+  /**
+   * Whether a file is already there *and* this install can read it.
+   *
+   * Archive paths are content-addressed, so the same picture always lands at
+   * the same path and identical bytes are stored once. That shortcut assumed
+   * an existing file belongs to us, and after a clean start it does not: the
+   * archive is deliberately kept while the database is thrown away, so the new
+   * database has a new master key and every file already there was encrypted
+   * under the old one. Keeping such a file and recording a row that points at
+   * it produces an image that can never be decrypted — for a picture the user
+   * has right there on disk and is importing precisely to keep.
+   *
+   * So the existence check is a *readability* check, and anything we cannot
+   * read is written over with the copy we were just handed.
+   */
+  private async readable(relativePath: string): Promise<boolean> {
+    try {
+      return (await this.read(relativePath)) !== null;
+    } catch {
+      // Locked or undecryptable. Locked never gets here — the caller checks
+      // first — so this is the stale-ciphertext case, and it must be rewritten.
+      return false;
+    }
+  }
+
+  private async writeEncrypted(relativePath: string, plaintext: Buffer): Promise<void> {
+    const absolute = this.resolvePath(relativePath);
+    if (!absolute) throw new Error('Refusing to write outside the archive directory');
+    await mkdir(dirname(absolute), { recursive: true });
+    await writeFile(absolute, this.vault.encrypt(plaintext));
+  }
+
+  /** Date-sharded so a long-lived archive is not one enormous directory. */
+  private pathFor(hash: string, extension: string, suffix = ''): string {
+    const now = new Date();
+    return join(
+      String(now.getUTCFullYear()),
+      String(now.getUTCMonth() + 1).padStart(2, '0'),
+      `${hash}${suffix}${extension}`,
+    );
+  }
+
+  /**
+   * Store image bytes, with a thumbnail alongside them.
+   *
+   * The thumbnail is made here, always. It used to prefer whatever ComfyUI
+   * answered `preview=webp;70` with, on the belief that it had already done the
+   * resizing — it has not. That endpoint re-encodes and moves not one pixel, so
+   * what got filed as the thumbnail of a 4000×4000 picture was a 4000×4000
+   * webp, and it passed the "smaller than the original" check every time
+   * because webp is always smaller than PNG at the same size.
+   */
+  async storeBytes(imageId: number, filename: string, data: Buffer): Promise<StoredImage> {
+    if (!this.vault.isUnlocked) throw new VaultLockedError();
+
+    const hash = createHash('sha256').update(data).digest('hex');
+    const extension = (extname(filename) || '.png').toLowerCase();
+    const path = this.pathFor(hash, extension);
+
+    if (!(await this.readable(path))) {
+      await this.writeEncrypted(path, data);
+    }
+
+    const size = readImageSize(data);
+
+    const generated = makeThumbnail(data, THUMBNAIL_SIZE);
+    const thumbnail = generated?.data ?? null;
+
+    let thumbPath: string | null = null;
+    let thumbBytes: number | null = null;
+    if (thumbnail && thumbnail.length > 0) {
+      thumbPath = this.pathFor(hash, '.png', '_t');
+      if (!(await this.readable(thumbPath))) {
+        await this.writeEncrypted(thumbPath, thumbnail);
+      }
+      thumbBytes = thumbnail.length;
+    }
+
+    const stored: StoredImage = {
+      path,
+      bytes: data.length,
+      thumbPath,
+      thumbBytes,
+      width: size?.width ?? null,
+      height: size?.height ?? null,
+    };
+
+    this.store.setImageArchive(imageId, {
+      path: stored.path,
+      bytes: stored.bytes,
+      encrypted: true,
+      thumbPath: stored.thumbPath,
+      thumbBytes: stored.thumbBytes,
+      width: stored.width,
+      height: stored.height,
+    });
+
+    return stored;
+  }
+
+  /**
+   * Fetch an image from ComfyUI and store it locally, thumbnail and all.
+   * Idempotent: bytes already present are not downloaded twice.
+   */
+  async capture(client: ComfyClient, imageId: number, ref: ComfyImageRef): Promise<StoredImage> {
+    const response = await client.view(ref);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    // One download, not two: the second one used to ask for `preview=` in the
+    // belief that it came back resized, and it never did.
+    return this.storeBytes(imageId, ref.filename, buffer);
+  }
+
+  /**
+   * Drop an archived copy, unless another image row still points at the same
+   * content-addressed file.
+   */
+  async forget(imageId: number, row: Pick<ImageRow, 'archived_path' | 'thumb_path'>): Promise<void> {
+    const { archived_path: archivedPath, thumb_path: thumbPath } = row;
+    this.store.clearImageArchive(imageId);
+
+    for (const path of [archivedPath, thumbPath]) {
+      if (!path) continue;
+      if (this.store.archivePathInUseElsewhere(path, imageId)) continue;
+      const absolute = this.resolvePath(path);
+      if (absolute) await rm(absolute, { force: true });
+    }
+  }
+
+  /** Remove archived copies of images nobody rated. Returns how many went. */
+  async pruneUnrated(): Promise<number> {
+    let removed = 0;
+    for (const row of this.store.listUnratedArchived()) {
+      if (!row.archived_path) continue;
+      await this.forget(row.id, row);
+      removed += 1;
+    }
+    return removed;
+  }
+}
