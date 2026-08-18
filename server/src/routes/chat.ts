@@ -16,7 +16,7 @@ import {
   LlamaError,
   looksLikeAQuestionWithOptions,
 } from '../chat/llama.js';
-import { loadReviewImage } from '../chat/reviewImage.js';
+import { loadConversationPictures, loadReviewImage } from '../chat/reviewImage.js';
 import type { ConnectionConfig } from '../comfy/connection.js';
 import { toConfig } from './connections.js';
 import type { AppContext } from './context.js';
@@ -418,6 +418,20 @@ async function streamReply(
    * proposed at all.
    */
   const settings = ctx.store.getSettings().chat;
+
+  /*
+   * And the pictures stay in front of it afterwards.
+   *
+   * "Make the sky darker" is meaningless to a model that saw the render once,
+   * two turns ago, and has been working from its own description of it ever
+   * since — every change after that compounds the description rather than the
+   * picture. So the last few renders go back with every turn, and both sides of
+   * the conversation are looking at the same thing.
+   */
+  const pictures = settings.review.enabled
+    ? await loadConversationPictures(ctx, chat.messages, settings.review.keepInView)
+    : new Map<string, string>();
+
   const review =
     !force && afterGeneration && settings.review.enabled && last?.generationId && last.prompt
       ? await loadReviewImage(ctx, last.generationId).then((image) =>
@@ -426,6 +440,8 @@ async function streamReply(
                 dataUrl: image.dataUrl,
                 prompt: last.prompt as string,
                 threshold: settings.review.threshold,
+                // Already the message above, unless nothing is kept in view.
+                inHistory: pictures.has(last.id),
               }
             : null,
         )
@@ -437,6 +453,7 @@ async function streamReply(
       ...(force ? { force } : {}),
       ...(!force && afterGeneration ? { withoutTools: true } : {}),
       ...(review ? { review } : {}),
+      ...(pictures.size > 0 ? { pictures } : {}),
     })) {
       if (event.type === 'content') message.content += event.text;
       if (event.type === 'thinking') thinking += event.text;
@@ -525,7 +542,8 @@ async function* streamWithFallback(
   messages: ChatMessage[],
   options: Parameters<LlamaClient['stream']>[1],
 ): AsyncGenerator<ChatStreamEvent> {
-  if (!options?.review) {
+  const carriesPictures = Boolean(options?.review) || (options?.pictures?.size ?? 0) > 0;
+  if (!carriesPictures) {
     yield* client.stream(messages, options);
     return;
   }
@@ -537,9 +555,11 @@ async function* streamWithFallback(
       yield event;
     }
   } catch (error) {
-    if (started || options.signal?.aborted) throw error;
-    const { review: _review, ...rest } = options;
-    yield* client.stream(messages, { ...rest, withoutTools: true });
+    if (started || options?.signal?.aborted) throw error;
+    // Every picture goes, not just the one being judged: a server that refuses
+    // an image refuses all of them, wherever in the conversation they sit.
+    const { review: _review, pictures: _pictures, ...rest } = options ?? {};
+    yield* client.stream(messages, { ...rest, ...(options?.review ? { withoutTools: true } : {}) });
   }
 }
 

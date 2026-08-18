@@ -4670,7 +4670,9 @@ describe('chat', () => {
       // Back to the default, so the tests after this one see what they expect.
       await api('/api/settings', {
         method: 'PATCH',
-        body: JSON.stringify({ chat: { review: { enabled: true, threshold: 'balanced' } } }),
+        body: JSON.stringify({
+          chat: { review: { enabled: true, threshold: 'balanced', keepInView: 2 } },
+        }),
       });
     });
 
@@ -4704,17 +4706,30 @@ describe('chat', () => {
 
         const { sent, last } = lastTurn(llama);
 
-        // The picture goes over as a picture, beside the question about it.
-        expect(last.role).toBe('user');
-        const parts = last.content as { type: string; text?: string; image_url?: { url: string } }[];
-        expect(Array.isArray(parts)).toBe(true);
+        /*
+         * The picture goes over as a picture, at the point it was made — not
+         * appended to the question about it. Where it sits is what makes it
+         * still there two turns later, when the change is asked for.
+         */
+        const shown = sent.messages.filter((message) =>
+          JSON.stringify(message.content).includes('image_url'),
+        );
+        expect(shown).toHaveLength(1);
+        const parts = shown[0]!.content as {
+          type: string;
+          text?: string;
+          image_url?: { url: string };
+        }[];
         expect(parts[0]?.image_url?.url.startsWith('data:image/png;base64,')).toBe(true);
         // Small enough to be worth prefilling: a render is not sent whole.
         expect(parts[0]!.image_url!.url.length).toBeLessThan(1_500_000);
-
-        // And the prompt with it, in full, rather than a pointer to it.
         expect(parts[1]?.text).toContain('a harbour at dawn, soft light');
-        expect(parts[1]?.text).toContain('out of 10');
+
+        // And the question about it is the turn that ends the request, with the
+        // prompt in full rather than a pointer to it.
+        expect(last.role).toBe('user');
+        expect(String(last.content)).toContain('a harbour at dawn, soft light');
+        expect(String(last.content)).toContain('out of 10');
 
         // One tool on that turn: a rewrite. Not a fresh proposal on top of a
         // picture nobody has looked at yet.
@@ -4733,6 +4748,201 @@ describe('chat', () => {
         const proposal = stored.messages[stored.messages.length - 1];
         expect(proposal?.toolCall?.tool).toBe('revise_prompt');
         expect(proposal?.toolResult).toBeUndefined();
+      } finally {
+        await llama.close();
+      }
+    }, 60_000);
+
+    /**
+     * A group of settings keeps the fields the patch did not mention.
+     *
+     * The chat's settings have groups of their own now, and a client patching
+     * one of them sends the fields it knows about. Before this, the rest came
+     * back `undefined` — which for "how many pictures to keep in view" meant
+     * every picture in the conversation, re-read on every turn.
+     */
+    it('keeps the rest of a settings group when part of it is patched', async () => {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: { review: { enabled: true, threshold: 'balanced', keepInView: 3 } },
+        }),
+      });
+
+      // As a client that predates the field would send it.
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { review: { enabled: true, threshold: 'strict' } } }),
+      });
+
+      const settings = await json<{ chat: ChatSettings }>(api('/api/settings'));
+      expect(settings.chat.review.threshold).toBe('strict');
+      expect(settings.chat.review.keepInView).toBe(3);
+    });
+
+    /**
+     * The picture is still there when the change is asked for.
+     *
+     * The point of keeping it in view: "make the sky darker" means nothing to a
+     * model working from its own description of a render it saw two turns ago.
+     */
+    it('keeps the picture in the conversation after the turn that judged it', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            chat: { review: { enabled: true, threshold: 'never', keepInView: 2 } },
+          }),
+        });
+
+        const chatId = await upToAPicture(llama, 'a harbour at dawn');
+
+        llama.script({ content: 'The light came through.' });
+        await readStream(
+          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
+        );
+
+        // Two turns later, with something else said in between.
+        llama.script({ content: 'Darker it is.' });
+        await readStream(
+          await api(`/api/chat/conversations/${chatId}/messages`, {
+            method: 'POST',
+            body: JSON.stringify({ content: 'make the sky darker' }),
+          }),
+        );
+
+        const { sent, last } = lastTurn(llama);
+        // Still in front of it, and still where it happened rather than piled
+        // onto the end.
+        expect(JSON.stringify(sent.messages)).toContain('image_url');
+        expect(String(last.content)).toBe('make the sky darker');
+        expect(JSON.stringify(last.content)).not.toContain('image_url');
+      } finally {
+        await llama.close();
+      }
+    }, 60_000);
+
+    /**
+     * A few, not all of them.
+     *
+     * Every picture in view is prefill on every turn from then on, so a long
+     * session would spend its time re-reading its own back catalogue.
+     */
+    it('keeps only as many pictures as the setting allows', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            chat: { review: { enabled: true, threshold: 'never', keepInView: 1 } },
+          }),
+        });
+
+        const chatId = await upToAPicture(llama, 'a harbour at dawn');
+        llama.script({ content: 'Right.' });
+        await readStream(
+          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
+        );
+
+        // A second prompt, accepted and rendered, in the same conversation.
+        llama.script({
+          toolCall: {
+            name: 'build_prompt',
+            arguments: { prompt: 'the same harbour at noon', reason: 'Brighter.' },
+          },
+        });
+        const events = await readStream(
+          await api(`/api/chat/conversations/${chatId}/messages`, {
+            method: 'POST',
+            body: JSON.stringify({ content: 'now at noon' }),
+          }),
+        );
+        const messageId = events.find(
+          (event): event is { type: 'done'; messageId: string } => event.type === 'done',
+        )?.messageId;
+        const second = await render('the same harbour at noon');
+        await api(`/api/chat/conversations/${chatId}/tool`, {
+          method: 'POST',
+          body: JSON.stringify({
+            messageId,
+            decision: 'accepted',
+            generationId: second,
+            prompt: 'the same harbour at noon',
+          }),
+        });
+
+        llama.script({ content: 'Brighter indeed.' });
+        await readStream(
+          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
+        );
+
+        const { sent } = lastTurn(llama);
+        const shown = sent.messages.filter((message) =>
+          JSON.stringify(message.content).includes('image_url'),
+        );
+        // One picture, and it is the one that goes with the newest prompt.
+        expect(shown).toHaveLength(1);
+        expect(JSON.stringify(shown[0]?.content)).toContain('the same harbour at noon');
+      } finally {
+        await llama.close();
+      }
+    }, 90_000);
+
+    /**
+     * Refusing a rewrite is an ordinary turn.
+     *
+     * The tool response for a refused call carries no run, so the turn after it
+     * is a normal one again — tools back, no picture to judge — and the
+     * conversation carries on rather than waiting on a decision already made.
+     */
+    it('carries on after a rewrite is refused', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            chat: { review: { enabled: true, threshold: 'balanced', keepInView: 2 } },
+          }),
+        });
+
+        const chatId = await upToAPicture(llama, 'a harbour at dawn');
+
+        llama.script({
+          content: 'No harbour.',
+          toolCall: {
+            name: 'revise_prompt',
+            arguments: { prompt: 'a working harbour at dawn', reason: 'Missing.', score: 4 },
+          },
+        });
+        const events = await readStream(
+          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
+        );
+        const messageId = events.find(
+          (event): event is { type: 'done'; messageId: string } => event.type === 'done',
+        )?.messageId;
+        expect(messageId).toBeTruthy();
+
+        const rejected = await api(`/api/chat/conversations/${chatId}/tool`, {
+          method: 'POST',
+          body: JSON.stringify({ messageId, decision: 'rejected' }),
+        });
+        expect(rejected.status).toBe(200);
+
+        llama.script({ content: 'Fair enough.' });
+        const after = await readStream(
+          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
+        );
+        expect(after.some((event) => event.type === 'done')).toBe(true);
       } finally {
         await llama.close();
       }
@@ -4763,8 +4973,8 @@ describe('chat', () => {
           await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
         );
 
-        const { sent, last } = lastTurn(llama);
-        expect(JSON.stringify(last.content)).toContain('image_url');
+        const { sent } = lastTurn(llama);
+        expect(JSON.stringify(sent.messages)).toContain('image_url');
         expect(sent.tools).toBeUndefined();
       } finally {
         await llama.close();

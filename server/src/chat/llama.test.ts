@@ -466,3 +466,89 @@ describe('checking a picture against its prompt', () => {
     expect(text).toMatch(/Do NOT propose/);
   });
 });
+
+/**
+ * Where a render sits in what the model is shown.
+ *
+ * At the point it was made, as a turn of its own — not appended to the end.
+ * "The first one was better" only means anything if the two are in the order
+ * they happened, and a picture at the end of the request is a picture with no
+ * prompt attached to it.
+ */
+describe('pictures in the replayed conversation', () => {
+  const withRender: ChatMessage[] = [
+    { id: 'u1', role: 'user', content: 'build me a prompt', createdAt: 1 },
+    {
+      id: 'a1',
+      role: 'assistant',
+      content: '',
+      toolCall: {
+        callId: 'call_1',
+        tool: 'build_prompt',
+        prompt: 'a harbour at dawn',
+        reason: 'Calm.',
+      },
+      createdAt: 2,
+    },
+    {
+      id: 't1',
+      role: 'tool',
+      content: 'The user accepted the prompt.',
+      toolCall: {
+        callId: 'call_1',
+        tool: 'build_prompt',
+        prompt: 'a harbour at dawn',
+        reason: 'Calm.',
+      },
+      generationId: 'gen-1',
+      prompt: 'a harbour at dawn',
+      createdAt: 3,
+    },
+    { id: 'u2', role: 'user', content: 'make the sky darker', createdAt: 4 },
+  ];
+
+  it('puts the picture in after the message that made it', () => {
+    const out = toApiMessages(withRender, 'system', new Map([['t1', 'data:image/png;base64,AAA']]));
+
+    const at = out.findIndex((message) => JSON.stringify(message.content).includes('image_url'));
+    expect(at).toBeGreaterThan(0);
+    // Straight after the tool response, and before what was said next.
+    expect(out[at - 1]?.role).toBe('tool');
+    expect(out[at]?.role).toBe('user');
+    expect(out[at + 1]?.content).toBe('make the sky darker');
+
+    // With the prompt beside it, so the picture is not a picture of nothing.
+    expect(JSON.stringify(out[at]?.content)).toContain('a harbour at dawn');
+  });
+
+  it('sends no picture when there is none to send', () => {
+    const out = toApiMessages(withRender, 'system');
+    expect(JSON.stringify(out)).not.toContain('image_url');
+  });
+
+  /**
+   * A re-run is Latent's own bookkeeping and never a turn in the conversation
+   * — but the picture it produced is a picture, and a model that is never
+   * shown it will be asked to change something it does not know exists.
+   */
+  it('shows what a re-run produced, without inventing a turn for it', () => {
+    const messages: ChatMessage[] = [
+      ...withRender,
+      {
+        id: 'n1',
+        role: 'note',
+        content: 'Generated again',
+        generationId: 'gen-2',
+        prompt: 'a harbour at dawn, colder',
+        createdAt: 5,
+      },
+    ];
+
+    const out = toApiMessages(messages, 'system', new Map([['n1', 'data:image/png;base64,BBB']]));
+    const shown = out.filter((message) => JSON.stringify(message.content).includes('image_url'));
+    expect(shown).toHaveLength(1);
+    expect(JSON.stringify(shown[0]?.content)).toContain('colder');
+    // And the note itself is still not said out loud.
+    expect(JSON.stringify(out)).not.toContain('Generated again');
+  });
+});

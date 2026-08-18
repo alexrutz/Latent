@@ -114,6 +114,11 @@ export function createMockLlama(
     get requests() {
       return seen;
     },
+    /** Forget what was queued and what was seen, between tests. */
+    reset() {
+      replies.length = 0;
+      seen.length = 0;
+    },
     async listen(port = 0): Promise<string> {
       await app.listen({ port, host: '127.0.0.1' });
       const address = app.server.address();

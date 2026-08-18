@@ -1395,14 +1395,30 @@ export type ReviewThreshold =
  */
 export interface ChatReviewSettings {
   /**
-   * Show the finished picture to the model at all. On by default.
+   * Show the model the pictures it makes at all. On by default.
    *
    * Off for a text-only model, or when the extra wait per picture is not worth
-   * it. With it off the turn after a picture is what it always was: a sentence
-   * about a render the model has not seen.
+   * it. With it off the conversation is what it always was: a model that has
+   * written prompts and never seen a single result of one.
    */
   enabled: boolean;
   threshold: ReviewThreshold;
+  /**
+   * How many of the most recent pictures stay in the model's view.
+   *
+   * Not just the moment it is made. "Make the sky darker" means nothing to a
+   * model that saw the picture once, two turns ago, and is now working from its
+   * own description of it — every subsequent change compounds that description
+   * instead of the actual result. So the last few renders are sent with every
+   * turn, and the conversation is about something both of you can see.
+   *
+   * A few rather than all of them, because each one is prefill: a picture is
+   * on the order of a thousand tokens before the model says anything, and a
+   * long session would spend most of its time re-reading its own back
+   * catalogue. Two is enough for "that one was better than this one". `0`
+   * keeps the picture only for the turn where it is judged.
+   */
+  keepInView: number;
 }
 
 /**

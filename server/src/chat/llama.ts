@@ -429,12 +429,56 @@ interface OpenAiMessage {
  * it asks for it not to be fed back — it is working, not record — and including
  * it wastes the context window on a phone-sized conversation.
  */
-export function toApiMessages(messages: ChatMessage[], systemPrompt: string): OpenAiMessage[] {
+export function toApiMessages(
+  messages: ChatMessage[],
+  systemPrompt: string,
+  /**
+   * Renders to put back into the conversation, by the message that made them.
+   *
+   * Empty for a text-only server, and for the setting that keeps none in view.
+   * See `loadConversationPictures`: a model that saw a picture once, three
+   * turns ago, is working from its own description of it by the time anybody
+   * asks for a change.
+   */
+  pictures: Map<string, string> = new Map(),
+): OpenAiMessage[] {
   const out: OpenAiMessage[] = [{ role: 'system', content: systemPrompt }];
 
+  /**
+   * The picture that message produced, as a turn of its own.
+   *
+   * A user turn, because that is the only role every chat template renders an
+   * image in — and because it is true: here is what came out, look at it. It
+   * goes immediately after the message that started the run, so the order of
+   * the conversation is the order things actually happened in.
+   */
+  const showPicture = (message: ChatMessage): void => {
+    const dataUrl = pictures.get(message.id);
+    if (!dataUrl) return;
+    out.push({
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: dataUrl } },
+        {
+          type: 'text',
+          text: message.prompt
+            ? `This is what that prompt produced: "${message.prompt}"`
+            : 'This is the picture that produced.',
+        },
+      ],
+    });
+  };
+
   for (const message of messages) {
-    // Latent's own. See `ChatRole`: it is transcript, not conversation.
-    if (message.role === 'note') continue;
+    /*
+     * Latent's own. See `ChatRole`: it is transcript, not conversation — but
+     * the picture it points at is not, and a re-run the model is never told
+     * about is a picture it will be asked to change without knowing it exists.
+     */
+    if (message.role === 'note') {
+      showPicture(message);
+      continue;
+    }
 
     if (message.role === 'tool') {
       out.push({
@@ -442,6 +486,7 @@ export function toApiMessages(messages: ChatMessage[], systemPrompt: string): Op
         tool_call_id: message.toolCall?.callId ?? 'unknown',
         content: message.content,
       });
+      showPicture(message);
       continue;
     }
 
@@ -566,7 +611,7 @@ export function reviewInstruction(prompt: string, threshold: ReviewThreshold): s
   const { score, standard } = REVIEW_THRESHOLDS[threshold];
 
   const lines = [
-    'This is the picture that prompt produced. Compare it with the prompt and say how well ' +
+    'Look at the picture that prompt produced. Compare it with the prompt and say how well ' +
       'it was carried out.',
     '',
     'The prompt was:',
@@ -620,6 +665,8 @@ export interface ReviewTurn {
   /** The prompt it was made from, repeated so it need not be hunted for. */
   prompt: string;
   threshold: ReviewThreshold;
+  /** True when the history already carries it, so it is not sent twice. */
+  inHistory: boolean;
 }
 
 /**
@@ -631,13 +678,27 @@ export interface ReviewTurn {
  * make of it.
  */
 function reviewTurn(review: ReviewTurn): OpenAiMessage {
-  return {
-    role: 'user',
-    content: [
-      { type: 'image_url', image_url: { url: review.dataUrl } },
-      { type: 'text', text: reviewInstruction(review.prompt, review.threshold) },
-    ],
-  };
+  const instruction = reviewInstruction(review.prompt, review.threshold);
+
+  /*
+   * The picture only when it is not already there.
+   *
+   * With renders kept in view it is the message immediately above this one, and
+   * sending it twice is a second thousand tokens of prefill for a model that is
+   * looking at the same thing. With none kept — the setting that says "only
+   * while you judge it" — this turn is the one place it appears.
+   */
+  if (!review.inHistory) {
+    return {
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: review.dataUrl } },
+        { type: 'text', text: instruction },
+      ],
+    };
+  }
+
+  return { role: 'user', content: instruction };
 }
 
 /** Plain text when there are no pictures, so a text-only model is unbothered. */
@@ -742,6 +803,8 @@ export class LlamaClient {
        * prompt. Only ever set for the turn straight after a render.
        */
       review?: ReviewTurn;
+      /** Renders to keep in the conversation; see `toApiMessages`. */
+      pictures?: Map<string, string>;
     } = {},
   ): AsyncGenerator<ChatStreamEvent> {
     /*
@@ -771,6 +834,7 @@ export class LlamaClient {
     const history = toApiMessages(
       messages,
       (this.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT) + toolPolicy(this.settings.tools),
+      options.pictures,
     );
     // A forced call needs a turn of its own to answer; see the comment there.
     const conversation = options.force

@@ -65,8 +65,10 @@ form. Nothing about your ComfyUI setup changes.
   finished picture goes back to the chat with the prompt beside it: it says how
   much of the prompt actually came through and — below a perfectionism threshold
   you set, next to the other tool settings — proposes a rewritten prompt to fix
-  what did not. See [Checking the picture against the
-  prompt](#checking-the-picture-against-the-prompt).
+  what did not. See [The model sees what it
+  made](#the-model-sees-what-it-made). The last couple of renders stay in the
+  conversation, so “make the sky darker” lands on the picture rather than on its
+  own description of it.
 - **Favourites.** Keep an image together with the settings that made it, rate
   those separately, and generate more like it in one tap. Opening one gives the
   gallery's own viewer — the same rating, keep, save, reuse and details actions,
@@ -922,7 +924,7 @@ turn waits for the run to finish, with a line in the transcript saying so. Both
 hold while you are elsewhere in the app; the conversation lives outside the
 screen that shows it.
 
-### Checking the picture against the prompt
+### The model sees what it made
 
 That turn used to be the model talking about a render it had never seen —
 confidently, because that is what these models do. Most model servers worth
@@ -930,10 +932,20 @@ running are multimodal, so **the finished picture is handed back to it**, with
 the prompt beside it, and the reply becomes a judgement it is in a position to
 make: what came through, what did not.
 
+**And it stays in front of it.** The picture is not shown once and taken away:
+the last couple of renders go back with every turn, in the place they happened.
+That is what makes the next sentence work — *make the sky darker*, *keep this
+one but move the boat* — because otherwise the model is changing its own
+description of a picture it saw two turns ago, and every change after that
+compounds the description rather than the result. **Pictures it keeps in view**
+in Settings → Chat sets how many: none, the last one, up to the last four. Two
+by default, because each one is prefill on every turn from then on and a long
+session should not spend its time re-reading its own back catalogue.
+
 On by default, and switchable off in Settings → Chat for a text-only server or
 when the extra wait per picture is not worth it. A server that cannot take an
-image is not an error either: the turn is asked again without the picture, which
-is exactly what it was before this existed.
+image is not an error either: the turn is asked again without any pictures,
+which is exactly what it was before this existed.
 
 **How picky it is, is yours to set.** Under the same tool settings — because it
 is the same kind of decision, how much the model does on its own — a line of

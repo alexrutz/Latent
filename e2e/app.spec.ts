@@ -2659,6 +2659,34 @@ test.describe('the chat module', () => {
     }
   };
 
+  /**
+   * Throw away anything a previous test queued or sent.
+   *
+   * The scripted replies are a queue on the mock, so a test that ends before
+   * consuming what it scripted hands its leftovers to whichever test runs next
+   * — which then reads a reply meant for something else and fails for a reason
+   * that has nothing to do with it. One failure became fourteen that way.
+   */
+  const resetLlama = async () => {
+    const context = await apiRequest.newContext({ baseURL: LLAMA });
+    try {
+      await context.post('/__reset');
+    } finally {
+      await context.dispose();
+    }
+  };
+
+  /** The whole of the last request, for asserting on what was sent. */
+  const lastRequest = async (): Promise<string> => {
+    const context = await apiRequest.newContext({ baseURL: LLAMA });
+    try {
+      const sent = (await (await context.get('/__requests')).json()) as unknown[];
+      return JSON.stringify(sent.at(-1) ?? {});
+    } finally {
+      await context.dispose();
+    }
+  };
+
   /** Which tools the last request actually put in front of the model. */
   const lastOffer = async (): Promise<string[]> => {
     const context = await apiRequest.newContext({ baseURL: LLAMA });
@@ -2692,6 +2720,7 @@ test.describe('the chat module', () => {
 
   test.beforeEach(async () => {
     await resetState();
+    await resetLlama();
     await useLlama();
     // The whole chat block, not a patch of it: settings merge, so a test that
     // switches a tool off would otherwise leave it off for everything after it.
@@ -2713,7 +2742,7 @@ test.describe('the chat module', () => {
             // Off unless the test is about it: every render would otherwise be
             // followed by a turn carrying a picture, which is a different reply
             // from the one most of these are asserting on.
-            review: { enabled: false, threshold: 'balanced' },
+            review: { enabled: false, threshold: 'balanced', keepInView: 2 },
           },
         },
       }),
@@ -2895,25 +2924,30 @@ test.describe('the chat module', () => {
     // The picture went over as a picture, and the only tool on that turn was
     // the rewrite — not a fresh proposal on top of one nobody has looked at.
     expect(await lastOffer()).toEqual(['revise_prompt']);
-    const carried = await withApi(async () => {
-      const context = await apiRequest.newContext({ baseURL: LLAMA });
-      try {
-        const sent = (await (await context.get('/__requests')).json()) as {
-          messages: { content: unknown }[];
-        }[];
-        return JSON.stringify(sent.at(-1)?.messages?.at(-1) ?? {});
-      } finally {
-        await context.dispose();
-      }
-    });
-    expect(carried).toContain('image_url');
-    expect(carried).toContain('a harbour at dawn, soft light');
+    expect(await lastRequest()).toContain('image_url');
 
     // And it is a proposal: refusing it leaves the conversation where it was.
     await script({ content: 'Fair enough.' });
     await rewrite.getByRole('button', { name: 'Reject' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 30_000 });
     await expect(page.getByText('Proposed a rewrite')).toBeVisible();
+
+    /*
+     * And the picture is still there for the next thing said about it.
+     *
+     * The point of keeping it in view: "make the sky darker" has to land on the
+     * render rather than on the model's own description of one it saw two turns
+     * ago, which every change after that would compound.
+     */
+    await script({ content: 'Darker it is.' });
+    await page.getByPlaceholder('Say something…').fill('make the sky darker');
+    // Rejecting is itself a turn — the model is told — so the composer is busy
+    // for a moment afterwards, and a Send pressed then does nothing at all.
+    const send = page.getByRole('button', { name: 'Send' });
+    await expect(send).toBeEnabled({ timeout: 30_000 });
+    await send.click();
+    await expect(page.getByText('Darker it is.')).toBeVisible({ timeout: 30_000 });
+    expect(await lastRequest()).toContain('image_url');
   });
 
   /**

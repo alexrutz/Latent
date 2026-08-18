@@ -474,6 +474,39 @@ interface ChatMessageRow {
   created_at: number;
 }
 
+/**
+ * Stored settings over the defaults, one group deep.
+ *
+ * A group is stored as one JSON blob, and a blob written by an older version —
+ * or by a client patching part of it — simply does not have the fields added
+ * since. Filling those in from the defaults is what the top level always did;
+ * doing it one level further down is the same promise for a group that has
+ * groups of its own, which the chat's settings now do. Without it, adding a
+ * field means every existing install reads it as `undefined` and every caller
+ * has to defend against that separately.
+ *
+ * Deliberately not deeper, and never into arrays: a nested list is a value the
+ * user set, and merging defaults into it would resurrect entries they removed.
+ */
+function mergeSetting(defaults: object, stored: object): object {
+  const out: Record<string, unknown> = { ...defaults };
+
+  for (const [key, value] of Object.entries(stored)) {
+    const fallback = (defaults as Record<string, unknown>)[key];
+    const nested =
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      fallback !== null &&
+      typeof fallback === 'object' &&
+      !Array.isArray(fallback);
+
+    out[key] = nested ? { ...(fallback as object), ...(value as object) } : value;
+  }
+
+  return out;
+}
+
 /** Settings held as a group under one key rather than as a single value. */
 function isObjectSetting(key: string): boolean {
   const value = (DEFAULT_SETTINGS as unknown as Record<string, unknown>)[key];
@@ -819,7 +852,7 @@ const DEFAULT_SETTINGS: AppSettings = {
      * genuinely absent. A stricter default would rewrite the prompt over a
      * shade of light and train you to ignore it.
      */
-    review: { enabled: true, threshold: 'balanced' },
+    review: { enabled: true, threshold: 'balanced', keepInView: 2 },
     generation: { workflowId: '', values: {} },
     imageSize: 3,
     promptButton: 'generate',
@@ -2405,10 +2438,10 @@ export class Store {
        * later version appears rather than being undefined.
        */
       if (isObjectSetting(row.key)) {
-        settings[row.key] = {
-          ...((DEFAULT_SETTINGS as unknown as Record<string, object>)[row.key] ?? {}),
-          ...parseJson<object>(row.value, {}),
-        };
+        settings[row.key] = mergeSetting(
+          (DEFAULT_SETTINGS as unknown as Record<string, object>)[row.key] ?? {},
+          parseJson<object>(row.value, {}),
+        );
         continue;
       }
       settings[row.key] = row.value === '' ? null : row.value;
@@ -2434,10 +2467,9 @@ export class Store {
       // Patched a field at a time, so setting the chat's model does not
       // silently reset which system prompt it uses.
       if (isObjectSetting(key)) {
-        upsert.run(
-          key,
-          JSON.stringify({ ...(current[key] as object), ...(value as object) }),
-        );
+        // One group deep, like the read side: patching the chat's review
+        // settings must not drop the fields of it the patch did not mention.
+        upsert.run(key, JSON.stringify(mergeSetting(current[key] as object, value as object)));
         continue;
       }
       upsert.run(key, value == null ? '' : String(value));

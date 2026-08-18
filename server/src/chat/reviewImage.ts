@@ -1,5 +1,5 @@
 import { mediaKindOf } from '@latent/shared';
-import type { GenerationRecord } from '@latent/shared';
+import type { ChatMessage, GenerationRecord } from '@latent/shared';
 
 import type { AppContext } from '../routes/context.js';
 
@@ -26,6 +26,28 @@ const REVIEW_EDGE = 768;
 /** Above this, an undecodable original is left alone rather than sent whole. */
 const MAX_RAW_BYTES = 4 * 1024 * 1024;
 
+/**
+ * Pictures already turned into something a model can read.
+ *
+ * A render never changes, and the same one is now sent on every turn for as
+ * long as it stays in view — so decoding, scaling and base64-ing it once per
+ * request would be work done again and again for a byte-identical answer.
+ * Small and oldest-first: this holds a handful of megabytes at most, and a
+ * conversation only ever looks at the end of it.
+ */
+const cache = new Map<string, string>();
+const CACHE_SLOTS = 8;
+
+function remember(key: string, dataUrl: string): string {
+  cache.set(key, dataUrl);
+  while (cache.size > CACHE_SLOTS) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+  return dataUrl;
+}
+
 export interface ReviewImage {
   /** `data:image/png;base64,…`, ready to be a chat part. */
   dataUrl: string;
@@ -43,6 +65,9 @@ export async function loadReviewImage(
   ctx: AppContext,
   generationId: string,
 ): Promise<ReviewImage | null> {
+  const held = cache.get(generationId);
+  if (held) return { dataUrl: held };
+
   const record: GenerationRecord | null = ctx.store.getGeneration(generationId);
   if (!record || record.status !== 'completed') return null;
 
@@ -61,7 +86,9 @@ export async function loadReviewImage(
   if (mediaKindOf(image.filename) === 'video') {
     if (!row?.thumb_path) return null;
     const poster = await ctx.archive.read(row.thumb_path).catch(() => null);
-    return poster ? { dataUrl: toDataUrl(poster, 'image/png') } : null;
+    return poster
+      ? { dataUrl: remember(generationId, toDataUrl(poster, 'image/png')) }
+      : null;
   }
 
   /** The bytes, from wherever this picture lives. */
@@ -89,7 +116,9 @@ export async function loadReviewImage(
     }, null)
     .catch(() => null);
 
-  if (rendered) return { dataUrl: toDataUrl(rendered.data, rendered.contentType) };
+  if (rendered) {
+    return { dataUrl: remember(generationId, toDataUrl(rendered.data, rendered.contentType)) };
+  }
 
   /*
    * Undecodable here — a JPEG, or a PNG shape the decoder does not handle.
@@ -97,7 +126,54 @@ export async function loadReviewImage(
    * a twenty-megabyte one is not, so that is where this stops.
    */
   if (original.length > MAX_RAW_BYTES) return null;
-  return { dataUrl: toDataUrl(original, guessType(image.filename)) };
+  return { dataUrl: remember(generationId, toDataUrl(original, guessType(image.filename))) };
+}
+
+/**
+ * The pictures this conversation should still have in front of it.
+ *
+ * Keyed by the message that produced each one, so the history can put it back
+ * where it happened rather than piling every render at the end — "the first one
+ * was better" only means something if the two are in the order they were made.
+ *
+ * Only the last few, newest first in what it looks for and oldest first in what
+ * it returns. Every one of them is prefill on every turn from now on, which is
+ * the whole reason this is a number and not "all of them".
+ */
+export async function loadConversationPictures(
+  ctx: AppContext,
+  messages: ChatMessage[],
+  limit: number,
+): Promise<Map<string, string>> {
+  const pictures = new Map<string, string>();
+  /*
+   * A number, or nothing at all.
+   *
+   * Settings arrive from a client patch and from a stored blob written by an
+   * older version, so this can be `undefined` — and `slice(-undefined)` is
+   * `slice(NaN)`, which is every picture in the conversation, loaded and
+   * scaled and base64-ed on every single turn. None is the safe reading of a
+   * number nobody set.
+   */
+  const keep = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 0;
+  if (keep <= 0) return pictures;
+
+  const carrying = messages.filter(
+    (message) =>
+      typeof message.generationId === 'string' &&
+      message.generationId !== '' &&
+      (message.role === 'tool' || message.role === 'note'),
+  );
+
+  // Walked from the end, because what is worth having is what just happened.
+  const wanted = carrying.slice(-keep);
+
+  for (const message of wanted) {
+    const image = await loadReviewImage(ctx, message.generationId as string);
+    if (image) pictures.set(message.id, image.dataUrl);
+  }
+
+  return pictures;
 }
 
 function toDataUrl(bytes: Buffer, contentType: string): string {
