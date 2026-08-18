@@ -806,6 +806,20 @@ const DEFAULT_SETTINGS: AppSettings = {
        */
       ask_user: 'always',
     },
+    /*
+     * The picture is shown back to the model, and it is picky about it.
+     *
+     * On by default because the alternative is worse in a way that is easy to
+     * miss: the turn after a render used to be the model talking confidently
+     * about a picture it had never seen. Most model servers worth running are
+     * multimodal, and the ones that are not fall back to that same turn without
+     * the picture rather than failing.
+     *
+     * `balanced`, because the useful proposal is the one that names something
+     * genuinely absent. A stricter default would rewrite the prompt over a
+     * shade of light and train you to ignore it.
+     */
+    review: { enabled: true, threshold: 'balanced' },
     generation: { workflowId: '', values: {} },
     imageSize: 3,
     promptButton: 'generate',

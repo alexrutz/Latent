@@ -103,6 +103,7 @@ async function testLlama(config: ConnectionConfig): Promise<ConnectionTestResult
     thinking: false,
     systemPromptId: null,
     tools: { prompt_blocks: 'off', build_prompt: 'off', ask_user: 'off' },
+    review: { enabled: false, threshold: 'never' },
     generation: { workflowId: '', values: {} },
     imageSize: 3,
     promptButton: 'dialog',

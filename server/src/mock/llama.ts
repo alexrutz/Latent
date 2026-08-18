@@ -22,7 +22,20 @@ export interface ScriptedReply {
   toolCall?: { name: string; arguments: unknown };
 }
 
-export function createMockLlama(options: { logLevel?: string } = {}) {
+export function createMockLlama(
+  options: {
+    logLevel?: string;
+    /**
+     * Answer a request carrying a picture with an error, as a text-only build does.
+     *
+     * `llama-server` started without a vision projector does not ignore an
+     * image part — it refuses the request. That is the case worth having in a
+     * test, because showing the model the finished picture is on by default:
+     * whatever happens here happens to somebody who never asked for it.
+     */
+    refuseImages?: boolean;
+  } = {},
+) {
   const app: FastifyInstance = Fastify({
     logger: { level: options.logLevel ?? 'silent' },
   });
@@ -35,7 +48,13 @@ export function createMockLlama(options: { logLevel?: string } = {}) {
   app.get('/v1/models', async () => ({ data: [{ id: 'mock-model' }] }));
 
   app.post('/v1/chat/completions', async (request, reply) => {
-    seen.push(request.body as Record<string, unknown>);
+    const body = request.body as Record<string, unknown>;
+    seen.push(body);
+
+    if (options.refuseImages && JSON.stringify(body.messages ?? []).includes('image_url')) {
+      return reply.code(400).send({ error: { message: 'this model does not support images' } });
+    }
+
     const script = replies.shift() ?? { content: 'All right.' };
 
     reply.raw.writeHead(200, {

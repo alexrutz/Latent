@@ -110,7 +110,10 @@ export function ToolDialog({
           </button>
         )}
 
-        {call.tool === 'build_prompt' ? (
+        {/* A revision is a prompt like any other, and the dialog it opens is
+            the same one: the same editing, the same workflow picker, the same
+            Generate. What differs is what it says about itself. */}
+        {call.tool === 'build_prompt' || call.tool === 'revise_prompt' ? (
           <BuildPromptBody
             call={call}
             settings={settings}
@@ -294,13 +297,15 @@ function BuildPromptBody({
   previousPrompt,
   autoAccept,
 }: {
-  call: Extract<ChatToolCall, { tool: 'build_prompt' }>;
+  call: Extract<ChatToolCall, { tool: 'build_prompt' | 'revise_prompt' }>;
   settings: AppSettings | null;
   onResolve: (decision: ToolDecision) => void | Promise<void>;
   revisit?: RevisitActions;
   previousPrompt: string;
   autoAccept: boolean;
 }) {
+  /** A second attempt at a prompt whose picture missed, rather than a first. */
+  const revised = call.tool === 'revise_prompt';
   const workflows = useVisibleWorkflows();
 
   /**
@@ -395,7 +400,8 @@ function BuildPromptBody({
 
       await onResolve({
         decision: 'accepted',
-        note: `The user accepted the prompt and queued it: "${prompt.slice(0, 200)}"`,
+        note: `The user accepted the ${revised ? 'revised ' : ''}prompt and queued it: ` +
+          `"${prompt.slice(0, 200)}"`,
         ...(generationId ? { generationId } : {}),
         // As edited, not as proposed: the transcript shows what actually ran.
         prompt,
@@ -462,6 +468,24 @@ function BuildPromptBody({
       </div>
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
+        {/*
+          What this is, when it is not the usual thing.
+
+          A rewrite arrives looking exactly like a first prompt, and the
+          difference matters: it exists because the last picture missed, and the
+          mark it was given is the reason there is a dialog here at all.
+        */}
+        {revised && (
+          <div className="flex items-baseline justify-between gap-2">
+            <p className="text-xs font-medium">After looking at the picture</p>
+            {typeof call.score === 'number' && (
+              <span className="shrink-0 rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted tabular-nums">
+                matched {call.score}/10
+              </span>
+            )}
+          </div>
+        )}
+
         {call.reason !== '' && <p className="text-xs text-muted">{call.reason}</p>}
 
         {/*

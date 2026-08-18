@@ -12,6 +12,7 @@ import {
   inlineReasoning,
   looksLikeAQuestionWithOptions,
   parseCall,
+  reviewInstruction,
   toApiMessages,
   toolPolicy,
   withForcedInstruction,
@@ -420,5 +421,48 @@ describe('asking for a prompt with the button', () => {
     const parts = out[out.length - 1]!.content as { type: string; text?: string }[];
     expect(parts.some((part) => part.type === 'image_url')).toBe(true);
     expect(parts.filter((part) => part.type === 'text')).toHaveLength(2);
+  });
+});
+
+/**
+ * What the model is asked when it is shown the picture.
+ *
+ * The threshold is the whole of the perfectionism setting, and it has to reach
+ * the model as something followable: a standard in words *and* a number to
+ * beat. Either one alone leaves "too far apart" to be decided fresh every time.
+ */
+describe('checking a picture against its prompt', () => {
+  const PROMPT = 'a working harbour at dawn, boats at the quay';
+
+  it('hands over the prompt in full, rather than pointing at it', () => {
+    const text = reviewInstruction(PROMPT, 'balanced');
+    expect(text).toContain(PROMPT);
+    expect(text).toContain('out of 10');
+    expect(text).toContain('revise_prompt');
+  });
+
+  it('raises the bar as the setting gets pickier', () => {
+    const scoreOf = (text: string) => Number(/below (\d+) out of 10/.exec(text)?.[1] ?? 0);
+
+    const wrong = scoreOf(reviewInstruction(PROMPT, 'wrong'));
+    const balanced = scoreOf(reviewInstruction(PROMPT, 'balanced'));
+    const exacting = scoreOf(reviewInstruction(PROMPT, 'exacting'));
+
+    expect(wrong).toBeLessThan(balanced);
+    expect(balanced).toBeLessThan(exacting);
+    expect(exacting).toBe(10);
+  });
+
+  /**
+   * The quiet end is a different instruction, not a lower number.
+   *
+   * "Look at it and tell me" without "and rewrite it" is a real way to work,
+   * and asking for a score of zero would read as an invitation to rewrite
+   * everything rather than nothing.
+   */
+  it('says plainly not to propose anything at the lowest setting', () => {
+    const text = reviewInstruction(PROMPT, 'never');
+    expect(text).not.toContain('revise_prompt');
+    expect(text).toMatch(/Do NOT propose/);
   });
 });

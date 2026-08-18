@@ -2710,6 +2710,10 @@ test.describe('the chat module', () => {
               prompt_blocks: 'settled',
               ask_user: 'settled',
             },
+            // Off unless the test is about it: every render would otherwise be
+            // followed by a turn carrying a picture, which is a different reply
+            // from the one most of these are asserting on.
+            review: { enabled: false, threshold: 'balanced' },
           },
         },
       }),
@@ -2829,6 +2833,87 @@ test.describe('the chat module', () => {
     await expect(viewer).toBeVisible();
     await viewer.click();
     await expect(viewer).toHaveCount(0);
+  });
+
+  /**
+   * Looking at what came out, and saying so.
+   *
+   * The turn after a render used to be the model talking about a picture it had
+   * never seen. Shown the result and the prompt together, it can say which
+   * parts arrived — and, when they are far enough apart, offer a rewrite that
+   * is a proposal like any other.
+   */
+  test('shows the finished picture to the model and offers its rewrite', async ({ page }) => {
+    await seedWorkflow();
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', {
+        data: { chat: { review: { enabled: true, threshold: 'balanced' } } },
+      }),
+    );
+
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a harbour at dawn, soft light', reason: 'Calm and blue.' },
+      },
+    });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('build me a prompt');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+
+    // What it says about the picture, and what it proposes instead.
+    await script({
+      content: 'The light is right, but there is no harbour in it.',
+      toolCall: {
+        name: 'revise_prompt',
+        arguments: {
+          prompt: 'a working harbour at dawn, boats at the quay, soft light',
+          reason: 'The harbour itself never appeared.',
+          score: 4,
+        },
+      },
+    });
+
+    await dialog.getByRole('button', { name: 'Generate' }).click();
+
+    // The rewrite arrives as its own dialog, once the render has finished and
+    // the model has been shown it.
+    const rewrite = page.getByRole('dialog');
+    await expect(rewrite.getByText('After looking at the picture')).toBeVisible({
+      timeout: 90_000,
+    });
+    await expect(rewrite.getByText('matched 4/10')).toBeVisible();
+    await expect(rewrite.getByRole('textbox', { name: 'The prompt' })).toHaveValue(
+      'a working harbour at dawn, boats at the quay, soft light',
+    );
+    await page.screenshot({ path: 'test-results/88-prompt-review.png' });
+
+    // The picture went over as a picture, and the only tool on that turn was
+    // the rewrite — not a fresh proposal on top of one nobody has looked at.
+    expect(await lastOffer()).toEqual(['revise_prompt']);
+    const carried = await withApi(async () => {
+      const context = await apiRequest.newContext({ baseURL: LLAMA });
+      try {
+        const sent = (await (await context.get('/__requests')).json()) as {
+          messages: { content: unknown }[];
+        }[];
+        return JSON.stringify(sent.at(-1)?.messages?.at(-1) ?? {});
+      } finally {
+        await context.dispose();
+      }
+    });
+    expect(carried).toContain('image_url');
+    expect(carried).toContain('a harbour at dawn, soft light');
+
+    // And it is a proposal: refusing it leaves the conversation where it was.
+    await script({ content: 'Fair enough.' });
+    await rewrite.getByRole('button', { name: 'Reject' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByText('Proposed a rewrite')).toBeVisible();
   });
 
   /**

@@ -16,6 +16,7 @@ import {
   LlamaError,
   looksLikeAQuestionWithOptions,
 } from '../chat/llama.js';
+import { loadReviewImage } from '../chat/reviewImage.js';
 import type { ConnectionConfig } from '../comfy/connection.js';
 import { toConfig } from './connections.js';
 import type { AppContext } from './context.js';
@@ -256,7 +257,9 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
 
     const { messageId, generationId, prompt } = request.body ?? {};
     const message = chat.messages.find((candidate) => candidate.id === messageId);
-    if (message?.toolCall?.tool !== 'build_prompt') {
+    const tool = message?.toolCall?.tool;
+    // A rewrite is a prompt too, and the commonest one to want again.
+    if (tool !== 'build_prompt' && tool !== 'revise_prompt') {
       return reply.code(404).send({ error: 'No such prompt' });
     }
 
@@ -404,11 +407,36 @@ async function streamReply(
   const last = chat.messages[chat.messages.length - 1];
   const afterGeneration = last?.role === 'tool' && Boolean(last.generationId);
 
+  /*
+   * And when it can be shown the picture, it is.
+   *
+   * That turn was always the model talking about a render it had never seen —
+   * confidently, because that is what these models do. Most model servers worth
+   * running are multimodal, so hand it the result and the prompt together and
+   * the sentence becomes a judgement it is in a position to make. The one tool
+   * it gets is a rewrite, and only when the setting says a rewrite may be
+   * proposed at all.
+   */
+  const settings = ctx.store.getSettings().chat;
+  const review =
+    !force && afterGeneration && settings.review.enabled && last?.generationId && last.prompt
+      ? await loadReviewImage(ctx, last.generationId).then((image) =>
+          image
+            ? {
+                dataUrl: image.dataUrl,
+                prompt: last.prompt as string,
+                threshold: settings.review.threshold,
+              }
+            : null,
+        )
+      : null;
+
   try {
-    for await (const event of client.stream(chat.messages, {
+    for await (const event of streamWithFallback(client, chat.messages, {
       signal: controller.signal,
       ...(force ? { force } : {}),
       ...(!force && afterGeneration ? { withoutTools: true } : {}),
+      ...(review ? { review } : {}),
     })) {
       if (event.type === 'content') message.content += event.text;
       if (event.type === 'thinking') thinking += event.text;
@@ -434,7 +462,6 @@ async function streamReply(
      * Conservative on purpose: it costs a second wait, so it only fires when
      * the reply both asks something and enumerates the answers.
      */
-    const settings = ctx.store.getSettings().chat;
     if (
       !force &&
       !message.toolCall &&
@@ -478,6 +505,41 @@ async function streamReply(
   } finally {
     await client.close();
     reply.raw.end();
+  }
+}
+
+/**
+ * The same turn, without the picture, if the picture is what it choked on.
+ *
+ * A model server with no vision projector answers an image part with an error
+ * rather than ignoring it, and the setting that put the picture there is on by
+ * default — so the failure would land on somebody who never asked for any of
+ * this, on the turn after every render. Retried once, plainly: if nothing has
+ * been emitted yet, ask again as the turn always used to be.
+ *
+ * Only before the first frame. Once the model has started answering, a second
+ * attempt would repeat what is already on screen.
+ */
+async function* streamWithFallback(
+  client: LlamaClient,
+  messages: ChatMessage[],
+  options: Parameters<LlamaClient['stream']>[1],
+): AsyncGenerator<ChatStreamEvent> {
+  if (!options?.review) {
+    yield* client.stream(messages, options);
+    return;
+  }
+
+  let started = false;
+  try {
+    for await (const event of client.stream(messages, options)) {
+      started = true;
+      yield event;
+    }
+  } catch (error) {
+    if (started || options.signal?.aborted) throw error;
+    const { review: _review, ...rest } = options;
+    yield* client.stream(messages, { ...rest, withoutTools: true });
   }
 }
 

@@ -9,6 +9,7 @@ import type {
   ChatToolName,
   ChatToolSettings,
   ProposedBlock,
+  ReviewThreshold,
   ToolEagerness,
 } from '@latent/shared';
 import { samplingOverrides } from '@latent/shared';
@@ -101,6 +102,15 @@ so write like a person describing a photograph:
   work.
 
 Depict people clothed and with dignity.
+
+## Looking at a picture that came out
+
+When you are shown a render made from one of your prompts, judge it. Describe
+what is actually in the frame — including the parts that are not what the prompt
+asked for — rather than what the prompt led you to expect. A compliment about a
+picture that missed is worse than useless, because the next prompt gets built on
+it. If you propose a rewrite, change what did not work and keep the wording that
+did.
 
 ## Prompt blocks
 
@@ -225,6 +235,51 @@ export const TOOLS = [
     },
   },
 ] as const;
+
+/**
+ * The tool that only exists on the turn after a picture.
+ *
+ * Kept out of `TOOLS` deliberately. Everything in that list is offered on every
+ * turn and governed by a pace setting; this one is offered on exactly one turn
+ * — the one where the model has just been shown what the last prompt produced —
+ * and offering it any earlier would invite a rewrite of a prompt whose result
+ * nobody has seen.
+ */
+export const REVIEW_TOOL = {
+  type: 'function',
+  function: {
+    name: 'revise_prompt',
+    description:
+      'Propose a rewritten prompt, after looking at the picture the last one produced. ' +
+      'Only for what the picture actually got wrong: name the difference, then fix it in ' +
+      'the prompt. The user can generate it straight away or refuse it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description:
+            'The rewritten positive prompt, whole rather than a fragment: one paragraph ' +
+            'of plain English prose. Keep everything that worked and change what did not.',
+        },
+        negativePrompt: {
+          type: 'string',
+          description: 'What to avoid, also in English. Omit unless there is a reason for one.',
+        },
+        reason: {
+          type: 'string',
+          description:
+            'What the picture got wrong and what the change is meant to fix, in a sentence.',
+        },
+        score: {
+          type: 'number',
+          description: 'How well the picture matched the prompt it came from, from 0 to 10.',
+        },
+      },
+      required: ['prompt', 'reason', 'score'],
+    },
+  },
+} as const;
 
 /**
  * How readily each tool is reached for, as instructions the model can follow.
@@ -450,6 +505,93 @@ const FORCED_INSTRUCTIONS: Record<ChatToolName, string> = {
 };
 
 /**
+ * What each level of perfectionism means, said as a standard to hold to.
+ *
+ * A number *and* a sentence. The number alone is not something a model applies
+ * consistently — "is this a 6 or a 7" is exactly the judgement it is bad at —
+ * and the sentence alone leaves "too far apart" to be decided fresh every time.
+ * Together they are reproducible enough that moving the setting one step
+ * visibly changes what comes back.
+ */
+const REVIEW_THRESHOLDS: Record<ReviewThreshold, { score: number; standard: string }> = {
+  never: {
+    score: 0,
+    standard:
+      'Do NOT propose a new prompt, whatever you find. Say how well it turned out and leave ' +
+      'it there; they will ask if they want a change.',
+  },
+  wrong: {
+    score: 3,
+    standard:
+      'Only propose a rewrite if the picture is plainly not what was asked for — the wrong ' +
+      'subject, the wrong medium, something central missing. Anything that is recognisably ' +
+      'the picture described stands.',
+  },
+  loose: {
+    score: 5,
+    standard:
+      'Propose a rewrite when something the prompt actually called for is missing or wrong. ' +
+      'Differences of degree — a little darker, a slightly different angle — are not worth one.',
+  },
+  balanced: {
+    score: 7,
+    standard:
+      'Propose a rewrite when a noticeable part of the prompt did not come through. Small ' +
+      'imperfections that do not change what the picture is are not worth one.',
+  },
+  strict: {
+    score: 8,
+    standard:
+      'Propose a rewrite whenever any part of the prompt is not there or not as described, ' +
+      'including details of light, framing and material.',
+  },
+  exacting: {
+    score: 10,
+    standard:
+      'Propose a rewrite unless the picture is exactly what the prompt describes, in every ' +
+      'detail it names. Near enough is not enough here.',
+  },
+};
+
+/**
+ * The turn that shows the model what its prompt produced.
+ *
+ * Phrased as the user handing over a picture, because that is the only turn a
+ * chat template is guaranteed to render with an image in it — and because it is
+ * true: this is the result, and the question is whether it is what was asked
+ * for. The prompt is repeated in full rather than pointed at, since it may be
+ * twenty messages back and half of it was written by a tool call.
+ */
+export function reviewInstruction(prompt: string, threshold: ReviewThreshold): string {
+  const { score, standard } = REVIEW_THRESHOLDS[threshold];
+
+  const lines = [
+    'This is the picture that prompt produced. Compare it with the prompt and say how well ' +
+      'it was carried out.',
+    '',
+    'The prompt was:',
+    '',
+    prompt.trim(),
+    '',
+    'Say in two or three sentences what came through and what did not. Be concrete: name ' +
+      'what you can see, not what you would expect to see. Score the match out of 10.',
+  ];
+
+  if (threshold !== 'never') {
+    lines.push(
+      '',
+      `If it scores below ${score} out of 10, call \`revise_prompt\` with a rewritten prompt ` +
+        'that keeps everything which worked and fixes what did not. ' +
+        standard,
+    );
+  } else {
+    lines.push('', standard);
+  }
+
+  return lines.join('\n');
+}
+
+/**
  * Add that turn, folding it into the last one when that is already the user's.
  *
  * Two user messages in a row is something several chat templates refuse
@@ -469,6 +611,33 @@ export function withForcedInstruction(
       ? { ...last, content: `${last.content}\n\n${text}` }
       : { ...last, content: [...last.content, { type: 'text', text }] };
   return [...messages.slice(0, -1), merged];
+}
+
+/** What the model is shown, and how picky it is asked to be, after a render. */
+export interface ReviewTurn {
+  /** The finished picture, small enough to be worth prefilling. */
+  dataUrl: string;
+  /** The prompt it was made from, repeated so it need not be hunted for. */
+  prompt: string;
+  threshold: ReviewThreshold;
+}
+
+/**
+ * The picture, handed over as a turn.
+ *
+ * A user turn rather than an assistant one: an image inside an assistant
+ * message is not something every chat template renders, and this genuinely is
+ * the user's side of the exchange — here is what your prompt made, what do you
+ * make of it.
+ */
+function reviewTurn(review: ReviewTurn): OpenAiMessage {
+  return {
+    role: 'user',
+    content: [
+      { type: 'image_url', image_url: { url: review.dataUrl } },
+      { type: 'text', text: reviewInstruction(review.prompt, review.threshold) },
+    ],
+  };
 }
 
 /** Plain text when there are no pictures, so a text-only model is unbothered. */
@@ -564,7 +733,16 @@ export class LlamaClient {
    */
   async *stream(
     messages: ChatMessage[],
-    options: { signal?: AbortSignal; force?: ChatToolName; withoutTools?: boolean } = {},
+    options: {
+      signal?: AbortSignal;
+      force?: ChatToolName;
+      withoutTools?: boolean;
+      /**
+       * Show it the picture that came out, and have it marked against the
+       * prompt. Only ever set for the turn straight after a render.
+       */
+      review?: ReviewTurn;
+    } = {},
   ): AsyncGenerator<ChatStreamEvent> {
     /*
      * A forced tool is offered even when its setting is `off`.
@@ -575,9 +753,20 @@ export class LlamaClient {
      */
     const tools = options.force
       ? TOOLS.filter((tool) => tool.function.name === options.force)
-      : options.withoutTools
-        ? []
-        : enabledTools(this.settings.tools);
+      : options.review
+        ? /*
+           * One tool, and only when a rewrite is a thing that may be proposed.
+           *
+           * The rest are withheld on this turn exactly as they were before the
+           * review existed: what is wanted here is a sentence about the picture,
+           * not a fresh proposal on top of it.
+           */
+          options.review.threshold === 'never'
+            ? []
+            : [REVIEW_TOOL]
+        : options.withoutTools
+          ? []
+          : enabledTools(this.settings.tools);
 
     const history = toApiMessages(
       messages,
@@ -586,7 +775,9 @@ export class LlamaClient {
     // A forced call needs a turn of its own to answer; see the comment there.
     const conversation = options.force
       ? withForcedInstruction(history, options.force)
-      : history;
+      : options.review
+        ? [...history, reviewTurn(options.review)]
+        : history;
 
     const body = {
       ...(this.settings.model ? { model: this.settings.model } : {}),
@@ -889,6 +1080,26 @@ export function parseCall(call: PartialCall): ChatToolCall | null {
         ? { negativePrompt: args.negativePrompt.trim() }
         : {}),
       reason: typeof args.reason === 'string' ? args.reason : '',
+    };
+  }
+
+  /*
+   * A rewrite is a `build_prompt` with a mark out of ten attached, so it is
+   * read the same way and kept apart by its name alone.
+   */
+  if (call.name === 'revise_prompt') {
+    const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : '';
+    if (prompt === '') return null;
+    const score = Number(args.score);
+    return {
+      callId,
+      tool: 'revise_prompt',
+      prompt,
+      ...(typeof args.negativePrompt === 'string' && args.negativePrompt.trim() !== ''
+        ? { negativePrompt: args.negativePrompt.trim() }
+        : {}),
+      reason: typeof args.reason === 'string' ? args.reason : '',
+      ...(Number.isFinite(score) ? { score: Math.max(0, Math.min(10, score)) } : {}),
     };
   }
 

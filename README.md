@@ -61,6 +61,12 @@ form. Nothing about your ComfyUI setup changes.
 - **Keep, delete, and a cleanup that runs itself.** Keeping stores a picture
   without passing judgement on it; anything nobody rated, kept or favourited is
   deleted after a period you choose, so the gallery stays worth scrolling.
+- **The model looks at what it made.** With a multimodal model server, the
+  finished picture goes back to the chat with the prompt beside it: it says how
+  much of the prompt actually came through and — below a perfectionism threshold
+  you set, next to the other tool settings — proposes a rewritten prompt to fix
+  what did not. See [Checking the picture against the
+  prompt](#checking-the-picture-against-the-prompt).
 - **Favourites.** Keep an image together with the settings that made it, rate
   those separately, and generate more like it in one tap. Opening one gives the
   gallery's own viewer — the same rating, keep, save, reuse and details actions,
@@ -912,11 +918,43 @@ becomes readable again in the meantime.
 **Nothing is said about a picture until there is one.** Accepting a prompt used
 to be followed immediately by the model's next turn, which meant it described,
 and often proposed changing, a render that was still being sampled. Now that
-turn waits for the run to finish, with a line in the transcript saying so, and
-when it comes it is offered **no tools** — so the reply after a picture is a
-sentence about it rather than another proposal on top of it. Both hold while
-you are elsewhere in the app; the conversation lives outside the screen that
-shows it.
+turn waits for the run to finish, with a line in the transcript saying so. Both
+hold while you are elsewhere in the app; the conversation lives outside the
+screen that shows it.
+
+### Checking the picture against the prompt
+
+That turn used to be the model talking about a render it had never seen —
+confidently, because that is what these models do. Most model servers worth
+running are multimodal, so **the finished picture is handed back to it**, with
+the prompt beside it, and the reply becomes a judgement it is in a position to
+make: what came through, what did not.
+
+On by default, and switchable off in Settings → Chat for a text-only server or
+when the extra wait per picture is not worth it. A server that cannot take an
+image is not an error either: the turn is asked again without the picture, which
+is exactly what it was before this existed.
+
+**How picky it is, is yours to set.** Under the same tool settings — because it
+is the same kind of decision, how much the model does on its own — a line of
+points runs from **Never** through *plainly wrong*, *something missing*,
+*noticeably off* and *any part off* to **not exact**. Below the threshold you
+choose, the model proposes a rewritten prompt; above it, it says how it went and
+stops there. Each step is a sentence *and* a score out of ten the picture has to
+beat, because a number alone is not something a model applies consistently and a
+sentence alone leaves "too far apart" to be decided fresh every time.
+
+A rewrite arrives as an ordinary tool dialog — the same editing, the same
+workflow picker, the same **Generate** — headed by what the last attempt scored
+and what it got wrong. Accepting it renders again, and that picture is checked
+in its turn, so "not quite, try again" is a loop you drive one tap at a time.
+Refusing is a normal turn in the conversation.
+
+What is shown is a copy scaled to 768 pixels, not the original: prefilling an
+image costs real time on a local model, and a 4000² output is minutes of it for
+nothing a vision encoder can use. From a batch it is the first picture — the
+transcript still shows the whole run — and from a video workflow it is the
+poster frame, once something has captured one.
 
 **Build a prompt** is the one this module exists for. Ask for a prompt from what
 you have been discussing and you get it in an editable box — with **Reject** and
@@ -990,6 +1028,11 @@ updates and removes, so "these four are near-duplicates" is a thing it can fix.
 kept, listed by its first line, and renameable — but the model has no memory
 across them, and the point of the module is the prompt at the end, not the
 transcript.
+
+**Propose a rewrite** is the fourth, and the one you never set a pace for: it is
+offered on exactly one turn — the one where the model has just been shown the
+picture its prompt produced — so "how readily does it reach for this" is not a
+question that arises. What it *is* governed by is the threshold above.
 
 ### How eagerly it reaches for each one
 

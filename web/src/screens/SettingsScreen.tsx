@@ -19,6 +19,7 @@ import type {
   ParamField,
   QueuePolicy,
   SystemPrompt,
+  ReviewThreshold,
   ToolEagerness,
   WidgetValue,
   WorkflowDetail,
@@ -85,6 +86,24 @@ const EAGERNESS_OPTIONS: { value: ToolEagerness; label: string; hint: string }[]
 /** Only asking has the enforced top step; the other tools stop at "freely". */
 const ASK_ONLY: ToolEagerness[] = ['always'];
 
+/**
+ * How perfectionist it is about a finished picture, on the same kind of line.
+ *
+ * The same shape as the pace scale above because it is the same kind of
+ * setting: one ordered judgement made on your behalf, where the interesting
+ * distinctions are between neighbours rather than at the ends. Each step is
+ * both a sentence and a score the model has to beat, so moving it one point
+ * visibly changes what comes back.
+ */
+const REVIEW_OPTIONS: { value: ReviewThreshold; label: string; hint: string }[] = [
+  { value: 'never', label: 'Never', hint: 'says how it went and stops there' },
+  { value: 'wrong', label: 'Plainly wrong', hint: 'wrong subject, wrong medium' },
+  { value: 'loose', label: 'Something missing', hint: 'a thing the prompt asked for' },
+  { value: 'balanced', label: 'Noticeably off', hint: 'a part of it did not come through' },
+  { value: 'strict', label: 'Any part off', hint: 'down to light and framing' },
+  { value: 'exacting', label: 'Not exact', hint: 'unless it matches in every detail' },
+];
+
 const TOOL_ROWS: { key: keyof ChatSettings['tools']; label: string; hint: string }[] = [
   { key: 'build_prompt', label: 'Build a prompt', hint: 'stops the conversation' },
   { key: 'prompt_blocks', label: 'Edit prompt blocks', hint: 'writes to your library' },
@@ -128,6 +147,61 @@ function describeHours(hours: number): string {
   if (days < 7) return `${days} day${days === 1 ? '' : 's'}`;
   const weeks = Math.round(days / 7);
   return weeks < 5 ? `${weeks} week${weeks === 1 ? '' : 's'}` : `${Math.round(days / 30)} months`;
+}
+
+/**
+ * How far apart picture and prompt have to be before a rewrite is offered.
+ *
+ * The same line of points the tools above use, deliberately: it sits with them
+ * because it is the same kind of decision — how much the model does on its own
+ * — and a different control for it would suggest it was something else.
+ */
+function ReviewThresholdLine({
+  value,
+  onChange,
+}: {
+  value: ReviewThreshold;
+  onChange: (value: ReviewThreshold) => void;
+}) {
+  const at = Math.max(
+    0,
+    REVIEW_OPTIONS.findIndex((option) => option.value === value),
+  );
+  const current = REVIEW_OPTIONS[at]!;
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm">Propose a rewrite when</span>
+        <span className="min-w-0 truncate text-[11px] text-muted">how picky it is</span>
+      </div>
+
+      <div className="flex items-center gap-1">
+        {REVIEW_OPTIONS.map((option, index) => (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={index === at}
+            aria-label={`Propose a rewrite when: ${option.label}`}
+            onClick={() => onChange(option.value)}
+            className="min-w-0 flex-1 py-2"
+          >
+            <span
+              className={cn(
+                'block h-2 rounded-[3px]',
+                index === at ? 'bg-accent' : index < at ? 'bg-accent/30' : 'bg-surface-3',
+              )}
+            />
+          </button>
+        ))}
+      </div>
+
+      <p className="text-[11px]">
+        <span className="text-body">{current.label}</span>
+        <span className="text-muted"> — {current.hint}</span>
+      </p>
+    </div>
+  );
 }
 
 export function SettingsScreen() {
@@ -1284,6 +1358,13 @@ function ChatSection() {
 
   if (!chat) return null;
 
+  /*
+   * Written after the rest of the chat settings, so a stored block from before
+   * it existed simply has no field for it. The server merges its defaults in;
+   * this is the same answer on the client, for a response that predates them.
+   */
+  const review = chat.review ?? { enabled: true, threshold: 'balanced' as const };
+
   const patch = (change: Partial<typeof chat>) =>
     updateSettings.mutate({ chat: { ...chat, ...change } });
 
@@ -1549,6 +1630,32 @@ function ChatSection() {
             </div>
           );
         })}
+
+        {/* Checking the picture -------------------------------------- */}
+        <div className="space-y-3 border-t border-line pt-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm">Check the picture against the prompt</p>
+              <p className="text-[11px] text-muted">
+                On by default. The finished picture is shown to the model — most worth running
+                are multimodal — and it says how much of the prompt actually came through. With
+                it off, the turn after a render is a sentence about a picture it has not seen.
+              </p>
+            </div>
+            <Toggle
+              checked={review.enabled}
+              onChange={(enabled) => patch({ review: { ...review, enabled } })}
+              label="Check the picture against the prompt"
+            />
+          </div>
+
+          {review.enabled && (
+            <ReviewThresholdLine
+              value={review.threshold}
+              onChange={(threshold) => patch({ review: { ...review, threshold } })}
+            />
+          )}
+        </div>
       </Card>
 
       {/* Pictures, and what they are made with ----------------------- */}

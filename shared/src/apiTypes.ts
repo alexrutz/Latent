@@ -958,6 +958,8 @@ export interface ChatSettings {
   systemPromptId: string | null;
   /** How readily each tool is reached for. */
   tools: ChatToolSettings;
+  /** Whether a finished picture is shown to the model, and how picky it is. */
+  review: ChatReviewSettings;
   /** What a picture generated from the chat is used with. */
   generation: ChatGenerationSettings;
   /**
@@ -1360,6 +1362,50 @@ export interface ChatToolSettings {
 }
 
 /**
+ * How far a picture may be from its prompt before a rewrite is proposed.
+ *
+ * The same shape as the pace scale beside it, and for the same reason: this is
+ * one ordered judgement, not a set of alternatives. What it decides is how
+ * perfectionist the model is on your behalf — everything above `never` is a
+ * standard it holds the picture to, stated to it as a score it has to beat.
+ */
+export type ReviewThreshold =
+  /** Say how it went and stop there. Never proposes a rewrite. */
+  | 'never'
+  /** Only when the picture is plainly not what was asked for. */
+  | 'wrong'
+  /** When something the prompt called for is missing. */
+  | 'loose'
+  /** When a noticeable part of it is off. */
+  | 'balanced'
+  /** When any part of it is off. */
+  | 'strict'
+  /** Unless it is exactly what the prompt describes. */
+  | 'exacting';
+
+/**
+ * Looking at what came out.
+ *
+ * A prompt is a guess about how a model will read it, and the only honest test
+ * is the picture. The chat model is usually multimodal — most worth running
+ * are — so it can be shown the result and asked the one question that matters:
+ * is this what the prompt said? Everything downstream of that (what is missing,
+ * what to change, whether it is worth changing) is a judgement, which is what
+ * `threshold` calibrates.
+ */
+export interface ChatReviewSettings {
+  /**
+   * Show the finished picture to the model at all. On by default.
+   *
+   * Off for a text-only model, or when the extra wait per picture is not worth
+   * it. With it off the turn after a picture is what it always was: a sentence
+   * about a render the model has not seen.
+   */
+  enabled: boolean;
+  threshold: ReviewThreshold;
+}
+
+/**
  * What a picture started from the chat is generated with.
  *
  * Either whatever the Generate screen is currently set to — which is what you
@@ -1438,7 +1484,18 @@ export interface ChatConversationDetail extends ChatConversation {
 /* Chat tools                                                          */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The tools the model may reach for on its own, each with a pace setting.
+ *
+ * `revise_prompt` is deliberately not one of them: it is offered on exactly one
+ * turn — the one where the model has just been shown the picture its prompt
+ * produced — so "how readily does it reach for this" is not a question that
+ * arises. See `ChatCallName`.
+ */
 export type ChatToolName = 'prompt_blocks' | 'build_prompt' | 'ask_user';
+
+/** Every tool a call can name, including the one that is not pace-governed. */
+export type ChatCallName = ChatToolName | 'revise_prompt';
 
 /** A block the model proposes adding, changing or removing. */
 export interface ProposedBlock {
@@ -1493,7 +1550,30 @@ export interface AskUserCall {
   reason: string;
 }
 
-export type ChatToolCall = (PromptBlocksCall | BuildPromptCall | AskUserCall) & {
+/**
+ * A rewrite, proposed after looking at what the last prompt actually produced.
+ *
+ * The same payload as `build_prompt` and deliberately a different tool: it is
+ * only ever offered on the turn where the model has just been shown a picture,
+ * so it cannot be reached for at random, and the dialog can say what it is —
+ * a second attempt at a prompt that missed, rather than a first at a new one.
+ */
+export interface RevisePromptCall {
+  tool: 'revise_prompt';
+  prompt: string;
+  negativePrompt?: string;
+  /** What was wrong with the picture, and what the change is meant to fix. */
+  reason: string;
+  /** How well the last one matched, out of ten, as the model scored it. */
+  score?: number;
+}
+
+export type ChatToolCall = (
+  | PromptBlocksCall
+  | BuildPromptCall
+  | AskUserCall
+  | RevisePromptCall
+) & {
   /** The id llama.cpp gave it, needed to answer the model. */
   callId: string;
 };

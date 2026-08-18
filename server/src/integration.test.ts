@@ -4593,6 +4593,255 @@ describe('chat', () => {
   }, 30_000);
 
   /**
+   * Showing the model what its prompt actually produced.
+   *
+   * The turn after a render used to be the model talking about a picture it had
+   * never seen — which it does confidently, because that is what these models
+   * do. With a multimodal server there is no reason for that: hand it the
+   * result and the prompt together, and the sentence becomes a judgement it is
+   * in a position to make.
+   */
+  describe('checking the picture against the prompt', () => {
+    /** Generate one picture through the real path, and hand back its run. */
+    async function render(prompt: string): Promise<string> {
+      const workflows = await json<{ id: string }[]>(api('/api/workflows'));
+      const workflowId =
+        workflows[0]?.id ??
+        (
+          await json<WorkflowDetail>(
+            api('/api/workflows', {
+              method: 'POST',
+              body: JSON.stringify({ name: 'review', graph: sd15Txt2Img }),
+            }),
+          )
+        ).id;
+
+      const { generationIds } = await json<GenerateResponse>(
+        api('/api/generate', {
+          method: 'POST',
+          body: JSON.stringify({ workflowId, values: { '6.text': prompt, '3.steps': 2 } }),
+        }),
+      );
+      const id = generationIds[0] as string;
+
+      await waitFor(async () => {
+        const record = await json<GenerationRecord>(api(`/api/gallery/${id}`));
+        return record.status === 'completed' && record.images.length > 0 ? record : null;
+      }, 30_000);
+
+      return id;
+    }
+
+    /** Get to the point where a prompt has been accepted and has rendered. */
+    async function upToAPicture(llama: ReturnType<typeof createMockLlama>, prompt: string) {
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+
+      llama.script({ toolCall: { name: 'build_prompt', arguments: { prompt, reason: 'Calm.' } } });
+      const events = await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'build me a prompt' }),
+        }),
+      );
+      const messageId = events.find(
+        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
+      )?.messageId;
+
+      const generationId = await render(prompt);
+
+      await api(`/api/chat/conversations/${chat.id}/tool`, {
+        method: 'POST',
+        body: JSON.stringify({ messageId, decision: 'accepted', generationId, prompt }),
+      });
+
+      return chat.id;
+    }
+
+    /** The last request's final message, which is where the review lands. */
+    function lastTurn(llama: ReturnType<typeof createMockLlama>) {
+      const sent = llama.requests[llama.requests.length - 1] as {
+        messages: { role: string; content: unknown }[];
+        tools?: { function: { name: string } }[];
+      };
+      return { sent, last: sent.messages[sent.messages.length - 1]! };
+    }
+
+    afterAll(async () => {
+      // Back to the default, so the tests after this one see what they expect.
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { review: { enabled: true, threshold: 'balanced' } } }),
+      });
+    });
+
+    it('hands over the picture and the prompt, and takes back a rewrite', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({ chat: { review: { enabled: true, threshold: 'balanced' } } }),
+        });
+
+        const chatId = await upToAPicture(llama, 'a harbour at dawn, soft light');
+
+        llama.script({
+          content: 'The light is right but there is no harbour.',
+          toolCall: {
+            name: 'revise_prompt',
+            arguments: {
+              prompt: 'a working harbour at dawn, soft light on the water',
+              reason: 'The harbour itself is missing.',
+              score: 4,
+            },
+          },
+        });
+        const events = await readStream(
+          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
+        );
+
+        const { sent, last } = lastTurn(llama);
+
+        // The picture goes over as a picture, beside the question about it.
+        expect(last.role).toBe('user');
+        const parts = last.content as { type: string; text?: string; image_url?: { url: string } }[];
+        expect(Array.isArray(parts)).toBe(true);
+        expect(parts[0]?.image_url?.url.startsWith('data:image/png;base64,')).toBe(true);
+        // Small enough to be worth prefilling: a render is not sent whole.
+        expect(parts[0]!.image_url!.url.length).toBeLessThan(1_500_000);
+
+        // And the prompt with it, in full, rather than a pointer to it.
+        expect(parts[1]?.text).toContain('a harbour at dawn, soft light');
+        expect(parts[1]?.text).toContain('out of 10');
+
+        // One tool on that turn: a rewrite. Not a fresh proposal on top of a
+        // picture nobody has looked at yet.
+        expect(sent.tools?.map((tool) => tool.function.name)).toEqual(['revise_prompt']);
+
+        const call = events.find(
+          (event): event is { type: 'tool'; call: ChatToolCall } => event.type === 'tool',
+        )?.call;
+        expect(call?.tool).toBe('revise_prompt');
+        expect(call && 'score' in call ? call.score : null).toBe(4);
+
+        // It is a proposal like any other: stored, and waiting on the user.
+        const stored = await json<{ messages: ChatMessage[] }>(
+          api(`/api/chat/conversations/${chatId}`),
+        );
+        const proposal = stored.messages[stored.messages.length - 1];
+        expect(proposal?.toolCall?.tool).toBe('revise_prompt');
+        expect(proposal?.toolResult).toBeUndefined();
+      } finally {
+        await llama.close();
+      }
+    }, 60_000);
+
+    /**
+     * The quiet end of the scale.
+     *
+     * "Look at it and tell me" without "and rewrite it" is a real way to work,
+     * and it is the setting that makes the feature safe to leave on: the model
+     * still sees the picture, it simply has nothing to propose with.
+     */
+    it('shows the picture but offers no rewrite at the lowest setting', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({ chat: { review: { enabled: true, threshold: 'never' } } }),
+        });
+
+        const chatId = await upToAPicture(llama, 'a lighthouse in a storm');
+
+        llama.script({ content: 'It matches well enough.' });
+        await readStream(
+          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
+        );
+
+        const { sent, last } = lastTurn(llama);
+        expect(JSON.stringify(last.content)).toContain('image_url');
+        expect(sent.tools).toBeUndefined();
+      } finally {
+        await llama.close();
+      }
+    }, 60_000);
+
+    it('sends no picture at all when the check is switched off', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({ chat: { review: { enabled: false, threshold: 'balanced' } } }),
+        });
+
+        const chatId = await upToAPicture(llama, 'a field of rape in flower');
+
+        llama.script({ content: 'Hope it came out well.' });
+        await readStream(
+          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
+        );
+
+        const { sent } = lastTurn(llama);
+        expect(JSON.stringify(sent.messages)).not.toContain('image_url');
+        expect(sent.tools).toBeUndefined();
+      } finally {
+        await llama.close();
+      }
+    }, 60_000);
+
+    /**
+     * A text-only server, which is what a refusal actually looks like.
+     *
+     * `llama-server` without a vision projector answers an image with an error
+     * rather than ignoring it — and this setting is on by default, so that
+     * error would land on somebody who never asked for any of it. The turn is
+     * asked again without the picture instead.
+     */
+    it('falls back to the plain turn when the server cannot take a picture', async () => {
+      const llama = createMockLlama({ refuseImages: true });
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({ chat: { review: { enabled: true, threshold: 'balanced' } } }),
+        });
+
+        const chatId = await upToAPicture(llama, 'a red bicycle against a wall');
+
+        llama.script({ content: 'Hope that worked.' });
+        const events = await readStream(
+          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
+        );
+
+        // The reply arrives, and nothing is reported as broken.
+        const said = events
+          .filter((event): event is { type: 'content'; text: string } => event.type === 'content')
+          .map((event) => event.text)
+          .join('');
+        expect(said).toBe('Hope that worked.');
+        expect(events.some((event) => event.type === 'error')).toBe(false);
+
+        // The retry is the turn as it always was: no picture, no tools.
+        const { sent } = lastTurn(llama);
+        expect(JSON.stringify(sent.messages)).not.toContain('image_url');
+        expect(sent.tools).toBeUndefined();
+      } finally {
+        await llama.close();
+      }
+    }, 60_000);
+  });
+
+  /**
    * What the model is shown of a tool call it made earlier.
    *
    * Replayed on every request from then on, so a call carrying fields the tool

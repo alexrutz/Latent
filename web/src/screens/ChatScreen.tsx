@@ -51,6 +51,7 @@ function promptBefore(messages: ChatMessage[], id: string): string {
 /** What a resolved tool call is called once it is only a line in the history. */
 const TOOL_LABELS: Record<ChatToolCall['tool'], string> = {
   build_prompt: 'Proposed a prompt',
+  revise_prompt: 'Proposed a rewrite',
   prompt_blocks: 'Proposed blocks',
   ask_user: 'Asked something',
 };
@@ -550,9 +551,12 @@ function MessageRow({
           thing there is, and the alternative was a trip to the gallery to
           find the result and press reuse — which loses the conversation the
           prompt came out of. Only prompts: a decided question or a saved
-          block has nothing left to do.
+          block has nothing left to do. A rewrite is a prompt like any other —
+          often the better one, since it was written knowing what the last
+          attempt produced.
         */
-        (message.toolCall.tool === 'build_prompt' && message.toolResult ? (
+        ((message.toolCall.tool === 'build_prompt' || message.toolCall.tool === 'revise_prompt') &&
+        message.toolResult ? (
           <button
             type="button"
             onClick={() => onRevisit(message.toolCall!)}
