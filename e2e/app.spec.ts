@@ -641,6 +641,54 @@ test.describe('gallery, favourites and the prompt builder', () => {
     await expect(page.getByText('★★★★').first()).toBeVisible();
   });
 
+  /**
+   * A favourite opens in the viewer the gallery opens.
+   *
+   * It used to get a stripped one with nothing on it, so the picture you had
+   * already said you cared about was the one you could do least with.
+   */
+  test('opens a favourite in the gallery’s own viewer', async ({ page }) => {
+    await generate(page, 'the same viewer');
+
+    await open(page, '/gallery');
+    await page.locator('img[alt*="the same viewer"]').first().click();
+    await page.getByRole('button', { name: /Favourite/ }).click();
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    await page.getByRole('link', { name: 'Favourites' }).click();
+    const favorite = page.locator('img[alt="the same viewer"]').first();
+    await expect(favorite).toBeVisible({ timeout: 20_000 });
+    await favorite.click();
+
+    await page.getByRole('button', { name: 'Open the picture' }).click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+
+    // Every action the gallery's viewer carries, including the rating that
+    // stores the bytes on this device.
+    for (const name of ['Save', 'Keep', 'Reseed', 'Reuse', 'Upscale', 'Details']) {
+      await expect(page.getByRole('button', { name, exact: true })).toBeVisible();
+    }
+    await expect(page.getByRole('button', { name: 'Favourited' })).toBeVisible();
+    await page.screenshot({ path: 'test-results/83-favourite-viewer.png' });
+
+    // Rating from here writes to the run the favourite came from, which is only
+    // possible because the viewer is looking at that run rather than at a copy.
+    await page.getByRole('button', { name: '3 stars' }).click();
+    await expect
+      .poll(async () => {
+        const gallery = await withApi(async (ctx) => {
+          const response = await ctx.get('/api/gallery');
+          return (await response.json()) as { items: { images: { rating: number }[] }[] };
+        });
+        return gallery.items.flatMap((item) => item.images).map((image) => image.rating);
+      })
+      .toContain(3);
+
+    // And the settings behind the picture are readable, as they are anywhere else.
+    await page.getByRole('button', { name: 'Details' }).click();
+    await expect(page.getByText('the same viewer').first()).toBeVisible();
+  });
+
   test('switches favourites between thumbnails and a compact list', async ({ page }) => {
     await generate(page, 'list mode');
     await open(page, '/gallery');

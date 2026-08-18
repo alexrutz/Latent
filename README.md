@@ -55,7 +55,9 @@ form. Nothing about your ComfyUI setup changes.
   without passing judgement on it; anything nobody rated, kept or favourited is
   deleted after a period you choose, so the gallery stays worth scrolling.
 - **Favourites.** Keep an image together with the settings that made it, rate
-  those separately, and generate more like it in one tap.
+  those separately, and generate more like it in one tap. Opening one gives the
+  gallery's own viewer — the same rating, keep, save, reuse and details actions,
+  and a swipe through the rest of the run it came from.
 - **A grid that fits the pictures.** Adjustable column count; each tile takes its
   shape from the image's aspect ratio so nothing is cropped square, with a
   per-image override. Only thumbnails are ever downloaded.

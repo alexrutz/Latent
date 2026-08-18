@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import type { Favorite, FavoriteSort } from '@latent/shared';
+import type { Favorite, FavoriteSort, GenerationImage, GenerationRecord } from '@latent/shared';
 
 import { useQueryClient } from '@tanstack/react-query';
 
@@ -10,13 +10,15 @@ import {
   queryKeys,
   useDeleteFavorite,
   useFavorites,
+  useGeneration,
   useUpdateFavorite,
 } from '../api/queries';
-import { ImageViewer, Thumb } from '../components/ImageViewer';
+import { Thumb, type ViewerEntry } from '../components/ImageViewer';
 import { RatingStars } from '../components/RatingStars';
 import { ThumbGrid, useTileStyle } from '../components/ThumbGrid';
 import { Toggle } from '../components/ParamControl';
 import { Button, Card, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
+import { ViewerWithActions } from '../components/ViewerWithActions';
 import { useGridSettings } from '../state/grid';
 import { showInGallery } from '../state/galleryTarget';
 import { usePendingStore } from '../state/pending';
@@ -216,35 +218,9 @@ function FavoriteSheet({ favorite, onClose }: { favorite: Favorite; onClose: () 
 
   if (viewing && favorite.image) {
     return (
-      <ImageViewer
-        // One favourite at a time: there is nothing to swipe to from here, and
-        // the surrounding list is sorted by rating rather than by run.
-        entries={[
-          {
-            record: {
-              id: favorite.generationId ?? favorite.id,
-              promptId: '',
-              workflowId: favorite.workflowId,
-              workflowName: '',
-              status: 'completed',
-              error: null,
-              values: favorite.values,
-              seeds: {},
-              // A favourite snapshots the values, not the rendered summary — the
-              // viewer only needs the image and the title here.
-              params: [],
-              title: favorite.title,
-              texts: [],
-              images: [favorite.image],
-              createdAt: favorite.createdAt,
-              completedAt: favorite.createdAt,
-              source: 'comfy',
-            },
-            image: favorite.image,
-          },
-        ]}
-        index={0}
-        onIndexChange={() => undefined}
+      <FavoriteViewer
+        favorite={favorite}
+        image={favorite.image}
         onClose={() => setViewing(false)}
       />
     );
@@ -257,6 +233,7 @@ function FavoriteSheet({ favorite, onClose }: { favorite: Favorite; onClose: () 
           <button
             type="button"
             onClick={() => setViewing(true)}
+            aria-label="Open the picture"
             className="block w-full overflow-hidden rounded-2xl border border-line bg-surface-2"
           >
             {/* A preview: tapping it opens the viewer, which is where the
@@ -373,5 +350,93 @@ function FavoriteSheet({ favorite, onClose }: { favorite: Favorite; onClose: () 
         </p>
       </div>
     </Sheet>
+  );
+}
+
+/** Where one picture sits among the images of its run. */
+function imageKey(image: GenerationImage): string {
+  return `${image.subfolder}/${image.filename}`;
+}
+
+/**
+ * A record made out of the favourite itself.
+ *
+ * Only for the case where the run behind it cannot be read — it was deleted, or
+ * it is still being fetched. A favourite snapshots the values, not the rendered
+ * summary, so this carries the picture, the prompt and the settings and nothing
+ * else.
+ */
+function standInRecord(favorite: Favorite, image: GenerationImage): GenerationRecord {
+  return {
+    id: favorite.generationId ?? favorite.id,
+    promptId: '',
+    workflowId: favorite.workflowId,
+    workflowName: '',
+    status: 'completed',
+    error: null,
+    values: favorite.values,
+    seeds: {},
+    params: [],
+    title: favorite.title,
+    texts: [],
+    images: [image],
+    createdAt: favorite.createdAt,
+    completedAt: favorite.createdAt,
+    source: 'comfy',
+  };
+}
+
+/**
+ * A favourite, opened in the viewer the gallery opens.
+ *
+ * It used to get a stripped viewer with no actions on it at all, so the one
+ * picture you had already said you cared about was the one you could do least
+ * with — no rating, no keep, no save, no settings behind it. The run is fetched
+ * for that reason rather than for the swipe: the actions write to a generation
+ * and an image, and the favourite carries only a copy of the second.
+ *
+ * Swiping moves through the rest of that run, which is what the same picture
+ * does when it is opened from the gallery.
+ */
+function FavoriteViewer({
+  favorite,
+  image,
+  onClose,
+}: {
+  favorite: Favorite;
+  image: GenerationImage;
+  onClose: () => void;
+}) {
+  const generation = useGeneration(favorite.generationId);
+  const [grid, updateGrid] = useGridSettings();
+  const [selected, setSelected] = useState(imageKey(image));
+
+  const entries = useMemo<ViewerEntry[]>(() => {
+    const record = generation.data;
+    if (record && record.images.length > 0) {
+      return record.images.map((candidate) => ({ record, image: candidate }));
+    }
+    return [{ record: standInRecord(favorite, image), image }];
+  }, [generation.data, favorite, image]);
+
+  /*
+   * Found by name, not by position: the stand-in above is replaced by the real
+   * run the moment it arrives, and a stored index would then point at whichever
+   * picture of that batch happened to be first rather than the one opened.
+   */
+  const index = entries.findIndex((entry) => imageKey(entry.image) === selected);
+
+  return (
+    <ViewerWithActions
+      entries={entries}
+      index={index < 0 ? 0 : index}
+      grid={grid}
+      onGridChange={updateGrid}
+      onIndexChange={(next) => {
+        const entry = entries[next];
+        if (entry) setSelected(imageKey(entry.image));
+      }}
+      onClose={onClose}
+    />
   );
 }
