@@ -9,6 +9,7 @@ import type {
   WidgetValue,
 } from './comfyTypes.js';
 import { hasLoraTags } from './loraTags.js';
+import { producesVideo } from './media.js';
 import type {
   ControlKind,
   FieldOverrides,
@@ -144,6 +145,17 @@ const MODEL_INPUTS = new Set([
 const LORA_INPUTS = new Set(['lora_name', 'lora_1', 'lora_2']);
 const VAE_INPUTS = new Set(['vae_name']);
 
+/**
+ * How long the clip is, however the node chose to say it.
+ *
+ * Every video model names this differently — LTX and Wan call it `length`,
+ * Hunyuan `num_frames`, VideoHelperSuite `frames` — and all of them mean the
+ * same decision, which is the one you change most often in a video workflow.
+ */
+const LENGTH_INPUTS = new Set(['length', 'num_frames', 'video_frames', 'frames', 'frame_count']);
+/** And how fast those frames are played back. */
+const FRAME_RATE_INPUTS = new Set(['frame_rate', 'fps', 'framerate']);
+
 /** Nodes whose text inputs are prompt candidates even without a positive/negative link. */
 function isTextEncodeClass(classType: string): boolean {
   return /CLIPTextEncode|TextEncode|PromptEncode/i.test(classType);
@@ -164,7 +176,12 @@ function isImageLoaderInput(classType: string, inputName: string, options: Input
  * follow links backwards (bounded, cycle-safe) and collect every node with an
  * editable text input we reach.
  */
-function findTextSources(workflow: ApiWorkflow, startNodeId: string, maxDepth = 6): string[] {
+function findTextSources(
+  workflow: ApiWorkflow,
+  startNodeId: string,
+  polarity: 'positive' | 'negative',
+  maxDepth = 6,
+): string[] {
   const found: string[] = [];
   const seen = new Set<string>();
   const queue: { id: string; depth: number }[] = [{ id: startNodeId, depth: 0 }];
@@ -195,10 +212,25 @@ function findTextSources(workflow: ApiWorkflow, startNodeId: string, maxDepth = 
       // Keep walking: ConditioningCombine can merge two prompt nodes.
     }
 
-    for (const value of Object.values(node.inputs ?? {})) {
-      if (isNodeLink(value)) {
-        queue.push({ id: String(value[0]), depth: current.depth + 1 });
+    /*
+     * A node carrying both conditionings is followed on one side only.
+     *
+     * Video models put one between the sampler and the text — LTXV's own
+     * conditioning node takes `positive` and `negative` and hands both back —
+     * and so do ControlNet's advanced appliers. Walking every input from there
+     * reaches both prompts from both directions, which made the negative prompt
+     * indistinguishable from the positive one: a video workflow offered two
+     * boxes both labelled Prompt and no way to say what you did *not* want.
+     */
+    const carriesBoth =
+      isNodeLink(node.inputs?.positive) && isNodeLink(node.inputs?.negative);
+
+    for (const [name, value] of Object.entries(node.inputs ?? {})) {
+      if (!isNodeLink(value)) continue;
+      if (carriesBoth && (name === 'positive' || name === 'negative') && name !== polarity) {
+        continue;
       }
+      queue.push({ id: String(value[0]), depth: current.depth + 1 });
     }
   }
 
@@ -227,9 +259,9 @@ function classifyPrompts(workflow: ApiWorkflow): PromptClassification {
       if (!isNodeLink(value)) continue;
       const sourceId = String(value[0]);
       if (inputName === 'positive') {
-        for (const id of findTextSources(workflow, sourceId)) positive.add(id);
+        for (const id of findTextSources(workflow, sourceId, 'positive')) positive.add(id);
       } else if (inputName === 'negative') {
-        for (const id of findTextSources(workflow, sourceId)) negative.add(id);
+        for (const id of findTextSources(workflow, sourceId, 'negative')) negative.add(id);
       }
     }
   }
@@ -357,6 +389,8 @@ function detectRole(
   if (inputName === 'height') return 'height';
   if (inputName === 'aspect_ratio') return 'aspect_ratio';
   if (inputName === 'megapixels') return 'megapixels';
+  if (LENGTH_INPUTS.has(inputName)) return 'length';
+  if (FRAME_RATE_INPUTS.has(inputName)) return 'frame_rate';
   if (inputName === 'batch_size') return 'batch_size';
   if (LORA_INPUTS.has(inputName)) return 'lora';
   if (VAE_INPUTS.has(inputName)) return 'vae';
@@ -379,6 +413,8 @@ const MAIN_ROLE_ORDER: ParamRole[] = [
   'height',
   'aspect_ratio',
   'megapixels',
+  'length',
+  'frame_rate',
   'batch_size',
   'steps',
   'cfg',
@@ -491,6 +527,14 @@ const PRACTICAL_RANGES: Partial<Record<ParamRole, [number, number]>> = {
   // 0.26 MP is SD1.5's native size, 1.0 SDXL's and Flux's; past 4 the node is
   // being asked for something no consumer card renders in one pass.
   megapixels: [0.25, 4],
+  /*
+   * A video model's frame count is quantised — LTX wants 8n+1, Wan 4n+1 — and
+   * the node reports that as a step, which the slider already honours. The
+   * bounds are what a single pass on one card actually renders: a second or two
+   * at the low end, and about ten seconds at the high one.
+   */
+  length: [1, 257],
+  frame_rate: [4, 60],
   batch_size: [1, 8],
 };
 
@@ -565,6 +609,8 @@ const ROLE_LABELS: Partial<Record<ParamRole, string>> = {
   height: 'Height',
   aspect_ratio: 'Aspect ratio',
   megapixels: 'Megapixels',
+  length: 'Frames',
+  frame_rate: 'Frames per second',
   batch_size: 'Batch size',
   steps: 'Steps',
   cfg: 'CFG',
@@ -713,6 +759,7 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
     capabilities: {
       img2img: fields.some((f) => f.role === 'image_input' && !f.hidden),
       seeded: fields.some((f) => f.role === 'seed' && !f.hidden),
+      video: producesVideo(workflow),
     },
     missingNodeTypes: [...missingNodeTypes].sort(),
   };
@@ -764,6 +811,9 @@ export function applyOverrides(schema: ParamSchema, overrides: FieldOverrides = 
     capabilities: {
       img2img: fields.some((f) => f.role === 'image_input' && !f.hidden),
       seeded: fields.some((f) => f.role === 'seed' && !f.hidden),
+      // Hiding a field cannot turn a video workflow into a still one: this is a
+      // fact about the graph, not about the form.
+      video: schema.capabilities?.video === true,
     },
   };
 }

@@ -320,6 +320,18 @@ export const api = {
       body: JSON.stringify({ image, width, height }),
     }),
 
+  /**
+   * Hand back a frame of a video, and how long it runs.
+   *
+   * The server cannot decode an mp4 — see `lib/poster` — so the browser that is
+   * playing it supplies the still every grid tile and every picker needs.
+   */
+  reportPoster: (image: ComfyImageRef, poster: string | null, durationMs?: number) =>
+    request<void>('/api/images/poster', {
+      method: 'PUT',
+      body: JSON.stringify({ image, ...(poster ? { poster } : {}), ...(durationMs ? { durationMs } : {}) }),
+    }),
+
   /* ---------------------------------------------------------------- */
   /* Favourites                                                        */
   /* ---------------------------------------------------------------- */

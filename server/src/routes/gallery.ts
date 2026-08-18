@@ -2,12 +2,23 @@ import type { FastifyInstance } from 'fastify';
 
 import type { ComfyImageRef, GalleryPage, GallerySort } from '@latent/shared';
 
-/** Anything else in the query string is somebody's typo, not a third ordering. */
-const SORTS = new Set<GallerySort>(['newest', 'oldest', 'rating']);
-
+import { readImageSize } from '../images/png.js';
 import { VaultLockedError } from '../vault.js';
 
 import type { AppContext } from './context.js';
+
+/** Anything else in the query string is somebody's typo, not a third ordering. */
+const SORTS = new Set<GallerySort>(['newest', 'oldest', 'rating']);
+
+/**
+ * A poster is a still at thumbnail size, not a picture in its own right.
+ *
+ * 512 pixels on the long side as a PNG is tens of kilobytes; this leaves room
+ * for a generous encoder and refuses anything that is plainly not a thumbnail.
+ */
+const MAX_POSTER_BYTES = 2 * 1024 * 1024;
+/** Base64 costs a third more, and the body carries a little JSON besides. */
+const POSTER_BODY_LIMIT = 4 * 1024 * 1024;
 
 export function registerGalleryRoutes(app: FastifyInstance, ctx: AppContext): void {
   app.get<{
@@ -137,6 +148,61 @@ export function registerGalleryRoutes(app: FastifyInstance, ctx: AppContext): vo
       return reply.code(204).send();
     },
   );
+
+  /**
+   * A frame of a video, sent back by the browser that decoded it.
+   *
+   * Nothing on this server can open an mp4 — there is no ffmpeg here and no
+   * pure-JavaScript decoder worth having — so a video would have no thumbnail
+   * at all, and every grid tile showing one would have to load the clip itself.
+   * The browser is already decoding it to play it, so it grabs one frame and
+   * posts it here, and from then on the video has a still like everything else.
+   *
+   * Sent as a data URL because that is what a canvas produces; the alternative
+   * is a multipart upload of a 40 kB PNG, which is more machinery for the same
+   * bytes. Refused unless it really is a PNG of a sane size — this is an
+   * endpoint that writes a file, and it takes its input from a browser.
+   */
+  app.put<{
+    Body: {
+      image?: ComfyImageRef & { id?: number };
+      /** `data:image/png;base64,…` */
+      poster?: string;
+      durationMs?: number;
+    };
+  }>('/api/images/poster', { bodyLimit: POSTER_BODY_LIMIT }, async (request, reply) => {
+    const { image, poster, durationMs } = request.body ?? {};
+    if (!image?.filename) return reply.code(400).send({ error: 'Which video?' });
+
+    const row = ctx.store.findImage(image);
+    if (!row) return reply.code(404).send({ error: 'That video is not in the gallery' });
+
+    if (typeof durationMs === 'number' && Number.isFinite(durationMs) && durationMs > 0) {
+      ctx.store.setImageDuration(row.id, Math.min(durationMs, 24 * 60 * 60 * 1000));
+    }
+
+    // Already has one: a second client watching the same clip must not rewrite
+    // the poster, and saying so costs nothing.
+    if (row.thumb_path) return reply.code(204).send();
+    if (!poster) return reply.code(204).send();
+
+    const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(poster.trim());
+    if (!match?.[1]) return reply.code(400).send({ error: 'A poster must be a base64 PNG' });
+
+    const bytes = Buffer.from(match[1], 'base64');
+    if (bytes.length === 0 || bytes.length > MAX_POSTER_BYTES) {
+      return reply.code(413).send({ error: 'That poster is too large' });
+    }
+    const size = readImageSize(bytes);
+    if (!size) return reply.code(400).send({ error: 'That poster is not a readable PNG' });
+
+    if (!ctx.vault.isUnlocked) {
+      return reply.code(423).send({ error: new VaultLockedError().message, locked: true });
+    }
+
+    await ctx.archive.storePoster(row.id, bytes, size);
+    return reply.code(204).send();
+  });
 
   /**
    * Keep a picture without passing judgement on it.

@@ -14,6 +14,7 @@ import { objectInfoFixture } from './fixtures/objectInfo.js';
 import {
   combinedConditioning,
   img2img,
+  ltxVideoGguf,
   sd15Txt2Img,
   sdxlBaseRefiner,
   uiFormatWorkflow,
@@ -135,7 +136,7 @@ describe('buildParamSchema — SD1.5 txt2img', () => {
 
   it('finds the output node and reports capabilities', () => {
     expect(schema.outputNodeIds).toEqual(['9']);
-    expect(schema.capabilities).toEqual({ img2img: false, seeded: true });
+    expect(schema.capabilities).toEqual({ img2img: false, seeded: true, video: false });
     expect(schema.missingNodeTypes).toEqual([]);
   });
 });
@@ -177,7 +178,7 @@ describe('buildParamSchema — img2img and upscale', () => {
   it('handles a prompt-free, sampler-free upscale graph', () => {
     const schema = build(upscale);
     expect(byRole(schema.fields, 'prompt')).toHaveLength(0);
-    expect(schema.capabilities).toEqual({ img2img: true, seeded: false });
+    expect(schema.capabilities).toEqual({ img2img: true, seeded: false, video: false });
     expect(byId(schema.fields, '2.model_name')?.role).toBe('model');
     expect(schema.outputNodeIds).toEqual(['4']);
   });
@@ -579,5 +580,57 @@ describe('nodes named by convention', () => {
     // exists to settle.
     expect(byId(schema.fields, '2.text')).toMatchObject({ role: 'prompt' });
     expect(byId(schema.fields, '3.text')?.role).not.toBe('prompt');
+  });
+});
+
+/**
+ * A video workflow on quantised weights, which is how these models are
+ * actually run: a GGUF repack loaded by its own node, a latent with a frame
+ * count, and a frame rate on the conditioning.
+ */
+describe('a video workflow', () => {
+  const schema = build(ltxVideoGguf);
+
+  it('knows it makes a clip before anything has run', () => {
+    expect(schema.capabilities.video).toBe(true);
+    expect(schema.outputNodeIds).toEqual(['10']);
+  });
+
+  /*
+   * The frame count is the length of the clip and most of the render time. As
+   * one more integer in the advanced group it was the single most consequential
+   * number in the graph, three taps away.
+   */
+  it('gives the frame count and the frame rate roles of their own', () => {
+    const length = byId(schema.fields, '6.length');
+    expect(length?.role).toBe('length');
+    expect(length?.label).toBe('Frames');
+    expect(length?.group).toBe('main');
+    // The model quantises it — LTX wants 8n+1 — and the node says so.
+    expect(length?.step).toBe(8);
+    // The slider spans what one pass on one card renders, not what the node
+    // will tolerate.
+    expect(length?.softMax).toBe(257);
+
+    const rate = byId(schema.fields, '7.frame_rate');
+    expect(rate?.role).toBe('frame_rate');
+    expect(rate?.group).toBe('main');
+
+    // And they come after the size, where the rest of "how big is this" sits.
+    const main = schema.fields.filter((field) => field.group === 'main').map((field) => field.role);
+    expect(main.indexOf('length')).toBeGreaterThan(main.indexOf('height'));
+    expect(main.indexOf('frame_rate')).toBeGreaterThan(main.indexOf('length'));
+  });
+
+  it('treats a quantised loader as the model picker', () => {
+    const model = byId(schema.fields, '1.unet_name');
+    expect(model?.role).toBe('model');
+    expect(model?.control).toBe('combo');
+    expect(model?.options).toContain('ltx-2.5-video-Q4_K_M.gguf');
+  });
+
+  it('still finds the prompts through the video conditioning node', () => {
+    expect(byRole(schema.fields, 'prompt').map((field) => field.id)).toEqual(['4.text']);
+    expect(byRole(schema.fields, 'negative_prompt').map((field) => field.id)).toEqual(['5.text']);
   });
 });

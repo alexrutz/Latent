@@ -7,6 +7,7 @@ import { api, thumbnailUrl } from '../api/client';
 import { formatSeconds, formatStepRate } from '../lib/format';
 import { useTicker } from '../lib/useTicker';
 import { useLiveStore } from '../state/live';
+import { Still } from './ImageViewer';
 import { RatingStars } from './RatingStars';
 import { Button, cn, ErrorNote, Sheet } from './ui';
 
@@ -94,7 +95,15 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
    * own is the difference between watching a batch and watching an empty box.
    */
   const lastImage = finished?.images[0];
-  const holdover = !previewUrl && lastImage ? thumbnailUrl(lastImage) : null;
+  /*
+   * Only a picture, and only one there is a still for. A video's poster does
+   * not exist until a browser has played the clip, and a holdover that 404s is
+   * a broken image where the previous result should be.
+   */
+  const holdover =
+    !previewUrl && lastImage && (lastImage.kind !== 'video' || lastImage.hasThumbnail)
+      ? thumbnailUrl(lastImage)
+      : null;
 
   /*
    * The full detail, shared by both shapes. Whichever bar you tapped, the same
@@ -392,7 +401,7 @@ function ResultBar({
   const label = failed ? 'Show what went wrong' : 'Show the finished picture';
 
   const thumbnail = image ? (
-    <img src={thumbnailUrl(image)} alt="" className="size-full object-cover" />
+    <Still image={image} alt="" className="size-full" />
   ) : (
     <div className="grid size-full place-items-center text-sm">{failed ? '!' : '✓'}</div>
   );
@@ -468,7 +477,7 @@ function ResultBar({
               {/* A preview, not the original: this sheet appears on its own
                   after every render, and a 4000×4000 picture behind it is
                   64 MB of bitmap for something the size of a phone screen. */}
-              <img src={thumbnailUrl(image)} alt={record.title} className="w-full object-contain" />
+              <Still image={image} alt={record.title} fit="contain" className="w-full" />
             </button>
           ) : (
             <div className="rounded-2xl border border-line bg-surface-2 p-6 text-center text-sm text-muted">

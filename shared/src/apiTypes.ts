@@ -4,6 +4,7 @@ import type { FieldOverrides, ParamSchema, ParamValues } from './paramTypes.js';
 // The rating scale belongs to the analysis, which is where it is defined; the
 // wire types reuse it rather than restating three levels in two places.
 import type { StudyRating } from './studyStats.js';
+import type { MediaKind } from './media.js';
 
 /* ------------------------------------------------------------------ */
 /* Workflows                                                           */
@@ -26,6 +27,14 @@ export interface WorkflowSummary {
   visible: boolean;
   /** Where it was read from, when it came from the ComfyUI folder. */
   sourcePath: string | null;
+  /**
+   * Whether this workflow ends in a moving picture.
+   *
+   * Read off the graph's save node, so it is known before anything has been
+   * rendered — which is what lets the picker say so, and what tells a screen
+   * expecting pictures that it is about to be handed a video instead.
+   */
+  producesVideo: boolean;
 }
 
 export interface WorkflowDetail extends WorkflowSummary {
@@ -121,6 +130,17 @@ export interface GenerationImage extends ComfyImageRef {
   archived: boolean;
   /** True when a small preview is stored, so the grid never fetches full size. */
   hasThumbnail: boolean;
+  /**
+   * Whether this output moves.
+   *
+   * A video is the same row in the same gallery, but almost nothing about
+   * handling it is the same: it is streamed in ranges rather than sent whole,
+   * it cannot be resized by the still-image renderer, and it plays rather than
+   * draws. Decided from the filename when the row is written; see `mediaKindOf`.
+   */
+  kind: MediaKind;
+  /** How long it runs, once anything has managed to measure it. */
+  durationMs: number | null;
   /** Pixel size, used to give the tile a shape that matches the image. */
   width: number | null;
   height: number | null;

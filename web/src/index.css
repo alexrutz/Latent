@@ -130,8 +130,12 @@
  * dominant colour, which is often enough to recognise a picture you have seen
  * before. Anything genuinely unusable when blurred — the crop preview in the
  * image editor — opts out with `data-blur-exempt`.
+ *
+ * Videos are covered by the same rule for the same reason: a clip playing full
+ * screen is the most conspicuous thing this app ever shows, and a privacy blur
+ * that stops at still images is one somebody has to remember is incomplete.
  */
-[data-blur='on'] img:not([data-blur-exempt]) {
+[data-blur='on'] :is(img, video):not([data-blur-exempt]) {
   filter: blur(20px) saturate(0.55);
 }
 

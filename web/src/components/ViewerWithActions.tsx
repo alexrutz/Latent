@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { textOutputLabel } from '@latent/shared';
+import { contentTypeOf, mediaKindOf, textOutputLabel } from '@latent/shared';
 import type { GenerationRecord, GridSettings } from '@latent/shared';
 
 import { api, imageUrl } from '../api/client';
@@ -77,6 +77,15 @@ export function ViewerWithActions({
 
   const { record, image } = entry;
   const workflowExists = workflows.data?.some((item) => item.id === record.workflowId) ?? false;
+  /*
+   * A clip cannot be sent anywhere that expects a picture.
+   *
+   * `LoadImage` reads one frame from a file, so img2img and upscaling are not
+   * "not implemented yet" for a video — they are the wrong question. Shown
+   * disabled rather than hidden, so the row of actions does not rearrange
+   * itself as you swipe from a picture to a video.
+   */
+  const isVideo = mediaKindOf(image.filename) === 'video';
   const viewerOverlay = overlayValues(record, grid.viewerParams);
 
   /*
@@ -163,7 +172,9 @@ export function ViewerWithActions({
     try {
       const response = await fetch(url);
       const blob = await response.blob();
-      const file = new File([blob], image.filename, { type: blob.type || 'image/png' });
+      const file = new File([blob], image.filename, {
+        type: blob.type || contentTypeOf(image.filename),
+      });
 
       // Web Share with files is the only route to "save to camera roll" on iOS.
       if (navigator.canShare?.({ files: [file] })) {
@@ -297,12 +308,16 @@ export function ViewerWithActions({
               glyph="◨"
               label="img2img"
               busy={busy === 'img2img'}
+              disabled={isVideo}
+              title={isVideo ? 'img2img takes a picture, not a clip' : undefined}
               onClick={() => void sendTo('img2img')}
             />
             <ViewerAction
               glyph="⤢"
               label="Upscale"
               busy={busy === 'upscale'}
+              disabled={isVideo}
+              title={isVideo ? 'Upscaling takes a picture, not a clip' : undefined}
               onClick={() => void sendTo('upscale')}
             />
             <ViewerAction glyph="≡" label="Details" onClick={() => setShowDetails(true)} />

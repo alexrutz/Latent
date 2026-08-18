@@ -6,7 +6,9 @@ import { expect, request as apiRequest, test, type Page } from '@playwright/test
 
 import {
   img2img,
+  ltxVideoGguf,
   sd15Txt2Img,
+  videoCombine,
   sd15Txt2ImgUi,
   sd15WithLoraInput,
   uiFormatWorkflow,
@@ -541,6 +543,20 @@ test.describe('gallery, favourites and the prompt builder', () => {
    */
   test('keeps a long grid cheap to scroll', async ({ page }) => {
     await generate(page, 'scroll load', 8);
+
+    /*
+     * Every size report this page makes, from the moment the gallery opens.
+     *
+     * Watched from before the first tile rather than from after it: a tile
+     * scrolled into view for the first time is *allowed* to report — that is
+     * the one measurement it exists to take — so what has to be proved is that
+     * nothing reports twice, and that can only be seen across the whole visit.
+     */
+    const reports: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/dimensions')) reports.push(request.postData() ?? '');
+    });
+
     await open(page, '/gallery');
     await expect(page.locator('img[alt*="scroll load"]').first()).toBeVisible({ timeout: 30_000 });
 
@@ -554,23 +570,19 @@ test.describe('gallery, favourites and the prompt builder', () => {
       });
     expect(contained).toBe('auto');
 
-    /*
-     * Each image reports its size at most once, ever. Before, this fired on every
-     * load and on every remount — the request storm that came with the re-render
-     * storm.
-     */
-    const reports: string[] = [];
-    page.on('request', (request) => {
-      if (request.url().includes('/dimensions')) reports.push(request.url());
-    });
-
     await page.locator('main').evaluate((element) => element.scrollTo(0, element.scrollHeight));
     await page.waitForTimeout(600);
     await page.locator('main').evaluate((element) => element.scrollTo(0, 0));
     await page.waitForTimeout(600);
 
-    // Scrolling back and forth must not re-report anything already reported.
-    expect(reports).toHaveLength(0);
+    /*
+     * Each image reports its size at most once, ever. Before, this fired on
+     * every load and on every remount — the request storm that came with the
+     * re-render storm — so scrolling a long grid up and down was a request per
+     * tile per pass.
+     */
+    expect(reports.length).toBeGreaterThan(0);
+    expect(new Set(reports).size).toBe(reports.length);
   });
 
   test('lets the grid width be changed and remembers it', async ({ page }) => {
@@ -4513,5 +4525,175 @@ test.describe('the twenty-seventh wave', () => {
     await expect(
       page.getByText('The model server’s own, from the flags it was started with.'),
     ).toBeVisible();
+  });
+});
+
+/**
+ * Video, from the picker to the player.
+ *
+ * A workflow that ends in a clip is queued and watched exactly like one that
+ * draws a picture — what differs is everything about the result: the tile has
+ * no still until something makes one, the viewer plays rather than zooms, and
+ * the actions that hand a picture to another graph are not offered.
+ */
+test.describe('generating video', () => {
+  test.beforeEach(async () => {
+    await resetState();
+  });
+
+  /** Queue one run of `graph` and wait for its clip to land in the gallery. */
+  async function renderClip(page: Page, name: string, graph: unknown, prompt: string) {
+    await withApi((ctx) => ctx.post('/api/workflows', { data: { name, graph } }));
+
+    await open(page, '/');
+    await page.getByRole('button', { name: 'Workflow' }).click();
+    const picker = page.getByRole('dialog', { name: 'Workflow' });
+    await picker.getByRole('button', { name: new RegExp(name) }).click();
+
+    await page.getByPlaceholder('Describe the image…').first().fill(prompt);
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await expect
+      .poll(
+        async () => {
+          const gallery = await withApi(async (ctx) => {
+            const response = await ctx.get('/api/gallery');
+            return (await response.json()) as {
+              items: { title: string; images: { filename: string; kind: string }[] }[];
+            };
+          });
+          return gallery.items.find((item) => item.title === prompt)?.images ?? [];
+        },
+        { timeout: 60_000 },
+      )
+      .not.toHaveLength(0);
+  }
+
+  test('marks a video workflow in the picker and plays what it produced', async ({ page }) => {
+    await withApi((ctx) => ctx.post('/api/workflows', { data: { name: 'LTXV', graph: ltxVideoGguf } }));
+
+    await open(page, '/');
+    await page.getByRole('button', { name: 'Workflow' }).click();
+    // Which of these makes a clip is the first thing worth knowing about a list
+    // of workflows, and the name does not reliably say.
+    const picker = page.getByRole('dialog', { name: 'Workflow' });
+    await expect(picker.getByRole('button', { name: /LTXV/ }).getByText('video')).toBeVisible();
+    await picker.getByRole('button', { name: /LTXV/ }).click();
+
+    // The frame count is a control on the main screen, not one integer among
+    // twenty behind Advanced.
+    await expect(page.getByText('Frames', { exact: true }).first()).toBeVisible();
+    await page.screenshot({ path: 'test-results/84-video-form.png' });
+
+    await page.getByPlaceholder('Describe the image…').first().fill('a paper boat');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await expect
+      .poll(
+        async () => {
+          const gallery = await withApi(async (ctx) => {
+            const response = await ctx.get('/api/gallery');
+            return (await response.json()) as {
+              items: { title: string; images: { kind: string }[] }[];
+            };
+          });
+          return gallery.items.find((item) => item.title === 'a paper boat')?.images?.[0]?.kind;
+        },
+        { timeout: 60_000 },
+      )
+      .toBe('video');
+
+    await open(page, '/gallery');
+
+    /*
+     * No still yet, and the tile says so rather than quietly loading the clip:
+     * a grid that autoplays videos pulls tens of megabytes over mobile data,
+     * which is the exact thing thumbnails exist to prevent.
+     */
+    const placeholder = page.getByTestId('video-placeholder').first();
+    await expect(placeholder).toBeVisible({ timeout: 30_000 });
+    await page.screenshot({ path: 'test-results/85-video-grid.png' });
+
+    await placeholder.click();
+
+    // A player, with the browser's own controls, pointed at this clip.
+    const video = page.getByTestId('viewer-video');
+    await expect(video).toBeVisible();
+    await expect(video).toHaveAttribute('src', /\/api\/view\?.*\.webm/);
+    await expect(video).toHaveAttribute('controls', '');
+
+    /*
+     * And it does not own the whole screen.
+     *
+     * Fitted to the clip's own shape, so the margins around it stay part of the
+     * layer that handles a swipe to the next output and a tap to close — the
+     * two gestures a picture has, which a full-bleed element would swallow.
+     */
+    const viewport = page.viewportSize()!;
+    const box = (await video.boundingBox())!;
+    expect(box.width).toBeLessThanOrEqual(viewport.width);
+    expect(box.height).toBeLessThan(viewport.height);
+
+    // Rating a clip stores it here, exactly as it does for a picture.
+    await page.getByRole('button', { name: '4 stars' }).click();
+    await expect
+      .poll(async () => {
+        const gallery = await withApi(async (ctx) => {
+          const response = await ctx.get('/api/gallery');
+          return (await response.json()) as {
+            items: { images: { archived: boolean }[] }[];
+          };
+        });
+        return gallery.items[0]?.images?.[0]?.archived;
+      })
+      .toBe(true);
+
+    // And the two actions that hand a picture to another graph are refused,
+    // because a clip is not an input image.
+    await expect(page.getByRole('button', { name: 'img2img' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Upscale' })).toBeDisabled();
+    await page.screenshot({ path: 'test-results/86-video-viewer.png' });
+  });
+
+  /**
+   * The other half: VideoHelperSuite files its result under `gifs`, and what it
+   * made here is a real animated GIF — which the browser draws as a picture.
+   */
+  test('shows a clip that a browser draws as an image', async ({ page }) => {
+    await renderClip(page, 'Combine', videoCombine, 'a sweeping band');
+
+    await open(page, '/gallery');
+    const tile = page.getByTestId('video-placeholder').first();
+    await expect(tile).toBeVisible({ timeout: 30_000 });
+    await tile.click();
+
+    // Drawn by an `<img>`, so this is the one video the viewer does not play —
+    // and the frame it shows is the poster the clip did not have.
+    const image = page.getByTestId('viewer-image');
+    await expect(image).toBeVisible();
+    await expect
+      .poll(async () => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
+      .toBeGreaterThan(0);
+
+    // Having decoded it, the browser hands a still back, and the gallery has a
+    // thumbnail for a file this server cannot open.
+    await expect
+      .poll(
+        async () => {
+          const gallery = await withApi(async (ctx) => {
+            const response = await ctx.get('/api/gallery');
+            return (await response.json()) as {
+              items: { images: { hasThumbnail: boolean }[] }[];
+            };
+          });
+          return gallery.items[0]?.images?.[0]?.hasThumbnail;
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+
+    await page.getByRole('button', { name: 'Close' }).click();
+    await expect(page.getByTestId('video-placeholder')).toHaveCount(0);
+    await page.screenshot({ path: 'test-results/87-video-poster.png' });
   });
 });

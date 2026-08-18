@@ -2,6 +2,7 @@ import { Readable } from 'node:stream';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
+import { contentTypeOf, mediaKindOf } from '@latent/shared';
 import type { ComfyImageRef, UploadImageResponse } from '@latent/shared';
 
 import { ComfyError } from '../comfy/client.js';
@@ -105,6 +106,118 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
     };
 
     /*
+     * A video is a different thing to serve.
+     *
+     * It cannot be resized or cropped here — nothing in this process can decode
+     * one — and it must be answerable in pieces, because that is how a browser
+     * plays one. So it takes its own path: the poster for a preview request,
+     * and byte ranges for everything else.
+     *
+     * The row's own answer comes first, because it was decided when the file
+     * was recorded — from what the node said as well as from the name — and is
+     * therefore right for a container this build has never heard of.
+     */
+    if ((known?.kind ?? mediaKindOf(filename)) === 'video') {
+      if (preview) {
+        /*
+         * The poster, if anything has managed to make one.
+         *
+         * On a server without ffmpeg that is the browser: it decodes the clip
+         * to play it anyway, and hands a frame back (see the poster route). Any
+         * grid tile before that happens has no still to show, and says so
+         * rather than sending the clip itself — a wall of thumbnails that are
+         * secretly whole videos is exactly what the preview endpoint exists to
+         * prevent.
+         */
+        if (!known?.thumb_path) {
+          return reply
+            .code(404)
+            .send({ error: 'No poster for that video yet', kind: 'video', noPoster: true });
+        }
+        try {
+          const bytes = await ctx.archive.read(known.thumb_path);
+          if (bytes) {
+            return reply
+              .header('content-type', thumbnailContentType(known.thumb_path))
+              .header('cache-control', 'private, max-age=86400')
+              .header('x-latent-source', 'poster')
+              .send(bytes);
+          }
+        } catch (error) {
+          if (error instanceof VaultLockedError) {
+            return reply.code(423).send({ error: error.message, locked: true });
+          }
+          if (error instanceof ArchiveUnreadableError) {
+            return reply.code(409).send({ error: error.message });
+          }
+          throw error;
+        }
+        return reply
+          .code(404)
+          .send({ error: 'No poster for that video yet', kind: 'video', noPoster: true });
+      }
+
+      const range = parseRange(request.headers.range);
+
+      if (known?.archived_path) {
+        try {
+          const part = await ctx.archive.readRange(known.archived_path, range);
+          if (part) {
+            reply
+              .header('content-type', contentTypeOf(filename))
+              .header('accept-ranges', 'bytes')
+              .header('cache-control', 'private, max-age=86400')
+              .header('content-length', String(part.end - part.start + 1))
+              .header('x-latent-source', 'archive');
+            if (range) {
+              reply
+                .code(206)
+                .header('content-range', `bytes ${part.start}-${part.end}/${part.size}`);
+            }
+            return reply.send(part.stream);
+          }
+        } catch (error) {
+          if (error instanceof VaultLockedError) {
+            return reply.code(423).send({ error: error.message, locked: true });
+          }
+          if (error instanceof ArchiveUnreadableError) {
+            return reply.code(409).send({ error: error.message });
+          }
+          throw error;
+        }
+      }
+
+      if (!UPSTREAM_TYPES.has(type)) {
+        return reply.code(404).send({ error: 'That video is not in the local archive' });
+      }
+
+      let upstream: Response;
+      try {
+        // The range goes through untouched, and so does the answer: ComfyUI
+        // serves these files itself and knows how long they are.
+        upstream = await ctx.orchestrator.client.view(
+          params,
+          request.headers.range ? { range: request.headers.range } : undefined,
+        );
+      } catch (error) {
+        return sendImageError(reply, error);
+      }
+      if (!upstream.body) return reply.code(502).send({ error: 'ComfyUI returned an empty video' });
+
+      reply
+        .code(upstream.status === 206 ? 206 : 200)
+        .header('content-type', upstream.headers.get('content-type') ?? contentTypeOf(filename))
+        .header('accept-ranges', 'bytes')
+        .header('cache-control', type === 'output' ? 'private, max-age=86400' : 'no-store');
+      const upstreamRange = upstream.headers.get('content-range');
+      if (upstreamRange) reply.header('content-range', upstreamRange);
+      const upstreamLength = upstream.headers.get('content-length');
+      if (upstreamLength) reply.header('content-length', upstreamLength);
+
+      return reply.send(Readable.fromWeb(upstream.body as WebReadableStream<Uint8Array>));
+    }
+
+    /*
      * A view sized for the screen looking at it.
      *
      * The viewer used to open the original, which for a 4000×4000 output is
@@ -178,7 +291,7 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
         const bytes = await ctx.archive.read(path);
         if (bytes) {
           return reply
-            .header('content-type', wantsThumbnail ? thumbnailContentType(path) : contentTypeFor(filename))
+            .header('content-type', wantsThumbnail ? thumbnailContentType(path) : contentTypeOf(filename))
             .header('cache-control', 'private, max-age=86400')
             .header('x-latent-source', wantsThumbnail ? 'archive-thumb' : 'archive')
             .send(bytes);
@@ -325,6 +438,18 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
     if (!ALLOWED_TYPES.has(type)) {
       return reply.code(400).send({ error: 'Invalid image type' });
     }
+    /*
+     * A clip is not an input image.
+     *
+     * `LoadImage` reads one frame from a file, so uploading an mp4 to it fails
+     * inside ComfyUI with something unhelpful about PIL. Refusing here says the
+     * true thing instead.
+     */
+    if (mediaKindOf(filename) === 'video') {
+      return reply.code(400).send({
+        error: 'That is a video. Send a picture to img2img or upscaling, not a clip.',
+      });
+    }
 
     try {
       let buffer: Buffer;
@@ -340,7 +465,7 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
 
       if (local) {
         buffer = local;
-        contentType = contentTypeFor(filename);
+        contentType = contentTypeOf(filename);
       } else if (UPSTREAM_TYPES.has(type)) {
         const response = await ctx.orchestrator.client.view({ filename, subfolder, type });
         buffer = Buffer.from(await response.arrayBuffer());
@@ -421,24 +546,25 @@ function thumbnailContentType(path: string): string {
   return path.endsWith('.webp') ? 'image/webp' : 'image/png';
 }
 
-function contentTypeFor(filename: string): string {
-  const extension = filename.toLowerCase().split('.').pop() ?? '';
-  switch (extension) {
-    case 'jpg':
-    case 'jpeg':
-      return 'image/jpeg';
-    case 'webp':
-      return 'image/webp';
-    case 'gif':
-      return 'image/gif';
-    case 'mp4':
-      return 'video/mp4';
-    case 'webm':
-      return 'video/webm';
-    case 'png':
-    default:
-      return 'image/png';
-  }
+/**
+ * `bytes=0-1023`, or nothing.
+ *
+ * Only the single-range form, which is the only one browsers send for media.
+ * A suffix range (`bytes=-500`, the last N bytes) is answered as "from the
+ * start" rather than refused: it is rare, and a whole file is always a correct
+ * answer to a range request the server declines to honour.
+ */
+export function parseRange(header: string | undefined): { start: number; end: number } | null {
+  if (!header) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match) return null;
+  const [, rawStart, rawEnd] = match;
+  if (!rawStart) return null;
+  const start = Number(rawStart);
+  if (!Number.isFinite(start) || start < 0) return null;
+  const end = rawEnd ? Number(rawEnd) : Number.MAX_SAFE_INTEGER;
+  if (!Number.isFinite(end) || end < start) return null;
+  return { start, end };
 }
 
 /**

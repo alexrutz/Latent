@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { extname, join, relative, resolve, sep } from 'node:path';
 
-import { buildParamSummary, matchPrompt, parsePromptMetadata } from '@latent/shared';
+import { buildParamSummary, matchPrompt, mediaKindOf, parsePromptMetadata } from '@latent/shared';
 import type {
   ImportBrowseResult,
   ImportCandidate,
@@ -32,7 +33,25 @@ import { readImageSize, readPngText } from './images/png.js';
  * local ComfyUI, a network mount, or a synced folder.
  */
 
-const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+/**
+ * What is worth walking a folder for.
+ *
+ * Videos are in the list because a video workflow's outputs sit in the same
+ * directory as everything else, and a folder half of which the importer
+ * pretends not to see is a folder you cannot import.
+ */
+const IMAGE_EXTENSIONS = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.webp',
+  '.gif',
+  '.mp4',
+  '.m4v',
+  '.webm',
+  '.mkv',
+  '.mov',
+]);
 /** Guards against a pathological tree, and against symlink loops. */
 const MAX_DEPTH = 8;
 const MAX_FILES = 2000;
@@ -183,11 +202,36 @@ export class Importer {
           continue;
         }
 
-        const data = await readFile(absolute);
         const segments = path.split('/');
         const filename = segments.pop() as string;
         const subfolder = segments.join('/');
 
+        /*
+         * A clip is not read into memory and not encrypted.
+         *
+         * The same two reasons as everywhere else: whole-file AES cannot be
+         * read from the middle, and a video is watched by asking for the
+         * middle — and a folder of them is gigabytes that have no business
+         * passing through a Buffer on the way to disk. It carries no settings
+         * either: the PNG text chunk a ComfyUI output hides its prompt in has
+         * no equivalent in an mp4.
+         */
+        if (mediaKindOf(filename) === 'video') {
+          const imageId = this.store.insertImportedImage({
+            generationId: randomUUID(),
+            promptId: `import:${path}`,
+            title: subfolder ? `${subfolder}/${filename}` : filename,
+            filename,
+            subfolder,
+            modifiedAt: Math.round(info.mtimeMs),
+          });
+          await this.archive.storeVideo(imageId, filename, createReadStream(absolute));
+          if (rating > 0) this.store.setImageRating(imageId, rating);
+          result.imported += 1;
+          continue;
+        }
+
+        const data = await readFile(absolute);
         const recovered = this.recoverSettings(data);
 
         const imageId = this.store.insertImportedImage({

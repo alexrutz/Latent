@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
+  formatDuration,
+  mediaKindOf,
+  playsInVideoElement,
   regionFraction,
   viewBox,
   viewerScaleOf,
@@ -9,7 +12,10 @@ import {
 } from '@latent/shared';
 import type { GenerationImage, GenerationRecord, ViewTransform } from '@latent/shared';
 
+import { useQueryClient } from '@tanstack/react-query';
+
 import { imageUrl, thumbnailUrl, viewUrl } from '../api/client';
+import { reportPoster } from '../lib/poster';
 import { useBlur } from '../state/blur';
 import { useGridSettings } from '../state/grid';
 import { cn } from './ui';
@@ -84,7 +90,16 @@ function useViewSources(
    * every pixel is already there.
    */
   const scale = viewerScaleOf(grid);
-  const native = scale === 0;
+  /*
+   * A video is always fetched as itself.
+   *
+   * The renderer on the other end decodes still images; there is nothing there
+   * that can open an mp4, resize it and hand back a frame. Asking anyway would
+   * cost a round trip to be told so — and the clip is streamed in ranges, which
+   * is the cheaper answer to "do not send me all of it" in any case.
+   */
+  const isVideo = image ? mediaKindOf(image.filename) === 'video' : false;
+  const native = scale === 0 || isVideo;
   const [detail, setDetail] = useState<string | null>(null);
   /**
    * The size of the copy that actually arrived.
@@ -188,6 +203,23 @@ export function ImageViewer({
    */
   const blurred = useBlur((state) => state.blurred);
   const toggleBlur = useBlur((state) => state.toggle);
+
+  /*
+   * A poster arriving is news to every grid on the other side of this overlay:
+   * until they hear it, the video they are listing keeps showing the plate that
+   * says it has no still.
+   */
+  const queryClient = useQueryClient();
+  const capturePoster = useCallback(
+    (element: HTMLVideoElement | HTMLImageElement) => {
+      if (!image) return;
+      reportPoster(image, element, () => {
+        void queryClient.invalidateQueries({ queryKey: ['gallery'] });
+        void queryClient.invalidateQueries({ queryKey: ['favorites'] });
+      });
+    },
+    [image, queryClient],
+  );
 
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gestureStart = useRef({ distance: 0, scale: 1, x: 0, y: 0, offsetX: 0, offsetY: 0 });
@@ -374,6 +406,8 @@ export function ImageViewer({
     swipeStart.current = null;
   };
 
+  const plays = playsInVideoElement(image.filename);
+
   return (
     /*
       One layer, not three stacked boxes.
@@ -391,20 +425,67 @@ export function ImageViewer({
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       >
-        <img
-          data-testid="viewer-image"
-          src={fitted}
-          alt={record.title}
-          draggable={false}
-          onLoad={(event) => onFittedLoad(event.currentTarget)}
-          className={cn(
-            'size-full origin-center object-contain select-none',
-            !dragging && 'transition-transform duration-150',
-          )}
-          style={{
-            transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})`,
-          }}
-        />
+        {plays ? (
+          /*
+            A clip gets the browser's own controls, and keeps its hands off the
+            gestures.
+
+            Pinch-to-zoom on a video is meaningless — there is no detail to
+            fetch, only a scaled-up frame — and a scrubber you cannot drag
+            because the layer above it reads every drag as a swipe is worse than
+            no scrubber. So the element stops its own pointer events, and it is
+            sized to the clip rather than to the screen: a full-bleed element
+            with `object-contain` looks identical and is not the same thing —
+            its *box* covers the viewport, so the black margins beside a
+            portrait clip would belong to the video and swallow every gesture.
+            Fitted, those margins stay with the layer underneath, which is what
+            keeps a swipe moving to the next output and a tap closing the
+            viewer.
+          */
+          <div className="flex size-full items-center justify-center">
+            <video
+              data-testid="viewer-video"
+              src={imageUrl(image)}
+              controls
+              loop
+              playsInline
+              preload="metadata"
+              poster={image.hasThumbnail ? thumbnailUrl(image) : undefined}
+              // The first decoded frame is the poster this video does not have
+              // yet — see `lib/poster`. `loadeddata` is the moment there is one.
+              onLoadedData={(event) => capturePoster(event.currentTarget)}
+              // How long it runs arrives first, and separately — see `lib/poster`.
+              onLoadedMetadata={(event) => capturePoster(event.currentTarget)}
+              onPlaying={(event) => capturePoster(event.currentTarget)}
+              onPointerDown={(event) => event.stopPropagation()}
+              onPointerMove={(event) => event.stopPropagation()}
+              onPointerUp={(event) => event.stopPropagation()}
+              className="max-h-full max-w-full"
+            />
+          </div>
+        ) : (
+          <img
+            data-testid="viewer-image"
+            src={fitted}
+            alt={record.title}
+            draggable={false}
+            onLoad={(event) => {
+              onFittedLoad(event.currentTarget);
+              // An animated GIF is a video that a browser draws as a picture,
+              // and the still it needs is the frame already on screen.
+              if (mediaKindOf(image.filename) === 'video') {
+                capturePoster(event.currentTarget);
+              }
+            }}
+            className={cn(
+              'size-full origin-center object-contain select-none',
+              !dragging && 'transition-transform duration-150',
+            )}
+            style={{
+              transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})`,
+            }}
+          />
+        )}
 
         {/*
           The zoomed-in rectangle, rendered at the screen's own resolution and
@@ -415,7 +496,7 @@ export function ImageViewer({
           needs no transform of its own. Until it arrives the stretched copy
           underneath is what you see, which is blurry rather than blank.
         */}
-        {detail && (
+        {detail && !plays && (
           <img
             data-testid="viewer-detail"
             src={detail}
@@ -531,7 +612,6 @@ export function Thumb({
   onMeasured?: (width: number, height: number) => void;
   fit?: 'cover' | 'contain';
 }) {
-  const [failed, setFailed] = useState(false);
   const longPress = useLongPress(onLongPress);
 
   return (
@@ -545,27 +625,102 @@ export function Thumb({
         className,
       )}
     >
-      {failed ? (
-        <span className="grid size-full place-items-center text-xs text-muted">missing</span>
-      ) : (
-        <img
-          src={thumbnailUrl(image)}
-          alt={alt}
-          loading="lazy"
-          decoding="async"
-          onLoad={(event) => {
-            const element = event.currentTarget;
-            // The thumbnail's own dimensions carry the original's aspect ratio,
-            // which is all the grid needs to shape the tile.
-            if (!image.width && element.naturalWidth > 0) {
-              onMeasured?.(element.naturalWidth, element.naturalHeight);
-            }
-          }}
-          onError={() => setFailed(true)}
-          className={cn('size-full', fit === 'cover' ? 'object-cover' : 'object-contain')}
-        />
-      )}
+      <Still image={image} alt={alt} fit={fit} onMeasured={onMeasured} />
     </button>
+  );
+}
+
+/**
+ * The still for an output, whatever kind of output it is.
+ *
+ * For a picture that is the picture. For a video it is the poster — a frame
+ * some browser handed back while playing it — and until one exists, a plate
+ * saying so. Emphatically *not* the clip itself: a grid that autoloads videos
+ * is a grid that pulls tens of megabytes on a mobile connection, which is the
+ * exact thing thumbnails exist to prevent.
+ */
+export function Still({
+  image,
+  alt,
+  className,
+  fit = 'cover',
+  onMeasured,
+}: {
+  image: GenerationImage;
+  alt: string;
+  className?: string;
+  fit?: 'cover' | 'contain';
+  onMeasured?: (width: number, height: number) => void;
+}) {
+  const [failed, setFailed] = useState(false);
+  const isVideo = mediaKindOf(image.filename) === 'video';
+  const duration = formatDuration(image.durationMs);
+
+  /*
+   * Two shapes, because there are two kinds of caller.
+   *
+   * A grid tile is a box of a size the grid decided, and the picture fills it.
+   * A sheet or a chat bubble is the other way round: the width is given and the
+   * picture's own proportions set the height. Forcing the tile's `size-full` on
+   * those collapsed them to nothing, since their height is what was being asked
+   * for in the first place.
+   */
+  const fills = fit === 'cover';
+
+  // A video with nothing to show yet, or a picture whose file has gone.
+  if (failed || (isVideo && !image.hasThumbnail)) {
+    return (
+      <span
+        data-testid={isVideo ? 'video-placeholder' : undefined}
+        className={cn(
+          'grid place-items-center gap-1 bg-surface-2 text-muted',
+          fills ? 'size-full' : 'aspect-video w-full',
+          className,
+        )}
+      >
+        {isVideo ? (
+          <span className="flex flex-col items-center gap-0.5">
+            <span aria-hidden className="text-lg leading-none">
+              ▶
+            </span>
+            <span className="text-[10px]">{duration ?? 'video'}</span>
+          </span>
+        ) : (
+          <span className="text-xs">missing</span>
+        )}
+      </span>
+    );
+  }
+
+  return (
+    <span className={cn('relative block', fills ? 'size-full' : 'w-full', className)}>
+      <img
+        src={thumbnailUrl(image)}
+        alt={alt}
+        loading="lazy"
+        decoding="async"
+        onLoad={(event) => {
+          const element = event.currentTarget;
+          // The thumbnail's own dimensions carry the original's aspect ratio,
+          // which is all the grid needs to shape the tile.
+          if (!image.width && element.naturalWidth > 0) {
+            onMeasured?.(element.naturalWidth, element.naturalHeight);
+          }
+        }}
+        onError={() => setFailed(true)}
+        className={cn(
+          fills ? 'size-full object-cover' : 'block h-auto w-full object-contain',
+        )}
+      />
+      {/* A poster is a picture of a video, and looks exactly like a picture.
+          The badge is the whole difference, so it is not optional. */}
+      {isVideo && (
+        <span className="pointer-events-none absolute top-1 left-1 flex items-center gap-1 rounded-md bg-black/60 px-1.5 py-0.5 text-[10px] text-white backdrop-blur">
+          <span aria-hidden>▶</span>
+          {duration && <span className="tabular-nums">{duration}</span>}
+        </span>
+      )}
+    </span>
   );
 }
 

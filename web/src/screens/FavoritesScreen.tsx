@@ -5,7 +5,7 @@ import type { Favorite, FavoriteSort, GenerationImage, GenerationRecord } from '
 
 import { useQueryClient } from '@tanstack/react-query';
 
-import { api, thumbnailUrl } from '../api/client';
+import { api } from '../api/client';
 import {
   queryKeys,
   useDeleteFavorite,
@@ -13,7 +13,7 @@ import {
   useGeneration,
   useUpdateFavorite,
 } from '../api/queries';
-import { Thumb, type ViewerEntry } from '../components/ImageViewer';
+import { Still, Thumb, type ViewerEntry } from '../components/ImageViewer';
 import { RatingStars } from '../components/RatingStars';
 import { ThumbGrid, useTileStyle } from '../components/ThumbGrid';
 import { Toggle } from '../components/ParamControl';
@@ -237,8 +237,8 @@ function FavoriteSheet({ favorite, onClose }: { favorite: Favorite; onClose: () 
             className="block w-full overflow-hidden rounded-2xl border border-line bg-surface-2"
           >
             {/* A preview: tapping it opens the viewer, which is where the
-                full-size picture belongs. */}
-            <img src={thumbnailUrl(favorite.image)} alt={favorite.title} className="w-full" />
+                full-size picture — or the clip — belongs. */}
+            <Still image={favorite.image} alt={favorite.title} fit="contain" className="w-full" />
           </button>
         )}
 

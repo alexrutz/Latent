@@ -6,6 +6,7 @@ import {
   describeSignificance,
   factorLevels,
   levelLabel,
+  playsInVideoElement,
 } from '@latent/shared';
 import type {
   CategoricalFactor,
@@ -673,14 +674,36 @@ function RatingViewer({ study }: { study: StudyDetail }) {
   return (
     <div className="space-y-2">
       <div className="relative overflow-hidden rounded-xl bg-black">
-        <img
-          src={imageUrl(shot.image)}
-          alt=""
-          className={cn(
-            'block max-h-[62svh] w-full object-contain',
-            blurred && 'blur-2xl',
-          )}
-        />
+        {/*
+          A clip plays itself here, without controls.
+
+          Rating is three tap zones laid over the picture, and a scrubber
+          underneath them would be a control you cannot reach. A study shot is
+          something you glance at and judge, so it loops silently and the
+          judgement stays one tap wherever you touch it.
+        */}
+        {playsInVideoElement(shot.image.filename) ? (
+          <video
+            src={imageUrl(shot.image)}
+            autoPlay
+            loop
+            muted
+            playsInline
+            className={cn(
+              'block max-h-[62svh] w-full object-contain',
+              blurred && 'blur-2xl',
+            )}
+          />
+        ) : (
+          <img
+            src={imageUrl(shot.image)}
+            alt=""
+            className={cn(
+              'block max-h-[62svh] w-full object-contain',
+              blurred && 'blur-2xl',
+            )}
+          />
+        )}
 
         {/* The three targets, invisible until one is hit. */}
         <div className="absolute inset-0 flex flex-col">

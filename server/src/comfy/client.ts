@@ -271,8 +271,15 @@ export class ComfyClient {
     });
   }
 
-  /** Returns the raw response so the caller can stream image bytes straight through. */
-  view(params: ViewParams): Promise<Response> {
+  /**
+   * Returns the raw response so the caller can stream image bytes straight through.
+   *
+   * `headers` is how a byte range gets through to ComfyUI: a browser playing a
+   * video asks for one part of the file at a time, and forwarding that is the
+   * difference between a clip that starts immediately and one that has to be
+   * downloaded whole before the first frame.
+   */
+  view(params: ViewParams, headers?: Record<string, string>): Promise<Response> {
     return this.request('/view', {
       query: {
         filename: params.filename,
@@ -280,6 +287,7 @@ export class ComfyClient {
         type: params.type ?? 'output',
         preview: params.preview,
       },
+      ...(headers ? { headers } : {}),
       signal: AbortSignal.timeout(60_000),
     });
   }

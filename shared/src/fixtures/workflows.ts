@@ -347,6 +347,81 @@ export const withPresetChat: ApiWorkflow = {
   },
 };
 
+/**
+ * Text-to-video on a quantised model, the way it is actually run.
+ *
+ * Modelled on the published LTX-2.5 graphs, with the weights swapped for the
+ * GGUF repacks people load on one card — a `UnetLoaderGGUF` where a checkpoint
+ * loader would be, a video latent with a frame count, a frame rate on the
+ * conditioning, and a saver that writes a `.webm` rather than a picture.
+ */
+export const ltxVideoGguf: ApiWorkflow = {
+  '1': {
+    class_type: 'UnetLoaderGGUF',
+    inputs: { unet_name: 'ltx-2.5-video-Q4_K_M.gguf' },
+  },
+  '2': {
+    class_type: 'CLIPLoaderGGUF',
+    inputs: { clip_name: 't5xxl_encoderonly-Q5_K_M.gguf', type: 'ltxv' },
+  },
+  '3': { class_type: 'VAELoader', inputs: { vae_name: 'ltx-2.5-vae.safetensors' } },
+  '4': {
+    class_type: 'CLIPTextEncode',
+    inputs: { text: 'a paper boat drifting down a rain gutter', clip: ['2', 0] },
+    _meta: { title: 'CLIP Text Encode (Prompt)' },
+  },
+  '5': {
+    class_type: 'CLIPTextEncode',
+    inputs: { text: 'still, jitter, watermark', clip: ['2', 0] },
+    _meta: { title: 'CLIP Text Encode (Negative)' },
+  },
+  '6': {
+    class_type: 'EmptyLTXVLatentVideo',
+    inputs: { width: 768, height: 512, length: 97, batch_size: 1 },
+  },
+  '7': {
+    class_type: 'LTXVConditioning',
+    inputs: { positive: ['4', 0], negative: ['5', 0], frame_rate: 25 },
+  },
+  '8': {
+    class_type: 'KSampler',
+    inputs: {
+      seed: 4242,
+      steps: 20,
+      cfg: 3,
+      sampler_name: 'euler',
+      scheduler: 'normal',
+      denoise: 1,
+      model: ['1', 0],
+      positive: ['7', 0],
+      negative: ['7', 1],
+      latent_image: ['6', 0],
+    },
+  },
+  '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['3', 0] } },
+  '10': {
+    class_type: 'SaveWEBM',
+    inputs: { images: ['9', 0], filename_prefix: 'LTXV', codec: 'vp9', fps: 25, crf: 32 },
+  },
+};
+
+/** The same thing ending in VideoHelperSuite's combiner, which reports `gifs`. */
+export const videoCombine: ApiWorkflow = {
+  ...ltxVideoGguf,
+  '10': {
+    class_type: 'VHS_VideoCombine',
+    inputs: {
+      images: ['9', 0],
+      frame_rate: 8,
+      loop_count: 0,
+      filename_prefix: 'LTXV',
+      format: 'image/gif',
+      pingpong: false,
+      save_output: true,
+    },
+  },
+};
+
 export const workflowFixtures = {
   sd15Txt2Img,
   sdxlBaseRefiner,
@@ -357,6 +432,8 @@ export const workflowFixtures = {
   withTextPreview,
   withLlamaServer,
   withPresetChat,
+  ltxVideoGguf,
+  videoCombine,
 };
 
 /**

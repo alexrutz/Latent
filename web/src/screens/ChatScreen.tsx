@@ -3,9 +3,9 @@ import { useEffect, useRef, useState } from 'react';
 import { CHAT_IMAGE_SIZES } from '@latent/shared';
 import type { ChatMessage, ChatToolCall } from '@latent/shared';
 
-import { api, thumbnailUrl } from '../api/client';
+import { api } from '../api/client';
 import { useGeneration, useSettings } from '../api/queries';
-import { ImageViewer } from '../components/ImageViewer';
+import { ImageViewer, Still } from '../components/ImageViewer';
 import { Markdown } from '../components/Markdown';
 import { PromptDiff, promptChanged } from '../components/PromptDiff';
 import { ToolDialog } from '../components/ToolDialog';
@@ -681,14 +681,10 @@ function GeneratedRun({
             aria-label={`Open picture ${index + 1}`}
             className="overflow-hidden rounded-xl bg-surface-2 active:opacity-80"
           >
-            <img
-              src={thumbnailUrl(image)}
-              alt=""
-              // `h-auto` so each picture keeps its own shape: a portrait and a
-              // landscape from one batch should not be cropped into agreeing
-              // with each other.
-              className="block h-auto w-full"
-            />
+            {/* `contain` so each picture keeps its own shape: a portrait and a
+                landscape from one batch should not be cropped into agreeing
+                with each other. */}
+            <Still image={image} alt="" fit="contain" className="block w-full" />
           </button>
         ))}
       </div>

@@ -57,6 +57,26 @@ export const UPSCALE_MODELS = ['RealESRGAN_x4plus.pth', '4x-UltraSharp.pth'];
 
 export const INPUT_IMAGES = ['example.png', 'photo.jpg'];
 
+/**
+ * Quantised weights, as they actually appear on a machine that runs video
+ * models on one consumer card.
+ *
+ * The published checkpoints for LTX-2.5 and MiniMax-H3 are tens of gigabytes of
+ * bf16 safetensors that nobody loads on a 24 GB card; what people run is a GGUF
+ * or fp8 repack of them, loaded by a different node than a checkpoint. The
+ * fixture says so, because a workflow this app cannot describe is a workflow it
+ * cannot offer.
+ */
+export const GGUF_MODELS = [
+  'ltx-2.5-video-Q4_K_M.gguf',
+  'ltx-2.5-video-Q6_K.gguf',
+  'minimax-h3-Q4_K_M.gguf',
+];
+
+export const GGUF_CLIPS = ['t5xxl_encoderonly-Q5_K_M.gguf', 'umt5-xxl-Q4_K_M.gguf'];
+
+export const VAES = ['ltx-2.5-vae.safetensors', 'ae.safetensors'];
+
 /** The ratios comfyllama's aspect-ratio latent offers, in its own order. */
 export const ASPECT_RATIOS = [
   '1:1',
@@ -329,6 +349,88 @@ export const objectInfoFixture: ObjectInfo = {
    * `divisible_by` is the numeric combo in the suite: its choices arrive as
    * numbers, and the node compares against numbers.
    */
+  /* ---------------------------------------------------------------- */
+  /* Video: quantised loaders, a video latent, and the savers           */
+  /* ---------------------------------------------------------------- */
+
+  /** ComfyUI-GGUF's loader — how a quantised video model is actually loaded. */
+  UnetLoaderGGUF: {
+    display_name: 'Unet Loader (GGUF)',
+    output: ['MODEL'],
+    input: { required: { unet_name: [GGUF_MODELS] } },
+  },
+  CLIPLoaderGGUF: {
+    display_name: 'CLIP Loader (GGUF)',
+    output: ['CLIP'],
+    input: {
+      required: {
+        clip_name: [GGUF_CLIPS],
+        type: [['ltxv', 'stable_diffusion', 'flux', 'hunyuan_video', 'wan']],
+      },
+    },
+  },
+  VAELoader: {
+    display_name: 'Load VAE',
+    output: ['VAE'],
+    input: { required: { vae_name: [VAES] } },
+  },
+  EmptyLTXVLatentVideo: {
+    display_name: 'Empty LTXV Latent Video',
+    output: ['LATENT'],
+    input: {
+      required: {
+        width: ['INT', { default: 768, min: 64, max: 16384, step: 32 }],
+        height: ['INT', { default: 512, min: 64, max: 16384, step: 32 }],
+        // Quantised to 8n+1 by the model, which is what the step is for.
+        length: ['INT', { default: 97, min: 9, max: 257, step: 8 }],
+        batch_size: ['INT', { default: 1, min: 1, max: 4096 }],
+      },
+    },
+  },
+  LTXVConditioning: {
+    display_name: 'LTXV Conditioning',
+    output: ['CONDITIONING', 'CONDITIONING'],
+    input: {
+      required: {
+        positive: ['CONDITIONING'],
+        negative: ['CONDITIONING'],
+        frame_rate: ['FLOAT', { default: 25, min: 0, max: 1000, step: 1 }],
+      },
+    },
+  },
+  /** Core ComfyUI's own video saver: files its result under `images`. */
+  SaveWEBM: {
+    display_name: 'Save WEBM',
+    output: [],
+    output_node: true,
+    input: {
+      required: {
+        images: ['IMAGE'],
+        filename_prefix: ['STRING', { default: 'ComfyUI' }],
+        codec: [['vp9', 'av1']],
+        fps: ['FLOAT', { default: 24, min: 1, max: 120, step: 1 }],
+        crf: ['FLOAT', { default: 32, min: 0, max: 63, step: 1 }],
+      },
+    },
+  },
+  /** VideoHelperSuite's, which files its result under `gifs` whatever it made. */
+  VHS_VideoCombine: {
+    display_name: 'Video Combine 🎥🅥🅗🅢',
+    output: [],
+    output_node: true,
+    input: {
+      required: {
+        images: ['IMAGE'],
+        frame_rate: ['FLOAT', { default: 8, min: 1, max: 120, step: 1 }],
+        loop_count: ['INT', { default: 0, min: 0, max: 100 }],
+        filename_prefix: ['STRING', { default: 'AnimateDiff' }],
+        format: [['image/gif', 'video/h264-mp4', 'video/webm']],
+        pingpong: ['BOOLEAN', { default: false }],
+        save_output: ['BOOLEAN', { default: true }],
+      },
+    },
+  },
+
   EmptyLatentByAspectRatio: {
     display_name: 'Empty Latent (Aspect Ratio)',
     output: ['LATENT', 'INT', 'INT'],

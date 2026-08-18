@@ -13,6 +13,7 @@ export * from './studyStats.js';
 export * from './modelServer.js';
 export * from './presetChat.js';
 export * from './viewBox.js';
+export * from './media.js';
 export * from './systemPrompts.js';
 export * from './apiTypes.js';
 export * from './markdown.js';

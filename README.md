@@ -41,6 +41,13 @@ form. Nothing about your ComfyUI setup changes.
 - **Gallery.** Every result, with the exact settings that produced it. Swipe
   through the whole gallery, pinch to zoom, tap to close, save to your camera
   roll, re-run, or send a result straight to img2img or an upscale pass.
+- **Video, not just pictures.** A workflow ending in a clip — LTX-2.5,
+  MiniMax-H3, Wan, whatever you run, in whatever quantisation loads on your card
+  — is queued, watched, rated, kept and favourited exactly like a render that
+  draws a still. The picker says which workflows make video, the frame count and
+  frame rate get controls of their own, and clips play in the viewer and stream
+  in pieces so a phone is not asked to download one before it starts. See
+  [Video workflows](#video-workflows).
 - **Divided into days, sorted how you like.** The grid is cut at midnight and
   each day folds away when you tap its divider, so a few days back is a tap
   rather than a minute of scrolling. Order by newest, oldest, or the best
@@ -447,6 +454,9 @@ So a stolen disk, a backup, or someone sitting at the machine gets nothing but
 ciphertext. Changing your password re-wraps the master key, which takes
 milliseconds — no image is ever re-encrypted.
 
+**Videos are the exception**, and deliberately so: see
+[Video workflows](#video-workflows) for why a clip is stored as itself.
+
 **Metadata stays readable.** Prompts, seeds and settings remain in the database
 in the clear, which is what lets the server sort and filter by rating without
 decrypting everything first — and what means the settings behind an image are
@@ -455,6 +465,55 @@ still there years later.
 > **If you forget the password, the images are gone.** There is no recovery key
 > and no back door; that is what makes the encryption worth anything. The
 > database, and the settings in it, survive — the pictures do not.
+
+## Video workflows
+
+A workflow whose last node writes a video rather than a picture works
+everywhere a normal one does. Latent reads the save node when the workflow is
+imported, so it knows before anything has run: the workflow picker marks those
+entries **video**, and the form puts the two settings that only a video has —
+**Frames** and **Frames per second** — on the main screen beside width and
+height rather than in the advanced list, because the frame count is the length
+of the clip and most of the render time.
+
+Nothing about the models is special-cased. What the graph loads is up to the
+graph: the published weights for these models are tens of gigabytes that nobody
+runs on one consumer card, so what people actually load is a GGUF or fp8 repack
+through `UnetLoaderGGUF` or `Load Diffusion Model` — and those are model
+pickers like any other, filled from your own server's file list.
+
+**Which save nodes are recognised.** Core's `SaveVideo` and `SaveWEBM`, the
+animated-image savers, and VideoHelperSuite's `Video Combine`. That matters
+because the node packs disagree about how they report a finished file — core
+files an `.mp4` under `images`, VideoHelperSuite files everything under `gifs` —
+and reading only one of those is how a run finishes successfully and leaves an
+empty gallery row.
+
+**Watching them.** A clip opens in the same viewer as a picture, with the
+browser's own controls; swiping the area around it still moves to the next
+output and the actions underneath are the ones that make sense — rate, keep,
+favourite, save, reuse the settings, delete. img2img and upscaling are shown
+disabled, because those nodes read one frame from a picture and handing them a
+clip fails inside ComfyUI with an error about nothing you did.
+
+**Thumbnails.** Latent's own image renderer cannot open an mp4 — there is no
+ffmpeg here and no reason to add one — so a video has no still until something
+makes one. Rather than let the grid load whole clips to show tiles, a video
+appears as a plate with a ▶ on it until the first time you open it; the browser
+that plays it hands one frame back, and from then on it has a thumbnail like
+everything else, with its length on the badge.
+
+**Streaming.** Clips are served in byte ranges, both from ComfyUI and from the
+local archive, so playback starts at once and dragging the scrubber fetches the
+part you asked for rather than the whole file.
+
+**Storage.** Rating or keeping a video copies it onto the machine running Latent
+exactly like a picture — and stores it **unencrypted**, which is the one
+deliberate exception to [the encrypted archive](#the-archive-is-encrypted). The
+encryption is whole-file AES-GCM, which cannot be read from the middle, and a
+video is watched by asking for the middle; encrypting it would mean holding an
+entire clip in memory to answer every seek. Posters, prompts and settings are
+handled as they always were, and every still image stays encrypted.
 
 ## An input folder
 
@@ -497,6 +556,11 @@ one level at a time, with the image count on each folder, and imports
 a single picture, a selection, or a whole folder and everything under it in one
 request — the expansion happens on the server, so a phone never sends ten
 thousand paths.
+
+**Clips come too.** `.mp4`, `.webm`, `.mkv` and friends are listed and imported
+alongside the pictures, streamed straight to disk rather than read into memory,
+and stored as themselves — see [Video workflows](#video-workflows). They carry
+no settings: the metadata ComfyUI hides in a PNG has no equivalent in an mp4.
 
 **Imported pictures remember how they were made.** ComfyUI writes the graph it
 ran into every PNG it saves. Latent reads it back, matches it against the

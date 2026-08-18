@@ -15,6 +15,7 @@ import type {
   ParamValues,
   SystemPrompt,
   WidgetValue,
+  WorkflowSummary,
 } from '@latent/shared';
 
 import {
@@ -259,7 +260,7 @@ export function GenerateScreen() {
 
 interface GenerateFormProps {
   workflowQuery: ReturnType<typeof useWorkflow>;
-  workflows: { id: string; name: string }[];
+  workflows: WorkflowSummary[];
   workflowId: string | null;
   onSelectWorkflow: (id: string) => void;
   consumePending: () => ReturnType<typeof usePendingStore.getState>['pending'];
@@ -806,7 +807,17 @@ function GenerateForm({
                 )}
               >
                 <span className="min-w-0 truncate">{item.name}</span>
-                {item.id === workflowId && <span aria-hidden>✓</span>}
+                <span className="flex shrink-0 items-center gap-2">
+                  {/* Which of these makes a clip rather than a picture is the
+                      first thing you want to know about a list of workflows,
+                      and the name does not reliably say. */}
+                  {item.producesVideo && (
+                    <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">
+                      video
+                    </span>
+                  )}
+                  {item.id === workflowId && <span aria-hidden>✓</span>}
+                </span>
               </button>
             </li>
           ))}

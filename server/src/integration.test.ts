@@ -33,7 +33,9 @@ import type {
 } from '@latent/shared';
 import { defaultSampling } from '@latent/shared';
 import {
+  ltxVideoGguf,
   sd15Txt2Img,
+  videoCombine,
   withLlamaServer,
   withPresetChat,
   sd15Txt2ImgUi,
@@ -49,6 +51,7 @@ import { Vault } from './vault.js';
 import { createMockComfy } from './mock/comfy.js';
 import { createMockLlama } from './mock/llama.js';
 import { readImageSize } from './images/png.js';
+import { renderPlaceholderWebm } from './mock/gif.js';
 import { renderPlaceholder } from './mock/png.js';
 import { withPngText } from './images/png.js';
 
@@ -4849,4 +4852,284 @@ describe('chat', () => {
     const events = await readStream(response);
     expect(events.some((event) => event.type === 'error')).toBe(true);
   }, 30_000);
+});
+
+/**
+ * Video, end to end.
+ *
+ * A workflow ending in a video saver is the same workflow in every other
+ * respect — it is queued, watched, rated and kept exactly like one that draws a
+ * picture — and the differences are all in what comes back: which key ComfyUI
+ * files it under, how it is fetched, and how it is stored. Each of those is a
+ * place a still-image assumption used to sit.
+ */
+describe('video workflows', () => {
+  /** The bytes a WebM starts with, so "did we get the file" has a real answer. */
+  const EBML = Buffer.from([0x1a, 0x45, 0xdf, 0xa3]);
+
+  async function renderVideo(name: string, graph: unknown) {
+    const workflow = await json<WorkflowDetail>(
+      api('/api/workflows', { method: 'POST', body: JSON.stringify({ name, graph }) }),
+    );
+
+    await api('/api/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        workflowId: workflow.id,
+        values: { '8.steps': 2, '4.text': `clip for ${name}` },
+      }),
+    });
+
+    const record = await waitFor(async () => {
+      const page = await json<GalleryPage>(api('/api/gallery'));
+      const found = page.items.find((item) => item.title === `clip for ${name}`);
+      return found && found.status === 'completed' && found.images.length > 0 ? found : null;
+    }, 20_000);
+
+    return { workflow, record, image: record.images[0] as GenerationRecord['images'][number] };
+  }
+
+  it('renders a clip, streams it in ranges, and keeps it as itself', async () => {
+    const { workflow, record, image } = await renderVideo('LTXV GGUF', ltxVideoGguf);
+
+    // Known to be a video workflow before anything has run, off the graph.
+    expect(workflow.capabilities.video).toBe(true);
+    expect(workflow.producesVideo).toBe(true);
+    // And the frame count is a field of its own rather than one more integer.
+    const length = workflow.schema.fields.find((field) => field.id === '6.length');
+    expect(length?.role).toBe('length');
+    expect(length?.group).toBe('main');
+    expect(
+      workflow.schema.fields.find((field) => field.id === '7.frame_rate')?.role,
+    ).toBe('frame_rate');
+    // A quantised model is still the model picker.
+    expect(workflow.schema.fields.find((field) => field.id === '1.unet_name')?.role).toBe('model');
+
+    expect(image.filename.endsWith('.webm')).toBe(true);
+    expect(image.kind).toBe('video');
+
+    const query = new URLSearchParams({
+      filename: image.filename,
+      subfolder: image.subfolder,
+      type: image.type,
+      id: String(image.id),
+    });
+
+    // Whole file, as a video, and announced as seekable.
+    const whole = await api(`/api/view?${query}`);
+    expect(whole.status).toBe(200);
+    expect(whole.headers.get('content-type')).toBe('video/webm');
+    expect(whole.headers.get('accept-ranges')).toBe('bytes');
+    const full = Buffer.from(await whole.arrayBuffer());
+    expect(full.subarray(0, 4)).toEqual(EBML);
+
+    /*
+     * The part a browser actually asks for.
+     *
+     * A `<video>` fetches the head of the file, then whatever the scrubber
+     * lands on. Answering those with the whole clip is the difference between
+     * a video that starts and one that has to be downloaded first.
+     */
+    const part = await api(`/api/view?${query}`, { headers: { range: 'bytes=0-127' } });
+    expect(part.status).toBe(206);
+    expect(part.headers.get('content-range')).toBe(`bytes 0-127/${full.length}`);
+    const head = Buffer.from(await part.arrayBuffer());
+    expect(head.length).toBe(128);
+    expect(head).toEqual(full.subarray(0, 128));
+
+    // No poster yet, and the grid is told so rather than handed the clip.
+    const preview = await api(`/api/view?${query}&preview=webp;70`);
+    expect(preview.status).toBe(404);
+    expect((await json<{ noPoster?: boolean }>(preview)).noPoster).toBe(true);
+
+    // img2img takes a picture. Saying so beats a PIL error from ComfyUI.
+    const toInput = await api('/api/images/to-input', {
+      method: 'POST',
+      body: JSON.stringify(image),
+    });
+    expect(toInput.status).toBe(400);
+    expect((await json<{ error: string }>(toInput)).error).toMatch(/video/i);
+
+    /*
+     * Rating copies it here, exactly as it does for a picture — and stores it
+     * in the clear, which is the one deliberate difference. Whole-file AES
+     * cannot be read from the middle, and a video is watched by asking for the
+     * middle.
+     */
+    const rated = await json<GenerationRecord>(
+      api(`/api/gallery/${record.id}/rating`, {
+        method: 'PUT',
+        body: JSON.stringify({ image, rating: 4 }),
+      }),
+    );
+    expect(rated.images[0]?.archived).toBe(true);
+
+    const stored = (readdirSync(join(dataDir, 'archive'), { recursive: true }) as string[])
+      .filter((entry) => entry.endsWith('.webm'))
+      .map((entry) => readFileSync(join(dataDir, 'archive', entry)));
+    expect(stored.length).toBeGreaterThan(0);
+    expect(stored.every((bytes) => !Vault.isEncrypted(bytes))).toBe(true);
+    expect(stored[0]?.subarray(0, 4)).toEqual(EBML);
+
+    // Served from the archive now, still in pieces.
+    const archived = await api(`/api/view?${query}`, { headers: { range: 'bytes=8-23' } });
+    expect(archived.status).toBe(206);
+    expect(archived.headers.get('x-latent-source')).toBe('archive');
+    expect(Buffer.from(await archived.arrayBuffer())).toEqual(full.subarray(8, 24));
+
+    /*
+     * The poster, from the only thing here that can decode a video: the browser
+     * playing it. Nothing on this server has an ffmpeg, and a clip with no
+     * still is a gallery tile that has to load the clip.
+     */
+    const poster = renderPlaceholder(64, 48, 'poster');
+    const sent = await api('/api/images/poster', {
+      method: 'PUT',
+      body: JSON.stringify({
+        image,
+        poster: `data:image/png;base64,${poster.toString('base64')}`,
+        durationMs: 4000,
+      }),
+    });
+    expect(sent.status).toBe(204);
+
+    const withPoster = await json<GenerationRecord>(api(`/api/gallery/${record.id}`));
+    expect(withPoster.images[0]?.hasThumbnail).toBe(true);
+    expect(withPoster.images[0]?.durationMs).toBe(4000);
+
+    const served = await api(`/api/view?${query}&preview=webp;70`);
+    expect(served.status).toBe(200);
+    expect(served.headers.get('content-type')).toBe('image/png');
+    expect(readImageSize(Buffer.from(await served.arrayBuffer()))).toEqual({
+      width: 64,
+      height: 48,
+    });
+
+    // A poster is a picture of a video, so it is encrypted like every picture.
+    const posterFiles = (readdirSync(join(dataDir, 'archive'), { recursive: true }) as string[])
+      .filter((entry) => entry.endsWith('_t.png'))
+      .map((entry) => readFileSync(join(dataDir, 'archive', entry)));
+    expect(posterFiles.every((bytes) => Vault.isEncrypted(bytes))).toBe(true);
+  }, 40_000);
+
+  /**
+   * The other convention.
+   *
+   * VideoHelperSuite files everything it makes under `gifs`, whatever the
+   * container turned out to be. A client that reads only `images` finishes the
+   * run successfully and shows an empty gallery row.
+   */
+  /**
+   * A folder of finished work has clips in it too.
+   *
+   * They take the streaming, unencrypted path — a directory of renders is
+   * gigabytes, and none of it has any business passing through a Buffer on the
+   * way to disk — while the pictures beside them are read and encrypted exactly
+   * as before.
+   */
+  it('imports a clip from a folder without encrypting it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-import-video-'));
+    const outputs = join(dir, 'outputs');
+    mkdirSync(outputs, { recursive: true });
+
+    const clip = renderPlaceholderWebm('imported');
+    writeFileSync(join(outputs, 'clip.webm'), clip);
+    writeFileSync(join(outputs, 'still.png'), renderPlaceholder(64, 64, 'still'));
+
+    const comfy = createMockComfy({ logLevel: 'silent' });
+    const comfyUrl = await comfy.listen(0);
+    const server = await bootIsolated({
+      comfyUrl,
+      dbPath: join(dir, 'import.db'),
+      dataDir: dir,
+      archiveDir: join(dir, 'archive'),
+      webDir: join(dir, 'no-web'),
+    });
+
+    try {
+      const claim = await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'import a clip' }),
+      });
+      const cookie = claim.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      await server.call('/api/settings', {
+        method: 'PATCH',
+        cookie,
+        body: JSON.stringify({ importRoot: outputs }),
+      });
+
+      const scan = (await (
+        await server.call('/api/import/scan', { cookie })
+      ).json()) as ImportScanResult;
+      expect(scan.files.map((file) => file.path).sort()).toEqual(['clip.webm', 'still.png']);
+
+      const result = (await (
+        await server.call('/api/import', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ paths: ['clip.webm', 'still.png'], rating: 5 }),
+        })
+      ).json()) as ImportResult;
+      expect(result).toMatchObject({ imported: 2, failed: [] });
+
+      const page = (await (await server.call('/api/gallery', { cookie })).json()) as GalleryPage;
+      const imported = page.items.flatMap((item) => item.images);
+      const video = imported.find((image) => image.filename === 'clip.webm');
+      expect(video?.kind).toBe('video');
+      expect(video?.archived).toBe(true);
+
+      // The clip is on disk as itself; the picture beside it is not.
+      const archived = (readdirSync(join(dir, 'archive'), { recursive: true }) as string[])
+        .map((name) => join(dir, 'archive', String(name)))
+        .filter((candidate) => statSync(candidate).isFile());
+      const webm = archived.filter((file) => file.endsWith('.webm'));
+      expect(webm).toHaveLength(1);
+      expect(readFileSync(webm[0] as string)).toEqual(clip);
+      for (const file of archived.filter((candidate) => candidate.endsWith('.png'))) {
+        expect(Vault.isEncrypted(readFileSync(file))).toBe(true);
+      }
+
+      // And it plays: an imported clip lives only here, so this is the only
+      // place its bytes can come from.
+      const query = new URLSearchParams({
+        filename: 'clip.webm',
+        subfolder: '',
+        type: 'import',
+        id: String(video?.id),
+      });
+      const part = await server.call(`/api/view?${query}`, {
+        cookie,
+        headers: { range: 'bytes=0-15' },
+      });
+      expect(part.status).toBe(206);
+      expect(Buffer.from(await part.arrayBuffer())).toEqual(clip.subarray(0, 16));
+    } finally {
+      await server.dispose();
+      await comfy.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  it('reads a clip filed under another output key', async () => {
+    const { image } = await renderVideo('Video Combine', videoCombine);
+
+    expect(image.filename.endsWith('.gif')).toBe(true);
+    expect(image.kind).toBe('video');
+
+    const query = new URLSearchParams({
+      filename: image.filename,
+      subfolder: image.subfolder,
+      type: image.type,
+      id: String(image.id),
+    });
+    const response = await api(`/api/view?${query}`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('image/gif');
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    // A real GIF, not a placeholder: the mock renders one so the whole path —
+    // including what a browser is asked to draw — is exercised for real.
+    expect(bytes.subarray(0, 6).toString('ascii')).toBe('GIF89a');
+  }, 40_000);
 });

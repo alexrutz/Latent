@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyBaseLogger } from 'fastify';
 import type { WebSocket } from 'ws';
 
+import { mediaKindFor } from '@latent/shared';
 import type {
   ApiWorkflow,
   ComfyExecutedMessage,
@@ -15,6 +16,7 @@ import type {
   ComfyWsMessage,
   JobStats,
   LiveState,
+  MediaKind,
   ObjectInfo,
   ParamSummaryItem,
   ParamValues,
@@ -96,6 +98,68 @@ function emptyStats(): JobStats {
 const BINARY_OUTPUT_KEYS = new Set(['images', 'gifs', 'audio', 'video', 'latents', 'masks']);
 
 /**
+ * Output keys that carry a *file we can show*.
+ *
+ * There is no convention here either. Core ComfyUI files a rendered video under
+ * `images` — the same key as a picture, with an `.mp4` in it — while
+ * VideoHelperSuite uses `gifs` whatever the container actually is, and others
+ * use `videos`. Reading only `images` is how a video workflow finished
+ * successfully and left an empty gallery row behind.
+ *
+ * `audio` is deliberately absent: nothing in this app can play it yet, and a
+ * row that cannot be opened is worse than no row.
+ */
+const FILE_OUTPUT_KEYS = ['images', 'gifs', 'videos', 'video'] as const;
+
+/** One output entry as a node reported it, before it is known to be a file. */
+interface OutputFile extends ComfyImageRef {
+  /** VideoHelperSuite's own `video/h264-mp4`, when it says. */
+  format?: string;
+}
+
+/** A file we are going to record, with what it turned out to be. */
+type OutputRef = ComfyImageRef & { kind: MediaKind };
+
+/**
+ * Every file in one node's output, whichever key it was filed under.
+ *
+ * `temp` entries are dropped: they are ComfyUI's in-flight previews — and for a
+ * video node, the low-quality preview it writes beside the real thing.
+ */
+function collectFiles(output: Record<string, unknown> | undefined): OutputRef[] {
+  if (!output) return [];
+  const found: OutputRef[] = [];
+  const seen = new Set<string>();
+
+  for (const key of FILE_OUTPUT_KEYS) {
+    const entries = output[key];
+    if (!Array.isArray(entries)) continue;
+
+    for (const entry of entries as OutputFile[]) {
+      if (!entry || typeof entry.filename !== 'string' || entry.filename === '') continue;
+      if (entry.type === 'temp') continue;
+
+      const ref: OutputRef = {
+        filename: entry.filename,
+        subfolder: entry.subfolder ?? '',
+        type: entry.type ?? 'output',
+        // The name decides, and the node's own `format` breaks a tie for a
+        // container this build has never heard of.
+        kind: mediaKindFor(entry.filename, entry.format),
+      };
+      // A node can report the same file under two keys — VideoHelperSuite lists
+      // its result as both a `gif` and, on some builds, an image.
+      const identity = `${ref.type}/${ref.subfolder}/${ref.filename}`;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      found.push(ref);
+    }
+  }
+
+  return found;
+}
+
+/**
  * Every string a node produced, whatever it chose to call the field.
  *
  * There is no convention here: the core preview node uses `text`, others use
@@ -125,20 +189,13 @@ function collectTexts(output: Record<string, unknown> | undefined): string[] {
  * events are gone, but the history still knows what was produced.
  */
 function collectHistoryImages(entry: {
-  outputs?: Record<string, { images?: ComfyImageRef[] }>;
-}): [string, ComfyImageRef[]][] {
-  const found: [string, ComfyImageRef[]][] = [];
+  outputs?: Record<string, Record<string, unknown>>;
+}): [string, OutputRef[]][] {
+  const found: [string, OutputRef[]][] = [];
 
   for (const [nodeId, output] of Object.entries(entry.outputs ?? {})) {
-    const images = (output?.images ?? [])
-      // `temp` is a live preview, not a result.
-      .filter((image) => image.type !== 'temp')
-      .map((image) => ({
-        filename: image.filename,
-        subfolder: image.subfolder ?? '',
-        type: image.type ?? 'output',
-      }));
-    if (images.length > 0) found.push([nodeId, images]);
+    const files = collectFiles(output);
+    if (files.length > 0) found.push([nodeId, files]);
   }
 
   return found;
@@ -739,17 +796,7 @@ export class Orchestrator {
       this.emitGeneration(promptId);
     }
 
-    const images = output?.images ?? [];
-    if (images.length === 0) return;
-
-    // `temp` images are ComfyUI's in-flight previews, not results.
-    const results: ComfyImageRef[] = images
-      .filter((image) => image.type !== 'temp')
-      .map((image) => ({
-        filename: image.filename,
-        subfolder: image.subfolder ?? '',
-        type: image.type ?? 'output',
-      }));
+    const results = collectFiles(output as Record<string, unknown> | undefined);
     if (results.length === 0) return;
 
     this.store.addImages(promptId, node, results);

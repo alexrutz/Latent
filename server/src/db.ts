@@ -21,6 +21,7 @@ import type {
   FavoriteSort,
   FormLayout,
   GenerationImage,
+  MediaKind,
   ParamSummaryItem,
   ParamValues,
   PromptBlock,
@@ -45,6 +46,7 @@ import type { ApiWorkflow, RandomPromptConfig } from '@latent/shared';
 import {
   DEFAULT_RANDOM_PROMPT_CONFIG,
   defaultSampling,
+  mediaKindOf,
   normaliseRandomPromptConfig,
 } from '@latent/shared';
 
@@ -423,6 +425,34 @@ CREATE TABLE system_prompts (
 CREATE INDEX idx_system_prompts_order ON system_prompts (position, created_at);
 `);
 
+/**
+ * v11: outputs that move.
+ *
+ * A video workflow leaves an mp4 or a webm where a picture used to be, and the
+ * row is otherwise the same row — same rating, same keeping, same archive. What
+ * differs is everything about handling it, so it is recorded once here rather
+ * than re-derived from the filename at every call site.
+ *
+ * Existing rows are pictures by definition: nothing before this could produce
+ * anything else. The backfill is for imported and generated files whose
+ * extension says otherwise, which cost nothing to catch now.
+ */
+MIGRATIONS.push(`
+ALTER TABLE images ADD COLUMN kind TEXT NOT NULL DEFAULT 'image';
+-- How long it runs, once the browser or the archive has managed to measure it.
+ALTER TABLE images ADD COLUMN duration_ms INTEGER;
+
+UPDATE images SET kind = 'video'
+ WHERE lower(filename) LIKE '%.mp4'
+    OR lower(filename) LIKE '%.webm'
+    OR lower(filename) LIKE '%.mkv'
+    OR lower(filename) LIKE '%.mov'
+    OR lower(filename) LIKE '%.m4v'
+    OR lower(filename) LIKE '%.ogv'
+    OR lower(filename) LIKE '%.avi'
+    OR lower(filename) LIKE '%.gif';
+`);
+
 interface ChatRow {
   id: string;
   title: string;
@@ -525,6 +555,8 @@ export interface ImageRow {
   height: number | null;
   encrypted: number;
   tile_span: string | null;
+  kind: string;
+  duration_ms: number | null;
 }
 
 interface FavoriteRow {
@@ -650,9 +682,38 @@ export function toGenerationImage(row: ImageRow): GenerationImage {
     kept: Boolean(row.kept),
     archived: Boolean(row.archived_path),
     hasThumbnail: Boolean(row.thumb_path),
+    kind: row.kind === 'video' ? 'video' : 'image',
+    durationMs: row.duration_ms ?? null,
     width: row.width,
     height: row.height,
     tileSpan: parseTileSpan(row.tile_span),
+  };
+}
+
+/**
+ * `live` is the gallery row this favourite points at, when it still exists.
+ *
+ * The stored `image_json` is a snapshot, and it has to be: a favourite outlives
+ * the run it came from, which is most of what makes it a favourite. But while
+ * the run *is* still there, the snapshot is stale the moment anything about the
+ * picture changes — a rating, a tile size, or the poster a browser captured for
+ * a video, which is the difference between a favourite tile showing the clip
+ * and showing a grey plate forever.
+ */
+/**
+ * The favourite's own copy of the picture, made current.
+ *
+ * A snapshot written before videos existed says nothing about what it is, and
+ * every reader would otherwise have to cope with a missing field forever. The
+ * filename has the answer, and it always did.
+ */
+function snapshotImage(imageJson: string): GenerationImage | null {
+  const image = parseJson<GenerationImage | null>(imageJson, null);
+  if (!image?.filename) return image;
+  return {
+    ...image,
+    kind: image.kind ?? mediaKindOf(image.filename),
+    durationMs: image.durationMs ?? null,
   };
 }
 
@@ -660,8 +721,9 @@ function toFavorite(
   row: FavoriteRow,
   workflowAvailable: boolean,
   archived: boolean,
+  live?: ImageRow | null,
 ): Favorite {
-  const image = parseJson<GenerationImage | null>(row.image_json, null);
+  const image = live ? toGenerationImage(live) : snapshotImage(row.image_json);
   return {
     archived,
     id: row.id,
@@ -942,7 +1004,7 @@ export class Store {
         version: 1,
         fields: [],
         outputNodeIds: [],
-        capabilities: { img2img: false, seeded: false },
+        capabilities: { img2img: false, seeded: false, video: false },
         missingNodeTypes: [],
       }),
       overrides: parseJson<FieldOverrides>(row.overrides_json, {}),
@@ -1042,7 +1104,7 @@ export class Store {
       version: 1,
       fields: [],
       outputNodeIds: [],
-      capabilities: { img2img: false, seeded: false },
+      capabilities: { img2img: false, seeded: false, video: false },
       missingNodeTypes: [],
     });
     return {
@@ -1054,6 +1116,7 @@ export class Store {
       missingNodeTypes: schema.missingNodeTypes ?? [],
       visible: row.visible !== 0,
       sourcePath: row.source_path,
+      producesVideo: schema.capabilities?.video === true,
     };
   }
 
@@ -1111,23 +1174,44 @@ export class Store {
       .run(status, error ?? null, done ? 1 : 0, Date.now(), promptId);
   }
 
-  /** Takes bare ComfyUI refs; rating and archive state are added later by the user. */
-  addImages(promptId: string, nodeId: string, images: ComfyImageRef[]): void {
+  /**
+   * Takes bare ComfyUI refs; rating and archive state are added later by the user.
+   *
+   * Whether each one moves is settled here, from its name, so nothing further
+   * down has to guess: a `.mp4` is a video wherever it turns up, and the key
+   * ComfyUI happened to file it under — `images`, `gifs`, `videos` — says
+   * nothing reliable about that.
+   */
+  addImages(promptId: string, nodeId: string, images: (ComfyImageRef & { kind?: MediaKind })[]): void {
     const generation = this.db
       .prepare<[string], { id: string }>('SELECT id FROM generations WHERE prompt_id = ?')
       .get(promptId);
     if (!generation) return;
 
     const insert = this.db.prepare(
-      `INSERT OR IGNORE INTO images (generation_id, node_id, filename, subfolder, type)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO images (generation_id, node_id, filename, subfolder, type, kind)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     );
-    const insertAll = this.db.transaction((items: ComfyImageRef[]) => {
+    const insertAll = this.db.transaction((items: (ComfyImageRef & { kind?: MediaKind })[]) => {
       for (const image of items) {
-        insert.run(generation.id, nodeId, image.filename, image.subfolder ?? '', image.type ?? 'output');
+        insert.run(
+          generation.id,
+          nodeId,
+          image.filename,
+          image.subfolder ?? '',
+          image.type ?? 'output',
+          image.kind ?? mediaKindOf(image.filename),
+        );
       }
     });
     insertAll(images);
+  }
+
+  /** Record how long a video runs, once something has measured it. */
+  setImageDuration(imageId: number, durationMs: number): void {
+    this.db
+      .prepare('UPDATE images SET duration_ms = ? WHERE id = ? AND duration_ms IS NULL')
+      .run(Math.round(durationMs), imageId);
   }
 
   /**
@@ -1464,7 +1548,11 @@ export class Store {
       .prepare(
         `UPDATE images
             SET archived_path = ?, archived_bytes = ?, encrypted = ?,
-                thumb_path = ?, thumb_bytes = ?,
+                -- Kept when this store has none to offer: a video's poster is
+                -- captured long before the file itself is ever archived, and
+                -- archiving must not throw the only preview away.
+                thumb_path = COALESCE(?, thumb_path),
+                thumb_bytes = COALESCE(?, thumb_bytes),
                 width = COALESCE(?, width), height = COALESCE(?, height)
           WHERE id = ?`,
       )
@@ -1478,6 +1566,28 @@ export class Store {
         archive.height ?? null,
         imageId,
       );
+  }
+
+  /**
+   * File a still for something that cannot be resized here.
+   *
+   * A video has no thumbnail until somebody has decoded a frame of it, which on
+   * a server without ffmpeg is the browser — see the poster route. Stored the
+   * same way a thumbnail always was, so every grid, sheet and picker gets it
+   * without knowing where it came from.
+   */
+  setImagePoster(
+    imageId: number,
+    poster: { path: string; bytes: number; width?: number | null; height?: number | null },
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE images
+            SET thumb_path = ?, thumb_bytes = ?,
+                width = COALESCE(?, width), height = COALESCE(?, height)
+          WHERE id = ?`,
+      )
+      .run(poster.path, poster.bytes, poster.width ?? null, poster.height ?? null, imageId);
   }
 
   /** Remember an image's pixel size so the grid can shape its tile up front. */
@@ -1548,11 +1658,30 @@ export class Store {
         .map((entry) => entry.id),
     );
 
+    /*
+     * The rows these favourites point at, where they are still there.
+     *
+     * One query for the lot, like the two above: this list is as long as the
+     * user's taste, and a lookup per row would make opening the screen a
+     * hundred statements.
+     */
+    const live = new Map<number, ImageRow>();
+    const ids = rows.map((row) => row.image_id).filter((id): id is number => id !== null);
+    if (ids.length > 0) {
+      const placeholders = ids.map(() => '?').join(', ');
+      for (const image of this.db
+        .prepare<number[], ImageRow>(`SELECT * FROM images WHERE id IN (${placeholders})`)
+        .all(...ids)) {
+        live.set(image.id, image);
+      }
+    }
+
     return rows.map((row) =>
       toFavorite(
         row,
         row.workflow_id !== null && available.has(row.workflow_id),
         row.image_id !== null && archived.has(row.image_id),
+        row.image_id !== null ? (live.get(row.image_id) ?? null) : null,
       ),
     );
   }
@@ -1564,7 +1693,12 @@ export class Store {
     if (!row) return null;
     const available =
       row.workflow_id !== null && this.getWorkflow(row.workflow_id) !== null;
-    return toFavorite(row, available, this.isArchived(row.image_id));
+    return toFavorite(
+      row,
+      available,
+      this.isArchived(row.image_id),
+      row.image_id !== null ? this.getImage(row.image_id) : null,
+    );
   }
 
   /** Whether an image's bytes are stored here rather than only referenced. */
@@ -1583,6 +1717,7 @@ export class Store {
       row,
       row.workflow_id !== null && this.getWorkflow(row.workflow_id) !== null,
       this.isArchived(row.image_id),
+      this.getImage(imageId),
     );
   }
 
@@ -1917,10 +2052,10 @@ export class Store {
 
     const result = this.db
       .prepare(
-        `INSERT INTO images (generation_id, node_id, filename, subfolder, type)
-         VALUES (?, 'import', ?, ?, 'import')`,
+        `INSERT INTO images (generation_id, node_id, filename, subfolder, type, kind)
+         VALUES (?, 'import', ?, ?, 'import', ?)`,
       )
-      .run(input.generationId, input.filename, input.subfolder);
+      .run(input.generationId, input.filename, input.subfolder, mediaKindOf(input.filename));
 
     return Number(result.lastInsertRowid);
   }

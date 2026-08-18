@@ -5,10 +5,17 @@ import fastifyWebsocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance, type RouteHandlerMethod } from 'fastify';
 import type { WebSocket } from 'ws';
 
-import { BINARY_EVENT_PREVIEW_IMAGE, BINARY_IMAGE_TYPE_PNG, isNodeLink } from '@latent/shared';
+import {
+  BINARY_EVENT_PREVIEW_IMAGE,
+  BINARY_IMAGE_TYPE_PNG,
+  contentTypeOf as contentTypeFor,
+  isNodeLink,
+  isVideoOutputClass,
+} from '@latent/shared';
 import type { ApiWorkflow, ComfyImageRef, HistoryEntry } from '@latent/shared';
 import { CHECKPOINTS, LORAS, objectInfoFixture, UPSCALE_MODELS } from '@latent/shared/fixtures';
 
+import { renderPlaceholderClip, renderPlaceholderWebm } from './gif.js';
 import { renderPlaceholder } from './png.js';
 
 /**
@@ -216,9 +223,42 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       const isOutput =
         !isTextNode &&
         (objectInfoFixture[node.class_type]?.output_node === true ||
-          /^(SaveImage|PreviewImage)/.test(node.class_type));
+          /^(SaveImage|PreviewImage)/.test(node.class_type) ||
+          isVideoOutputClass(node.class_type));
 
-      if (isOutput) {
+      if (isOutput && isVideoOutputClass(node.class_type)) {
+        /*
+         * A video node, reported the way its own pack reports one.
+         *
+         * The key matters and is not `images` for everybody: VideoHelperSuite
+         * files its result under `gifs` whatever the container is, while core's
+         * own WEBM saver uses `images` with an `.webm` inside. A client that
+         * only reads one of those loses the output of a whole class of
+         * workflow, so the mock produces both shapes.
+         */
+        const vhs = /VideoCombine/i.test(node.class_type);
+        const frames = findFrameCount(workflow);
+        const fps = findFrameRate(workflow);
+        const size = Math.min(findOutputSize(workflow), 128);
+        const filename = `Latent_${String(job.number).padStart(5, '0')}_${nodeId}.${vhs ? 'gif' : 'webm'}`;
+
+        files.set(
+          `output//${filename}`,
+          vhs
+            ? renderPlaceholderClip(size, size, String(seed), Math.min(frames, 16), fps)
+            : renderPlaceholderWebm(String(seed)),
+        );
+
+        const file = {
+          filename,
+          subfolder: '',
+          type: 'output',
+          ...(vhs ? { format: 'image/gif', frame_rate: fps } : {}),
+        };
+        const output = vhs ? { gifs: [file] } : { images: [file] };
+        outputs[nodeId] = output as (typeof outputs)[string];
+        send(clientId, 'executed', { prompt_id: promptId, node: nodeId, output });
+      } else if (isOutput) {
         const batch = typeof findBatchSize(workflow) === 'number' ? findBatchSize(workflow) : 1;
         const size = findOutputSize(workflow);
         const images: ComfyImageRef[] = [];
@@ -280,6 +320,27 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       outputs,
       status: { status_str: 'success', completed: true, messages: [] },
     });
+  }
+
+  /** How many frames the graph asked for, for a clip of a plausible length. */
+  function findFrameCount(workflow: ApiWorkflow): number {
+    for (const node of Object.values(workflow)) {
+      for (const name of ['length', 'num_frames', 'frames']) {
+        const value = node.inputs?.[name];
+        if (typeof value === 'number' && value > 1) return Math.min(value, 64);
+      }
+    }
+    return 8;
+  }
+
+  function findFrameRate(workflow: ApiWorkflow): number {
+    for (const node of Object.values(workflow)) {
+      for (const name of ['frame_rate', 'fps']) {
+        const value = node.inputs?.[name];
+        if (typeof value === 'number' && value > 0) return Math.min(value, 60);
+      }
+    }
+    return 8;
   }
 
   function findBatchSize(workflow: ApiWorkflow): number {
@@ -510,6 +571,34 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       const key = `${query.type ?? 'output'}/${query.subfolder ?? ''}/${query.filename}`;
       const stored = files.get(key);
       if (!stored) return reply.code(404).send({ error: 'not found' });
+
+      /*
+       * Byte ranges, because a video is fetched in pieces.
+       *
+       * Real ComfyUI serves output files with aiohttp's own file response,
+       * which honours `Range`; a mock that ignored it would let a bug through
+       * in exactly the code path that decides whether a clip starts playing or
+       * has to be downloaded first.
+       */
+      const contentType = contentTypeFor(query.filename);
+      const rangeHeader = request.headers.range;
+      const range = typeof rangeHeader === 'string' ? /^bytes=(\d+)-(\d*)$/.exec(rangeHeader) : null;
+      if (range) {
+        const start = Math.min(Number(range[1]), Math.max(0, stored.length - 1));
+        const end = Math.min(range[2] ? Number(range[2]) : stored.length - 1, stored.length - 1);
+        return reply
+          .code(206)
+          .header('content-type', contentType)
+          .header('accept-ranges', 'bytes')
+          .header('content-range', `bytes ${start}-${end}/${stored.length}`)
+          .send(stored.subarray(start, end + 1));
+      }
+      if (contentType !== 'image/png') {
+        return reply
+          .header('content-type', contentType)
+          .header('accept-ranges', 'bytes')
+          .send(stored);
+      }
 
       /*
        * `preview` re-encodes and does *not* resize — read the real thing:
