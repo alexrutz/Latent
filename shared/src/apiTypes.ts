@@ -960,6 +960,14 @@ export interface ChatSettings {
   tools: ChatToolSettings;
   /** Whether a finished picture is shown to the model, and how picky it is. */
   review: ChatReviewSettings;
+  /**
+   * How far a prompt goes in describing the picture.
+   *
+   * Instructions rather than a length limit: "two sentences" is a rule a model
+   * follows by truncating, and what is wanted is a different level of decision
+   * — how much of the scene is settled here rather than left to the sampler.
+   */
+  promptDetail: PromptDetail;
   /** What a picture generated from the chat is used with. */
   generation: ChatGenerationSettings;
   /**
@@ -1393,6 +1401,38 @@ export type ReviewThreshold =
  * what to change, whether it is worth changing) is a judgement, which is what
  * `threshold` calibrates.
  */
+/**
+ * When the model stops and asks rather than deciding for you.
+ *
+ * A picture can miss its prompt for reasons that are not the prompt's fault, or
+ * for several at once — the light is wrong *and* the subject is off centre —
+ * and which of those to fix is a matter of taste rather than of fact. Guessing
+ * at that produces a rewrite that fixes the wrong thing, confidently. This is
+ * how readily it says so instead.
+ */
+export type ReviewAsk =
+  /** Never asks; it rewrites the prompt itself or says nothing. */
+  | 'never'
+  /** Only when it genuinely cannot tell what went wrong. */
+  | 'unclear'
+  /** When it is unsure which of several fixes you would want. */
+  | 'unsure'
+  /** Whenever there is more than one sensible way to improve the match. */
+  | 'often'
+  /** Always asks before rewriting anything. */
+  | 'always';
+
+/**
+ * How much a prompt spells out.
+ *
+ * The same picture can be described in a sentence or in a paragraph, and which
+ * is better is not a fact about prompting — it is a fact about what you are
+ * doing. A sparse prompt leaves the model room and varies wildly between seeds;
+ * an elaborate one pins the picture down and is what you want when you know
+ * exactly what you are after.
+ */
+export type PromptDetail = 'sparse' | 'plain' | 'balanced' | 'detailed' | 'elaborate';
+
 export interface ChatReviewSettings {
   /**
    * Show the model the pictures it makes at all. On by default.
@@ -1419,6 +1459,8 @@ export interface ChatReviewSettings {
    * keeps the picture only for the turn where it is judged.
    */
   keepInView: number;
+  /** How readily it asks you rather than rewriting the prompt itself. */
+  askWhen: ReviewAsk;
 }
 
 /**
@@ -1554,6 +1596,15 @@ export interface AskUserQuestion {
 
 export interface AskUserCall {
   tool: 'ask_user';
+  /**
+   * Asked while looking at a picture, rather than while working one out.
+   *
+   * Set by the server, not by the model: it is a fact about which turn the call
+   * arrived on. What it buys is the turn *after* the answer — that one is still
+   * about the picture, so the rewrite is still on offer there rather than the
+   * conversation quietly leaving the review behind.
+   */
+  fromReview?: boolean;
   /**
    * Several at once, because that is how the decisions actually arrive.
    *

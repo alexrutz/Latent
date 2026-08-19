@@ -278,6 +278,91 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
  * Never the server's timestamps: on a rented box the clock is routinely minutes
  * off, and subtracting one clock from another would produce an ETA in the past.
  */
+/**
+ * One run's progress, wherever that run is being watched.
+ *
+ * The same numbers the bar above the tab bar shows — the live preview frame,
+ * how much longer, which node, the step count — for a run somebody is watching
+ * somewhere else. The chat is the case that needs it: a picture asked for in a
+ * conversation is watched in that conversation, and a thin bar with no preview
+ * and no ETA is not what the rest of the app shows for the same wait.
+ *
+ * Only ever about *this* run. While something else is rendering, or before the
+ * queue reaches it, there is a bar with no numbers rather than another job's.
+ */
+export function RunProgress({ generationId, queued }: { generationId: string; queued?: string }) {
+  const job = useLiveStore((state) => state.live.job);
+  const liveAt = useLiveStore((state) => state.liveAt);
+  const previewUrl = useLiveStore((state) => state.previewUrl);
+  const queueRemaining = useLiveStore((state) => state.live.queueRemaining);
+
+  const mine = job?.generationId === generationId ? job : null;
+  const now = useTicker(Boolean(mine));
+
+  const stepFraction = mine && mine.progressMax > 0 ? mine.progress / mine.progressMax : 0;
+  // Before the sampler says anything, how much of the graph is done — otherwise
+  // the bar sits at zero through model loading, which reads as nothing
+  // happening at all.
+  const fraction = mine ? (mine.progressMax > 0 ? stepFraction : mine.graphProgress) : 0;
+  const eta = mine ? remainingEta(mine.stats, now, liveAt) : null;
+
+  return (
+    <div className="space-y-1.5 rounded-xl border border-line bg-surface-2/50 p-2.5">
+      <div className="flex items-center gap-2.5">
+        {/*
+          The frame it is up to, at thumbnail size.
+
+          The single thing that makes a wait bearable is seeing it take shape,
+          and the preview is already arriving over the socket for the bar above
+          the tab bar — showing it here costs nothing and is the whole
+          difference between watching a render and watching a spinner.
+        */}
+        <div className="size-11 shrink-0 overflow-hidden rounded-lg bg-surface-3">
+          {mine && previewUrl ? (
+            <img src={previewUrl} alt="" className="size-full object-cover" />
+          ) : (
+            <div className="grid size-full animate-pulse place-items-center text-xs opacity-40">
+              ●
+            </div>
+          )}
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs">
+            {mine?.nodeTitle ?? queued ?? 'Queued'}
+          </p>
+          {/*
+            ETA first: it is the only question being asked. Then the step count,
+            which is what actually moves, then the queue behind it.
+          */}
+          <p className="truncate text-[11px] tabular-nums text-muted">
+            {eta !== null ? `${formatSeconds(eta)} left` : 'Starting…'}
+            {mine && mine.progressMax > 0 && ` · ${mine.progress}/${mine.progressMax}`}
+            {mine?.stats.msPerStep != null && ` · ${formatStepRate(mine.stats.msPerStep)}`}
+            {queueRemaining > 1 && ` · ${queueRemaining - 1} queued`}
+          </p>
+        </div>
+
+        <span className="shrink-0 text-[11px] tabular-nums text-muted">
+          {fraction > 0 ? `${Math.round(fraction * 100)}%` : ''}
+        </span>
+      </div>
+
+      <div className="h-1.5 overflow-hidden rounded-full bg-surface-3">
+        <div
+          className={cn(
+            'h-full rounded-full bg-accent transition-[width] duration-300',
+            // Nothing to report yet: a bar at zero looks stuck, so it pulses
+            // across instead of claiming a progress it does not have.
+            fraction === 0 && 'w-1/3 animate-pulse',
+          )}
+          style={fraction > 0 ? { width: `${Math.round(fraction * 100)}%` } : undefined}
+        />
+      </div>
+    </div>
+  );
+}
+
 function sinceUpdate(now: number, liveAt: number): number {
   if (now === 0 || liveAt === 0) return 0;
   return Math.max(0, now - liveAt);

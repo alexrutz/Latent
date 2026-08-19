@@ -4671,7 +4671,9 @@ describe('chat', () => {
       await api('/api/settings', {
         method: 'PATCH',
         body: JSON.stringify({
-          chat: { review: { enabled: true, threshold: 'balanced', keepInView: 2 } },
+          chat: {
+            review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'unsure' },
+          },
         }),
       });
     });
@@ -4684,7 +4686,9 @@ describe('chat', () => {
         await useLlama(url);
         await api('/api/settings', {
           method: 'PATCH',
-          body: JSON.stringify({ chat: { review: { enabled: true, threshold: 'balanced' } } }),
+          body: JSON.stringify({
+            chat: { review: { enabled: true, threshold: 'balanced', askWhen: 'never' } },
+          }),
         });
 
         const chatId = await upToAPicture(llama, 'a harbour at dawn, soft light');
@@ -4949,6 +4953,160 @@ describe('chat', () => {
     }, 60_000);
 
     /**
+     * Asking rather than guessing, and staying in the review to do it.
+     *
+     * A picture can miss for several reasons at once, and which of them to
+     * chase is a matter of taste. Guessing produces a confident rewrite of the
+     * wrong thing; asking costs one tap — and the turn *after* the answer is
+     * still about the same picture, which is where the rewrite belongs.
+     */
+    it('asks how to improve the match, and keeps the picture for the answer', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            chat: { review: { enabled: true, threshold: 'balanced', askWhen: 'often' } },
+          }),
+        });
+
+        const chatId = await upToAPicture(llama, 'a harbour at dawn');
+
+        // Both are on offer: rewrite it, or ask which way to go.
+        llama.script({
+          content: 'The light is right; the harbour is not really there.',
+          toolCall: {
+            name: 'ask_user',
+            arguments: {
+              questions: [
+                {
+                  question: 'What should the rewrite chase?',
+                  options: ['More of the harbour', 'Stronger light', 'Closer framing'],
+                },
+              ],
+              reason: 'Several things are off at once.',
+            },
+          },
+        });
+        const events = await readStream(
+          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
+        );
+
+        const offered = (
+          llama.requests[llama.requests.length - 1] as { tools?: { function: { name: string } }[] }
+        ).tools?.map((tool) => tool.function.name);
+        expect(offered).toEqual(['revise_prompt', 'ask_user']);
+
+        const messageId = events.find(
+          (event): event is { type: 'done'; messageId: string } => event.type === 'done',
+        )?.messageId;
+
+        // Answering it is an ordinary tool decision.
+        await api(`/api/chat/conversations/${chatId}/tool`, {
+          method: 'POST',
+          body: JSON.stringify({
+            messageId,
+            decision: 'accepted',
+            note: 'More of the harbour.',
+          }),
+        });
+
+        llama.script({
+          toolCall: {
+            name: 'revise_prompt',
+            arguments: {
+              prompt: 'a working harbour at dawn, boats at the quay',
+              reason: 'More harbour, as asked.',
+              score: 5,
+            },
+          },
+        });
+        await readStream(
+          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
+        );
+
+        /*
+         * Still the same review: the picture is there and the rewrite is still
+         * on offer. Without that, answering the question would have ended the
+         * review and thrown away the answer's whole purpose.
+         */
+        const after = llama.requests[llama.requests.length - 1] as {
+          messages: { content: unknown }[];
+          tools?: { function: { name: string } }[];
+        };
+        expect(JSON.stringify(after.messages)).toContain('image_url');
+        expect(after.tools?.map((tool) => tool.function.name)).toContain('revise_prompt');
+
+        // And the model is never shown the marker Latent stamped on its call.
+        expect(JSON.stringify(after.messages)).not.toContain('fromReview');
+      } finally {
+        await llama.close();
+      }
+    }, 60_000);
+
+    /**
+     * How much a prompt spells out reaches the model as instructions.
+     *
+     * Not a length limit anywhere in the request: it is a section of the system
+     * prompt, so it applies to a system prompt somebody wrote themselves as
+     * well as to Latent's own.
+     */
+    it('tells the model how much detail a prompt should go into', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({ chat: { promptDetail: 'elaborate' } }),
+        });
+
+        const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+        llama.script({ content: 'All right.' });
+        await readStream(
+          await api(`/api/chat/conversations/${chat.id}/messages`, {
+            method: 'POST',
+            body: JSON.stringify({ content: 'hello' }),
+          }),
+        );
+
+        const system = (
+          llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
+        ).messages[0]!;
+        expect(system.content).toContain('How much detail a prompt goes into');
+        expect(system.content).toContain('exhaustively');
+
+        // And the other end of the scale says something else entirely.
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({ chat: { promptDetail: 'sparse' } }),
+        });
+        llama.script({ content: 'Fine.' });
+        await readStream(
+          await api(`/api/chat/conversations/${chat.id}/messages`, {
+            method: 'POST',
+            body: JSON.stringify({ content: 'again' }),
+          }),
+        );
+        const after = (
+          llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
+        ).messages[0]!;
+        expect(after.content).toContain('Leave everything else open');
+        expect(after.content).not.toContain('exhaustively');
+      } finally {
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({ chat: { promptDetail: 'balanced' } }),
+        });
+        await llama.close();
+      }
+    }, 30_000);
+
+    /**
      * The quiet end of the scale.
      *
      * "Look at it and tell me" without "and rewrite it" is a real way to work,
@@ -4963,7 +5121,9 @@ describe('chat', () => {
         await useLlama(url);
         await api('/api/settings', {
           method: 'PATCH',
-          body: JSON.stringify({ chat: { review: { enabled: true, threshold: 'never' } } }),
+          body: JSON.stringify({
+            chat: { review: { enabled: true, threshold: 'never', askWhen: 'never' } },
+          }),
         });
 
         const chatId = await upToAPicture(llama, 'a lighthouse in a storm');

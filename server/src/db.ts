@@ -852,7 +852,16 @@ const DEFAULT_SETTINGS: AppSettings = {
      * genuinely absent. A stricter default would rewrite the prompt over a
      * shade of light and train you to ignore it.
      */
-    review: { enabled: true, threshold: 'balanced', keepInView: 2 },
+    review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'unsure' },
+    /*
+     * Enough detail to make a picture, not so much that it makes only one.
+     *
+     * The failure at either end is real: a sparse prompt varies wildly between
+     * seeds, and an elaborate one produces exactly what it says and nothing
+     * you did not think of. The middle is where a conversation about a picture
+     * usually wants to land.
+     */
+    promptDetail: 'balanced',
     generation: { workflowId: '', values: {} },
     imageSize: 3,
     promptButton: 'generate',

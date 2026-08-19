@@ -19,6 +19,8 @@ import type {
   ParamField,
   QueuePolicy,
   SystemPrompt,
+  PromptDetail,
+  ReviewAsk,
   ReviewThreshold,
   ToolEagerness,
   WidgetValue,
@@ -98,6 +100,24 @@ const ASK_ONLY: ToolEagerness[] = ['always'];
 /** The scale reads as pictures, because that is what the number is. */
 const KEEP_IN_VIEW_LABELS = ['None', 'The last one', 'The last two', 'The last three', 'The last four'];
 
+/** When it stops and asks instead of rewriting the prompt for you. */
+const ASK_OPTIONS: { value: ReviewAsk; label: string; hint: string }[] = [
+  { value: 'never', label: 'Never', hint: 'always decides for itself' },
+  { value: 'unclear', label: 'When it cannot tell', hint: 'only if the miss is a mystery' },
+  { value: 'unsure', label: 'When unsure', hint: 'several fixes, no obvious one' },
+  { value: 'often', label: 'More than one way', hint: 'offers the choice rather than picking' },
+  { value: 'always', label: 'Always first', hint: 'nothing is rewritten unasked' },
+];
+
+/** How much of the picture a prompt settles, rather than how long it is. */
+const DETAIL_OPTIONS: { value: PromptDetail; label: string; hint: string }[] = [
+  { value: 'sparse', label: 'Sparse', hint: 'a sentence; the model fills in the rest' },
+  { value: 'plain', label: 'Plain', hint: 'subject, light, framing, medium' },
+  { value: 'balanced', label: 'Balanced', hint: 'settled, but not exhausted' },
+  { value: 'detailed', label: 'Detailed', hint: 'the whole scene, clause by clause' },
+  { value: 'elaborate', label: 'Elaborate', hint: 'nothing important left to chance' },
+];
+
 const REVIEW_OPTIONS: { value: ReviewThreshold; label: string; hint: string }[] = [
   { value: 'never', label: 'Never', hint: 'says how it went and stops there' },
   { value: 'wrong', label: 'Plainly wrong', hint: 'wrong subject, wrong medium' },
@@ -153,6 +173,68 @@ function describeHours(hours: number): string {
 }
 
 /**
+ * One ordered choice, as a line of points.
+ *
+ * The control the tool settings use, because these are all the same kind of
+ * decision — how much the model does on its own, on a scale where the useful
+ * distinctions are between neighbours. Six labelled buttons in a phone's width
+ * are six unreadable ones.
+ */
+function PointsLine<T extends string>({
+  label,
+  aside,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  aside: string;
+  options: { value: T; label: string; hint: string }[];
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  const at = Math.max(
+    0,
+    options.findIndex((option) => option.value === value),
+  );
+  const current = options[at]!;
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm">{label}</span>
+        <span className="min-w-0 truncate text-[11px] text-muted">{aside}</span>
+      </div>
+
+      <div className="flex items-center gap-1">
+        {options.map((option, index) => (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={index === at}
+            aria-label={`${label}: ${option.label}`}
+            onClick={() => onChange(option.value)}
+            className="min-w-0 flex-1 py-2"
+          >
+            <span
+              className={cn(
+                'block h-2 rounded-[3px]',
+                index === at ? 'bg-accent' : index < at ? 'bg-accent/30' : 'bg-surface-3',
+              )}
+            />
+          </button>
+        ))}
+      </div>
+
+      <p className="text-[11px]">
+        <span className="text-body">{current.label}</span>
+        <span className="text-muted"> — {current.hint}</span>
+      </p>
+    </div>
+  );
+}
+
+/**
  * How many recent renders the model still has in front of it.
  *
  * Not a detail: a model that saw a picture once, two turns ago, is working from
@@ -203,61 +285,6 @@ function KeepInViewLine({
             ? ' — shown while it is judged, then gone'
             : ' — sent again with every turn, so a change can be asked for'}
         </span>
-      </p>
-    </div>
-  );
-}
-
-/**
- * How far apart picture and prompt have to be before a rewrite is offered.
- *
- * The same line of points the tools above use, deliberately: it sits with them
- * because it is the same kind of decision — how much the model does on its own
- * — and a different control for it would suggest it was something else.
- */
-function ReviewThresholdLine({
-  value,
-  onChange,
-}: {
-  value: ReviewThreshold;
-  onChange: (value: ReviewThreshold) => void;
-}) {
-  const at = Math.max(
-    0,
-    REVIEW_OPTIONS.findIndex((option) => option.value === value),
-  );
-  const current = REVIEW_OPTIONS[at]!;
-
-  return (
-    <div className="space-y-1">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-sm">Propose a rewrite when</span>
-        <span className="min-w-0 truncate text-[11px] text-muted">how picky it is</span>
-      </div>
-
-      <div className="flex items-center gap-1">
-        {REVIEW_OPTIONS.map((option, index) => (
-          <button
-            key={option.value}
-            type="button"
-            aria-pressed={index === at}
-            aria-label={`Propose a rewrite when: ${option.label}`}
-            onClick={() => onChange(option.value)}
-            className="min-w-0 flex-1 py-2"
-          >
-            <span
-              className={cn(
-                'block h-2 rounded-[3px]',
-                index === at ? 'bg-accent' : index < at ? 'bg-accent/30' : 'bg-surface-3',
-              )}
-            />
-          </button>
-        ))}
-      </div>
-
-      <p className="text-[11px]">
-        <span className="text-body">{current.label}</span>
-        <span className="text-muted"> — {current.hint}</span>
       </p>
     </div>
   );
@@ -1619,6 +1646,23 @@ function ChatSection() {
             reached for is set below and applies either way.
           </p>
         </div>
+
+        {/*
+          How far a prompt goes, separately from what the instructions say.
+
+          Not a length limit — "two sentences" is a rule a model follows by
+          truncating the wrong half. What is being chosen is how much of the
+          scene the prompt settles and how much is left to the sampler, which is
+          a different picture at each end rather than a longer one. It applies
+          to a system prompt you wrote yourself as well.
+        */}
+        <PointsLine
+          label="How much a prompt spells out"
+          aside="the picture, not its length"
+          options={DETAIL_OPTIONS}
+          value={chat.promptDetail ?? 'balanced'}
+          onChange={(promptDetail) => patch({ promptDetail })}
+        />
       </Card>
 
       {/* When it reaches for a tool ---------------------------------- */}
@@ -1718,9 +1762,24 @@ function ChatSection() {
                 value={review.keepInView}
                 onChange={(keepInView) => patch({ review: { ...review, keepInView } })}
               />
-              <ReviewThresholdLine
+              <PointsLine
+                label="Propose a rewrite when"
+                aside="how picky it is"
+                options={REVIEW_OPTIONS}
                 value={review.threshold}
                 onChange={(threshold) => patch({ review: { ...review, threshold } })}
+              />
+              {/*
+                A picture can miss for several reasons at once, and which to
+                chase is a matter of taste. Guessing produces a confident
+                rewrite of the wrong thing; asking costs one tap.
+              */}
+              <PointsLine
+                label="Ask rather than guess"
+                aside="when the fix is a choice"
+                options={ASK_OPTIONS}
+                value={review.askWhen}
+                onChange={(askWhen) => patch({ review: { ...review, askWhen } })}
               />
             </>
           )}

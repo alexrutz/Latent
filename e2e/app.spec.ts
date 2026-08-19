@@ -2742,7 +2742,7 @@ test.describe('the chat module', () => {
             // Off unless the test is about it: every render would otherwise be
             // followed by a turn carrying a picture, which is a different reply
             // from the one most of these are asserting on.
-            review: { enabled: false, threshold: 'balanced', keepInView: 2 },
+            review: { enabled: false, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
           },
         },
       }),
@@ -2876,7 +2876,11 @@ test.describe('the chat module', () => {
     await seedWorkflow();
     await withApi((ctx) =>
       ctx.patch('/api/settings', {
-        data: { chat: { review: { enabled: true, threshold: 'balanced' } } },
+        data: {
+          chat: {
+            review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+          },
+        },
       }),
     );
 
@@ -2909,17 +2913,28 @@ test.describe('the chat module', () => {
 
     await dialog.getByRole('button', { name: 'Generate' }).click();
 
-    // The rewrite arrives as its own dialog, once the render has finished and
-    // the model has been shown it.
+    /*
+     * The rewrite waits rather than covering the picture.
+     *
+     * The whole point of the review is that you see the result first, read what
+     * the model made of it, and then decide — so the proposal arrives folded
+     * away above the composer, and the transcript behind it stays readable.
+     */
+    const putAside = page.getByRole('button', { name: /Proposed a rewrite — waiting on you/ });
+    await expect(putAside).toBeVisible({ timeout: 90_000 });
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /Open picture/ }).first()).toBeVisible();
+    await page.screenshot({ path: 'test-results/88-prompt-review-aside.png' });
+
+    // And opens when you go to it.
+    await putAside.click();
     const rewrite = page.getByRole('dialog');
-    await expect(rewrite.getByText('After looking at the picture')).toBeVisible({
-      timeout: 90_000,
-    });
+    await expect(rewrite.getByText('After looking at the picture')).toBeVisible();
     await expect(rewrite.getByText('matched 4/10')).toBeVisible();
     await expect(rewrite.getByRole('textbox', { name: 'The prompt' })).toHaveValue(
       'a working harbour at dawn, boats at the quay, soft light',
     );
-    await page.screenshot({ path: 'test-results/88-prompt-review.png' });
+    await page.screenshot({ path: 'test-results/89-prompt-review.png' });
 
     // The picture went over as a picture, and the only tool on that turn was
     // the rewrite — not a fresh proposal on top of one nobody has looked at.
@@ -2948,6 +2963,131 @@ test.describe('the chat module', () => {
     await send.click();
     await expect(page.getByText('Darker it is.')).toBeVisible({ timeout: 30_000 });
     expect(await lastRequest()).toContain('image_url');
+  });
+
+  /**
+   * Carrying on is an answer.
+   *
+   * A rewrite waits folded away, and the honest reading of "talk about
+   * something else instead" is that you do not want it. Leaving it pending
+   * would put the next thing said into a conversation the model thinks is
+   * still waiting on a decision.
+   */
+  test('drops an undecided proposal when you say something else', async ({ page }) => {
+    await seedWorkflow();
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', {
+        data: {
+          chat: {
+            review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+          },
+        },
+      }),
+    );
+
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+      },
+    });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('build me a prompt');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByRole('dialog')).toBeVisible({ timeout: 30_000 });
+
+    await script({
+      content: 'The harbour is missing.',
+      toolCall: {
+        name: 'revise_prompt',
+        arguments: {
+          prompt: 'a working harbour at dawn',
+          reason: 'Put the harbour in.',
+          score: 4,
+        },
+      },
+    });
+    await page.getByRole('dialog').getByRole('button', { name: 'Generate' }).click();
+
+    const putAside = page.getByRole('button', { name: /Proposed a rewrite — waiting on you/ });
+    await expect(putAside).toBeVisible({ timeout: 90_000 });
+
+    // Say something else instead of deciding.
+    await script({ content: 'Right, something else then.' });
+    await page.getByPlaceholder('Say something…').fill('actually, make it a lighthouse');
+    const send = page.getByRole('button', { name: 'Send' });
+    await expect(send).toBeEnabled();
+    await send.click();
+
+    // The proposal is gone — refused, not left hanging — and the conversation
+    // carries on with what was said.
+    await expect(putAside).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByText('Right, something else then.')).toBeVisible({ timeout: 30_000 });
+
+    // Refused rather than left hanging — and the model was told so, which is
+    // what keeps the next turn from arriving in a conversation still waiting.
+    const decided = await withApi(async (ctx) => {
+      const chats = (await (await ctx.get('/api/chat/conversations')).json()) as { id: string }[];
+      const detail = (await (
+        await ctx.get(`/api/chat/conversations/${chats[0]?.id}`)
+      ).json()) as {
+        messages: { toolCall?: { tool: string }; toolResult?: { decision: string } }[];
+      };
+      return detail.messages.find((message) => message.toolCall?.tool === 'revise_prompt')
+        ?.toolResult?.decision;
+    });
+    expect(decided).toBe('rejected');
+
+    // It stays reachable, like any other prompt in the transcript.
+    await expect(page.getByRole('button', { name: /a working harbour at dawn/ })).toBeVisible();
+    await page.screenshot({ path: 'test-results/90-proposal-dropped.png' });
+  });
+
+  /**
+   * The picture in the conversation opens the viewer everything else opens.
+   *
+   * It is the one you are most likely to want to keep the moment you see it —
+   * you have just asked for it — and a cut-down viewer here meant going to the
+   * gallery to do anything with the result of the conversation you were having.
+   */
+  test('opens a chat picture in the gallery’s own viewer', async ({ page }) => {
+    await seedWorkflow();
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a harbour at dusk', reason: 'Warm.' },
+      },
+    });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('build me a prompt');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByRole('dialog')).toBeVisible({ timeout: 30_000 });
+
+    await script({ content: 'There it is.' });
+    await page.getByRole('dialog').getByRole('button', { name: 'Generate' }).click();
+
+    const picture = page.getByRole('button', { name: /Open picture/ }).first();
+    await expect(picture).toBeVisible({ timeout: 90_000 });
+    await picture.click();
+
+    // Every action the gallery gives a picture, on the one in the conversation.
+    for (const name of ['Favourite', 'Save', 'Keep', 'Details']) {
+      await expect(page.getByRole('button', { name, exact: true })).toBeVisible();
+    }
+    await page.getByRole('button', { name: '4 stars' }).click();
+    await expect
+      .poll(async () =>
+        withApi(async (ctx) => {
+          const gallery = (await (await ctx.get('/api/gallery')).json()) as {
+            items: { images: { rating: number }[] }[];
+          };
+          return gallery.items[0]?.images?.[0]?.rating ?? 0;
+        }),
+      )
+      .toBe(4);
+    await page.screenshot({ path: 'test-results/91-chat-viewer.png' });
   });
 
   /**

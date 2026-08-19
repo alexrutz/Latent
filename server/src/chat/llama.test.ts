@@ -8,6 +8,7 @@ import type {
 } from '@latent/shared';
 
 import {
+  detailPolicy,
   enabledTools,
   inlineReasoning,
   looksLikeAQuestionWithOptions,
@@ -550,5 +551,54 @@ describe('pictures in the replayed conversation', () => {
     expect(JSON.stringify(shown[0]?.content)).toContain('colder');
     // And the note itself is still not said out loud.
     expect(JSON.stringify(out)).not.toContain('Generated again');
+  });
+});
+
+describe('how much a prompt spells out', () => {
+  /**
+   * Instructions, not a word count.
+   *
+   * "Two sentences" is a rule a model follows by truncating the wrong half.
+   * What is being chosen is how much of the scene the prompt settles — a
+   * different picture at each end rather than a longer one.
+   */
+  it('says something different at each end of the scale', () => {
+    const sparse = detailPolicy('sparse');
+    const elaborate = detailPolicy('elaborate');
+
+    expect(sparse).toContain('short');
+    expect(sparse).toContain('Leave everything else open');
+    expect(elaborate).toContain('exhaustively');
+    expect(elaborate).not.toBe(sparse);
+    // And neither of them reintroduces the keyword pile the instructions spend
+    // half their length arguing against.
+    expect(elaborate).toContain('no keyword piles');
+  });
+
+  it('falls back to the middle for a value nobody set', () => {
+    expect(detailPolicy(undefined as never)).toBe(detailPolicy('balanced'));
+  });
+});
+
+describe('asking rather than guessing about a picture', () => {
+  const PROMPT = 'a working harbour at dawn';
+
+  it('adds the standard for asking, and asks for one tool at most', () => {
+    const text = reviewInstruction(PROMPT, 'balanced', 'unsure');
+    expect(text).toContain('ask_user');
+    expect(text).toContain('revise_prompt');
+    // Two dialogs about one picture is two decisions where one was asked for.
+    expect(text).toContain('at most one tool');
+  });
+
+  it('says nothing about asking when it is switched off', () => {
+    const text = reviewInstruction(PROMPT, 'balanced', 'never');
+    expect(text).not.toContain('ask_user');
+    expect(text).toContain('revise_prompt');
+  });
+
+  it('gets more insistent as the setting rises', () => {
+    expect(reviewInstruction(PROMPT, 'balanced', 'unclear')).toContain('cannot tell');
+    expect(reviewInstruction(PROMPT, 'balanced', 'always')).toContain('Always call');
   });
 });

@@ -64,8 +64,10 @@ form. Nothing about your ComfyUI setup changes.
 - **The model looks at what it made.** With a multimodal model server, the
   finished picture goes back to the chat with the prompt beside it: it says how
   much of the prompt actually came through and — below a perfectionism threshold
-  you set, next to the other tool settings — proposes a rewritten prompt to fix
-  what did not. See [The model sees what it
+  you set, next to the other tool settings — either proposes a rewritten prompt
+  to fix what did not, or asks you which way to go when the fix is a matter of
+  taste. The proposal waits folded away rather than covering the picture, and
+  carrying on talking refuses it. See [The model sees what it
   made](#the-model-sees-what-it-made). The last couple of renders stay in the
   conversation, so “make the sky darker” lands on the picture rather than on its
   own description of it.
@@ -932,6 +934,22 @@ running are multimodal, so **the finished picture is handed back to it**, with
 the prompt beside it, and the reply becomes a judgement it is in a position to
 make: what came through, what did not.
 
+**The picture comes first, the proposal waits.** A rewrite is not thrown over
+the render the moment it appears: it arrives folded away on a line above the
+composer, so you see the result, read what the model made of it, and open the
+proposal when you are ready. Saying something else instead is an answer —
+the proposal is refused, the model is told, and the conversation carries on with
+what you said rather than with a decision nobody made.
+
+**When it is not sure, it asks.** A picture can miss for several reasons at
+once, and which of them to chase is a matter of taste; guessing produces a
+confident rewrite of the wrong thing. **Ask rather than guess** in Settings →
+Chat sets how readily it stops instead — from never through *when it cannot
+tell* and *when unsure* to *always first* — and what arrives is the ordinary
+question dialog, with two to four concrete ways to close the gap. Answering it
+keeps the review open: the turn after your answer is still about that picture,
+with the same rewrite on offer.
+
 **And it stays in front of it.** The picture is not shown once and taken away:
 the last couple of renders go back with every turn, in the place they happened.
 That is what makes the next sentence work — *make the sky darker*, *keep this
@@ -987,10 +1005,14 @@ applies to that dialog only, and the default stays whatever Settings says.
 
 **You stay in the conversation, and the picture arrives in it.** Being sent to
 the Generate screen threw away the thread at the moment it had paid off. The run
-appears where you asked for it, with a progress bar while it renders — the same
-numbers the live bar shows, in the place you are already looking. Its size is a
-step on a five-point scale in Settings, centred in the conversation. Tapping one
-opens it full-screen with pinch-zoom and pan; tapping again puts it away.
+appears where you asked for it, and while it renders you get **the same bar the
+rest of the app shows**: the live preview frame it is up to, how much longer,
+which node is running, the step count and the queue behind it. Its size is a
+step on a five-point scale in Settings, centred in the conversation. Tapping a
+finished picture opens **the gallery's own viewer** — the same rating, keep,
+favourite, save, reuse and details actions — because the picture you have just
+asked for is the one you are most likely to want to keep, and going to the
+gallery to do it loses the conversation it came out of.
 
 The size is a share of the *width*, not of the window's height. Height sounds
 tidier and is not: the chat window gets shorter when the keyboard opens, so one
@@ -1045,6 +1067,23 @@ transcript.
 offered on exactly one turn — the one where the model has just been shown the
 picture its prompt produced — so "how readily does it reach for this" is not a
 question that arises. What it *is* governed by is the threshold above.
+
+### How much a prompt spells out
+
+The same picture can be described in a sentence or in a paragraph, and which is
+right is not a fact about prompting — it is a fact about what you are doing. A
+sparse prompt leaves the model room and varies wildly between seeds; an
+elaborate one pins the picture down, which is what you want once you know
+exactly what you are after.
+
+Settings → Chat → **How much a prompt spells out** runs from **Sparse** through
+*plain*, *balanced* and *detailed* to **Elaborate**. It is instructions rather
+than a length limit — "two sentences" is a rule a model follows by truncating
+the wrong half — so what changes is how much of the scene the prompt settles and
+how much is left to the sampler. It is a section of the system prompt, which
+means it applies to instructions you wrote yourself as well as to Latent's own,
+and none of the levels reintroduce the keyword pile the rest of the prompt
+spends its length arguing against.
 
 ### How eagerly it reaches for each one
 

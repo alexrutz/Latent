@@ -432,16 +432,36 @@ async function streamReply(
     ? await loadConversationPictures(ctx, chat.messages, settings.review.keepInView)
     : new Map<string, string>();
 
+  /*
+   * A question asked while looking at a picture is still about that picture.
+   *
+   * Answering it lands the conversation on an ordinary tool response, which
+   * would end the review — and the answer is exactly the thing that makes the
+   * rewrite worth proposing. So the turn after one of those is a review turn
+   * too, with the same picture and the same offer.
+   */
+  const answeredReviewQuestion =
+    last?.role === 'tool' &&
+    last.toolCall?.tool === 'ask_user' &&
+    last.toolCall.fromReview === true;
+
+  const reviewed = answeredReviewQuestion ? lastRender(chat.messages) : last;
+
   const review =
-    !force && afterGeneration && settings.review.enabled && last?.generationId && last.prompt
-      ? await loadReviewImage(ctx, last.generationId).then((image) =>
+    !force &&
+    (afterGeneration || answeredReviewQuestion) &&
+    settings.review.enabled &&
+    reviewed?.generationId &&
+    reviewed.prompt
+      ? await loadReviewImage(ctx, reviewed.generationId).then((image) =>
           image
             ? {
                 dataUrl: image.dataUrl,
-                prompt: last.prompt as string,
+                prompt: reviewed.prompt as string,
                 threshold: settings.review.threshold,
-                // Already the message above, unless nothing is kept in view.
-                inHistory: pictures.has(last.id),
+                askWhen: settings.review.askWhen,
+                // Already in the history, unless nothing is kept in view.
+                inHistory: pictures.has(reviewed.id),
               }
             : null,
         )
@@ -451,13 +471,24 @@ async function streamReply(
     for await (const event of streamWithFallback(client, chat.messages, {
       signal: controller.signal,
       ...(force ? { force } : {}),
-      ...(!force && afterGeneration ? { withoutTools: true } : {}),
+      ...(!force && afterGeneration && !review ? { withoutTools: true } : {}),
       ...(review ? { review } : {}),
       ...(pictures.size > 0 ? { pictures } : {}),
     })) {
       if (event.type === 'content') message.content += event.text;
       if (event.type === 'thinking') thinking += event.text;
-      if (event.type === 'tool') message.toolCall = event.call;
+      if (event.type === 'tool') {
+        /*
+         * Which turn a question was asked on is ours to record, not the
+         * model's to claim: it decides whether the turn after the answer is
+         * still about the picture. Stamped here, stripped again before the
+         * call is ever replayed to the model.
+         */
+        message.toolCall =
+          review && event.call.tool === 'ask_user'
+            ? { ...event.call, fromReview: true }
+            : event.call;
+      }
       send(event);
     }
 
@@ -523,6 +554,15 @@ async function streamReply(
     await client.close();
     reply.raw.end();
   }
+}
+
+/** The last render this conversation produced, whatever has been said since. */
+function lastRender(messages: ChatMessage[]): ChatMessage | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.generationId && message.prompt) return message;
+  }
+  return undefined;
 }
 
 /**

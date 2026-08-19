@@ -5,13 +5,15 @@ import type { ChatMessage, ChatToolCall } from '@latent/shared';
 
 import { api } from '../api/client';
 import { useGeneration, useSettings } from '../api/queries';
-import { ImageViewer, Still } from '../components/ImageViewer';
+import { Still } from '../components/ImageViewer';
+import { RunProgress } from '../components/LiveBar';
+import { ViewerWithActions } from '../components/ViewerWithActions';
 import { Markdown } from '../components/Markdown';
 import { PromptDiff, promptChanged } from '../components/PromptDiff';
 import { ToolDialog } from '../components/ToolDialog';
 import { Button, cn, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { useChatStore } from '../state/chat';
-import { useLiveStore } from '../state/live';
+import { useGridSettings } from '../state/grid';
 
 /**
  * Talking to a local model about what to make.
@@ -606,7 +608,7 @@ function GeneratedRun({
   showDiff: boolean;
 }) {
   const generation = useGeneration(id);
-  const job = useLiveStore((state) => state.live.job);
+  const [grid, updateGrid] = useGridSettings();
   const [viewing, setViewing] = useState<number | null>(null);
 
   const record = generation.data;
@@ -616,52 +618,19 @@ function GeneratedRun({
 
   if (!record || (images.length === 0 && record.status !== 'failed')) {
     /*
-     * The same numbers the live bar shows, in the place you are looking.
+     * The bar the rest of the app shows for the same wait.
      *
-     * A run started from the chat is one you are watching from the chat, and
-     * "Queued" with no end in sight for two minutes is indistinguishable from
-     * broken. `graphProgress` rather than sampler steps: it covers the whole
-     * graph, so a workflow that loads a model for forty seconds before the
-     * first step still moves.
+     * A run asked for in a conversation is watched in that conversation, and
+     * what is wanted there is what the live bar gives everywhere else: the
+     * frame it is up to, how much longer, which node, the step count. See
+     * `RunProgress`.
      */
-    const mine = job?.generationId === id ? job : null;
-    const fraction = mine
-      ? Math.max(mine.graphProgress, mine.progressMax > 0 ? mine.progress / mine.progressMax : 0)
-      : 0;
-
     return (
-      <div style={style} className="mx-auto space-y-1.5 rounded-xl border border-line bg-surface-2/50 p-3">
-        <div className="flex items-center justify-between gap-2 text-xs text-muted">
-          <span className="flex min-w-0 items-center gap-2 truncate">
-            <Spinner className="size-3.5 shrink-0" />
-            {mine?.nodeTitle ?? (record?.status === 'running' ? 'Generating…' : 'Queued')}
-            {/*
-              The node's own steps, next to its name.
-              A percentage across the whole graph barely moves during the part
-              that actually takes the time; "KSampler 12/20" is the number you
-              are waiting on.
-            */}
-            {mine && mine.progressMax > 0 && (
-              <span className="shrink-0 tabular-nums text-body">
-                {mine.progress}/{mine.progressMax}
-              </span>
-            )}
-          </span>
-          {fraction > 0 && (
-            <span className="shrink-0 tabular-nums">{Math.round(fraction * 100)}%</span>
-          )}
-        </div>
-        <div className="h-1.5 overflow-hidden rounded-full bg-surface-3">
-          <div
-            className={cn(
-              'h-full rounded-full bg-accent transition-[width] duration-300',
-              // Nothing to report yet: a bar at zero looks stuck, so it pulses
-              // across instead of claiming a progress it does not have.
-              fraction === 0 && 'w-1/3 animate-pulse',
-            )}
-            style={fraction > 0 ? { width: `${Math.round(fraction * 100)}%` } : undefined}
-          />
-        </div>
+      <div style={style} className="mx-auto">
+        <RunProgress
+          generationId={id}
+          queued={record?.status === 'running' ? 'Generating…' : 'Queued'}
+        />
       </div>
     );
   }
@@ -700,10 +669,21 @@ function GeneratedRun({
         </div>
       )}
 
+      {/*
+        The gallery's viewer, not a stripped one.
+
+        A picture is a picture whichever list you came in by — and this is the
+        one you are most likely to want to rate, keep or favourite the moment
+        you see it, because you have just asked for it. Opening a cut-down
+        viewer here meant going to the gallery to do anything with the result of
+        the conversation you were having.
+      */}
       {viewing !== null && (
-        <ImageViewer
+        <ViewerWithActions
           entries={images.map((image) => ({ record, image }))}
           index={viewing}
+          grid={grid}
+          onGridChange={updateGrid}
           onIndexChange={setViewing}
           onClose={() => setViewing(null)}
         />

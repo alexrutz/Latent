@@ -248,9 +248,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
     // keeping, and a divergence here would show a message that is not stored.
     const refreshed = await api.chat(chatId);
     if (!mine()) return;
-    // A new proposal is always shown: folding one away is a decision about
-    // that call, not a preference to keep the next one hidden too.
-    set({ chat: refreshed, ...(call ? { pendingCall: call, callMinimized: false } : {}) });
+    /*
+     * A new proposal is shown — except the one that arrives while you are
+     * looking at a picture.
+     *
+     * A rewrite comes straight after a render, and covering that render with a
+     * dialog the moment it appears is the opposite of what was wanted: the
+     * point of the review is that you see the result, read what the model made
+     * of it, and then decide. So it waits, folded away above the composer, and
+     * opens when you go to it. Folding a call away yourself stays a decision
+     * about that call, not a preference for the next one.
+     */
+    set({
+      chat: refreshed,
+      ...(call
+        ? { pendingCall: call, callMinimized: call.call.tool === 'revise_prompt' }
+        : {}),
+    });
   };
 
   /** Run one request that produces a stream, cancelling any earlier one. */
@@ -382,9 +396,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     send: async () => {
-      const { chat, draft, attachments, streaming } = get();
+      const { chat, draft, attachments, streaming, pendingCall } = get();
       const content = draft.trim();
       if (!chat || (content === '' && attachments.length === 0) || streaming) return;
+
+      /*
+       * Saying something else is an answer to a proposal nobody decided.
+       *
+       * A rewrite waits folded away, and the honest reading of "carry on
+       * talking instead" is that you do not want it — leaving it pending would
+       * mean the next thing you say arrives in a conversation the model thinks
+       * is still waiting on a decision, which is a state chat templates handle
+       * badly and people handle worse. So it is refused, plainly, and the model
+       * is told why.
+       */
+      if (pendingCall) {
+        set({ pendingCall: null, callMinimized: false, askedForPrompt: false });
+        try {
+          await api.resolveTool(chat.id, {
+            messageId: pendingCall.messageId,
+            decision: 'rejected',
+            note: 'The user did not take that up and said something else instead.',
+          });
+          await get().refresh();
+        } catch {
+          // Already decided, or the conversation has gone. Either way what
+          // matters next is the message being sent, not this.
+        }
+      }
       /*
        * A request already out counts as sending, even before the first frame
        * has arrived and set `streaming`. Against a local model that gap is

@@ -9,6 +9,8 @@ import type {
   ChatToolName,
   ChatToolSettings,
   ProposedBlock,
+  PromptDetail,
+  ReviewAsk,
   ReviewThreshold,
   ToolEagerness,
 } from '@latent/shared';
@@ -406,6 +408,49 @@ export function toolPolicy(tools: ChatToolSettings): string {
 
 const TOOL_ORDER: ChatToolName[] = ['build_prompt', 'prompt_blocks', 'ask_user'];
 
+/**
+ * How far a prompt goes in settling the picture.
+ *
+ * Instructions rather than a word count. "Two sentences" is a rule a model
+ * follows by truncating the wrong half; what is actually being chosen is how
+ * much of the scene is decided in the prompt and how much is left to the
+ * sampler — which is a different picture at each end, not a longer one.
+ */
+const PROMPT_DETAIL: Record<PromptDetail, string> = {
+  sparse:
+    'Keep prompts short — a sentence or two naming the subject, the medium and one or two ' +
+    'things about how it looks. Leave everything else open; the model fills it in differently ' +
+    'every seed, which is the point.',
+  plain:
+    'Keep prompts brief: the subject, the medium, the light and the framing, and little else. ' +
+    'Say what the picture is, not everything that is in it.',
+  balanced:
+    'Write a prompt that settles the picture without exhausting it: subject, setting, light, ' +
+    'framing, medium, and the two or three details that make it that picture rather than a ' +
+    'generic one. Leave the rest open.',
+  detailed:
+    'Work the scene out properly: subject and what it is doing, the setting and its details, ' +
+    'the light and its direction, the framing and lens, the medium and its texture, colour and ' +
+    'mood. Every clause should be doing work — length is fine, padding is not.',
+  elaborate:
+    'Describe the picture exhaustively, as a paragraph that leaves nothing important to chance: ' +
+    'the subject in detail, everything else in the frame and where it sits, the quality and ' +
+    'direction of the light, the colour palette, the lens and the distance, the medium and its ' +
+    'surface, the atmosphere. Say what is in the background as well as the foreground. Still no ' +
+    'keyword piles and no "masterpiece" — this is more description, not more adjectives.',
+};
+
+/**
+ * The section that says how much a prompt spells out.
+ *
+ * Appended like the tool policy, and for the same reason: it belongs to the app
+ * rather than to the wording of the instructions, so replacing those does not
+ * silently lose it.
+ */
+export function detailPolicy(detail: PromptDetail): string {
+  return `\n\n## How much detail a prompt goes into\n\n${PROMPT_DETAIL[detail] ?? PROMPT_DETAIL.balanced}`;
+}
+
 /** The tools this configuration offers at all. `off` means genuinely absent. */
 export function enabledTools(tools: ChatToolSettings) {
   return TOOLS.filter((tool) => tools[tool.function.name as ChatToolName] !== 'off');
@@ -528,6 +573,9 @@ function toolArguments(call: ChatToolCall): Record<string, unknown> {
   const args: Record<string, unknown> = { ...call };
   delete args.callId;
   delete args.tool;
+  // Which turn the question was asked on is Latent's note to itself, and a
+  // field the tool never declared teaches the model to send it back.
+  delete args.fromReview;
   return args;
 }
 
@@ -599,6 +647,33 @@ const REVIEW_THRESHOLDS: Record<ReviewThreshold, { score: number; standard: stri
 };
 
 /**
+ * When it stops and asks rather than deciding for you.
+ *
+ * The failure this exists for is a confident rewrite of the wrong thing. A
+ * picture can miss for several reasons at once, and which of them to chase is
+ * often a matter of taste — so the useful move is to say what is off and offer
+ * two or three ways to go at it, which is one tap to answer.
+ */
+const REVIEW_ASKS: Record<ReviewAsk, string> = {
+  never: '',
+  unclear:
+    'If you genuinely cannot tell what went wrong — the picture is off but not in a way you ' +
+    'can name — call `ask_user` instead, with what you suspect as the options.',
+  unsure:
+    'If you are not sure which of several fixes they would want, call `ask_user` instead of ' +
+    'guessing: name what is off, and offer two to four concrete ways to improve how closely ' +
+    'the picture follows the prompt. Rewrite it yourself only when the fix is obvious.',
+  often:
+    'Whenever there is more than one sensible way to improve the match, call `ask_user` rather ' +
+    'than choosing for them: two to four concrete options, each a different way of closing the ' +
+    'gap. Rewrite it yourself only when there is exactly one thing to change.',
+  always:
+    'Always call `ask_user` before rewriting anything: say what came through and what did not, ' +
+    'and offer two to four concrete ways to improve the match for them to choose from. Do not ' +
+    'call `revise_prompt` until they have answered.',
+};
+
+/**
  * The turn that shows the model what its prompt produced.
  *
  * Phrased as the user handing over a picture, because that is the only turn a
@@ -607,7 +682,11 @@ const REVIEW_THRESHOLDS: Record<ReviewThreshold, { score: number; standard: stri
  * for. The prompt is repeated in full rather than pointed at, since it may be
  * twenty messages back and half of it was written by a tool call.
  */
-export function reviewInstruction(prompt: string, threshold: ReviewThreshold): string {
+export function reviewInstruction(
+  prompt: string,
+  threshold: ReviewThreshold,
+  askWhen: ReviewAsk = 'never',
+): string {
   const { score, standard } = REVIEW_THRESHOLDS[threshold];
 
   const lines = [
@@ -629,6 +708,10 @@ export function reviewInstruction(prompt: string, threshold: ReviewThreshold): s
         'that keeps everything which worked and fixes what did not. ' +
         standard,
     );
+    if (REVIEW_ASKS[askWhen] !== '') lines.push('', REVIEW_ASKS[askWhen]);
+    // One or the other, never both: two dialogs about one picture is two
+    // decisions where the user asked for one.
+    lines.push('', 'Call at most one tool. Say your judgement in words either way.');
   } else {
     lines.push('', standard);
   }
@@ -658,6 +741,17 @@ export function withForcedInstruction(
   return [...messages.slice(0, -1), merged];
 }
 
+/** The tools a review turn offers: a rewrite, a question, or neither. */
+function reviewTools(review: ReviewTurn): unknown[] {
+  const tools: unknown[] = [];
+  if (review.threshold !== 'never') tools.push(REVIEW_TOOL);
+  if (review.askWhen !== 'never') {
+    const ask = TOOLS.find((tool) => tool.function.name === 'ask_user');
+    if (ask) tools.push(ask);
+  }
+  return tools;
+}
+
 /** What the model is shown, and how picky it is asked to be, after a render. */
 export interface ReviewTurn {
   /** The finished picture, small enough to be worth prefilling. */
@@ -665,6 +759,8 @@ export interface ReviewTurn {
   /** The prompt it was made from, repeated so it need not be hunted for. */
   prompt: string;
   threshold: ReviewThreshold;
+  /** How readily it asks rather than rewriting the prompt itself. */
+  askWhen: ReviewAsk;
   /** True when the history already carries it, so it is not sent twice. */
   inHistory: boolean;
 }
@@ -678,7 +774,7 @@ export interface ReviewTurn {
  * make of it.
  */
 function reviewTurn(review: ReviewTurn): OpenAiMessage {
-  const instruction = reviewInstruction(review.prompt, review.threshold);
+  const instruction = reviewInstruction(review.prompt, review.threshold, review.askWhen);
 
   /*
    * The picture only when it is not already there.
@@ -818,22 +914,25 @@ export class LlamaClient {
       ? TOOLS.filter((tool) => tool.function.name === options.force)
       : options.review
         ? /*
-           * One tool, and only when a rewrite is a thing that may be proposed.
+           * Two at most, and both about the picture in front of it.
            *
-           * The rest are withheld on this turn exactly as they were before the
-           * review existed: what is wanted here is a sentence about the picture,
-           * not a fresh proposal on top of it.
+           * A rewrite when it knows what to change, and a question when it does
+           * not — which is the difference between a useful proposal and a
+           * confident one that fixes the wrong thing. Everything else is
+           * withheld on this turn exactly as it was before the review existed:
+           * what is wanted here is a judgement, not a fresh proposal on top of
+           * a picture nobody has looked at yet.
            */
-          options.review.threshold === 'never'
-            ? []
-            : [REVIEW_TOOL]
+          reviewTools(options.review)
         : options.withoutTools
           ? []
           : enabledTools(this.settings.tools);
 
     const history = toApiMessages(
       messages,
-      (this.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT) + toolPolicy(this.settings.tools),
+      (this.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT) +
+        toolPolicy(this.settings.tools) +
+        detailPolicy(this.settings.promptDetail),
       options.pictures,
     );
     // A forced call needs a turn of its own to answer; see the comment there.
