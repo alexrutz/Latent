@@ -72,6 +72,25 @@ interface ChatStore {
   waitingFor: string | null;
 
   /**
+   * A prompt has been asked for and nothing has come back yet.
+   *
+   * The gap is a second or two against a local model, and without it the ✦
+   * button is a button that visibly does nothing when pressed — which reads as
+   * a tap that missed, so people press it again.
+   */
+  asking: boolean;
+
+  /**
+   * The renders the transcript has actually put on screen.
+   *
+   * Not "the run finished": finished means the record exists, and there is a
+   * refetch and an image download between that and anything being visible. The
+   * model is handed the picture only once you have seen it, which is the whole
+   * order the review is supposed to happen in.
+   */
+  notePictureShown: (generationId: string) => void;
+
+  /**
    * The tool dialog has been folded away without being decided.
    *
    * It covers the screen and blurs everything behind it, which is right while
@@ -120,6 +139,47 @@ const SETTLE_POLL_MS = 2_000;
  * conversation for good. Reaching it carries on rather than giving up.
  */
 const SETTLE_CEILING_MS = 30 * 60 * 1000;
+
+/**
+ * Renders the transcript has drawn, and who is waiting for one.
+ *
+ * Module-level rather than state: nothing renders differently for it, and it
+ * has to outlive the screen — the picture arrives while you are in the gallery
+ * just as often as while you are looking at the chat.
+ */
+const shown = new Set<string>();
+const waiting = new Map<string, (() => void)[]>();
+
+/** How long to wait for a picture to appear before carrying on without it. */
+const SHOWN_CEILING_MS = 20_000;
+
+/**
+ * Wait until the picture is on screen, or until waiting stops being sensible.
+ *
+ * The point of the whole sequence: the render is yours to look at first, and
+ * only then does the model get it. Bounded, because a picture that fails to
+ * load must not leave the conversation silent for ever — after the ceiling the
+ * turn happens anyway, which is what it did before any of this existed.
+ */
+async function waitForPicture(generationId: string): Promise<void> {
+  if (shown.has(generationId)) return;
+
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(ceiling);
+      resolve();
+    };
+
+    const list = waiting.get(generationId) ?? [];
+    list.push(finish);
+    waiting.set(generationId, list);
+
+    const ceiling = setTimeout(finish, SHOWN_CEILING_MS);
+  });
+}
 
 /**
  * Wait for one run to stop being in progress.
@@ -299,8 +359,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
     error: null,
     loading: false,
     askedForPrompt: false,
+    asking: false,
     waitingFor: null,
     callMinimized: false,
+
+    notePictureShown: (generationId) => {
+      shown.add(generationId);
+      for (const waiter of waiting.get(generationId) ?? []) waiter();
+      waiting.delete(generationId);
+    },
 
     minimizeCall: () => set({ callMinimized: true }),
     restoreCall: () => set({ callMinimized: false }),
@@ -479,16 +546,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const { chat, streaming } = get();
       if (!chat || streaming || inFlight) return;
 
-      set({ error: null, askedForPrompt: true });
-      await stream(
-        () =>
-          fetch(`/api/chat/conversations/${chat.id}/build`, {
-            method: 'POST',
-            credentials: 'same-origin',
-            signal: inFlight?.signal,
-          }),
-        chat.id,
-      );
+      set({ error: null, askedForPrompt: true, asking: true });
+      try {
+        await stream(
+          () =>
+            fetch(`/api/chat/conversations/${chat.id}/build`, {
+              method: 'POST',
+              credentials: 'same-origin',
+              signal: inFlight?.signal,
+            }),
+          chat.id,
+        );
+      } finally {
+        // Whatever came of it, the button has stopped being pressed.
+        set({ asking: false });
+      }
     },
 
     /**
@@ -532,6 +604,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (typeof startedRun === 'string' && startedRun !== '') {
         set({ waitingFor: startedRun });
         await waitForGeneration(startedRun, () => get().chat?.id === chat.id);
+        if (get().chat?.id !== chat.id) return;
+
+        /*
+         * The picture goes on screen before the model is told anything.
+         *
+         * The run being finished is not the same as the render being visible:
+         * the record has to be refetched and the image downloaded, and against
+         * a fast model the reply used to win that race — so the judgement of a
+         * picture arrived before the picture did. `waitingFor` stays set until
+         * it is actually there, which is also what keeps the "waiting for the
+         * picture" line honest.
+         */
+        await get().refresh();
+        await waitForPicture(startedRun);
         if (get().chat?.id !== chat.id) return;
         set({ waitingFor: null });
       }

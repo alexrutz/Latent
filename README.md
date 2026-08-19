@@ -912,8 +912,11 @@ to use a tool the reply stops, the conversation behind it goes out of focus, and
 accept or you refuse, and refusing is an ordinary turn in the conversation —
 the model is told, and you carry on refining.
 
-**A dialog can be put aside** with the − in its corner, and comes back from a
-line above the composer. Deciding is often not the next thing you want to do:
+**A dialog can be put aside** with **Put aside** in its own strip along the top,
+and comes back from a line above the composer. It has a row to itself rather
+than a corner: it used to float over the row holding Reject and Generate, close
+enough to Generate that folding the dialog away and queueing a render were one
+slip apart. Deciding is often not the next thing you want to do:
 the answer is in the gallery, or five messages up, and both are behind the very
 thing asking. Folding it away leaves the call exactly as it was — the model is
 still waiting, nothing has been accepted or refused — and the transcript
@@ -933,6 +936,12 @@ confidently, because that is what these models do. Most model servers worth
 running are multimodal, so **the finished picture is handed back to it**, with
 the prompt beside it, and the reply becomes a judgement it is in a position to
 make: what came through, what did not.
+
+**You see it first; the model gets it second.** The order is deliberate and
+enforced: the render appears in the transcript, and only once it is actually on
+screen is it handed to the model. A finished run is not the same as a visible
+picture — there is a refetch and a download in between — and against a fast
+model the judgement of a picture used to arrive before the picture did.
 
 **The picture comes first, the proposal waits.** A rewrite is not thrown over
 the render the moment it appears: it arrives folded away on a line above the
@@ -985,6 +994,11 @@ image costs real time on a local model, and a 4000² output is minutes of it for
 nothing a vision encoder can use. From a batch it is the first picture — the
 transcript still shows the whole run — and from a video workflow it is the
 poster frame, once something has captured one.
+
+The **✦** button next to Send spins while it is being asked for. Against a local
+model the gap before the first frame is a second or two, and a button that
+visibly does nothing in it reads as a tap that missed — which is how you end up
+queueing two prompts.
 
 **Build a prompt** is the one this module exists for. Ask for a prompt from what
 you have been discussing and you get it in an editable box — with **Reject** and

@@ -94,20 +94,30 @@ export function ToolDialog({
 
       <div className="animate-rise relative flex max-h-[85svh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl">
         {/*
-          Floating over whichever body is rendered rather than living in three
-          headers. It is the same action whatever the call is about, and none
-          of the bodies has a header shaped to hold it.
+          A strip of its own, above everything the dialog decides.
+
+          It used to float in the top-right corner, which put it over the row
+          holding Reject and Generate — not flush with either, and close enough
+          to Generate that putting the dialog aside and queueing a render were
+          one slip apart. Two actions that different should not share an edge.
+          Here it is a row nothing else lives in, aligned to the left because
+          the buttons that commit to something are on the right.
         */}
         {onMinimize && (
-          <button
-            type="button"
-            onClick={onMinimize}
-            aria-label="Put this aside"
-            title="Put this aside and come back to it"
-            className="absolute top-2 right-2 z-10 grid size-8 place-items-center rounded-full bg-surface-2/80 text-lg leading-none text-muted backdrop-blur-sm active:bg-surface-3"
-          >
-            −
-          </button>
+          <div className="flex shrink-0 items-center border-b border-line/60 px-2 py-1">
+            <button
+              type="button"
+              onClick={onMinimize}
+              aria-label="Put this aside"
+              title="Put this aside and come back to it"
+              className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] text-muted active:bg-surface-2"
+            >
+              <span aria-hidden className="text-sm leading-none">
+                −
+              </span>
+              Put aside
+            </button>
+          </div>
         )}
 
         {/* A revision is a prompt like any other, and the dialog it opens is

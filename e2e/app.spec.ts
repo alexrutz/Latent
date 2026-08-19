@@ -2678,6 +2678,16 @@ test.describe('the chat module', () => {
     }
   };
 
+  /** How many requests the model server has been sent so far. */
+  const requestCount = async (): Promise<number> => {
+    const context = await apiRequest.newContext({ baseURL: LLAMA });
+    try {
+      return ((await (await context.get('/__requests')).json()) as unknown[]).length;
+    } finally {
+      await context.dispose();
+    }
+  };
+
   /** The whole of the last request, for asserting on what was sent. */
   const lastRequest = async (): Promise<string> => {
     const context = await apiRequest.newContext({ baseURL: LLAMA });
@@ -2965,6 +2975,83 @@ test.describe('the chat module', () => {
     await send.click();
     await expect(page.getByText('Darker it is.')).toBeVisible({ timeout: 30_000 });
     expect(await lastRequest()).toContain('image_url');
+  });
+
+  /**
+   * You see it first. The model gets it second.
+   *
+   * The run finishing is not the same as the render being visible — there is a
+   * refetch and a download between the two — and against a fast model the
+   * judgement of a picture used to arrive before the picture did. Nothing is
+   * sent to the model until the transcript has actually drawn it.
+   */
+  test('shows the picture before the model is given it', async ({ page }) => {
+    await seedWorkflow();
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', {
+        data: {
+          chat: {
+            review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+          },
+        },
+      }),
+    );
+
+    /*
+     * The picture is made slow to arrive, which is the only way to tell the two
+     * orders apart: with an instant image both sequences look identical.
+     */
+    await page.route('**/api/view**', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      await route.continue();
+    });
+
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+      },
+    });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('build me a prompt');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByRole('dialog')).toBeVisible({ timeout: 30_000 });
+
+    await script({ content: 'It came out well.' });
+    const before = await requestCount();
+    await page.getByRole('dialog').getByRole('button', { name: 'Generate' }).click();
+
+    // Wait for the render itself to finish, upstream of anything on screen.
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const gallery = (await (await ctx.get('/api/gallery')).json()) as {
+              items: { status: string; images: unknown[] }[];
+            };
+            const run = gallery.items[0];
+            return run?.status === 'completed' && run.images.length > 0;
+          }),
+        { timeout: 90_000 },
+      )
+      .toBe(true);
+
+    /*
+     * Finished, and still nothing said about it: the picture is on its way down
+     * a deliberately slow connection, and the model has not been handed
+     * anything. This is the assertion the whole change is about.
+     */
+    expect(await requestCount()).toBe(before);
+    await expect(page.getByText('It came out well.')).toHaveCount(0);
+
+    // Once it is there to look at, the turn happens.
+    await expect(page.getByRole('button', { name: /Open picture/ }).first()).toBeVisible({
+      timeout: 60_000,
+    });
+    await expect(page.getByText('It came out well.')).toBeVisible({ timeout: 60_000 });
+    expect(await requestCount()).toBeGreaterThan(before);
+    await page.screenshot({ path: 'test-results/92-picture-first.png' });
   });
 
   /**

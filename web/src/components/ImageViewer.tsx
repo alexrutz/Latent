@@ -645,12 +645,22 @@ export function Still({
   className,
   fit = 'cover',
   onMeasured,
+  onShown,
 }: {
   image: GenerationImage;
   alt: string;
   className?: string;
   fit?: 'cover' | 'contain';
   onMeasured?: (width: number, height: number) => void;
+  /**
+   * Called once there is something to look at.
+   *
+   * "Loaded" rather than "rendered", which is as close as the platform gets —
+   * and close enough for the one caller that needs it: the chat, which hands
+   * the picture to the model only after you have seen it. The plate a video
+   * shows before it has a poster counts too; it is what is on screen.
+   */
+  onShown?: () => void;
 }) {
   const [failed, setFailed] = useState(false);
   const isVideo = mediaKindOf(image.filename) === 'video';
@@ -671,6 +681,7 @@ export function Still({
   if (failed || (isVideo && !image.hasThumbnail)) {
     return (
       <span
+        ref={() => onShown?.()}
         data-testid={isVideo ? 'video-placeholder' : undefined}
         className={cn(
           'grid place-items-center gap-1 bg-surface-2 text-muted',
@@ -706,6 +717,7 @@ export function Still({
           if (!image.width && element.naturalWidth > 0) {
             onMeasured?.(element.naturalWidth, element.naturalHeight);
           }
+          onShown?.();
         }}
         onError={() => setFailed(true)}
         className={cn(

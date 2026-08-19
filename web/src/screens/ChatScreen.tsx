@@ -78,6 +78,7 @@ export function ChatScreen() {
   const attachments = useChatStore((state) => state.attachments);
   const error = useChatStore((state) => state.error);
   const askedForPrompt = useChatStore((state) => state.askedForPrompt);
+  const asking = useChatStore((state) => state.asking);
   const callMinimized = useChatStore((state) => state.callMinimized);
   const waitingFor = useChatStore((state) => state.waitingFor);
   const store = useChatStore.getState;
@@ -381,9 +382,18 @@ export function ChatScreen() {
           {/* Ask for a prompt without saying so. What it does with the answer
               — queue it, or show it first — is the setting beside it. */}
           {!streaming && (
+            /*
+              Busy while it is being asked for.
+
+              Against a local model the gap between the press and the first
+              frame is a second or two, and an unchanged button in it reads as a
+              tap that missed — so people press it again, and the second press
+              queues a second prompt. The spinner is the whole fix.
+            */
             <Button
               variant="secondary"
               className="size-10 shrink-0 rounded-xl p-0 text-base"
+              busy={asking}
               onClick={() => void store().askForPrompt()}
               aria-label="Build a prompt"
               title="Build a prompt from this conversation"
@@ -610,6 +620,7 @@ function GeneratedRun({
   const generation = useGeneration(id);
   const [grid, updateGrid] = useGridSettings();
   const [viewing, setViewing] = useState<number | null>(null);
+  const store = useChatStore.getState;
 
   const record = generation.data;
   const images = record?.images ?? [];
@@ -657,7 +668,20 @@ function GeneratedRun({
             {/* `contain` so each picture keeps its own shape: a portrait and a
                 landscape from one batch should not be cropped into agreeing
                 with each other. */}
-            <Still image={image} alt="" fit="contain" className="block w-full" />
+            <Still
+              image={image}
+              alt=""
+              fit="contain"
+              className="block w-full"
+              /*
+                The moment it is on screen, and not before.
+                What happens next is the model being handed this picture, and
+                the whole order of the review depends on that happening after
+                you can see it — not merely after the run finished, which is a
+                refetch and a download earlier.
+              */
+              onShown={index === 0 ? () => store().notePictureShown(id) : undefined}
+            />
           </button>
         ))}
       </div>
