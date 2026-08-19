@@ -943,7 +943,9 @@ test.describe('the phone ergonomics pass', () => {
     await row('3.steps').getByRole('button', { name: '→ Main' }).click();
     await expect(row('3.steps').getByRole('button', { name: '→ Advanced' })).toBeVisible();
 
-    await page.getByRole('button', { name: 'Sparse' }).click();
+    // Anchored: the chat settings on this screen have a "Sparse" step of their
+    // own on the prompt-detail scale, whose label merely ends with the word.
+    await page.getByRole('button', { name: /^Sparse/ }).click();
     await expect(row('3.steps').getByRole('button', { name: '→ Main' })).toBeVisible();
     await page.screenshot({ path: 'test-results/15-layouts.png' });
 
