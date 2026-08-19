@@ -12,7 +12,15 @@ import { Markdown } from '../components/Markdown';
 import { PromptDiff, promptChanged } from '../components/PromptDiff';
 import { TasteSheet } from '../components/TasteSheet';
 import { ToolDialog } from '../components/ToolDialog';
-import { Button, cn, ErrorNote, Sheet, Spinner } from '../components/ui';
+import {
+  Button,
+  cn,
+  CONTROL_FACE,
+  CONTROL_FACE_SET,
+  ErrorNote,
+  Sheet,
+  Spinner,
+} from '../components/ui';
 import { useChatStore } from '../state/chat';
 import { useGridSettings } from '../state/grid';
 
@@ -264,7 +272,7 @@ export function ChatScreen() {
             type="button"
             onClick={() => setShowHistory(true)}
             aria-label="Saved chats"
-            className="grid size-9 place-items-center rounded-full bg-surface text-muted active:bg-surface-2"
+            className={cn('grid size-9 place-items-center rounded-full text-base', CONTROL_FACE)}
           >
             ≡
           </button>
@@ -284,8 +292,8 @@ export function ChatScreen() {
             aria-label="Carry on by itself"
             onClick={() => void toggleAutonomous()}
             className={cn(
-              'grid size-9 place-items-center rounded-full text-base active:bg-surface-2',
-              autonomous?.enabled ? 'bg-accent/20 text-accent' : 'bg-surface text-muted',
+              'grid size-9 place-items-center rounded-full text-base',
+              autonomous?.enabled ? CONTROL_FACE_SET : CONTROL_FACE,
             )}
           >
             ∞
@@ -302,7 +310,7 @@ export function ChatScreen() {
             type="button"
             onClick={() => setShowTaste(true)}
             aria-label="What you like"
-            className="grid size-9 place-items-center rounded-full bg-surface text-muted active:bg-surface-2"
+            className={cn('grid size-9 place-items-center rounded-full text-base', CONTROL_FACE)}
           >
             ♥
           </button>
@@ -310,7 +318,7 @@ export function ChatScreen() {
             type="button"
             onClick={() => void startNew()}
             aria-label="New chat"
-            className="grid size-9 place-items-center rounded-full bg-surface text-muted active:bg-surface-2"
+            className={cn('grid size-9 place-items-center rounded-full text-base', CONTROL_FACE)}
           >
             ＋
           </button>

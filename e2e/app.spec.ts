@@ -4235,6 +4235,39 @@ test.describe('the twenty-third wave', () => {
     expect(borders).toEqual([]);
   });
 
+  /**
+   * Nothing pressable off the side of the screen.
+   *
+   * The gallery's toolbar grew a control at a time until the last two — the
+   * blur and the grid layout — sat past the right-hand edge, where a phone
+   * simply cannot reach them: the bar does not scroll, so they were not hidden,
+   * they were gone. Measured across every screen rather than asserted on the
+   * one that broke, because the way this happens is a control added to a row
+   * that already fitted.
+   */
+  test('keeps every control on the screen', async ({ page }) => {
+    for (const route of ['/gallery', '/favorites', '/queue', '/generate', '/chat', '/settings']) {
+      await open(page, route);
+      // The bar renders with the screen; the pictures under it can take longer.
+      await expect(page.locator('nav').first()).toBeVisible();
+
+      const escaped = await page.evaluate(() => {
+        const width = window.innerWidth;
+        return Array.from(document.querySelectorAll<HTMLElement>('button, a, input'))
+          .filter((node) => {
+            const box = node.getBoundingClientRect();
+            if (box.width === 0 && box.height === 0) return false;
+            // Half a pixel of slack for sub-pixel layout, and only horizontally:
+            // a long screen scrolls, a wide one is broken.
+            return box.right > width + 0.5 || box.left < -0.5;
+          })
+          .map((node) => `${node.getAttribute('aria-label') ?? node.textContent?.trim() ?? ''}`);
+      });
+
+      expect(escaped, `controls off the side of ${route}`).toEqual([]);
+    }
+  });
+
   /*
    * The drag that took the whole interface with it.
    *

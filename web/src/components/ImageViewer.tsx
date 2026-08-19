@@ -536,7 +536,10 @@ export function ImageViewer({
             blurred ? 'text-accent' : 'text-white/80',
           )}
         >
-          ◌
+          {/* The same glyph the gallery's blur wears: a circle half filled in
+              reads as "obscured" at a glance, where a dotted one reads as a
+              speck of dust on the screen. */}
+          ◍
         </button>
       </div>
 

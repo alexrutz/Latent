@@ -22,7 +22,15 @@ import {
 } from '../components/ParamOverlay';
 import { ThumbGrid, useTileStyle } from '../components/ThumbGrid';
 import { Toggle } from '../components/ParamControl';
-import { cn, EmptyState, Sheet, Spinner } from '../components/ui';
+import {
+  cn,
+  CONTROL_FACE,
+  CONTROL_FACE_ON,
+  CONTROL_FACE_SET,
+  EmptyState,
+  Sheet,
+  Spinner,
+} from '../components/ui';
 import { ViewerWithActions } from '../components/ViewerWithActions';
 import { useBlur } from '../state/blur';
 import { TILE_OPTIONS, useGridSettings } from '../state/grid';
@@ -389,77 +397,93 @@ export function GalleryScreen() {
       the filters are wanted *while* looking through a long gallery, which is
       exactly when the top of the page is thousands of pixels behind you.
     */
-    <div className="sticky top-0 z-20 -mx-4 mb-3 flex items-center justify-between gap-2 bg-ink/95 px-4 py-2 backdrop-blur">
-      <h1 className="text-xl font-semibold">Gallery</h1>
-      <div className="flex items-center gap-2">
-        <div className="flex gap-1 rounded-full bg-surface p-1">
-          {FILTERS.map((filter) => (
-            <button
-              key={filter.label}
-              type="button"
-              onClick={() => setMinRating(filter.minRating)}
-              className={cn(
-                'rounded-full px-3 py-1.5 text-xs',
-                minRating === filter.minRating ? 'bg-accent text-white' : 'text-muted',
-              )}
-            >
-              {filter.label}
-            </button>
-          ))}
-        </div>
-        {/* Sorting and the workflow filter live behind one button: they are
-            decisions you make occasionally, and three more chips across the
-            top would leave no room for the pictures. */}
-        <button
-          type="button"
-          onClick={() => setShowFilters(true)}
-          aria-label="Sort and filter"
-          className={cn(
-            'flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] leading-none',
-            sort !== 'newest' || workflowId ? 'bg-accent/20 text-accent' : 'bg-surface text-muted',
-          )}
-        >
-          <span aria-hidden className="text-base leading-none">
-            ⇅
-          </span>
-          <span aria-hidden className="opacity-60">
-            ▾
-          </span>
-        </button>
+    <div className="sticky top-0 z-20 -mx-4 mb-3 space-y-1.5 bg-ink/95 px-4 py-2 backdrop-blur">
+      {/*
+        Two rows, because five controls and a title do not fit across a phone.
 
-        {/* Its own selection, separate from the viewer's: a thumbnail has room
-            for two or three numbers, not eight. */}
-        <ParamOverlayPicker
-          label="Values on thumbnails"
-          records={items}
-          selected={settings.gridParams}
-          withLabels={settings.overlayLabels}
-          onChange={(gridParams) => updateSettings({ gridParams })}
-          onWithLabelsChange={(overlayLabels) => updateSettings({ overlayLabels })}
-        />
-        {/* Reachable from where the pictures are, not only from Settings —
-            the moment you want it is the moment somebody sits down next to
-            you. */}
-        <button
-          type="button"
-          onClick={toggleBlur}
-          aria-label="Blur every image"
-          aria-pressed={blurred}
-          className={cn(
-            'grid size-9 shrink-0 place-items-center rounded-full active:bg-surface-2',
-            blurred ? 'bg-accent text-white' : 'bg-surface text-muted',
-          )}
-        >
-          ◌
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowLayout(true)}
-          aria-label="Grid layout"
-          className="grid size-9 shrink-0 place-items-center rounded-full bg-surface text-muted active:bg-surface-2"
-        >
-          ▦
-        </button>
+        They used to be one row, and the last two — the blur and the grid — hung
+        off the right-hand edge of the screen where nothing could reach them.
+        The split is not arbitrary: the top row is what this screen *is* plus
+        the things you open occasionally, and the rating filter gets a row of
+        its own because it is the one you actually tap, which also lets each
+        chip be a third of the screen wide instead of forty pixels.
+      */}
+      <div className="flex items-center justify-between gap-2">
+        <h1 className="min-w-0 truncate text-xl font-semibold">Gallery</h1>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {/* Sorting and the workflow filter live behind one button: they are
+              decisions you make occasionally, and three more chips across the
+              top would leave no room for the pictures. */}
+          <button
+            type="button"
+            onClick={() => setShowFilters(true)}
+            aria-label="Sort and filter"
+            className={cn(
+              'flex h-9 shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] leading-none',
+              sort !== 'newest' || workflowId ? CONTROL_FACE_SET : CONTROL_FACE,
+            )}
+          >
+            <span aria-hidden className="text-base leading-none">
+              ⇅
+            </span>
+            <span aria-hidden className="opacity-60">
+              ▾
+            </span>
+          </button>
+
+          {/* Its own selection, separate from the viewer's: a thumbnail has room
+              for two or three numbers, not eight. */}
+          <ParamOverlayPicker
+            label="Values on thumbnails"
+            records={items}
+            selected={settings.gridParams}
+            withLabels={settings.overlayLabels}
+            onChange={(gridParams) => updateSettings({ gridParams })}
+            onWithLabelsChange={(overlayLabels) => updateSettings({ overlayLabels })}
+          />
+          {/* Reachable from where the pictures are, not only from Settings —
+              the moment you want it is the moment somebody sits down next to
+              you. */}
+          <button
+            type="button"
+            onClick={toggleBlur}
+            aria-label="Blur every image"
+            aria-pressed={blurred}
+            className={cn(
+              'grid size-9 shrink-0 place-items-center rounded-full text-base',
+              blurred ? CONTROL_FACE_ON : CONTROL_FACE,
+            )}
+          >
+            ◍
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowLayout(true)}
+            aria-label="Grid layout"
+            className={cn(
+              'grid size-9 shrink-0 place-items-center rounded-full text-base',
+              CONTROL_FACE,
+            )}
+          >
+            ▦
+          </button>
+        </div>
+      </div>
+
+      <div className="flex gap-1 rounded-full bg-surface p-1">
+        {FILTERS.map((filter) => (
+          <button
+            key={filter.label}
+            type="button"
+            onClick={() => setMinRating(filter.minRating)}
+            className={cn(
+              'min-w-0 flex-1 truncate rounded-full px-3 py-1.5 text-xs',
+              minRating === filter.minRating ? 'bg-accent text-white' : 'text-muted',
+            )}
+          >
+            {filter.label}
+          </button>
+        ))}
       </div>
     </div>
   );

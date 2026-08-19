@@ -12,6 +12,31 @@ export function cn(...parts: (string | false | null | undefined)[]): string {
 }
 
 /* ------------------------------------------------------------------ */
+/* Small controls on a dark screen                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The chrome that makes a small icon control visible.
+ *
+ * `surface` on `ink` is barely four per cent of lightness apart. That is right
+ * for a card — it should sit on the page, not shout — and wrong for something
+ * you are meant to press: a 36-pixel circle in it reads as a faint glyph
+ * floating on black, and a glyph is not a target. Anything pressable up in a
+ * toolbar gets the next surface up and a line around it, so its *shape* is
+ * visible before you have worked out what the symbol means.
+ *
+ * The border is on every state, including the lit ones, so switching a control
+ * on does not move it by two pixels.
+ */
+export const CONTROL_FACE = 'border border-line bg-surface-2 text-body active:bg-surface-3';
+
+/** The same control while it is doing something: lit, and still the same size. */
+export const CONTROL_FACE_ON = 'border border-accent bg-accent text-white';
+
+/** And the middle state: a setting is in force, but the control is not "on". */
+export const CONTROL_FACE_SET = 'border border-accent/50 bg-accent/20 text-accent';
+
+/* ------------------------------------------------------------------ */
 /* Button                                                              */
 /* ------------------------------------------------------------------ */
 
