@@ -10,6 +10,7 @@ import { RunProgress } from '../components/LiveBar';
 import { ViewerWithActions } from '../components/ViewerWithActions';
 import { Markdown } from '../components/Markdown';
 import { PromptDiff, promptChanged } from '../components/PromptDiff';
+import { TasteSheet } from '../components/TasteSheet';
 import { ToolDialog } from '../components/ToolDialog';
 import { Button, cn, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { useChatStore } from '../state/chat';
@@ -89,6 +90,7 @@ export function ChatScreen() {
     call: ChatToolCall;
   } | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showTaste, setShowTaste] = useState(false);
   /** Set while the transcript is at the end, which is when it follows a reply. */
   const [atBottom, setAtBottom] = useState(true);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -217,6 +219,22 @@ export function ChatScreen() {
             className="grid size-9 place-items-center rounded-full bg-surface text-muted active:bg-surface-2"
           >
             ≡
+          </button>
+          {/*
+            Next to the chat list, because it belongs to the same question.
+
+            The list is "what have I been working on"; this is "what do I like"
+            — both are things you reach for when the composer is empty and you
+            do not know what to type. A heart rather than a cog: it is not a
+            setting, it is a description of you.
+          */}
+          <button
+            type="button"
+            onClick={() => setShowTaste(true)}
+            aria-label="What you like"
+            className="grid size-9 place-items-center rounded-full bg-surface text-muted active:bg-surface-2"
+          >
+            ♥
           </button>
           <button
             type="button"
@@ -480,6 +498,8 @@ export function ChatScreen() {
           }}
         />
       )}
+
+      <TasteSheet open={showTaste} onClose={() => setShowTaste(false)} />
 
       <Sheet open={showHistory} onClose={() => setShowHistory(false)} title="Saved chats">
         <SavedChats

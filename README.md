@@ -71,6 +71,13 @@ form. Nothing about your ComfyUI setup changes.
   made](#the-model-sees-what-it-made). The last couple of renders stay in the
   conversation, so “make the sky darker” lands on the picture rather than on its
   own description of it.
+- **Somewhere to start when you do not know what to make.** Write down what you
+  like — concepts, aesthetics, places, films — under headings you make up or
+  under none, and the chat draws on it to fill in whatever you left open. How far
+  it reaches runs from off to house style, and at every step what you actually
+  asked for wins. **Encrypted with your password**, because it is never on screen
+  and is a fairly complete description of you. See [What you
+  like](#what-you-like).
 - **Favourites.** Keep an image together with the settings that made it, rate
   those separately, and generate more like it in one tap. Opening one gives the
   gallery's own viewer — the same rating, keep, save, reuse and details actions,
@@ -466,6 +473,11 @@ milliseconds — no image is ever re-encrypted.
 
 **Videos are the exception**, and deliberately so: see
 [Video workflows](#video-workflows) for why a clip is stored as itself.
+
+**Your notes about what you like** are encrypted with the same master key —
+see [What you like](#what-you-like). They are text rather than files, so they
+live in the database, but the words in them are ciphertext exactly as the
+pictures are.
 
 **Metadata stays readable.** Prompts, seeds and settings remain in the database
 in the clear, which is what lets the server sort and filter by rating without
@@ -1099,6 +1111,45 @@ means it applies to instructions you wrote yourself as well as to Latent's own,
 and none of the levels reintroduce the keyword pile the rest of the prompt
 spends its length arguing against.
 
+### What you like
+
+The hardest part of making pictures is deciding what to make, and "give me an
+idea" is a question nothing can answer well without knowing who is asking. The
+♥ button in the chat header — next to the chat list, because it answers the same
+question — opens a page for writing that down: concepts, aesthetics, places,
+films, whatever you keep coming back to.
+
+Notes can be filed under headings you make up, and they can sit under no heading
+at all; being made to file everything is how a list like this ends up empty.
+Everything has its own switch, and switching a heading off silences everything
+under it, so changing your mind for an evening is a tap rather than a deletion.
+
+**It is encrypted with your password**, like the archive and for the same
+reason: it is never on screen, so nobody would notice it sitting readable in a
+database file or a backup. The model reads it — that is what it is for — but
+only while somebody is signed in, and it never leaves the machines you already
+trust with the pictures. What stays in the clear is the shape of the list: the
+order, the switches, and which heading a note is under, so the page still works
+before you have signed in.
+
+Settings → Chat → **How much it draws on them** runs from **Off** through
+*sparingly*, *hints* and *guiding* to **house style**, and every step is a
+statement about empty space rather than about authority:
+
+| | |
+| --- | --- |
+| **Off** | The model is never told any of it. |
+| **Sparingly** | Only when you have said nothing at all — "surprise me". |
+| **Hints** | A vague idea gets coloured by it; a clear one is left alone. |
+| **Guiding** | Shapes what it offers first, wherever that does not contradict you. |
+| **House style** | Everything starts from it unless you say otherwise. |
+
+The default is *hints*. The rule every level shares, and one the model is told
+at each of them: **what you actually asked for wins.** The notes fill in what
+you left open; they never overrule what you said. The model is also told never
+to read the list back to you — you wrote it, and it shows in what it suggests
+rather than in what it says.
+
 ### How eagerly it reaches for each one
 
 Under Settings → Chat, every tool has its own line of points, from **Off**
@@ -1660,6 +1711,7 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 | `server/src/sweeper.ts` | Deletes runs nobody kept, once they are old enough |
 | `shared/src/promptMatch.ts` | Matches an image's embedded graph to a stored workflow |
 | `server/src/vault.ts` | Archive encryption: master key, wrapping, unlock on sign-in |
+| `server/src/taste.ts` | The notes about what you like, sealed and unsealed with the same key |
 | `server/src/images/` | A dependency-free PNG decoder/resizer, and the thumbnail cache the gallery is served from |
 | `server/src/mock/` | The mock ComfyUI — and a scriptable stand-in for `llama-server` — used for development and tests |
 | `web/` | React + Vite PWA |

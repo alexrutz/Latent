@@ -968,6 +968,8 @@ export interface ChatSettings {
    * — how much of the scene is settled here rather than left to the sampler.
    */
   promptDetail: PromptDetail;
+  /** How much what you like shapes what it suggests. See `TasteProfile`. */
+  taste: TasteInfluence;
   /** What a picture generated from the chat is used with. */
   generation: ChatGenerationSettings;
   /**
@@ -1537,6 +1539,77 @@ export interface ChatConversation {
 export interface ChatConversationDetail extends ChatConversation {
   messages: ChatMessage[];
 }
+
+/* ------------------------------------------------------------------ */
+/* What you like                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A heading for notes about your taste — "Colour", "Places", "Films".
+ *
+ * Optional by design: a note that does not belong under any of them is still a
+ * note worth having, and being made to file everything is the reason people
+ * stop writing things down.
+ */
+export interface TasteCategory {
+  id: string;
+  name: string;
+  /** Whether this one, and the notes under it, are currently feeding in. */
+  active: boolean;
+  position: number;
+  createdAt: number;
+}
+
+/** One thing you like, or want, or keep coming back to. */
+export interface TasteEntry {
+  id: string;
+  /** `null` for a note that belongs to no category. */
+  categoryId: string | null;
+  text: string;
+  /**
+   * Whether it is currently feeding in.
+   *
+   * Separately from its category, because "everything about colour except that
+   * one" is the normal shape of changing your mind. A note under a switched-off
+   * category stays off whatever this says.
+   */
+  active: boolean;
+  position: number;
+  createdAt: number;
+}
+
+/**
+ * Everything Latent knows about what you like.
+ *
+ * Kept encrypted with the app password like the picture archive, for the same
+ * reason: it is a description of you, sitting on a disk indefinitely. The model
+ * reads it — that is what it is for — but nothing else does, and it never
+ * leaves the machines you already trust with the pictures.
+ */
+export interface TasteProfile {
+  categories: TasteCategory[];
+  entries: TasteEntry[];
+}
+
+/**
+ * How much your taste shapes what the model suggests.
+ *
+ * The rule every level shares: it never overrides something you actually asked
+ * for. What changes is how much it fills the space you left — which is the
+ * whole point of writing it down, since the hardest part of making a picture is
+ * deciding what to make.
+ */
+export type TasteInfluence =
+  /** Never mentioned to the model at all. */
+  | 'off'
+  /** Only when you have said nothing whatever about what you want. */
+  | 'sparingly'
+  /** A vague idea is nudged towards it; a concrete one is left alone. */
+  | 'hints'
+  /** Shapes every suggestion, where it does not contradict what was asked. */
+  | 'guiding'
+  /** Everything starts from it unless you say otherwise. */
+  | 'strong';
 
 /* ------------------------------------------------------------------ */
 /* Chat tools                                                          */

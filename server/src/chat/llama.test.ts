@@ -5,8 +5,10 @@ import type {
   ChatStreamEvent,
   ChatToolCall,
   ChatToolSettings,
+  TasteProfile,
 } from '@latent/shared';
 
+import { activeTaste } from '../taste.js';
 import {
   detailPolicy,
   enabledTools,
@@ -15,6 +17,7 @@ import {
   parseCall,
   reviewInstruction,
   toApiMessages,
+  tastePolicy,
   toolPolicy,
   withForcedInstruction,
 } from './llama.js';
@@ -600,5 +603,96 @@ describe('asking rather than guessing about a picture', () => {
   it('gets more insistent as the setting rises', () => {
     expect(reviewInstruction(PROMPT, 'balanced', 'unclear')).toContain('cannot tell');
     expect(reviewInstruction(PROMPT, 'balanced', 'always')).toContain('Always call');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* What the user likes                                                 */
+/* ------------------------------------------------------------------ */
+
+function profile(): TasteProfile {
+  return {
+    categories: [
+      { id: 'colour', name: 'Colour', active: true, position: 0, createdAt: 1 },
+      { id: 'places', name: 'Places', active: false, position: 1, createdAt: 2 },
+    ],
+    entries: [
+      { id: 'a', categoryId: 'colour', text: 'washed-out teal', active: true, position: 0, createdAt: 1 },
+      { id: 'b', categoryId: 'colour', text: 'neon', active: false, position: 1, createdAt: 2 },
+      { id: 'c', categoryId: 'places', text: 'harbours', active: true, position: 2, createdAt: 3 },
+      { id: 'd', categoryId: null, text: 'rain at night', active: true, position: 3, createdAt: 4 },
+      { id: 'e', categoryId: 'gone', text: 'orphaned', active: true, position: 4, createdAt: 5 },
+    ],
+  };
+}
+
+describe('which notes are feeding in', () => {
+  it('keeps the switched-on ones and groups them under their heading', () => {
+    expect(activeTaste(profile())).toEqual([
+      { heading: 'Colour', notes: ['washed-out teal'] },
+      { heading: null, notes: ['rain at night'] },
+    ]);
+  });
+
+  /**
+   * The category switch is the coarse control.
+   *
+   * Having to also switch off six notes to silence a heading would make it
+   * useless, so a note under a switched-off category is off whatever it says.
+   */
+  it('silences a whole category from its own switch', () => {
+    const groups = activeTaste(profile());
+    expect(groups.some((group) => group.notes.includes('harbours'))).toBe(false);
+  });
+
+  it('drops a note filed under a category that no longer exists', () => {
+    const groups = activeTaste(profile());
+    expect(groups.some((group) => group.notes.includes('orphaned'))).toBe(false);
+  });
+});
+
+describe('how far the notes reach', () => {
+  it('says nothing at all when it is off', () => {
+    expect(tastePolicy(profile(), 'off')).toBe('');
+  });
+
+  /**
+   * A heading with nothing under it invites a small model to invent the
+   * contents, so an empty profile produces no section rather than an empty one.
+   */
+  it('says nothing when there is nothing switched on, or nothing to read', () => {
+    expect(tastePolicy({ categories: [], entries: [] }, 'strong')).toBe('');
+    expect(tastePolicy(null, 'strong')).toBe('');
+  });
+
+  it('puts the active notes in, under their headings', () => {
+    const text = tastePolicy(profile(), 'hints');
+    expect(text).toContain('washed-out teal');
+    expect(text).toContain('**Colour**');
+    expect(text).toContain('rain at night');
+    // Switched off, and under a switched-off heading: neither reaches the model.
+    expect(text).not.toContain('neon');
+    expect(text).not.toContain('harbours');
+  });
+
+  /** The rule the user asked for, at every level: what they asked for wins. */
+  it('leaves what was actually asked for alone at every step', () => {
+    for (const level of ['sparingly', 'hints', 'guiding', 'strong'] as const) {
+      expect(tastePolicy(profile(), level)).toContain(
+        'Whatever they have actually asked for is what they get',
+      );
+    }
+  });
+
+  it('reaches further as the setting rises', () => {
+    expect(tastePolicy(profile(), 'sparingly')).toContain('nothing to go on');
+    expect(tastePolicy(profile(), 'hints')).toContain('vague idea');
+    expect(tastePolicy(profile(), 'guiding')).toContain('wherever it does not contradict');
+    expect(tastePolicy(profile(), 'strong')).toContain('house style');
+  });
+
+  /** Never shown in the chat, so reciting it back would be a small leak. */
+  it('tells it not to read the list back', () => {
+    expect(tastePolicy(profile(), 'guiding')).toContain('Never read the list back');
   });
 });

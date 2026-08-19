@@ -13,6 +13,7 @@ import { Auth } from './auth.js';
 import { ThumbnailCache, ViewRenderer } from './images/thumbnails.js';
 import { Importer } from './importer.js';
 import { InputLibrary } from './inputLibrary.js';
+import { Taste } from './taste.js';
 import { Vault } from './vault.js';
 import { plainConnection, type ConnectionConfig } from './comfy/connection.js';
 import { loadConfig, type Config } from './config.js';
@@ -39,6 +40,7 @@ import { registerPresetRoutes } from './routes/presets.js';
 import { registerQueueRoutes } from './routes/queue.js';
 import { registerSystemRoutes } from './routes/system.js';
 import { registerSystemPromptRoutes } from './routes/systemPrompts.js';
+import { registerTasteRoutes } from './routes/taste.js';
 import { registerWorkflowRoutes } from './routes/workflows.js';
 import { attachTerminal } from './terminal.js';
 
@@ -126,6 +128,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   const vault = new Vault(store);
   const archive = new Archive(config.archiveDir, store, vault);
   const importer = new Importer(store, archive);
+  const taste = new Taste(store, vault);
   const inputs = new InputLibrary(store);
   const sweeper = new Sweeper(store, archive, app.log);
   /*
@@ -176,6 +179,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     auth,
     archive,
     vault,
+    taste,
     importer,
     inputs,
     stateFiles,
@@ -235,6 +239,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   registerGalleryRoutes(app, ctx);
   registerFavoriteRoutes(app, ctx);
   registerPromptBlockRoutes(app, ctx);
+  registerTasteRoutes(app, ctx);
   registerSystemPromptRoutes(app, ctx);
   registerImportRoutes(app, ctx);
   registerInputImageRoutes(app, ctx);

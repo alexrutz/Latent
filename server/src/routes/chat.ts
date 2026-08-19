@@ -58,7 +58,17 @@ function systemPrompt(ctx: AppContext): string {
 function llamaClient(ctx: AppContext): LlamaClient | null {
   const connection = llamaConnection(ctx);
   if (!connection) return null;
-  return new LlamaClient(connection, ctx.store.getSettings().chat, systemPrompt(ctx));
+  /*
+   * The notes go in per client, so switching one on takes effect on the next
+   * message rather than on the next restart — and a locked vault simply means
+   * `null`, which leaves the section out instead of failing the turn.
+   */
+  return new LlamaClient(
+    connection,
+    ctx.store.getSettings().chat,
+    systemPrompt(ctx),
+    ctx.taste.profileOrNull(),
+  );
 }
 
 export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void {

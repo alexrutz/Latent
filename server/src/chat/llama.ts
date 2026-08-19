@@ -12,11 +12,14 @@ import type {
   PromptDetail,
   ReviewAsk,
   ReviewThreshold,
+  TasteInfluence,
+  TasteProfile,
   ToolEagerness,
 } from '@latent/shared';
 import { samplingOverrides } from '@latent/shared';
 
 import { authHeaders, type ConnectionConfig } from '../comfy/connection.js';
+import { activeTaste } from '../taste.js';
 
 /**
  * Talking to a local llama.cpp server.
@@ -451,6 +454,81 @@ export function detailPolicy(detail: PromptDetail): string {
   return `\n\n## How much detail a prompt goes into\n\n${PROMPT_DETAIL[detail] ?? PROMPT_DETAIL.balanced}`;
 }
 
+/**
+ * How far the user's own notes are allowed to reach.
+ *
+ * Every level is a statement about *empty space*, not about authority. The user
+ * asked for this to shape things when they have not said what they want and to
+ * keep its hands off when they have, so each wording says which of the two
+ * situations it applies in rather than how strongly to push.
+ */
+const TASTE_REACH: Record<Exclude<TasteInfluence, 'off'>, string> = {
+  sparingly:
+    'Use it only when they have given you nothing to go on — "surprise me", "I don\'t know what ' +
+    'I want", or a request for an idea with no subject in it. The moment they name something, ' +
+    'work on that instead and leave the notes alone.',
+  hints:
+    'Use it to fill in what they have left open. If they have only a vague idea — a mood, a word, ' +
+    '"something quiet" — let the notes colour the details you choose around it. If they have ' +
+    'named the picture they want, build that picture; the notes may inform small choices nobody ' +
+    'specified, and nothing more.',
+  guiding:
+    'Let it shape what you suggest wherever it does not contradict them: the settings you reach ' +
+    'for first, the light, the treatment, what you offer when they ask for options. Anything ' +
+    'they actually asked for still wins outright.',
+  strong:
+    'Treat it as the house style. Start from it for every idea and every prompt, and only step ' +
+    'outside it where they have asked for something else — which they then get, exactly as ' +
+    'asked, without argument.',
+};
+
+/**
+ * The section that tells the model what the user likes.
+ *
+ * Absent entirely at `off`, when nothing is switched on, and when the vault is
+ * locked so the notes cannot be read — in all three cases the model is told
+ * nothing rather than told about an empty list, because a heading with nothing
+ * under it invites a small model to invent the contents.
+ *
+ * The notes go in as plain lines of the user's own words. No instruction to
+ * quote them, and one not to: they are never shown in the chat, so reciting
+ * them back would be both strange and a small leak of something written down
+ * privately.
+ */
+export function tastePolicy(profile: TasteProfile | null, level: TasteInfluence): string {
+  if (!profile || level === 'off') return '';
+
+  const groups = activeTaste(profile);
+  if (groups.length === 0) return '';
+
+  const body = groups
+    .map((group) => {
+      const notes = group.notes.map((note) => `- ${note}`).join('\n');
+      return group.heading ? `**${group.heading}**\n${notes}` : notes;
+    })
+    .join('\n\n');
+
+  return (
+    '\n\n## What this person likes\n\n' +
+    'Notes they have written about their own taste — concepts, aesthetics, things they keep ' +
+    'coming back to.\n\n' +
+    `${body}\n\n` +
+    `${TASTE_REACH[level]}\n\n` +
+    /*
+     * The one rule that does not move with the setting.
+     *
+     * Spelled out at every level rather than only at the gentle ones: the
+     * failure this feature could cause is a picture nobody asked for, and a
+     * model reading "house style" without this line is exactly the model that
+     * would produce one.
+     */
+    'Whatever they have actually asked for is what they get. These notes fill in what they left ' +
+    'open; they never overrule what was said.\n\n' +
+    'Never read the list back to them, quote it, or say that you are using it. They wrote it; ' +
+    'they know what is in it. It shows in what you suggest, not in what you say.'
+  );
+}
+
 /** The tools this configuration offers at all. `off` means genuinely absent. */
 export function enabledTools(tools: ChatToolSettings) {
   return TOOLS.filter((tool) => tools[tool.function.name as ChatToolName] !== 'off');
@@ -835,6 +913,14 @@ export class LlamaClient {
     private readonly settings: ChatSettings,
     /** The instructions in force, already resolved. Empty uses Latent's own. */
     private readonly systemPrompt: string = '',
+    /**
+     * What the user likes, if it could be read.
+     *
+     * Passed in rather than fetched: reading it needs the vault, which belongs
+     * to the server rather than to a client that talks to a model. `null` for
+     * a locked server, and the section is then simply absent.
+     */
+    private readonly taste: TasteProfile | null = null,
   ) {
     this.dispatcher = connection.allowSelfSigned
       ? new Agent({ connect: { rejectUnauthorized: false } })
@@ -932,7 +1018,8 @@ export class LlamaClient {
       messages,
       (this.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT) +
         toolPolicy(this.settings.tools) +
-        detailPolicy(this.settings.promptDetail),
+        detailPolicy(this.settings.promptDetail) +
+        tastePolicy(this.taste, this.settings.taste),
       options.pictures,
     );
     // A forced call needs a turn of its own to answer; see the comment there.

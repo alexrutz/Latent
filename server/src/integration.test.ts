@@ -28,6 +28,9 @@ import type {
   StudyShotImage,
   StudyStats,
   SystemPrompt,
+  TasteCategory,
+  TasteEntry,
+  TasteProfile,
   WorkflowDetail,
   WorkflowScanResult,
 } from '@latent/shared';
@@ -47,7 +50,8 @@ import Database from 'better-sqlite3';
 
 import { buildApp } from './app.js';
 import { Store } from './db.js';
-import { Vault } from './vault.js';
+import { Taste } from './taste.js';
+import { Vault, VaultLockedError } from './vault.js';
 import { createMockComfy } from './mock/comfy.js';
 import { createMockLlama } from './mock/llama.js';
 import { readImageSize } from './images/png.js';
@@ -4318,34 +4322,35 @@ describe('connections of both kinds', () => {
   }, 30_000);
 });
 
-describe('chat', () => {
-  /**
-   * Point the chat at a stand-in model server.
-   *
-   * A connection like any other now, rather than an address inside the chat
-   * settings — which is the whole point of the change: one list, one dialog,
-   * one way of saying "talk to this box".
-   */
-  const useLlama = async (url: string): Promise<string> => {
-    const created = await json<{ id: string }>(
-      api('/api/connections', {
-        method: 'POST',
-        body: JSON.stringify({ kind: 'llama', name: `Model server ${url}`, url }),
-      }),
-    );
-    await api(`/api/connections/${created.id}/activate`, { method: 'POST' });
-    return created.id;
-  };
+/**
+ * Point the chat at a stand-in model server.
+ *
+ * A connection like any other now, rather than an address inside the chat
+ * settings — which is the whole point of the change: one list, one dialog,
+ * one way of saying "talk to this box".
+ */
+const useLlama = async (url: string): Promise<string> => {
+  const created = await json<{ id: string }>(
+    api('/api/connections', {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'llama', name: `Model server ${url}`, url }),
+    }),
+  );
+  await api(`/api/connections/${created.id}/activate`, { method: 'POST' });
+  return created.id;
+};
 
-  /** Read a server-sent stream to the end and hand back the events. */
-  const readStream = async (response: Response): Promise<ChatStreamEvent[]> => {
-    expect(response.status).toBe(200);
-    const text = await response.text();
-    return text
-      .split('\n\n')
-      .filter((frame) => frame.startsWith('data:'))
-      .map((frame) => JSON.parse(frame.slice(5).trim()) as ChatStreamEvent);
-  };
+/** Read a server-sent stream to the end and hand back the events. */
+const readStream = async (response: Response): Promise<ChatStreamEvent[]> => {
+  expect(response.status).toBe(200);
+  const text = await response.text();
+  return text
+    .split('\n\n')
+    .filter((frame) => frame.startsWith('data:'))
+    .map((frame) => JSON.parse(frame.slice(5).trim()) as ChatStreamEvent);
+};
+
+describe('chat', () => {
 
   it('streams a reply, keeps the reasoning apart, and stores both', async () => {
     const llama = createMockLlama();
@@ -5751,4 +5756,286 @@ describe('video workflows', () => {
     // including what a browser is asked to draw — is exercised for real.
     expect(bytes.subarray(0, 6).toString('ascii')).toBe('GIF89a');
   }, 40_000);
+});
+
+/**
+ * Notes about what the user likes.
+ *
+ * Three things worth proving here and nowhere else: that the notes survive a
+ * round trip through the API, that what lands on disk is ciphertext rather than
+ * a description of somebody's taste, and that the active ones — and only those
+ * — reach the model.
+ */
+describe('what the user likes', () => {
+  const categories: string[] = [];
+  const entries: string[] = [];
+
+  afterAll(async () => {
+    for (const id of entries) await api(`/api/taste/entries/${id}`, { method: 'DELETE' });
+    for (const id of categories) await api(`/api/taste/categories/${id}`, { method: 'DELETE' });
+    await api('/api/settings', { method: 'PATCH', body: JSON.stringify({ chat: { taste: 'hints' } }) });
+  });
+
+  it('keeps categories, notes filed under them, and notes filed under nothing', async () => {
+    const colour = await json<TasteCategory>(
+      api('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name: 'Colour' }) }),
+    );
+    categories.push(colour.id);
+    expect(colour.name).toBe('Colour');
+    expect(colour.active).toBe(true);
+
+    const filed = await json<TasteEntry>(
+      api('/api/taste/entries', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'washed-out teal', categoryId: colour.id }),
+      }),
+    );
+    // A heading is optional by design: being made to file everything is how a
+    // list like this ends up empty.
+    const loose = await json<TasteEntry>(
+      api('/api/taste/entries', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'rain at night' }),
+      }),
+    );
+    entries.push(filed.id, loose.id);
+    expect(filed.categoryId).toBe(colour.id);
+    expect(loose.categoryId).toBe(null);
+
+    const profile = await json<TasteProfile>(api('/api/taste'));
+    expect(profile.categories.map((entry) => entry.name)).toContain('Colour');
+    expect(profile.entries.map((entry) => entry.text).sort()).toEqual([
+      'rain at night',
+      'washed-out teal',
+    ]);
+
+    // Switching one off is a tap, not a deletion: changing your mind for an
+    // evening should not cost you the note.
+    const off = await json<TasteEntry>(
+      api(`/api/taste/entries/${loose.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active: false }),
+      }),
+    );
+    expect(off.active).toBe(false);
+    expect(off.text).toBe('rain at night');
+  }, 20_000);
+
+  /** Deleting the heading is not deleting what was written under it. */
+  it('sets a category’s notes loose rather than deleting them with it', async () => {
+    const temporary = await json<TasteCategory>(
+      api('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name: 'Passing' }) }),
+    );
+    const note = await json<TasteEntry>(
+      api('/api/taste/entries', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'brutalist stairwells', categoryId: temporary.id }),
+      }),
+    );
+    entries.push(note.id);
+
+    expect((await api(`/api/taste/categories/${temporary.id}`, { method: 'DELETE' })).status).toBe(
+      204,
+    );
+
+    const profile = await json<TasteProfile>(api('/api/taste'));
+    const survivor = profile.entries.find((entry) => entry.id === note.id);
+    expect(survivor?.text).toBe('brutalist stairwells');
+    expect(survivor?.categoryId).toBe(null);
+  }, 20_000);
+
+  /**
+   * The reason the feature is encrypted at all.
+   *
+   * These notes are never on screen, so nobody would notice them sitting
+   * readable in a database file or a backup — which is exactly the situation
+   * this test rules out.
+   */
+  it('writes ciphertext to the database, not words', async () => {
+    const category = await json<TasteCategory>(
+      api('/api/taste/categories', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Distinctive heading' }),
+      }),
+    );
+    const entry = await json<TasteEntry>(
+      api('/api/taste/entries', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'an unmistakable phrase', categoryId: category.id }),
+      }),
+    );
+    categories.push(category.id);
+    entries.push(entry.id);
+
+    const db = new Database(join(dataDir, 'test.db'), { readonly: true });
+    try {
+      const storedName = db
+        .prepare<[string], { name: string }>('SELECT name FROM taste_categories WHERE id = ?')
+        .get(category.id)?.name;
+      const storedText = db
+        .prepare<[string], { text: string }>('SELECT text FROM taste_entries WHERE id = ?')
+        .get(entry.id)?.text;
+
+      expect(storedName).toBeTruthy();
+      expect(storedName).not.toContain('Distinctive heading');
+      expect(storedText).not.toContain('unmistakable');
+      // Latent's own envelope, so a stray plaintext row would be obvious.
+      expect(Vault.isEncrypted(Buffer.from(storedText ?? '', 'base64'))).toBe(true);
+
+      // What is *not* encrypted is what the screen needs to work while locked:
+      // the order, the switches, and which heading a note is under.
+      const row = db
+        .prepare<[string], { active: number; category_id: string | null }>(
+          'SELECT active, category_id FROM taste_entries WHERE id = ?',
+        )
+        .get(entry.id);
+      expect(row?.active).toBe(1);
+      expect(row?.category_id).toBe(category.id);
+    } finally {
+      db.close();
+    }
+  }, 20_000);
+
+  it('puts the active notes in front of the model, and nothing else', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+
+      const category = await json<TasteCategory>(
+        api('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name: 'Weather' }) }),
+      );
+      const kept = await json<TasteEntry>(
+        api('/api/taste/entries', {
+          method: 'POST',
+          body: JSON.stringify({ text: 'low fog over water', categoryId: category.id }),
+        }),
+      );
+      const silenced = await json<TasteEntry>(
+        api('/api/taste/entries', {
+          method: 'POST',
+          body: JSON.stringify({ text: 'bright noon sun', categoryId: category.id }),
+        }),
+      );
+      categories.push(category.id);
+      entries.push(kept.id, silenced.id);
+      await api(`/api/taste/entries/${silenced.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active: false }),
+      });
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      llama.script({ content: 'Right.' });
+      await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'give me an idea' }),
+        }),
+      );
+
+      const system = (
+        llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
+      ).messages[0]!;
+      expect(system.content).toContain('What this person likes');
+      expect(system.content).toContain('low fog over water');
+      expect(system.content).not.toContain('bright noon sun');
+      // The rule the whole feature hangs on, at every level of the scale.
+      expect(system.content).toContain('never overrule what was said');
+
+      // Switched off, and the section is gone entirely — not present and empty,
+      // which is the version a small model fills in for itself.
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { taste: 'off' } }),
+      });
+      llama.script({ content: 'Fine.' });
+      await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'again' }),
+        }),
+      );
+      const after = (
+        llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
+      ).messages[0]!;
+      expect(after.content).not.toContain('What this person likes');
+      expect(after.content).not.toContain('low fog over water');
+    } finally {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { taste: 'hints' } }),
+      });
+      await llama.close();
+    }
+  }, 30_000);
+
+  /** Signing out and back in leaves the notes where they were. */
+  it('keeps the notes readable across a lock and a sign-in', async () => {
+    const server = await bootIsolated();
+    try {
+      const claim = await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+      const sessionCookie = claim.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      const made = await server.call('/api/taste/entries', {
+        method: 'POST',
+        cookie: sessionCookie,
+        body: JSON.stringify({ text: 'something private' }),
+      });
+      expect(made.status).toBe(201);
+
+      await server.call('/api/auth/logout', { method: 'POST', cookie: sessionCookie });
+
+      const login = await server.call('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+      const back = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+      const profile = await json<TasteProfile>(server.call('/api/taste', { cookie: back }));
+      expect(profile.entries[0]?.text).toBe('something private');
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  /**
+   * With the key gone, so is the reading — and so is the writing.
+   *
+   * Tested against the store directly because there is no way to reach this
+   * state over HTTP: every route here needs a session, and signing in is what
+   * unlocks the vault. The state is reachable in a running server, though — a
+   * restart with sessions still valid and nobody signed in yet — which is why
+   * the routes answer 423 rather than assuming an open vault.
+   */
+  it('cannot read or write the notes with the vault locked', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-taste-'));
+    try {
+      const store = new Store(join(dir, 'taste.db'));
+      const vault = new Vault(store);
+      const taste = new Taste(store, vault);
+
+      vault.unlock('a password');
+      const entry = taste.addEntry(randomUUID(), { categoryId: null, text: 'quiet rooms' });
+      expect(taste.profile().entries[0]?.text).toBe('quiet rooms');
+
+      vault.lock();
+      expect(taste.isUnlocked).toBe(false);
+      expect(() => taste.profile()).toThrow(VaultLockedError);
+      expect(() => taste.addEntry(randomUUID(), { categoryId: null, text: 'more' })).toThrow(
+        VaultLockedError,
+      );
+      // The chat would rather go without the section than fail the turn.
+      expect(taste.profileOrNull()).toBe(null);
+
+      // Nothing was lost: the same password reads it back.
+      vault.unlock('a password');
+      expect(taste.profile().entries.map((row) => row.id)).toEqual([entry.id]);
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

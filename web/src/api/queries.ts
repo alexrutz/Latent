@@ -37,6 +37,7 @@ export const queryKeys = {
   favorites: ['favorites'] as const,
   promptBlocks: ['prompt-blocks'] as const,
   systemPrompts: ['system-prompts'] as const,
+  taste: ['taste'] as const,
   promptMode: ['prompt-mode'] as const,
   variationPresets: ['variation-presets'] as const,
   importScan: ['import-scan'] as const,
@@ -546,6 +547,57 @@ export const useDeletePromptBlock = () =>
 
 export const useReorderPromptBlocks = () =>
   usePromptBlockMutation((ids: string[]) => api.reorderPromptBlocks(ids));
+
+/* ------------------------------------------------------------------ */
+/* What you like                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The notes, decrypted by the server.
+ *
+ * Not retried on failure: the interesting failure is a locked vault, and
+ * hammering a 423 four times does not open it. The sheet says so instead.
+ */
+export function useTaste(enabled = true) {
+  return useQuery({ queryKey: queryKeys.taste, queryFn: api.taste, enabled, retry: false });
+}
+
+function useTasteMutation<TArgs>(fn: (args: TArgs) => Promise<unknown>) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => void client.invalidateQueries({ queryKey: queryKeys.taste }),
+  });
+}
+
+export const useCreateTasteCategory = () =>
+  useTasteMutation((name: string) => api.createTasteCategory(name));
+
+export const useUpdateTasteCategory = () =>
+  useTasteMutation(({ id, patch }: { id: string; patch: { name?: string; active?: boolean } }) =>
+    api.updateTasteCategory(id, patch),
+  );
+
+export const useDeleteTasteCategory = () =>
+  useTasteMutation((id: string) => api.deleteTasteCategory(id));
+
+export const useCreateTasteEntry = () =>
+  useTasteMutation((input: { text: string; categoryId: string | null }) =>
+    api.createTasteEntry(input),
+  );
+
+export const useUpdateTasteEntry = () =>
+  useTasteMutation(
+    ({
+      id,
+      patch,
+    }: {
+      id: string;
+      patch: { text?: string; active?: boolean; categoryId?: string | null };
+    }) => api.updateTasteEntry(id, patch),
+  );
+
+export const useDeleteTasteEntry = () => useTasteMutation((id: string) => api.deleteTasteEntry(id));
 
 /* ------------------------------------------------------------------ */
 /* System prompts                                                      */

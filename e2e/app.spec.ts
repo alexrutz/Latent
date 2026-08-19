@@ -128,6 +128,19 @@ async function resetState() {
     for (const block of blocks) await ctx.delete(`/api/prompt-blocks/${block.id}`);
 
     /*
+     * Notes about what the user likes go into the system prompt, so one left
+     * behind would quietly colour every later chat test's reply.
+     */
+    const taste = (await (await ctx.get('/api/taste')).json()) as {
+      categories: { id: string }[];
+      entries: { id: string }[];
+    };
+    for (const entry of taste.entries ?? []) await ctx.delete(`/api/taste/entries/${entry.id}`);
+    for (const category of taste.categories ?? []) {
+      await ctx.delete(`/api/taste/categories/${category.id}`);
+    }
+
+    /*
      * System prompts reach into every workflow with a field of the same name,
      * so one left behind would quietly rewrite a later test's text input. The
      * chat's choice of one goes with them.
@@ -3131,6 +3144,67 @@ test.describe('the chat module', () => {
     // It stays reachable, like any other prompt in the transcript.
     await expect(page.getByRole('button', { name: /a working harbour at dawn/ })).toBeVisible();
     await page.screenshot({ path: 'test-results/90-proposal-dropped.png' });
+  });
+
+  /**
+   * Notes about what you like, written from the chat and read by the model.
+   *
+   * The feature exists for the moment the composer is empty: "give me an idea"
+   * is a question nothing can answer well without knowing who is asking. What
+   * is worth proving end to end is the whole path — written on the sheet,
+   * encrypted on the way to disk, and back out again in the system prompt of
+   * the very next message — plus the switch, which is how you change your mind
+   * for an evening without deleting anything.
+   */
+  test('writes down what you like, and puts it in front of the model', async ({ page }) => {
+    await script({ content: 'How about a wet street at night?' });
+
+    await open(page, '/chat');
+    // Next to the chat list, because it answers the same question: what now?
+    await page.getByRole('button', { name: 'What you like' }).click();
+
+    const sheet = page.getByRole('dialog', { name: 'What you like' });
+    await expect(sheet).toBeVisible();
+
+    await sheet.getByLabel('Something you like').fill('low fog over water');
+    await sheet.getByRole('button', { name: 'Remember it' }).click();
+    await expect(sheet.getByText('low fog over water')).toBeVisible({ timeout: 30_000 });
+
+    // A heading, and a note filed under it.
+    await sheet.getByLabel('New category').fill('Weather');
+    await sheet.getByRole('button', { name: 'Add category' }).click();
+    await sheet.getByLabel('Add to Weather').fill('bright noon sun');
+    await sheet.getByRole('button', { name: 'Save to Weather' }).click();
+    await expect(sheet.getByText('bright noon sun')).toBeVisible({ timeout: 30_000 });
+
+    // Switched off is not deleted: the note stays, silenced.
+    await sheet.getByRole('switch', { name: 'bright noon sun feeds in' }).click();
+    await expect
+      .poll(async () =>
+        withApi(async (ctx) => {
+          const profile = (await (await ctx.get('/api/taste')).json()) as {
+            entries: { text: string; active: boolean }[];
+          };
+          return profile.entries.find((entry) => entry.text === 'bright noon sun')?.active;
+        }),
+      )
+      .toBe(false);
+
+    await sheet.getByRole('button', { name: 'Done' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await page.screenshot({ path: 'test-results/91-taste-sheet.png' });
+
+    await page.getByPlaceholder('Say something…').fill('give me an idea');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByText('How about a wet street at night?')).toBeVisible({
+      timeout: 30_000,
+    });
+
+    const sent = await lastRequest();
+    expect(sent).toContain('What this person likes');
+    expect(sent).toContain('low fog over water');
+    // Switched off, so it never left the database.
+    expect(sent).not.toContain('bright noon sun');
   });
 
   /**

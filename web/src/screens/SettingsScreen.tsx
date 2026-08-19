@@ -22,6 +22,7 @@ import type {
   PromptDetail,
   ReviewAsk,
   ReviewThreshold,
+  TasteInfluence,
   ToolEagerness,
   WidgetValue,
   WorkflowDetail,
@@ -116,6 +117,21 @@ const DETAIL_OPTIONS: { value: PromptDetail; label: string; hint: string }[] = [
   { value: 'balanced', label: 'Balanced', hint: 'settled, but not exhausted' },
   { value: 'detailed', label: 'Detailed', hint: 'the whole scene, clause by clause' },
   { value: 'elaborate', label: 'Elaborate', hint: 'nothing important left to chance' },
+];
+
+/**
+ * How far the notes about what you like are allowed to reach.
+ *
+ * Every step is about empty space rather than authority: what changes is how
+ * much of what you *did not* say gets filled in from them. Nothing on this
+ * scale overrides something you asked for — see `tastePolicy` on the server.
+ */
+const TASTE_OPTIONS: { value: TasteInfluence; label: string; hint: string }[] = [
+  { value: 'off', label: 'Off', hint: 'the model is never told' },
+  { value: 'sparingly', label: 'Sparingly', hint: 'only when you say nothing at all' },
+  { value: 'hints', label: 'Hints', hint: 'colours a vague idea, leaves a clear one' },
+  { value: 'guiding', label: 'Guiding', hint: 'shapes what it offers first' },
+  { value: 'strong', label: 'House style', hint: 'everything starts from it' },
 ];
 
 const REVIEW_OPTIONS: { value: ReviewThreshold; label: string; hint: string }[] = [
@@ -1662,6 +1678,32 @@ function ChatSection() {
           options={DETAIL_OPTIONS}
           value={chat.promptDetail ?? 'balanced'}
           onChange={(promptDetail) => patch({ promptDetail })}
+        />
+      </Card>
+
+      {/* What you like ----------------------------------------------- */}
+      <Card className="space-y-3">
+        <div>
+          <p className="text-sm">What you like</p>
+          <p className="text-[11px] text-muted">
+            Notes about concepts, aesthetics and things you keep coming back to, so “give me an
+            idea” has somewhere to start. They are encrypted with your password and read only by
+            the model — write them under the{' '}
+            <strong className="text-body">♥</strong> in the chat header.
+          </p>
+        </div>
+
+        {/*
+          A scale, like the pace settings, and read the same way: each step says
+          how much of what you left unsaid comes from the notes. None of them
+          touches what you did say.
+        */}
+        <PointsLine
+          label="How much it draws on them"
+          aside="fills what you leave open"
+          options={TASTE_OPTIONS}
+          value={chat.taste ?? 'hints'}
+          onChange={(taste) => patch({ taste })}
         />
       </Card>
 

@@ -28,6 +28,9 @@ import type {
   RandomPromptRoll,
   SystemPrompt,
   SystemPromptInput,
+  TasteCategory,
+  TasteEntry,
+  TasteProfile,
   TileSpan,
   VariationPreset,
   ConnectionInput,
@@ -367,6 +370,41 @@ export const api = {
 
   deletePromptBlock: (id: string) =>
     request<void>(`/api/prompt-blocks/${id}`, { method: 'DELETE' }),
+
+  /* ---------------------------------------------------------------- */
+  /* What you like                                                     */
+  /* ---------------------------------------------------------------- */
+
+  taste: () => request<TasteProfile>('/api/taste'),
+
+  createTasteCategory: (name: string) =>
+    request<TasteCategory>('/api/taste/categories', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
+  updateTasteCategory: (id: string, patch: { name?: string; active?: boolean }) =>
+    request<TasteCategory>(`/api/taste/categories/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+
+  deleteTasteCategory: (id: string) =>
+    request<void>(`/api/taste/categories/${id}`, { method: 'DELETE' }),
+
+  createTasteEntry: (input: { text: string; categoryId: string | null }) =>
+    request<TasteEntry>('/api/taste/entries', { method: 'POST', body: JSON.stringify(input) }),
+
+  updateTasteEntry: (
+    id: string,
+    patch: { text?: string; active?: boolean; categoryId?: string | null },
+  ) =>
+    request<TasteEntry>(`/api/taste/entries/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+
+  deleteTasteEntry: (id: string) => request<void>(`/api/taste/entries/${id}`, { method: 'DELETE' }),
 
   /* ---------------------------------------------------------------- */
   /* System prompts                                                    */

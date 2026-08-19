@@ -453,6 +453,42 @@ UPDATE images SET kind = 'video'
     OR lower(filename) LIKE '%.gif';
 `);
 
+/**
+ * v12: notes about what the user likes.
+ *
+ * `name` and `text` hold ciphertext, not words. This is a description of a
+ * person's taste sitting on a disk indefinitely, and it is read by a model
+ * rather than displayed on a screen — so the one place it must be legible is
+ * inside a running, signed-in server, which is exactly what the vault gives.
+ * Everything the app needs to *manage* the notes without reading them —
+ * ordering, switching one off, which category a note is under — stays in the
+ * clear, so the list works the same whether or not anyone has signed in.
+ *
+ * Deleting a category keeps its notes and sets them loose, because a note is
+ * something the user wrote and a category is only a heading over it.
+ */
+MIGRATIONS.push(`
+CREATE TABLE taste_categories (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  active     INTEGER NOT NULL DEFAULT 1,
+  position   INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE taste_entries (
+  id          TEXT PRIMARY KEY,
+  category_id TEXT REFERENCES taste_categories (id) ON DELETE SET NULL,
+  text        TEXT NOT NULL,
+  active      INTEGER NOT NULL DEFAULT 1,
+  position    INTEGER NOT NULL DEFAULT 0,
+  created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX idx_taste_categories_order ON taste_categories (position, created_at);
+CREATE INDEX idx_taste_entries_order ON taste_entries (category_id, position, created_at);
+`);
+
 interface ChatRow {
   id: string;
   title: string;
@@ -619,6 +655,31 @@ interface PromptBlockRow {
   name: string;
   category: string;
   text: string;
+  position: number;
+  created_at: number;
+}
+
+/**
+ * A taste category as stored: `name` is ciphertext, not a heading.
+ *
+ * Exported because the layer that can read it lives elsewhere — see
+ * `server/src/taste.ts`. Everything here deliberately stops at the encrypted
+ * blob, so the database layer never needs the key.
+ */
+export interface TasteCategoryRow {
+  id: string;
+  name: string;
+  active: number;
+  position: number;
+  created_at: number;
+}
+
+/** A taste note as stored; `text` is ciphertext. */
+export interface TasteEntryRow {
+  id: string;
+  category_id: string | null;
+  text: string;
+  active: number;
   position: number;
   created_at: number;
 }
@@ -862,6 +923,14 @@ const DEFAULT_SETTINGS: AppSettings = {
      * usually wants to land.
      */
     promptDetail: 'balanced',
+    /*
+     * Your taste fills the space you leave, and no more.
+     *
+     * The default is the behaviour people describe when they ask for this at
+     * all: "when I do not know what I want, start from what I like" — and,
+     * emphatically, leave what I did ask for alone.
+     */
+    taste: 'hints',
     generation: { workflowId: '', values: {} },
     imageSize: 3,
     promptButton: 'generate',
@@ -1977,6 +2046,144 @@ export class Store {
     this.db.transaction(() => {
       ids.forEach((id, index) => update.run(index, id));
     })();
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Notes about what the user likes                                   */
+  /* ---------------------------------------------------------------- */
+
+  /*
+   * Ciphertext in, ciphertext out.
+   *
+   * The methods below move opaque strings; only `Taste` knows what is in them.
+   * Keeping the split at this line means the database layer cannot leak a
+   * plaintext it never holds, and the ordering and switching still work while
+   * the vault is locked.
+   */
+
+  listTasteCategoryRows(): TasteCategoryRow[] {
+    return this.db
+      .prepare<[], TasteCategoryRow>(
+        'SELECT * FROM taste_categories ORDER BY position ASC, created_at ASC',
+      )
+      .all();
+  }
+
+  getTasteCategoryRow(id: string): TasteCategoryRow | null {
+    return (
+      this.db
+        .prepare<[string], TasteCategoryRow>('SELECT * FROM taste_categories WHERE id = ?')
+        .get(id) ?? null
+    );
+  }
+
+  /** Appends: a new heading belongs at the end of the list, not the top of it. */
+  insertTasteCategory(id: string, name: string): TasteCategoryRow {
+    this.db
+      .prepare(
+        `INSERT INTO taste_categories (id, name, active, position, created_at)
+         VALUES (?, ?, 1, COALESCE((SELECT MAX(position) + 1 FROM taste_categories), 0), ?)`,
+      )
+      .run(id, name, Date.now());
+    return this.getTasteCategoryRow(id) as TasteCategoryRow;
+  }
+
+  updateTasteCategory(
+    id: string,
+    input: { name?: string; active?: boolean; position?: number },
+  ): void {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+
+    if (input.name !== undefined) {
+      sets.push('name = ?');
+      params.push(input.name);
+    }
+    if (input.active !== undefined) {
+      sets.push('active = ?');
+      params.push(input.active ? 1 : 0);
+    }
+    if (input.position !== undefined) {
+      sets.push('position = ?');
+      params.push(input.position);
+    }
+    if (sets.length === 0) return;
+
+    params.push(id);
+    this.db.prepare(`UPDATE taste_categories SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  /**
+   * Delete the heading, keep the notes.
+   *
+   * The foreign key says the same thing, but it is spelled out here as well:
+   * a database opened without `foreign_keys` on would otherwise orphan rows
+   * that the profile then cannot show at all.
+   */
+  deleteTasteCategory(id: string): void {
+    this.db.transaction(() => {
+      this.db.prepare('UPDATE taste_entries SET category_id = NULL WHERE category_id = ?').run(id);
+      this.db.prepare('DELETE FROM taste_categories WHERE id = ?').run(id);
+    })();
+  }
+
+  listTasteEntryRows(): TasteEntryRow[] {
+    return this.db
+      .prepare<[], TasteEntryRow>(
+        'SELECT * FROM taste_entries ORDER BY position ASC, created_at ASC',
+      )
+      .all();
+  }
+
+  getTasteEntryRow(id: string): TasteEntryRow | null {
+    return (
+      this.db
+        .prepare<[string], TasteEntryRow>('SELECT * FROM taste_entries WHERE id = ?')
+        .get(id) ?? null
+    );
+  }
+
+  insertTasteEntry(id: string, input: { categoryId: string | null; text: string }): TasteEntryRow {
+    this.db
+      .prepare(
+        `INSERT INTO taste_entries (id, category_id, text, active, position, created_at)
+         VALUES (?, ?, ?, 1, COALESCE((SELECT MAX(position) + 1 FROM taste_entries), 0), ?)`,
+      )
+      .run(id, input.categoryId, input.text, Date.now());
+    return this.getTasteEntryRow(id) as TasteEntryRow;
+  }
+
+  updateTasteEntry(
+    id: string,
+    input: { categoryId?: string | null; text?: string; active?: boolean; position?: number },
+  ): void {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+
+    if (input.categoryId !== undefined) {
+      sets.push('category_id = ?');
+      params.push(input.categoryId);
+    }
+    if (input.text !== undefined) {
+      sets.push('text = ?');
+      params.push(input.text);
+    }
+    if (input.active !== undefined) {
+      sets.push('active = ?');
+      params.push(input.active ? 1 : 0);
+    }
+    if (input.position !== undefined) {
+      sets.push('position = ?');
+      params.push(input.position);
+    }
+    if (sets.length === 0) return;
+
+    params.push(id);
+    this.db.prepare(`UPDATE taste_entries SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  deleteTasteEntry(id: string): void {
+    this.db.prepare('DELETE FROM taste_entries WHERE id = ?').run(id);
   }
 
   /* ---------------------------------------------------------------- */
