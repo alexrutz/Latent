@@ -258,6 +258,52 @@ function PointsLine<T extends string>({
  * change after that compounds the description rather than the picture. The
  * ceiling is low because each one is prefill on every turn from then on.
  */
+/**
+ * How many renders one autonomous run may make.
+ *
+ * The same line of points as everything else here, because it is the same kind
+ * of choice: one ordered number where the interesting distinctions are between
+ * neighbours. Starts at two — a run that may make one picture is not a run, it
+ * is the ✦ button.
+ */
+function RoundsLine({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  const at = Math.max(0, Math.min(ROUND_LIMITS.length - 1, ROUND_LIMITS.indexOf(value)));
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm">Renders before it stops</span>
+        <span className="min-w-0 truncate text-[11px] text-muted">
+          {ROUND_LIMITS[at]} in one run
+        </span>
+      </div>
+
+      <div className="flex items-center gap-1">
+        {ROUND_LIMITS.map((limit, index) => (
+          <button
+            key={limit}
+            type="button"
+            aria-pressed={index === at}
+            aria-label={`Renders before it stops: ${limit}`}
+            onClick={() => onChange(limit)}
+            className="min-w-0 flex-1 py-2"
+          >
+            <span
+              className={cn(
+                'block h-2 rounded-[3px]',
+                index === at ? 'bg-accent' : index < at ? 'bg-accent/30' : 'bg-surface-3',
+              )}
+            />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** The steps the round limit offers. Doubling, because 5 and 6 are not a choice. */
+const ROUND_LIMITS = [2, 3, 4, 6, 8, 12];
+
 function KeepInViewLine({
   value,
   onChange,
@@ -1470,6 +1516,7 @@ function ChatSection() {
     threshold: 'balanced' as const,
     keepInView: 2,
   };
+  const autonomous = chat.autonomous ?? { enabled: false, maxRounds: 4 };
 
   const patch = (change: Partial<typeof chat>) =>
     updateSettings.mutate({ chat: { ...chat, ...change } });
@@ -1819,13 +1866,59 @@ function ChatSection() {
                 chase is a matter of taste. Guessing produces a confident
                 rewrite of the wrong thing; asking costs one tap.
               */}
-              <PointsLine
-                label="Ask rather than guess"
-                aside="when the fix is a choice"
-                options={ASK_OPTIONS}
-                value={review.askWhen}
-                onChange={(askWhen) => patch({ review: { ...review, askWhen } })}
-              />
+              {!autonomous.enabled && (
+                <PointsLine
+                  label="Ask rather than guess"
+                  aside="when the fix is a choice"
+                  options={ASK_OPTIONS}
+                  value={review.askWhen}
+                  onChange={(askWhen) => patch({ review: { ...review, askWhen } })}
+                />
+              )}
+
+              {/* Carrying on by itself ------------------------------- */}
+              <div className="space-y-2 border-t border-line pt-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm">Carry on by itself</p>
+                    <p className="text-[11px] text-muted">
+                      Off by default. With it on, the model’s own prompts and rewrites are accepted
+                      for you and the next render starts — until one clears the mark you set above.
+                      That threshold is the whole of the stopping rule: raise it and it tries
+                      harder, lower it and it settles sooner. It asks you nothing while it runs,
+                      because there is nobody to answer.
+                    </p>
+                  </div>
+                  <Toggle
+                    checked={autonomous.enabled}
+                    onChange={(enabled) => patch({ autonomous: { ...autonomous, enabled } })}
+                    label="Carry on by itself"
+                  />
+                </div>
+
+                {autonomous.enabled && (
+                  <>
+                    {/*
+                      The brake, and the reason there is one.
+
+                      A model convinced its prompt is nearly right will rewrite
+                      it indefinitely, and by definition nobody is watching. The
+                      limit is renders, not rewrites, because renders are what
+                      cost the GPU an hour.
+                    */}
+                    <RoundsLine
+                      value={autonomous.maxRounds}
+                      onChange={(maxRounds) => patch({ autonomous: { ...autonomous, maxRounds } })}
+                    />
+                    <p className="text-[11px] text-muted">
+                      It stops at the limit with the last proposal waiting rather than throwing it
+                      away, and the <strong className="text-body">∞</strong> strip above the
+                      composer stops it sooner. Anything you decide yourself hands the run back to
+                      you.
+                    </p>
+                  </>
+                )}
+              </div>
             </>
           )}
         </div>

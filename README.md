@@ -61,6 +61,11 @@ form. Nothing about your ComfyUI setup changes.
 - **Keep, delete, and a cleanup that runs itself.** Keeping stores a picture
   without passing judgement on it; anything nobody rated, kept or favourited is
   deleted after a period you choose, so the gallery stays worth scrolling.
+- **A mode that finishes the picture on its own.** Switch it on and the model's
+  own prompts and rewrites are accepted for you, render after render, until one
+  clears the perfectionism threshold — with a round limit, a stop, and a strip
+  saying which round it is on. See [Letting it carry on by
+  itself](#letting-it-carry-on-by-itself).
 - **The model looks at what it made.** With a multimodal model server, the
   finished picture goes back to the chat with the prompt beside it: it says how
   much of the prompt actually came through and — below a perfectionism threshold
@@ -1002,6 +1007,36 @@ workflow picker, the same **Generate** — headed by what the last attempt score
 and what it got wrong. Accepting it renders again, and that picture is checked
 in its turn, so "not quite, try again" is a loop you drive one tap at a time.
 Refusing is a normal turn in the conversation.
+
+### Letting it carry on by itself
+
+That loop is already complete apart from the tap. **Carry on by itself**, in
+Settings → Chat or under the **∞** in the chat header, is that tap made
+automatic: the model's own prompts and rewrites are accepted for you and the
+next render starts, again and again, **until a picture clears the perfectionism
+threshold you set above**. The stopping rule is not a new judgement — it is the
+threshold that was already there, so raising it makes the run try harder and
+lowering it makes it settle sooner.
+
+Off by default, because every round is a render nobody watched being started.
+
+While a run is going, a strip above the composer says which round it is on and
+stops it on a tap. It ends by itself in four ways:
+
+- **It cleared the mark.** The model was shown the render, marked it against the
+  prompt, and did not reach for a rewrite. That is the run finishing.
+- **The round limit.** Two to twelve renders, four by default — a model
+  convinced its prompt is nearly right will rewrite it indefinitely, and nobody
+  is watching. The last proposal is left waiting rather than thrown away.
+- **You decided something.** Accepting, refusing or folding away a proposal
+  yourself hands the run back to you; so does **Stop** on the reply.
+- **You said something.** Which also releases a stopped run and starts the count
+  again, because a run is what happens between two things you say.
+
+It asks you nothing while it runs — the question tool is withheld and the model
+is told plainly that nobody is answering, so it decides for itself or says the
+picture is good. Switching the mode on switches the check on with it, since a
+run with nothing looking at the pictures has no way to end.
 
 What is shown is a copy scaled to 768 pixels, not the original: prefilling an
 image costs real time on a local model, and a 4000² output is minutes of it for

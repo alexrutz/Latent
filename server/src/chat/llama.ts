@@ -804,6 +804,8 @@ export function reviewInstruction(
   prompt: string,
   threshold: ReviewThreshold,
   askWhen: ReviewAsk = 'never',
+  /** True while the run is accepting its own proposals; see `AutonomousRun`. */
+  autonomous = false,
 ): string {
   const { score, standard } = REVIEW_THRESHOLDS[threshold];
 
@@ -826,7 +828,24 @@ export function reviewInstruction(
         'that keeps everything which worked and fixes what did not. ' +
         standard,
     );
-    if (REVIEW_ASKS[askWhen] !== '') lines.push('', REVIEW_ASKS[askWhen]);
+    /*
+     * Nobody is at the other end of a question right now.
+     *
+     * The ask tool is withheld from the request as well — see `reviewTools` —
+     * but a model that has been told it may ask will write the question into
+     * its answer instead, and an unattended loop then stops on a question
+     * nobody reads. Better to say plainly that the choice is its to make.
+     */
+    if (autonomous) {
+      lines.push(
+        '',
+        'The user has left this running and is not answering questions. Do not ask which way ' +
+          'to go: either rewrite the prompt yourself, or say it is good enough and stop. ' +
+          `Once it clears ${score} out of 10, say so and call nothing.`,
+      );
+    } else if (REVIEW_ASKS[askWhen] !== '') {
+      lines.push('', REVIEW_ASKS[askWhen]);
+    }
     // One or the other, never both: two dialogs about one picture is two
     // decisions where the user asked for one.
     lines.push('', 'Call at most one tool. Say your judgement in words either way.');
@@ -863,7 +882,10 @@ export function withForcedInstruction(
 function reviewTools(review: ReviewTurn): unknown[] {
   const tools: unknown[] = [];
   if (review.threshold !== 'never') tools.push(REVIEW_TOOL);
-  if (review.askWhen !== 'never') {
+  // A question is a dialog waiting for a tap, and the point of an autonomous
+  // run is that there is nobody to tap it. Offering the tool anyway is how a
+  // loop ends parked on a question nobody sees for an hour.
+  if (review.askWhen !== 'never' && !review.autonomous) {
     const ask = TOOLS.find((tool) => tool.function.name === 'ask_user');
     if (ask) tools.push(ask);
   }
@@ -879,6 +901,15 @@ export interface ReviewTurn {
   threshold: ReviewThreshold;
   /** How readily it asks rather than rewriting the prompt itself. */
   askWhen: ReviewAsk;
+  /**
+   * True while the run accepts its own proposals and carries on by itself.
+   *
+   * Changes two things about this turn: no question tool, and the instruction
+   * says why. Everything else — the threshold, the standard, the rewrite — is
+   * exactly what it is when somebody is watching, because the judgement being
+   * asked for is the same one.
+   */
+  autonomous: boolean;
   /** True when the history already carries it, so it is not sent twice. */
   inHistory: boolean;
 }
@@ -892,7 +923,12 @@ export interface ReviewTurn {
  * make of it.
  */
 function reviewTurn(review: ReviewTurn): OpenAiMessage {
-  const instruction = reviewInstruction(review.prompt, review.threshold, review.askWhen);
+  const instruction = reviewInstruction(
+    review.prompt,
+    review.threshold,
+    review.askWhen,
+    review.autonomous,
+  );
 
   /*
    * The picture only when it is not already there.

@@ -2768,6 +2768,9 @@ test.describe('the chat module', () => {
             // followed by a turn carrying a picture, which is a different reply
             // from the one most of these are asserting on.
             review: { enabled: false, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+            // Pinned for the same reason as everything else here: a run left on
+            // would accept the next test's proposals for it.
+            autonomous: { enabled: false, maxRounds: 4 },
           },
         },
       }),
@@ -3144,6 +3147,134 @@ test.describe('the chat module', () => {
     // It stays reachable, like any other prompt in the transcript.
     await expect(page.getByRole('button', { name: /a working harbour at dawn/ })).toBeVisible();
     await page.screenshot({ path: 'test-results/90-proposal-dropped.png' });
+  });
+
+  /**
+   * Left to get on with it.
+   *
+   * Every piece of this existed already — the model writes a prompt, the render
+   * comes back, it is shown the picture and proposes a rewrite while the match
+   * falls short. The mode is the tap that accepted each of those, made
+   * automatic, and the thing worth proving end to end is that the loop actually
+   * closes: two renders from one sentence, with nobody touching a dialog, and a
+   * stop the moment the model says the picture is good.
+   */
+  test('accepts its own prompts and carries on until the picture is good', async ({ page }) => {
+    await seedWorkflow();
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', {
+        data: {
+          chat: {
+            review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+            autonomous: { enabled: true, maxRounds: 4 },
+          },
+        },
+      }),
+    );
+
+    // The whole run, scripted up front: a prompt, a rewrite after seeing the
+    // first render, and a verdict that ends it after the second.
+    await script(
+      {
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+        },
+      },
+      {
+        content: 'The light is right, but there is no harbour in it.',
+        toolCall: {
+          name: 'revise_prompt',
+          arguments: {
+            prompt: 'a working harbour at dawn, boats at the quay',
+            reason: 'The harbour never appeared.',
+            score: 4,
+          },
+        },
+      },
+      { content: 'That is the picture — the harbour is there and the light held.' },
+    );
+
+    await open(page, '/chat');
+    await expect(page.getByTestId('autonomous-strip')).toBeVisible();
+
+    await page.getByPlaceholder('Say something…').fill('make me something at dawn');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    // Both renders arrive without a single tap, and the verdict ends the run.
+    await expect(page.getByText('That is the picture')).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByRole('button', { name: /Open picture/ })).toHaveCount(2);
+    // Nothing was ever left waiting on a decision.
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /waiting on you/ })).toHaveCount(0);
+    await expect(page.getByTestId('autonomous-strip')).toContainText('Round 2 of 4');
+    await page.screenshot({ path: 'test-results/92-autonomous.png' });
+
+    expect(
+      await withApi(async (ctx) => {
+        const gallery = (await (await ctx.get('/api/gallery?limit=10')).json()) as {
+          items: unknown[];
+        };
+        return gallery.items.length;
+      }),
+    ).toBe(2);
+  });
+
+  /**
+   * The brake.
+   *
+   * A model convinced its prompt is nearly right will rewrite it indefinitely,
+   * and by definition nobody is watching. At the limit the run stops with the
+   * last proposal waiting rather than throwing it away — so the work is there
+   * when you come back to it.
+   */
+  test('stops at the round limit with the proposal waiting', async ({ page }) => {
+    await seedWorkflow();
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', {
+        data: {
+          chat: {
+            review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+            autonomous: { enabled: true, maxRounds: 1 },
+          },
+        },
+      }),
+    );
+
+    await script(
+      {
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+        },
+      },
+      {
+        content: 'Still not there.',
+        toolCall: {
+          name: 'revise_prompt',
+          arguments: {
+            prompt: 'a working harbour at dawn, boats at the quay',
+            reason: 'The harbour never appeared.',
+            score: 4,
+          },
+        },
+      },
+    );
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('make me something at dawn');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    // One render, and then it stops — with the rewrite folded away, exactly as
+    // an unaccepted proposal always is.
+    const putAside = page.getByRole('button', { name: /Proposed a rewrite — waiting on you/ });
+    await expect(putAside).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByTestId('autonomous-strip')).toContainText('Stopped after 1 of 1 rounds');
+    await expect(page.getByRole('button', { name: /Open picture/ })).toHaveCount(1);
+
+    // And it is still a proposal: opening it gives the ordinary dialog.
+    await putAside.click();
+    await expect(page.getByRole('dialog').getByText('After looking at the picture')).toBeVisible();
   });
 
   /**

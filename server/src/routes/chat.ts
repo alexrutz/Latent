@@ -470,6 +470,15 @@ async function streamReply(
                 prompt: reviewed.prompt as string,
                 threshold: settings.review.threshold,
                 askWhen: settings.review.askWhen,
+                /*
+                 * Nobody is watching, so nothing is asked.
+                 *
+                 * Read from the settings rather than sent by the client: the
+                 * loop is the client's to drive, but what the model is *told*
+                 * about its situation belongs with everything else the server
+                 * puts in front of it.
+                 */
+                autonomous: settings.autonomous.enabled,
                 // Already in the history, unless nothing is kept in view.
                 inHistory: pictures.has(reviewed.id),
               }

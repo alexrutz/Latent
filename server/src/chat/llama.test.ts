@@ -605,6 +605,31 @@ describe('asking rather than guessing about a picture', () => {
     expect(reviewInstruction(PROMPT, 'balanced', 'unclear')).toContain('cannot tell');
     expect(reviewInstruction(PROMPT, 'balanced', 'always')).toContain('Always call');
   });
+
+  /**
+   * A run nobody is watching cannot be asked anything.
+   *
+   * The tool is withheld from the request as well, but a model told it may ask
+   * writes the question into its answer instead — and an unattended loop then
+   * stops on a question nobody reads for an hour.
+   */
+  it('tells an autonomous run to decide for itself, whatever the ask setting says', () => {
+    const text = reviewInstruction(PROMPT, 'balanced', 'always', true);
+
+    expect(text).toContain('not answering questions');
+    expect(text).toContain('Do not ask which way to go');
+    expect(text).not.toContain('Always call');
+    // The judgement itself is unchanged: same threshold, same rewrite tool.
+    expect(text).toContain('revise_prompt');
+    expect(text).toContain('below 7 out of 10');
+  });
+
+  /** And it is told what ending the loop looks like. */
+  it('says what clearing the mark means, so a run can end', () => {
+    expect(reviewInstruction(PROMPT, 'exacting', 'never', true)).toContain(
+      'Once it clears 10 out of 10, say so and call nothing.',
+    );
+  });
 });
 
 /* ------------------------------------------------------------------ */

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 
 import type {
+  AutonomousRun,
   ChatAttachment,
   ChatConversationDetail,
   ChatMessage,
@@ -36,6 +37,13 @@ export interface Streaming {
 export interface PendingCall {
   messageId: string;
   call: ChatToolCall;
+}
+
+/** The settings the store itself acts on, mirrored from the server's copy. */
+export interface ChatMode {
+  autonomous: AutonomousRun;
+  /** Whether the ✦ button queues the prompt or shows it first. */
+  promptButton: 'generate' | 'dialog';
 }
 
 interface ChatStore {
@@ -89,6 +97,48 @@ interface ChatStore {
    * order the review is supposed to happen in.
    */
   notePictureShown: (generationId: string) => void;
+
+  /**
+   * How the app decides things on the model's behalf.
+   *
+   * Mirrored from the settings rather than read from them here: the store is
+   * where "is this proposal accepted automatically" is decided, and that
+   * question has two sources — the prompt button, and the autonomous run — that
+   * were previously answered in two different places. See `setMode`.
+   */
+  mode: ChatMode;
+  setMode: (mode: ChatMode) => void;
+
+  /**
+   * Renders this autonomous run has started, since the last thing you said.
+   *
+   * The loop's own brake. A model convinced its prompt is nearly right will
+   * rewrite it indefinitely, and nobody is watching by definition.
+   */
+  autoRounds: number;
+
+  /**
+   * The proposal on screen is one the app is accepting itself.
+   *
+   * Decided when the call arrives rather than by the dialog, because the same
+   * decision also settles whether it is folded away — a proposal about to be
+   * accepted must not be — and two places deciding that disagreed.
+   */
+  autoAccepting: boolean;
+
+  /**
+   * The autonomous run has been stopped, until you say something next.
+   *
+   * Set by the Stop button and by any decision you make yourself: taking one
+   * over is the clearest possible statement that you would like the wheel back.
+   */
+  autoHalted: boolean;
+
+  /** Why it stopped carrying on, in a few words, for the strip above the composer. */
+  autoNote: string | null;
+
+  /** Stop the current autonomous run without switching the mode off. */
+  haltAutonomous: () => void;
 
   /**
    * The tool dialog has been folded away without being decided.
@@ -231,7 +281,42 @@ async function waitForGeneration(id: string, stillWanted: () => boolean): Promis
   });
 }
 
+/**
+ * Why an autonomous run has stopped short of the threshold.
+ *
+ * Written for the strip above the composer, which is the only place a run that
+ * has quietly stopped would otherwise be distinguishable from one still going.
+ */
+function stoppedBecause(call: ChatToolCall, state: { autoRounds: number; mode: ChatMode }): string {
+  if (call.tool === 'ask_user') return 'It asked a question, so it is waiting for you.';
+  if (call.tool !== 'build_prompt' && call.tool !== 'revise_prompt') {
+    return 'It proposed something that needs you.';
+  }
+  return `Stopped after ${state.autoRounds} of ${state.mode.autonomous.maxRounds} rounds. The last proposal is waiting.`;
+}
+
 export const useChatStore = create<ChatStore>((set, get) => {
+  /**
+   * Whether the app accepts this proposal itself.
+   *
+   * Two reasons it might, and they are different things. The ✦ button is an
+   * instruction you just gave — you asked for a prompt and said "queue it" —
+   * and applies to exactly the call it asked for. An autonomous run is standing
+   * permission to accept the model's own rewrites until a render clears the
+   * perfectionism threshold, which is the loop this whole mode is.
+   */
+  const decideAutoAccept = (call: ChatToolCall): boolean => {
+    const { mode, askedForPrompt, autoRounds, autoHalted } = get();
+
+    if (call.tool === 'build_prompt' && askedForPrompt && mode.promptButton === 'generate') {
+      return true;
+    }
+    if (!mode.autonomous.enabled || autoHalted) return false;
+    // A question is the one proposal nobody else can answer.
+    if (call.tool !== 'build_prompt' && call.tool !== 'revise_prompt') return false;
+    return autoRounds < mode.autonomous.maxRounds;
+  };
+
   /**
    * Read one server-sent stream to the end, updating as it goes.
    *
@@ -319,12 +404,33 @@ export const useChatStore = create<ChatStore>((set, get) => {
      * opens when you go to it. Folding a call away yourself stays a decision
      * about that call, not a preference for the next one.
      */
-    set({
+    if (!call) {
+      set({ chat: refreshed });
+      return;
+    }
+
+    /*
+     * A reply with no proposal in it is where an autonomous run ends.
+     *
+     * That is the exit condition the user set: the model was shown the render,
+     * marked it against the prompt, and did not reach for a rewrite — which
+     * means it cleared the threshold. Nothing to do but say so.
+     */
+    const auto = decideAutoAccept(call.call);
+
+    set((state) => ({
       chat: refreshed,
-      ...(call
-        ? { pendingCall: call, callMinimized: call.call.tool === 'revise_prompt' }
+      pendingCall: call,
+      // A proposal about to be accepted is not folded away: the dialog is what
+      // accepts it, and one that never mounts never does.
+      callMinimized: call.call.tool === 'revise_prompt' && !auto,
+      autoAccepting: auto,
+      autoRounds: auto && state.mode.autonomous.enabled ? state.autoRounds + 1 : state.autoRounds,
+      ...(auto ? { autoNote: null } : {}),
+      ...(!auto && state.mode.autonomous.enabled && !state.autoHalted
+        ? { autoNote: stoppedBecause(call.call, state) }
         : {}),
-    });
+    }));
   };
 
   /** Run one request that produces a stream, cancelling any earlier one. */
@@ -362,6 +468,11 @@ export const useChatStore = create<ChatStore>((set, get) => {
     asking: false,
     waitingFor: null,
     callMinimized: false,
+    mode: { autonomous: { enabled: false, maxRounds: 0 }, promptButton: 'dialog' },
+    autoRounds: 0,
+    autoAccepting: false,
+    autoHalted: false,
+    autoNote: null,
 
     notePictureShown: (generationId) => {
       shown.add(generationId);
@@ -369,8 +480,19 @@ export const useChatStore = create<ChatStore>((set, get) => {
       waiting.delete(generationId);
     },
 
-    minimizeCall: () => set({ callMinimized: true }),
+    setMode: (mode) => set({ mode }),
+
+    /*
+     * Folding a proposal away by hand is taking the wheel back.
+     *
+     * It means "not this one, not yet", and an app that then accepted it two
+     * seconds later would be ignoring the clearest instruction available.
+     */
+    minimizeCall: () => set({ callMinimized: true, autoAccepting: false }),
     restoreCall: () => set({ callMinimized: false }),
+
+    haltAutonomous: () =>
+      set({ autoHalted: true, autoAccepting: false, autoNote: 'Stopped. Say something to go on.' }),
 
     setDraft: (draft) => {
       set({ draft });
@@ -437,6 +559,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
       localStorage.setItem(LAST_CHAT_KEY, id);
       set({
         chat: opened,
+        autoRounds: 0,
+        autoHalted: false,
+        autoAccepting: false,
+        autoNote: null,
         streaming: null,
         pendingCall: null,
         callMinimized: false,
@@ -456,6 +582,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
         callMinimized: false,
         waitingFor: null,
         askedForPrompt: false,
+        autoRounds: 0,
+        autoHalted: false,
+        autoAccepting: false,
+        autoNote: null,
         error: null,
         attachments: [],
       });
@@ -500,7 +630,14 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (inFlight) return;
 
       get().setDraft('');
-      set({ error: null, attachments: [] });
+      /*
+       * Saying something starts the run over.
+       *
+       * The round count is per run and a run is what happens between two things
+       * you say — so a stopped loop is released by talking to it, and a long
+       * session does not slowly exhaust its budget on renders from an hour ago.
+       */
+      set({ error: null, attachments: [], autoRounds: 0, autoHalted: false, autoNote: null });
 
       /*
        * Your own message goes up immediately.
@@ -546,7 +683,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const { chat, streaming } = get();
       if (!chat || streaming || inFlight) return;
 
-      set({ error: null, askedForPrompt: true, asking: true });
+      // The button is a fresh instruction, so it releases a halted run too.
+      set({
+        error: null,
+        askedForPrompt: true,
+        asking: true,
+        autoRounds: 0,
+        autoHalted: false,
+        autoNote: null,
+      });
       try {
         await stream(
           () =>
@@ -575,15 +720,38 @@ export const useChatStore = create<ChatStore>((set, get) => {
     stop: async () => {
       inFlight?.abort();
       inFlight = null;
-      set({ streaming: null });
+      // Stopping the reply stops the loop it belongs to. Pressing ■ while a
+      // run is accepting its own prompts and having it queue another one would
+      // be the button not working.
+      set({
+        streaming: null,
+        autoHalted: true,
+        autoAccepting: false,
+        ...(get().mode.autonomous.enabled ? { autoNote: 'Stopped. Say something to go on.' } : {}),
+      });
       await get().refresh();
     },
 
     resolveTool: async (body) => {
-      const { chat, pendingCall } = get();
+      const { chat, pendingCall, autoAccepting } = get();
       if (!chat || !pendingCall) return;
 
-      set({ pendingCall: null, askedForPrompt: false, callMinimized: false });
+      set({
+        pendingCall: null,
+        askedForPrompt: false,
+        callMinimized: false,
+        autoAccepting: false,
+        /*
+         * A decision you made yourself ends the autonomous run.
+         *
+         * Accepting or rejecting a proposal by hand is you deciding, and a mode
+         * whose whole content is "decide for me" has nothing left to do until
+         * you hand it back — which saying something does.
+         */
+        ...(autoAccepting
+          ? {}
+          : { autoHalted: true, autoNote: 'You took that one. Say something to go on.' }),
+      });
       try {
         await api.resolveTool(chat.id, { messageId: pendingCall.messageId, ...body });
       } catch (cause) {

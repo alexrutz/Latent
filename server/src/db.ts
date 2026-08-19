@@ -931,6 +931,16 @@ const DEFAULT_SETTINGS: AppSettings = {
      */
     review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'unsure' },
     /*
+     * Off, and deliberately so.
+     *
+     * Every round is a render nobody watched being started. That is fine when
+     * you asked for it and wrong as a default — the first surprise would be a
+     * queue full of pictures and a GPU that has been busy for an hour. Four
+     * rounds is what it does once switched on: enough for a rewrite to actually
+     * land, few enough that a model going in circles stops on its own.
+     */
+    autonomous: { enabled: false, maxRounds: 4 },
+    /*
      * Enough detail to make a picture, not so much that it makes only one.
      *
      * The failure at either end is real: a sparse prompt varies wildly between

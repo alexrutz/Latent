@@ -961,6 +961,15 @@ export interface ChatSettings {
   /** Whether a finished picture is shown to the model, and how picky it is. */
   review: ChatReviewSettings;
   /**
+   * Whether it accepts its own rewrites and carries on. See `AutonomousRun`.
+   *
+   * Beside the review rather than inside it, although it is the review's
+   * threshold that ends the loop: settings merge one group deep, and a group
+   * inside a group is the one shape a partial patch cannot fill in from the
+   * defaults.
+   */
+  autonomous: AutonomousRun;
+  /**
    * How far a prompt goes in describing the picture.
    *
    * Instructions rather than a length limit: "two sentences" is a rule a model
@@ -1463,6 +1472,34 @@ export interface ChatReviewSettings {
   keepInView: number;
   /** How readily it asks you rather than rewriting the prompt itself. */
   askWhen: ReviewAsk;
+}
+
+/**
+ * Leaving it to get on with it.
+ *
+ * Everything the loop needs already exists separately: the model writes a
+ * prompt, a render comes out, the model is shown it and says how much of the
+ * prompt came through, and below the perfectionism threshold it proposes a
+ * rewrite. The only thing standing between that and a picture that improves on
+ * its own is the tap that accepts each proposal — so this is that tap, made
+ * automatic.
+ *
+ * The exit condition is the threshold you already set: it stops the first time
+ * a render clears it. That is the whole point — "keep going until it is good
+ * enough" is a sentence about the threshold, not a new judgement.
+ */
+export interface AutonomousRun {
+  /** Off by default. Each render costs GPU time nobody watched being started. */
+  enabled: boolean;
+  /**
+   * How many renders one run may make before it stops and waits for you.
+   *
+   * A model convinced its prompt is nearly right can rewrite it a dozen times
+   * without getting closer, and an unattended loop that does is a night of GPU
+   * time spent on a picture that was finished at round two. Reaching the limit
+   * leaves the last proposal waiting rather than throwing it away.
+   */
+  maxRounds: number;
 }
 
 /**

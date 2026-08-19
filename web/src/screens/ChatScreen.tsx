@@ -4,7 +4,7 @@ import { CHAT_IMAGE_SIZES } from '@latent/shared';
 import type { ChatMessage, ChatToolCall } from '@latent/shared';
 
 import { api } from '../api/client';
-import { useGeneration, useSettings } from '../api/queries';
+import { useGeneration, useSettings, useUpdateSettings } from '../api/queries';
 import { Still } from '../components/ImageViewer';
 import { RunProgress } from '../components/LiveBar';
 import { ViewerWithActions } from '../components/ViewerWithActions';
@@ -61,6 +61,7 @@ const TOOL_LABELS: Record<ChatToolCall['tool'], string> = {
 
 export function ChatScreen() {
   const settings = useSettings();
+  const updateSettings = useUpdateSettings();
 
   /*
    * The conversation itself lives in `state/chat`, not here.
@@ -78,11 +79,33 @@ export function ChatScreen() {
   const draft = useChatStore((state) => state.draft);
   const attachments = useChatStore((state) => state.attachments);
   const error = useChatStore((state) => state.error);
-  const askedForPrompt = useChatStore((state) => state.askedForPrompt);
   const asking = useChatStore((state) => state.asking);
   const callMinimized = useChatStore((state) => state.callMinimized);
+  const autoAccepting = useChatStore((state) => state.autoAccepting);
+  const autoRounds = useChatStore((state) => state.autoRounds);
+  const autoHalted = useChatStore((state) => state.autoHalted);
+  const autoNote = useChatStore((state) => state.autoNote);
   const waitingFor = useChatStore((state) => state.waitingFor);
   const store = useChatStore.getState;
+
+  const autonomous = settings.data?.chat.autonomous;
+
+  /*
+   * The two settings the store acts on, kept in step with the server's copy.
+   *
+   * Mirrored rather than read where they are needed: whether a proposal is
+   * accepted for you is decided the moment it arrives — before any dialog
+   * exists to ask a query hook — and it decides more than one thing about that
+   * call, so it has to be settled in one place.
+   */
+  useEffect(() => {
+    const chatSettings = settings.data?.chat;
+    if (!chatSettings) return;
+    store().setMode({
+      autonomous: chatSettings.autonomous,
+      promptButton: chatSettings.promptButton,
+    });
+  }, [settings.data?.chat, store]);
 
   /** A prompt from further up, reopened to run again or to rewind to. */
   const [revisiting, setRevisiting] = useState<{
@@ -189,6 +212,31 @@ export function ChatScreen() {
     }
   };
 
+  /**
+   * Switch the mode, and switch on the thing it depends on.
+   *
+   * The loop's exit condition *is* the review: the model is shown the render,
+   * marks it against the prompt, and proposes a rewrite while it falls short.
+   * With the review off there is nothing to end a run, so turning this on with
+   * it off would be a switch that quietly does nothing — the honest reading of
+   * "carry on until it is good enough" is that you want the check on too.
+   */
+  const toggleAutonomous = async () => {
+    const chatSettings = settings.data?.chat;
+    if (!chatSettings) return;
+    const enabled = !chatSettings.autonomous.enabled;
+
+    await updateSettings.mutateAsync({
+      chat: {
+        ...chatSettings,
+        autonomous: { ...chatSettings.autonomous, enabled },
+        ...(enabled && !chatSettings.review.enabled
+          ? { review: { ...chatSettings.review, enabled: true } }
+          : {}),
+      },
+    });
+  };
+
   const startNew = async () => {
     await store().startNew();
     setShowHistory(false);
@@ -219,6 +267,28 @@ export function ChatScreen() {
             className="grid size-9 place-items-center rounded-full bg-surface text-muted active:bg-surface-2"
           >
             ≡
+          </button>
+          {/*
+            Left to get on with it.
+
+            A mode rather than a button that does something: while it is on, the
+            model's own prompts and rewrites are accepted for you and the next
+            render starts, until one clears the perfectionism threshold. Up here
+            with the other two because it is a thing about this conversation,
+            and because switching it on for one picture and off again should not
+            be a trip to Settings.
+          */}
+          <button
+            type="button"
+            aria-pressed={autonomous?.enabled === true}
+            aria-label="Carry on by itself"
+            onClick={() => void toggleAutonomous()}
+            className={cn(
+              'grid size-9 place-items-center rounded-full text-base active:bg-surface-2',
+              autonomous?.enabled ? 'bg-accent/20 text-accent' : 'bg-surface text-muted',
+            )}
+          >
+            ∞
           </button>
           {/*
             Next to the chat list, because it belongs to the same question.
@@ -334,6 +404,39 @@ export function ChatScreen() {
           </span>
           <span className="shrink-0 font-medium underline">Open</span>
         </button>
+      )}
+
+      {/*
+        What the autonomous run is doing, and the way out of it.
+
+        Only while the mode is on. A run is invisible otherwise — pictures
+        appear and prompts get accepted with nobody having tapped anything —
+        and "how many more of these are coming" is the one question watching it
+        raises. Stop halts this run; the mode itself stays on for the next thing
+        you say, which is what the ∞ button and Settings are for.
+      */}
+      {autonomous?.enabled && (
+        <div
+          data-testid="autonomous-strip"
+          className="mx-3 mb-1 flex items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-xs text-muted"
+        >
+          <span aria-hidden>∞</span>
+          <span className="min-w-0 flex-1">
+            {autoNote ??
+              (autoRounds === 0
+                ? 'Carrying on by itself, until a picture clears the mark.'
+                : `Round ${autoRounds} of ${autonomous.maxRounds} — carrying on until it clears the mark.`)}
+          </span>
+          {!autoHalted && (
+            <button
+              type="button"
+              onClick={() => store().haltAutonomous()}
+              className="shrink-0 font-medium text-accent underline"
+            >
+              Stop
+            </button>
+          )}
+        </div>
       )}
 
       {/* Composer */}
@@ -452,11 +555,15 @@ export function ChatScreen() {
           onMinimize={() => store().minimizeCall()}
           settings={settings.data ?? null}
           previousPrompt={previousPrompt}
-          autoAccept={
-            pendingCall.call.tool === 'build_prompt' &&
-            askedForPrompt &&
-            settings.data?.chat.promptButton === 'generate'
-          }
+          /*
+            Decided when the call arrived, not here.
+
+            Both reasons to accept a proposal for you — the ✦ button and an
+            autonomous run — are answers to "does this one get accepted", and
+            the store is where that question is settled, because the same answer
+            also decides whether the dialog is folded away.
+          */
+          autoAccept={autoAccepting}
           onResolve={(body) => store().resolveTool(body)}
         />
       )}

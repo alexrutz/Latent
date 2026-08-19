@@ -4965,6 +4965,67 @@ describe('chat', () => {
      * wrong thing; asking costs one tap — and the turn *after* the answer is
      * still about the same picture, which is where the rewrite belongs.
      */
+    /**
+     * A run left to itself is not offered the question tool at all.
+     *
+     * The setting says "ask when unsure", and normally that is right. With
+     * nobody there to answer, a question is a dialog that sits unread — so the
+     * tool is withheld and the instruction says why, which is what keeps the
+     * model from writing the question into its reply instead.
+     */
+    it('withholds the question tool while it is carrying on by itself', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            chat: {
+              review: { enabled: true, threshold: 'balanced', askWhen: 'always' },
+              autonomous: { enabled: true, maxRounds: 4 },
+            },
+          }),
+        });
+
+        const chatId = await upToAPicture(llama, 'a harbour at dawn');
+        llama.script({
+          content: 'The harbour is thin.',
+          toolCall: {
+            name: 'revise_prompt',
+            arguments: {
+              prompt: 'a working harbour at dawn, boats at the quay',
+              reason: 'More harbour.',
+              score: 5,
+            },
+          },
+        });
+        await readStream(
+          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
+        );
+
+        const { sent, last } = lastTurn(llama);
+        // Only the rewrite, even though asking is set to its most insistent
+        // step — the setting is about a conversation, and this is not one.
+        expect(sent.tools?.map((tool) => tool.function.name)).toEqual(['revise_prompt']);
+        expect(JSON.stringify(last.content)).toContain('not answering questions');
+        // The judgement it is asked for is unchanged.
+        expect(JSON.stringify(last.content)).toContain('below 7 out of 10');
+      } finally {
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            chat: {
+              review: { enabled: true, threshold: 'balanced', askWhen: 'unsure' },
+              autonomous: { enabled: false, maxRounds: 4 },
+            },
+          }),
+        });
+        await llama.close();
+      }
+    }, 40_000);
+
     it('asks how to improve the match, and keeps the picture for the answer', async () => {
       const llama = createMockLlama();
       const url = await llama.listen(0);
