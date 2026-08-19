@@ -488,7 +488,17 @@ const TASTE_REACH: Record<Exclude<TasteInfluence, 'off'>, string> = {
  * Absent entirely at `off`, when nothing is switched on, and when the vault is
  * locked so the notes cannot be read — in all three cases the model is told
  * nothing rather than told about an empty list, because a heading with nothing
- * under it invites a small model to invent the contents.
+ * under it invites a small model to invent the contents. `off` silences the
+ * standing notes too: it is the master switch, and a setting called Off that
+ * still sends something would be worth nothing.
+ *
+ * Two sections rather than one, because they are two different instructions.
+ * The ordinary notes fill the space the user left and step aside when they say
+ * what they want. The standing ones do not step aside — but they are bounded by
+ * relevance instead, which is the part that needs saying out loud: a note about
+ * colour has no business in a request for a line drawing, and a model handed
+ * "this always applies" without that limit will work every one of them into
+ * every prompt.
  *
  * The notes go in as plain lines of the user's own words. No instruction to
  * quote them, and one not to: they are never shown in the chat, so reciting
@@ -498,29 +508,59 @@ const TASTE_REACH: Record<Exclude<TasteInfluence, 'off'>, string> = {
 export function tastePolicy(profile: TasteProfile | null, level: TasteInfluence): string {
   if (!profile || level === 'off') return '';
 
-  const groups = activeTaste(profile);
-  if (groups.length === 0) return '';
+  const { groups, standing } = activeTaste(profile);
+  if (groups.length === 0 && standing.length === 0) return '';
 
-  const body = groups
-    .map((group) => {
-      const notes = group.notes.map((note) => `- ${note}`).join('\n');
-      return group.heading ? `**${group.heading}**\n${notes}` : notes;
-    })
-    .join('\n\n');
+  const sections: string[] = [];
+
+  if (groups.length > 0) {
+    const body = groups
+      .map((group) => {
+        const notes = group.notes.map((note) => `- ${note}`).join('\n');
+        return group.heading ? `**${group.heading}**\n${notes}` : notes;
+      })
+      .join('\n\n');
+
+    sections.push(
+      'Notes they have written about their own taste — concepts, aesthetics, things they keep ' +
+        `coming back to.\n\n${body}\n\n${TASTE_REACH[level]}`,
+    );
+  }
+
+  if (standing.length > 0) {
+    sections.push(
+      '### Things that always hold\n\n' +
+        'These are settled preferences rather than starting points, so they apply even when they ' +
+        'have told you exactly what they want:\n\n' +
+        standing.map((note) => `- ${note}`).join('\n') +
+        '\n\n' +
+        /*
+         * The limit that makes the override usable.
+         *
+         * Without it, "this always applies" is read as "put this in every
+         * prompt", and a standing note about colour turns up in a request for
+         * a line drawing. Relevance is the whole of the constraint: apply it
+         * where it bears on the picture, and say nothing where it does not.
+         */
+        'Apply each one only where it actually bears on the picture in hand. If a note has no ' +
+        'part in what is being made — a note about colour in a line drawing, a note about ' +
+        'framing in a question about wording — leave it out entirely. Do not bend the picture to ' +
+        'give a note something to do, and do not list them.',
+    );
+  }
 
   return (
     '\n\n## What this person likes\n\n' +
-    'Notes they have written about their own taste — concepts, aesthetics, things they keep ' +
-    'coming back to.\n\n' +
-    `${body}\n\n` +
-    `${TASTE_REACH[level]}\n\n` +
+    sections.join('\n\n') +
+    '\n\n' +
     /*
      * The one rule that does not move with the setting.
      *
      * Spelled out at every level rather than only at the gentle ones: the
      * failure this feature could cause is a picture nobody asked for, and a
      * model reading "house style" without this line is exactly the model that
-     * would produce one.
+     * would produce one. It holds for the standing notes as well — those
+     * override the *scale*, not the person.
      */
     'Whatever they have actually asked for is what they get. These notes fill in what they left ' +
     'open; they never overrule what was said.\n\n' +

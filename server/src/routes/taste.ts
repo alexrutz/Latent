@@ -52,26 +52,25 @@ export function registerTasteRoutes(app: FastifyInstance, ctx: AppContext): void
     return reply.code(204).send();
   });
 
-  app.post<{ Body: { text?: string; categoryId?: string | null } }>(
+  app.post<{ Body: { text?: string; categoryId?: string | null; always?: boolean } }>(
     '/api/taste/entries',
     async (request, reply) => {
       if (!ctx.taste.isUnlocked) return locked(reply);
       const text = request.body?.text?.trim();
       if (!text) return reply.code(400).send({ error: 'Write something to remember' });
-      return reply
-        .code(201)
-        .send(
-          ctx.taste.addEntry(randomUUID(), {
-            categoryId: request.body?.categoryId ?? null,
-            text,
-          }),
-        );
+      return reply.code(201).send(
+        ctx.taste.addEntry(randomUUID(), {
+          categoryId: request.body?.categoryId ?? null,
+          text,
+          always: request.body?.always,
+        }),
+      );
     },
   );
 
   app.patch<{
     Params: { id: string };
-    Body: { text?: string; active?: boolean; categoryId?: string | null };
+    Body: { text?: string; active?: boolean; always?: boolean; categoryId?: string | null };
   }>('/api/taste/entries/:id', async (request, reply) => {
     if (!ctx.taste.isUnlocked) return locked(reply);
     const body = request.body ?? {};

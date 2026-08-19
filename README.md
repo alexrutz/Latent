@@ -75,8 +75,10 @@ form. Nothing about your ComfyUI setup changes.
   like — concepts, aesthetics, places, films — under headings you make up or
   under none, and the chat draws on it to fill in whatever you left open. How far
   it reaches runs from off to house style, and at every step what you actually
-  asked for wins. **Encrypted with your password**, because it is never on screen
-  and is a fairly complete description of you. See [What you
+  asked for wins. Notes you have settled on can be **pinned** past the scale, so
+  they apply even to a picture you have described — wherever they are relevant to
+  it, and nowhere else. **Encrypted with your password**, because it is never on
+  screen and is a fairly complete description of you. See [What you
   like](#what-you-like).
 - **Favourites.** Keep an image together with the settings that made it, rate
   those separately, and generate more like it in one tap. Opening one gives the
@@ -1149,6 +1151,24 @@ at each of them: **what you actually asked for wins.** The notes fill in what
 you left open; they never overrule what you said. The model is also told never
 to read the list back to you — you wrote it, and it shows in what it suggests
 rather than in what it says.
+
+**Some notes are not starting points.** A format you always want, a thing you
+never want in a picture, a treatment you have settled on — those matter most in
+exactly the case the scale silences them, which is when you *have* said what you
+want. Tapping **Only when it fits** on a note pins it: it then applies whatever
+the scale says, even to a picture you have already described.
+
+A pin is bounded by relevance instead, and the model is told so in as many
+words: apply it where it bears on the picture in hand, and where it has no part
+in what is being made — a note about colour in a line drawing, one about framing
+in a question about wording — leave it out entirely rather than bending the
+picture to give it something to do. Pinned notes are listed once, as rules,
+rather than again among the rest.
+
+The pin and the switch are different things. The switch says whether a note is
+in play at all, so switching one off — or switching off the heading over it —
+still silences a pinned note. **Off** on the scale is the master switch: nothing
+is sent, pinned notes included.
 
 ### How eagerly it reaches for each one
 

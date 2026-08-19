@@ -489,6 +489,20 @@ CREATE INDEX idx_taste_categories_order ON taste_categories (position, created_a
 CREATE INDEX idx_taste_entries_order ON taste_entries (category_id, position, created_at);
 `);
 
+/**
+ * v13: notes that apply whatever the influence setting says.
+ *
+ * The scale governs how much of the space you left gets filled from the notes,
+ * which means a concrete request pushes all of them aside. Some of them should
+ * not be pushed aside — a format you always want, a thing you never want in a
+ * picture — and those matter most in exactly the case the scale silences them.
+ * `always_on` marks one of those. Spelled with the suffix because `ALWAYS` is a
+ * keyword in SQLite's `GENERATED ALWAYS AS`.
+ */
+MIGRATIONS.push(`
+ALTER TABLE taste_entries ADD COLUMN always_on INTEGER NOT NULL DEFAULT 0;
+`);
+
 interface ChatRow {
   id: string;
   title: string;
@@ -680,6 +694,8 @@ export interface TasteEntryRow {
   category_id: string | null;
   text: string;
   active: number;
+  /** 1 when this one applies whatever the influence setting says. */
+  always_on: number;
   position: number;
   created_at: number;
 }
@@ -2143,19 +2159,28 @@ export class Store {
     );
   }
 
-  insertTasteEntry(id: string, input: { categoryId: string | null; text: string }): TasteEntryRow {
+  insertTasteEntry(
+    id: string,
+    input: { categoryId: string | null; text: string; always?: boolean },
+  ): TasteEntryRow {
     this.db
       .prepare(
-        `INSERT INTO taste_entries (id, category_id, text, active, position, created_at)
-         VALUES (?, ?, ?, 1, COALESCE((SELECT MAX(position) + 1 FROM taste_entries), 0), ?)`,
+        `INSERT INTO taste_entries (id, category_id, text, active, always_on, position, created_at)
+         VALUES (?, ?, ?, 1, ?, COALESCE((SELECT MAX(position) + 1 FROM taste_entries), 0), ?)`,
       )
-      .run(id, input.categoryId, input.text, Date.now());
+      .run(id, input.categoryId, input.text, input.always ? 1 : 0, Date.now());
     return this.getTasteEntryRow(id) as TasteEntryRow;
   }
 
   updateTasteEntry(
     id: string,
-    input: { categoryId?: string | null; text?: string; active?: boolean; position?: number },
+    input: {
+      categoryId?: string | null;
+      text?: string;
+      active?: boolean;
+      always?: boolean;
+      position?: number;
+    },
   ): void {
     const sets: string[] = [];
     const params: unknown[] = [];
@@ -2171,6 +2196,10 @@ export class Store {
     if (input.active !== undefined) {
       sets.push('active = ?');
       params.push(input.active ? 1 : 0);
+    }
+    if (input.always !== undefined) {
+      sets.push('always_on = ?');
+      params.push(input.always ? 1 : 0);
     }
     if (input.position !== undefined) {
       sets.push('position = ?');

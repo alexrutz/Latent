@@ -3171,6 +3171,13 @@ test.describe('the chat module', () => {
     await expect(sheet.getByText('low fog over water')).toBeVisible({ timeout: 30_000 });
 
     // A heading, and a note filed under it.
+    // Pinned: it stops being a starting point and becomes a rule, so it holds
+    // even for a picture that has already been described.
+    await sheet.getByRole('button', { name: 'low fog over water always applies' }).click();
+    await expect(
+      sheet.getByRole('button', { name: 'low fog over water always applies' }),
+    ).toHaveAttribute('aria-pressed', 'true');
+
     await sheet.getByLabel('New category').fill('Weather');
     await sheet.getByRole('button', { name: 'Add category' }).click();
     await sheet.getByLabel('Add to Weather').fill('bright noon sun');
@@ -3203,6 +3210,10 @@ test.describe('the chat module', () => {
     const sent = await lastRequest();
     expect(sent).toContain('What this person likes');
     expect(sent).toContain('low fog over water');
+    // Pinned, so it arrives as a rule that holds — with the limit that keeps it
+    // out of prompts it has nothing to do with.
+    expect(sent).toContain('Things that always hold');
+    expect(sent).toContain('only where it actually bears on the picture');
     // Switched off, so it never left the database.
     expect(sent).not.toContain('bright noon sun');
   });

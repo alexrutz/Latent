@@ -98,7 +98,10 @@ export class Taste {
     this.store.deleteTasteCategory(id);
   }
 
-  addEntry(id: string, input: { categoryId: string | null; text: string }): TasteEntry {
+  addEntry(
+    id: string,
+    input: { categoryId: string | null; text: string; always?: boolean },
+  ): TasteEntry {
     // A note filed under a heading that is gone belongs to no heading, rather
     // than to a dangling id the screen would have to explain.
     const categoryId =
@@ -106,13 +109,17 @@ export class Taste {
         ? input.categoryId
         : null;
     return this.toEntry(
-      this.store.insertTasteEntry(id, { categoryId, text: this.seal(input.text.trim()) }),
+      this.store.insertTasteEntry(id, {
+        categoryId,
+        text: this.seal(input.text.trim()),
+        always: input.always,
+      }),
     );
   }
 
   updateEntry(
     id: string,
-    input: { categoryId?: string | null; text?: string; active?: boolean },
+    input: { categoryId?: string | null; text?: string; active?: boolean; always?: boolean },
   ): TasteEntry | null {
     if (!this.store.getTasteEntryRow(id)) return null;
     this.store.updateTasteEntry(id, {
@@ -126,6 +133,7 @@ export class Taste {
         : {}),
       ...(input.text !== undefined ? { text: this.seal(input.text.trim()) } : {}),
       ...(input.active !== undefined ? { active: input.active } : {}),
+      ...(input.always !== undefined ? { always: input.always } : {}),
     });
     const row = this.store.getTasteEntryRow(id);
     return row ? this.toEntry(row) : null;
@@ -151,10 +159,25 @@ export class Taste {
       categoryId: row.category_id,
       text: this.open(row.text),
       active: row.active === 1,
+      always: row.always_on === 1,
       position: row.position,
       createdAt: row.created_at,
     };
   }
+}
+
+/** What a profile actually contributes, once the switches have had their say. */
+export interface ActiveTaste {
+  /** The ordinary notes, grouped under their headings; `null` is no heading. */
+  groups: { heading: string | null; notes: string[] }[];
+  /**
+   * The ones that apply whatever the influence setting says.
+   *
+   * Listed apart rather than mixed in because they are told to the model
+   * differently: the rest fill the space you left, and these hold even when you
+   * have said exactly what you want — where they bear on it at all.
+   */
+  standing: string[];
 }
 
 /**
@@ -164,13 +187,16 @@ export class Taste {
  * category switch is the coarse control, and having to also switch off six
  * notes to silence a heading would make it useless. Empty categories are
  * dropped, and notes belonging to no category come back under `null`.
+ *
+ * The switches decide *whether* a note is in play; `always` decides how far it
+ * reaches. So a standing note under a switched-off heading is still off — you
+ * silenced it — and it simply does not appear at all.
  */
-export function activeTaste(
-  profile: TasteProfile,
-): { heading: string | null; notes: string[] }[] {
+export function activeTaste(profile: TasteProfile): ActiveTaste {
   const categories = new Map(profile.categories.map((category) => [category.id, category]));
   const groups: { heading: string | null; notes: string[] }[] = [];
   const byCategory = new Map<string | null, string[]>();
+  const standing: string[] = [];
 
   for (const entry of profile.entries) {
     if (!entry.active) continue;
@@ -178,6 +204,16 @@ export function activeTaste(
     if (entry.categoryId && (!category || !category.active)) continue;
     const text = entry.text.trim();
     if (!text) continue;
+
+    /*
+     * A standing note is listed once, in its own section, and not again under
+     * its heading. Saying it twice in one prompt is how a model decides it is
+     * the most important thing in the list.
+     */
+    if (entry.always) {
+      standing.push(text);
+      continue;
+    }
 
     const key = category ? category.id : null;
     const notes = byCategory.get(key);
@@ -192,5 +228,5 @@ export function activeTaste(
   const loose = byCategory.get(null);
   if (loose?.length) groups.push({ heading: null, notes: loose });
 
-  return groups;
+  return { groups, standing };
 }

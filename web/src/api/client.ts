@@ -392,12 +392,12 @@ export const api = {
   deleteTasteCategory: (id: string) =>
     request<void>(`/api/taste/categories/${id}`, { method: 'DELETE' }),
 
-  createTasteEntry: (input: { text: string; categoryId: string | null }) =>
+  createTasteEntry: (input: { text: string; categoryId: string | null; always?: boolean }) =>
     request<TasteEntry>('/api/taste/entries', { method: 'POST', body: JSON.stringify(input) }),
 
   updateTasteEntry: (
     id: string,
-    patch: { text?: string; active?: boolean; categoryId?: string | null },
+    patch: { text?: string; active?: boolean; always?: boolean; categoryId?: string | null },
   ) =>
     request<TasteEntry>(`/api/taste/entries/${id}`, {
       method: 'PATCH',

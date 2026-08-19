@@ -5,6 +5,7 @@ import type {
   ChatStreamEvent,
   ChatToolCall,
   ChatToolSettings,
+  TasteEntry,
   TasteProfile,
 } from '@latent/shared';
 
@@ -610,6 +611,19 @@ describe('asking rather than guessing about a picture', () => {
 /* What the user likes                                                 */
 /* ------------------------------------------------------------------ */
 
+/** One note, with the parts a test does not care about filled in. */
+function note(fields: Partial<TasteEntry> & { text: string }): TasteEntry {
+  return {
+    id: fields.text,
+    categoryId: null,
+    active: true,
+    always: false,
+    position: 0,
+    createdAt: 1,
+    ...fields,
+  };
+}
+
 function profile(): TasteProfile {
   return {
     categories: [
@@ -617,21 +631,24 @@ function profile(): TasteProfile {
       { id: 'places', name: 'Places', active: false, position: 1, createdAt: 2 },
     ],
     entries: [
-      { id: 'a', categoryId: 'colour', text: 'washed-out teal', active: true, position: 0, createdAt: 1 },
-      { id: 'b', categoryId: 'colour', text: 'neon', active: false, position: 1, createdAt: 2 },
-      { id: 'c', categoryId: 'places', text: 'harbours', active: true, position: 2, createdAt: 3 },
-      { id: 'd', categoryId: null, text: 'rain at night', active: true, position: 3, createdAt: 4 },
-      { id: 'e', categoryId: 'gone', text: 'orphaned', active: true, position: 4, createdAt: 5 },
+      note({ id: 'a', categoryId: 'colour', text: 'washed-out teal' }),
+      note({ id: 'b', categoryId: 'colour', text: 'neon', active: false }),
+      note({ id: 'c', categoryId: 'places', text: 'harbours' }),
+      note({ id: 'd', categoryId: null, text: 'rain at night' }),
+      note({ id: 'e', categoryId: 'gone', text: 'orphaned' }),
     ],
   };
 }
 
 describe('which notes are feeding in', () => {
   it('keeps the switched-on ones and groups them under their heading', () => {
-    expect(activeTaste(profile())).toEqual([
-      { heading: 'Colour', notes: ['washed-out teal'] },
-      { heading: null, notes: ['rain at night'] },
-    ]);
+    expect(activeTaste(profile())).toEqual({
+      groups: [
+        { heading: 'Colour', notes: ['washed-out teal'] },
+        { heading: null, notes: ['rain at night'] },
+      ],
+      standing: [],
+    });
   });
 
   /**
@@ -641,13 +658,43 @@ describe('which notes are feeding in', () => {
    * useless, so a note under a switched-off category is off whatever it says.
    */
   it('silences a whole category from its own switch', () => {
-    const groups = activeTaste(profile());
+    const { groups } = activeTaste(profile());
     expect(groups.some((group) => group.notes.includes('harbours'))).toBe(false);
   });
 
   it('drops a note filed under a category that no longer exists', () => {
-    const groups = activeTaste(profile());
+    const { groups } = activeTaste(profile());
     expect(groups.some((group) => group.notes.includes('orphaned'))).toBe(false);
+  });
+
+  /**
+   * A standing note is listed once, apart from the rest.
+   *
+   * Saying it twice in one prompt — under its heading and again as a rule — is
+   * how a model decides it is the most important thing in the list.
+   */
+  it('lists a standing note on its own, not under its heading as well', () => {
+    const base = profile();
+    base.entries.push(note({ id: 'f', categoryId: 'colour', text: 'never any text', always: true }));
+
+    const { groups, standing } = activeTaste(base);
+    expect(standing).toEqual(['never any text']);
+    expect(groups.some((group) => group.notes.includes('never any text'))).toBe(false);
+  });
+
+  /**
+   * `always` decides how far a note reaches, not whether it is in play.
+   *
+   * Switching one off, or switching off the heading over it, is still the way
+   * to silence it — otherwise a note marked "always" could never be put away.
+   */
+  it('still obeys the switches', () => {
+    const base = profile();
+    base.entries.push(
+      note({ id: 'f', text: 'switched off', always: true, active: false }),
+      note({ id: 'g', categoryId: 'places', text: 'under a silent heading', always: true }),
+    );
+    expect(activeTaste(base).standing).toEqual([]);
   });
 });
 
@@ -689,6 +736,57 @@ describe('how far the notes reach', () => {
     expect(tastePolicy(profile(), 'hints')).toContain('vague idea');
     expect(tastePolicy(profile(), 'guiding')).toContain('wherever it does not contradict');
     expect(tastePolicy(profile(), 'strong')).toContain('house style');
+  });
+
+  /**
+   * The point of the override: a settled preference is not a starting point.
+   *
+   * The rest of the notes step aside the moment a picture is named, which is
+   * exactly when "always 21:9" or "never any text in the picture" matters most.
+   */
+  it('tells it that a standing note holds even against a concrete request', () => {
+    const base = profile();
+    base.entries.push(note({ id: 'f', text: 'never any text in the picture', always: true }));
+
+    const text = tastePolicy(base, 'sparingly');
+    expect(text).toContain('Things that always hold');
+    expect(text).toContain('never any text in the picture');
+    expect(text).toContain('even when they have told you exactly what they want');
+  });
+
+  /**
+   * And the limit that makes the override usable.
+   *
+   * Without it, "this always applies" reads as "put this in every prompt", and
+   * a note about colour turns up in a request for a line drawing.
+   */
+  it('bounds a standing note by whether it is relevant at all', () => {
+    const base = profile();
+    base.entries.push(note({ id: 'f', text: 'shot on 35mm', always: true }));
+
+    const text = tastePolicy(base, 'hints');
+    expect(text).toContain('only where it actually bears on the picture');
+    expect(text).toContain('leave it out entirely');
+    expect(text).toContain('Do not bend the picture');
+  });
+
+  /** Off is the master switch, or it is not a switch. */
+  it('sends nothing at all when the whole thing is off, standing notes included', () => {
+    const base = profile();
+    base.entries.push(note({ id: 'f', text: 'always widescreen', always: true }));
+    expect(tastePolicy(base, 'off')).toBe('');
+  });
+
+  /** A profile that is nothing but standing notes still has a section. */
+  it('writes the section for standing notes alone', () => {
+    const text = tastePolicy(
+      { categories: [], entries: [note({ id: 'f', text: 'always widescreen', always: true })] },
+      'hints',
+    );
+    expect(text).toContain('always widescreen');
+    expect(text).toContain('Things that always hold');
+    // No empty lead-in for the ordinary notes, which there are none of.
+    expect(text).not.toContain('things they keep coming back to');
   });
 
   /** Never shown in the chat, so reciting it back would be a small leak. */

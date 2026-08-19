@@ -29,6 +29,12 @@ import { Button, Card, ErrorNote, Sheet, Spinner, cn } from './ui';
  * else". Each note and each category has its own switch, so changing your mind
  * for an evening is a tap rather than a deletion.
  *
+ * A note can also be pinned, which is a different thing from being switched on:
+ * the switch says whether it is in play at all, and the pin says it applies even
+ * when a picture has already been named. Settled preferences — a format, a thing
+ * you never want in a picture — are the notes that matter most in exactly the
+ * case the influence scale would otherwise silence them.
+ *
  * Everything here is encrypted with the app password and only ever read by the
  * model — see `server/src/taste.ts`.
  */
@@ -60,6 +66,11 @@ export function TasteSheet({ open, onClose }: { open: boolean; onClose: () => vo
           Notes the model reads when you have not said what you want — a starting point instead of a
           blank page. Encrypted with your password, and never shown back to you in the chat. How far
           it reaches is set under <strong className="text-body">Settings → Chat</strong>.
+        </p>
+        <p className="text-[11px] text-muted">
+          Tap <strong className="text-body">Only when it fits</strong> on a note to pin it. A pinned
+          note ignores that setting and applies even when you have said exactly what you want — but
+          only where it has anything to do with the picture, never worked in for its own sake.
         </p>
 
         {taste.isLoading && (
@@ -269,6 +280,27 @@ function EntryRow({ entry, categories }: { entry: TasteEntry; categories: TasteC
         <p className={cn('text-sm break-words', !entry.active && 'text-muted line-through')}>
           {entry.text}
         </p>
+        {/*
+          The one control that changes what a note *is*.
+
+          Everything else here fills the space you left, so naming a picture
+          pushes it aside. A pinned note does not get pushed aside — which is
+          the whole point, because a settled preference matters most exactly
+          when you have said what you want. It still only applies where it
+          bears on the picture; the model is told so in as many words.
+        */}
+        <button
+          type="button"
+          aria-pressed={entry.always}
+          aria-label={`${entry.text} always applies`}
+          onClick={() => update.mutate({ id: entry.id, patch: { always: !entry.always } })}
+          className={cn(
+            'mt-1 rounded-md px-2 py-0.5 text-[10px]',
+            entry.always ? 'bg-accent/20 text-accent' : 'bg-surface-2 text-muted',
+          )}
+        >
+          {entry.always ? '📌 Always' : 'Only when it fits'}
+        </button>
         {categories.length > 0 && (
           <div className="mt-1 flex flex-wrap gap-1">
             {categories.map((category) => (

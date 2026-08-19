@@ -582,7 +582,7 @@ export const useDeleteTasteCategory = () =>
   useTasteMutation((id: string) => api.deleteTasteCategory(id));
 
 export const useCreateTasteEntry = () =>
-  useTasteMutation((input: { text: string; categoryId: string | null }) =>
+  useTasteMutation((input: { text: string; categoryId: string | null; always?: boolean }) =>
     api.createTasteEntry(input),
   );
 
@@ -593,7 +593,7 @@ export const useUpdateTasteEntry = () =>
       patch,
     }: {
       id: string;
-      patch: { text?: string; active?: boolean; categoryId?: string | null };
+      patch: { text?: string; active?: boolean; always?: boolean; categoryId?: string | null };
     }) => api.updateTasteEntry(id, patch),
   );
 

@@ -1574,6 +1574,21 @@ export interface TasteEntry {
    * category stays off whatever this says.
    */
   active: boolean;
+  /**
+   * Ignore the scale for this one: it applies whenever it is relevant.
+   *
+   * The rest of the notes only fill the space you left, so a concrete request
+   * pushes them aside. Some things are not like that — a format you always
+   * want, a thing you never want in a picture, a treatment you have settled on
+   * — and those are exactly the ones that matter most when you *have* said what
+   * you want.
+   *
+   * "Relevant" is the whole of the limit. A standing note is not a phrase to
+   * work into every prompt: one about colour has no business in a request for a
+   * line drawing, and the model is told to leave it out rather than bend the
+   * picture to fit it.
+   */
+  always: boolean;
   position: number;
   createdAt: number;
 }
@@ -1600,7 +1615,7 @@ export interface TasteProfile {
  * deciding what to make.
  */
 export type TasteInfluence =
-  /** Never mentioned to the model at all. */
+  /** Never mentioned to the model at all — standing notes included. */
   | 'off'
   /** Only when you have said nothing whatever about what you want. */
   | 'sparingly'

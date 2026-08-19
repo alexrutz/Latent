@@ -5970,6 +5970,88 @@ describe('what the user likes', () => {
     }
   }, 30_000);
 
+  /**
+   * A pinned note overrides the scale — and only where it is relevant.
+   *
+   * The rest of the notes step aside the moment a picture is named, which is
+   * exactly when a settled preference matters most. What keeps that from
+   * turning into "work this into every prompt" is the relevance limit, which
+   * goes in beside it.
+   */
+  it('sends a pinned note as a rule that holds, bounded by relevance', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      const pinned = await json<TasteEntry>(
+        api('/api/taste/entries', {
+          method: 'POST',
+          body: JSON.stringify({ text: 'never any text in the picture', always: true }),
+        }),
+      );
+      const ordinary = await json<TasteEntry>(
+        api('/api/taste/entries', {
+          method: 'POST',
+          body: JSON.stringify({ text: 'low fog over water' }),
+        }),
+      );
+      entries.push(pinned.id, ordinary.id);
+      expect(pinned.always).toBe(true);
+      expect(ordinary.always).toBe(false);
+
+      // At the quietest setting the ordinary notes barely reach; the pinned one
+      // reaches all the same, which is the point of the override.
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { taste: 'sparingly' } }),
+      });
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      llama.script({ content: 'Right.' });
+      await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'a portrait of a fisherman, close up' }),
+        }),
+      );
+
+      const system = (
+        llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
+      ).messages[0]!;
+      expect(system.content).toContain('Things that always hold');
+      expect(system.content).toContain('never any text in the picture');
+      expect(system.content).toContain('even when they have told you exactly what they want');
+      expect(system.content).toContain('only where it actually bears on the picture');
+      // Listed once, as a rule — not again among the ordinary notes.
+      expect(system.content.match(/never any text in the picture/g)).toHaveLength(1);
+
+      // Unpinning puts it back among the rest.
+      await api(`/api/taste/entries/${pinned.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ always: false }),
+      });
+      llama.script({ content: 'Fine.' });
+      await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'again' }),
+        }),
+      );
+      const after = (
+        llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
+      ).messages[0]!;
+      expect(after.content).not.toContain('Things that always hold');
+      expect(after.content).toContain('never any text in the picture');
+    } finally {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { taste: 'hints' } }),
+      });
+      await llama.close();
+    }
+  }, 30_000);
+
   /** Signing out and back in leaves the notes where they were. */
   it('keeps the notes readable across a lock and a sign-in', async () => {
     const server = await bootIsolated();

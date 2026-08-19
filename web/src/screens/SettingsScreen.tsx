@@ -127,7 +127,7 @@ const DETAIL_OPTIONS: { value: PromptDetail; label: string; hint: string }[] = [
  * scale overrides something you asked for — see `tastePolicy` on the server.
  */
 const TASTE_OPTIONS: { value: TasteInfluence; label: string; hint: string }[] = [
-  { value: 'off', label: 'Off', hint: 'the model is never told' },
+  { value: 'off', label: 'Off', hint: 'nothing is sent, pinned notes too' },
   { value: 'sparingly', label: 'Sparingly', hint: 'only when you say nothing at all' },
   { value: 'hints', label: 'Hints', hint: 'colours a vague idea, leaves a clear one' },
   { value: 'guiding', label: 'Guiding', hint: 'shapes what it offers first' },
@@ -1689,7 +1689,10 @@ function ChatSection() {
             Notes about concepts, aesthetics and things you keep coming back to, so “give me an
             idea” has somewhere to start. They are encrypted with your password and read only by
             the model — write them under the{' '}
-            <strong className="text-body">♥</strong> in the chat header.
+            <strong className="text-body">♥</strong> in the chat header. A note pinned there
+            ignores this scale and applies wherever it is relevant, even to a picture you have
+            already described; <strong className="text-body">Off</strong> silences everything,
+            pinned notes included.
           </p>
         </div>
 
