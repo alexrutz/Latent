@@ -9,7 +9,7 @@ import type {
   WidgetValue,
 } from './comfyTypes.js';
 import { hasLoraTags } from './loraTags.js';
-import { producesVideo } from './media.js';
+import { producesAudio, producesVideo } from './media.js';
 import type {
   ControlKind,
   FieldOverrides,
@@ -155,6 +155,21 @@ const VAE_INPUTS = new Set(['vae_name']);
 const LENGTH_INPUTS = new Set(['length', 'num_frames', 'video_frames', 'frames', 'frame_count']);
 /** And how fast those frames are played back. */
 const FRAME_RATE_INPUTS = new Set(['frame_rate', 'fps', 'framerate']);
+/**
+ * How long a generated sound runs.
+ *
+ * The audio models name it every way there is: `seconds` in ComfyUI's own
+ * `EmptyLatentAudio`, `duration` and `length_seconds` around the music models,
+ * `audio_length` in some TTS packs.
+ */
+const SECONDS_INPUTS = new Set([
+  'seconds',
+  'duration',
+  'duration_seconds',
+  'length_seconds',
+  'audio_length',
+  'audio_seconds',
+]);
 
 /** Nodes whose text inputs are prompt candidates even without a positive/negative link. */
 function isTextEncodeClass(classType: string): boolean {
@@ -391,6 +406,7 @@ function detectRole(
   if (inputName === 'megapixels') return 'megapixels';
   if (LENGTH_INPUTS.has(inputName)) return 'length';
   if (FRAME_RATE_INPUTS.has(inputName)) return 'frame_rate';
+  if (SECONDS_INPUTS.has(inputName)) return 'seconds';
   if (inputName === 'batch_size') return 'batch_size';
   if (LORA_INPUTS.has(inputName)) return 'lora';
   if (VAE_INPUTS.has(inputName)) return 'vae';
@@ -415,6 +431,7 @@ const MAIN_ROLE_ORDER: ParamRole[] = [
   'megapixels',
   'length',
   'frame_rate',
+  'seconds',
   'batch_size',
   'steps',
   'cfg',
@@ -760,6 +777,7 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
       img2img: fields.some((f) => f.role === 'image_input' && !f.hidden),
       seeded: fields.some((f) => f.role === 'seed' && !f.hidden),
       video: producesVideo(workflow),
+      audio: producesAudio(workflow),
     },
     missingNodeTypes: [...missingNodeTypes].sort(),
   };
@@ -814,6 +832,7 @@ export function applyOverrides(schema: ParamSchema, overrides: FieldOverrides = 
       // Hiding a field cannot turn a video workflow into a still one: this is a
       // fact about the graph, not about the form.
       video: schema.capabilities?.video === true,
+      audio: schema.capabilities?.audio === true,
     },
   };
 }

@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
 import { contentTypeOf, mediaKindOf, textOutputLabel } from '@latent/shared';
-import type { GenerationRecord, GridSettings } from '@latent/shared';
+import type { Favorite, GenerationRecord, GridSettings } from '@latent/shared';
 
 import { api, imageUrl } from '../api/client';
 import {
+  queryKeys,
   useAddFavorite,
   useDeleteFavorite,
   useDeleteImage,
@@ -13,12 +15,13 @@ import {
   useKeepImage,
   useRateImage,
   useSettings,
+  useUpdateFavorite,
   useWorkflows,
 } from '../api/queries';
 import { ImageViewer, type ViewerEntry } from './ImageViewer';
 import { overlayValues, ParamOverlayLine, ParamOverlayPicker } from './ParamOverlay';
 import { RatingStars } from './RatingStars';
-import { cn, ErrorNote, Sheet, Spinner } from './ui';
+import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
 import { usePendingStore } from '../state/pending';
 
 /* ------------------------------------------------------------------ */
@@ -41,6 +44,7 @@ export function ViewerWithActions({
   onGridChange,
   onIndexChange,
   onClose,
+  onShowInGallery,
 }: {
   entries: ViewerEntry[];
   index: number;
@@ -49,6 +53,12 @@ export function ViewerWithActions({
   onGridChange: (patch: Partial<GridSettings>) => void;
   onIndexChange: (index: number) => void;
   onClose: () => void;
+  /**
+   * Take this picture to where the rest of its run is, when there is somewhere
+   * else to take it. Set from Favourites, where the swipe goes through the
+   * favourites rather than through the batch this one came out of.
+   */
+  onShowInGallery?: (entry: ViewerEntry) => void;
 }) {
   const navigate = useNavigate();
   const setPending = usePendingStore((state) => state.setPending);
@@ -85,7 +95,13 @@ export function ViewerWithActions({
    * disabled rather than hidden, so the row of actions does not rearrange
    * itself as you swipe from a picture to a video.
    */
-  const isVideo = mediaKindOf(image.filename) === 'video';
+  /*
+   * Anything that is not a still picture cannot be sent where a picture goes.
+   *
+   * `LoadImage` reads one frame from a file, so img2img and upscaling are not
+   * "not implemented yet" for a clip or a track — they are the wrong question.
+   */
+  const notAStill = mediaKindOf(image.filename) !== 'image';
   const viewerOverlay = overlayValues(record, grid.viewerParams);
 
   /*
@@ -308,16 +324,16 @@ export function ViewerWithActions({
               glyph="◨"
               label="img2img"
               busy={busy === 'img2img'}
-              disabled={isVideo}
-              title={isVideo ? 'img2img takes a picture, not a clip' : undefined}
+              disabled={notAStill}
+              title={notAStill ? 'img2img takes a still picture' : undefined}
               onClick={() => void sendTo('img2img')}
             />
             <ViewerAction
               glyph="⤢"
               label="Upscale"
               busy={busy === 'upscale'}
-              disabled={isVideo}
-              title={isVideo ? 'Upscaling takes a picture, not a clip' : undefined}
+              disabled={notAStill}
+              title={notAStill ? 'Upscaling takes a still picture' : undefined}
               onClick={() => void sendTo('upscale')}
             />
             <ViewerAction glyph="≡" label="Details" onClick={() => setShowDetails(true)} />
@@ -356,11 +372,128 @@ export function ViewerWithActions({
           </div>
 
           <Sheet open={showDetails} onClose={() => setShowDetails(false)} title="Settings used" full>
+            {/*
+              A favourite's own things, where the rest of this picture's things
+              already are.
+
+              Favourites used to open a page of their own before the viewer:
+              tapping one gave a sheet with the note, the rating and a preview,
+              and the viewer was a tap further in. That page is gone — a
+              favourite opens the same viewer as everything else, and swipes
+              through the other favourites the way the gallery swipes through
+              the gallery. What was genuinely only on that page is here.
+            */}
+            {existingFavorite && (
+              <FavoriteNote
+                favorite={existingFavorite}
+                onShowInGallery={onShowInGallery ? () => onShowInGallery(entry) : undefined}
+              />
+            )}
             <DetailsList record={record} />
           </Sheet>
         </div>
       }
     />
+  );
+}
+
+/**
+ * What a favourite carries that a picture does not.
+ *
+ * The note is the whole of it: why you kept this one, in your words, months
+ * after the prompt has stopped reminding you. Saved when the field loses focus
+ * rather than on a button, because a note nobody remembers to save is a note
+ * that gets lost — and the sheet closing takes the focus with it.
+ */
+function FavoriteNote({
+  favorite,
+  onShowInGallery,
+}: {
+  favorite: Favorite;
+  onShowInGallery?: () => void;
+}) {
+  const update = useUpdateFavorite();
+  const [note, setNote] = useState(favorite.note ?? '');
+  const [storing, setStoring] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+
+  return (
+    <div className="mb-4 space-y-2">
+      {/*
+        The favourite's own rating, which is not the picture's.
+
+        Two judgements that look alike and are not: the stars on the picture say
+        "this came out well", these say "I want to make more of these". A
+        technically perfect render of an idea that went nowhere earns five of
+        one and none of the other, and the Favourites list sorts by this one.
+      */}
+      <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-surface px-3 py-2">
+        <span className="min-w-0 text-sm">
+          Want more like this
+          <span className="block text-[11px] text-muted">Sorts your favourites</span>
+        </span>
+        <RatingStars
+          value={favorite.rating}
+          size="sm"
+          label="Want more like this"
+          onChange={(rating) => update.mutate({ id: favorite.id, patch: { rating } })}
+        />
+      </div>
+
+      <label className="block">
+        <span className="mb-1.5 block text-xs tracking-wide text-muted uppercase">Your note</span>
+        <textarea
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          onBlur={() => {
+            if (note !== (favorite.note ?? '')) {
+              update.mutate({ id: favorite.id, patch: { note: note.trim() || null } });
+            }
+          }}
+          rows={2}
+          placeholder="What you liked about it…"
+          className="w-full resize-none rounded-xl border border-line bg-surface px-3 py-2 text-sm focus:border-accent focus:outline-none"
+        />
+      </label>
+
+      {onShowInGallery && (
+        <Button variant="secondary" className="w-full" onClick={onShowInGallery}>
+          Show in the gallery
+        </Button>
+      )}
+
+      {/* The copy that never happened, and the second chance at it. */}
+      {!favorite.archived && (
+        <>
+          <p className="text-xs text-warn">
+            This one is not stored on this device — it is still being read from ComfyUI, so it
+            goes when that instance does.
+          </p>
+          <Button
+            variant="secondary"
+            className="w-full"
+            busy={storing}
+            onClick={async () => {
+              setError(null);
+              setStoring(true);
+              try {
+                await api.archiveFavorite(favorite.id);
+                await queryClient.invalidateQueries({ queryKey: queryKeys.favorites });
+              } catch (cause) {
+                setError(cause instanceof Error ? cause.message : 'Could not fetch it');
+              } finally {
+                setStoring(false);
+              }
+            }}
+          >
+            Store a copy here now
+          </Button>
+        </>
+      )}
+
+      <ErrorNote>{error}</ErrorNote>
+    </div>
   );
 }
 

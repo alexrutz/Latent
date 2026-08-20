@@ -3,25 +3,14 @@ import { useNavigate } from 'react-router-dom';
 
 import type { Favorite, FavoriteSort, GenerationImage, GenerationRecord } from '@latent/shared';
 
-import { useQueryClient } from '@tanstack/react-query';
-
-import { api } from '../api/client';
-import {
-  queryKeys,
-  useDeleteFavorite,
-  useFavorites,
-  useGeneration,
-  useUpdateFavorite,
-} from '../api/queries';
-import { Still, Thumb, type ViewerEntry } from '../components/ImageViewer';
-import { RatingStars } from '../components/RatingStars';
+import { useFavorites, useGeneration } from '../api/queries';
+import { Thumb, type ViewerEntry } from '../components/ImageViewer';
 import { ThumbGrid, useTileStyle } from '../components/ThumbGrid';
 import { Toggle } from '../components/ParamControl';
-import { Button, Card, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
+import { cn, EmptyState, Spinner } from '../components/ui';
 import { ViewerWithActions } from '../components/ViewerWithActions';
 import { useGridSettings } from '../state/grid';
 import { showInGallery } from '../state/galleryTarget';
-import { usePendingStore } from '../state/pending';
 
 const SORTS: { label: string; value: FavoriteSort }[] = [
   { label: 'Rating', value: 'rating' },
@@ -37,12 +26,38 @@ const SORTS: { label: string; value: FavoriteSort }[] = [
  * rated separately because the two judgements are not the same.
  */
 export function FavoritesScreen() {
+  const navigate = useNavigate();
   const [sort, setSort] = useState<FavoriteSort>('rating');
   const favorites = useFavorites(sort);
   const [settings, updateSettings] = useGridSettings();
-  const [open, setOpen] = useState<Favorite | null>(null);
+  /** Which favourite is open in the viewer, by its id. */
+  const [viewing, setViewing] = useState<string | null>(null);
 
   const items = favorites.data ?? [];
+
+  /*
+   * Every favourite, in the order they are listed, as viewer entries.
+   *
+   * Tapping one used to open a page about it, with the viewer a tap further
+   * in — so the picture took two taps to see properly, and the swipe when you
+   * got there went through the batch that picture came out of rather than
+   * through the favourites you were looking at. This is the gallery's
+   * behaviour instead: one tap opens it full-screen, and a swipe is the next
+   * favourite.
+   */
+  const entries = useMemo<ViewerEntry[]>(
+    () =>
+      items
+        .filter((favorite): favorite is Favorite & { image: GenerationImage } =>
+          Boolean(favorite.image),
+        )
+        .map((favorite) => ({ record: standInRecord(favorite, favorite.image), image: favorite.image })),
+    [items],
+  );
+
+  const viewerIndex = viewing
+    ? items.filter((favorite) => favorite.image).findIndex((favorite) => favorite.id === viewing)
+    : -1;
 
   const header = (
     <div className="mb-3 space-y-3">
@@ -103,7 +118,11 @@ export function FavoritesScreen() {
       {settings.favoriteThumbnails ? (
         <ThumbGrid columns={settings.columns}>
           {items.map((favorite) => (
-            <FavoriteTile key={favorite.id} favorite={favorite} onOpen={() => setOpen(favorite)} />
+            <FavoriteTile
+              key={favorite.id}
+              favorite={favorite}
+              onOpen={() => setViewing(favorite.id)}
+            />
           ))}
         </ThumbGrid>
       ) : (
@@ -112,7 +131,7 @@ export function FavoritesScreen() {
             <li key={favorite.id}>
               <button
                 type="button"
-                onClick={() => setOpen(favorite)}
+                onClick={() => setViewing(favorite.id)}
                 className="w-full rounded-xl border border-line bg-surface px-3 py-3 text-left active:bg-surface-2"
               >
                 <div className="flex items-center justify-between gap-3">
@@ -132,7 +151,24 @@ export function FavoritesScreen() {
         </ul>
       )}
 
-      {open && <FavoriteSheet favorite={open} onClose={() => setOpen(null)} />}
+      {viewerIndex >= 0 && (
+        <FavoriteViewer
+          entries={entries}
+          index={viewerIndex}
+          onIndexChange={(next) => {
+            const withImages = items.filter((favorite) => favorite.image);
+            const favorite = withImages[next];
+            if (favorite) setViewing(favorite.id);
+          }}
+          onClose={() => setViewing(null)}
+          onShowInGallery={(entry) => {
+            if (!entry.record.id || !entry.image) return;
+            showInGallery(entry.record.id, entry.image);
+            setViewing(null);
+            navigate('/gallery');
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -182,182 +218,6 @@ function FavoriteTile({ favorite, onOpen }: { favorite: Favorite; onOpen: () => 
   );
 }
 
-function FavoriteSheet({ favorite, onClose }: { favorite: Favorite; onClose: () => void }) {
-  const navigate = useNavigate();
-  const setPending = usePendingStore((state) => state.setPending);
-  const update = useUpdateFavorite();
-  const remove = useDeleteFavorite();
-
-  const queryClient = useQueryClient();
-  const [note, setNote] = useState(favorite.note ?? '');
-  const [viewing, setViewing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const [saving, setSaving] = useState(false);
-
-  const makeMore = (freshSeed: boolean) => {
-    if (!favorite.workflowId || !favorite.workflowAvailable) return;
-    setPending({ workflowId: favorite.workflowId, values: favorite.values, freshSeed });
-    onClose();
-    navigate('/');
-  };
-
-  /**
-   * Open the picture where the rest of its run is.
-   *
-   * A favourite is one image out of a batch, and "show me the others" is the
-   * commonest thing to want from it — previously a scroll through the gallery
-   * looking for something you were already holding.
-   */
-  const openInGallery = () => {
-    if (!favorite.generationId || !favorite.image) return;
-    showInGallery(favorite.generationId, favorite.image);
-    onClose();
-    navigate('/gallery');
-  };
-
-  if (viewing && favorite.image) {
-    return (
-      <FavoriteViewer
-        favorite={favorite}
-        image={favorite.image}
-        onClose={() => setViewing(false)}
-      />
-    );
-  }
-
-  return (
-    <Sheet open onClose={onClose} title="Favourite" full>
-      <div className="space-y-4">
-        {favorite.image && (
-          <button
-            type="button"
-            onClick={() => setViewing(true)}
-            aria-label="Open the picture"
-            className="block w-full overflow-hidden rounded-2xl border border-line bg-surface-2"
-          >
-            {/* A preview: tapping it opens the viewer, which is where the
-                full-size picture — or the clip — belongs. */}
-            <Still image={favorite.image} alt={favorite.title} fit="contain" className="w-full" />
-          </button>
-        )}
-
-        <p className="text-sm break-words">{favorite.title || 'Untitled'}</p>
-
-        <Card className="flex items-center justify-between gap-3">
-          <span className="text-sm">Rating</span>
-          <RatingStars
-            value={favorite.rating}
-            onChange={(rating) => update.mutate({ id: favorite.id, patch: { rating } })}
-          />
-        </Card>
-
-        <label className="block">
-          <span className="mb-1.5 block text-xs tracking-wide text-muted uppercase">Note</span>
-          <textarea
-            value={note}
-            onChange={(event) => setNote(event.target.value)}
-            onBlur={() => {
-              if (note !== (favorite.note ?? '')) {
-                update.mutate({ id: favorite.id, patch: { note: note.trim() || null } });
-              }
-            }}
-            rows={2}
-            placeholder="What you liked about it…"
-            className="w-full resize-none rounded-xl border border-line bg-surface px-4 py-3 focus:border-accent focus:outline-none"
-          />
-        </label>
-
-        <ErrorNote>{error}</ErrorNote>
-
-        {/* The copy that never happened, and the second chance at it. */}
-        {!favorite.archived && (
-          <Card className="space-y-2">
-            <p className="text-xs text-warn">
-              This picture is not stored on this device. It is still being read from ComfyUI,
-              so it will disappear when that instance does.
-            </p>
-            <Button
-              variant="secondary"
-              className="w-full"
-              busy={saving}
-              onClick={async () => {
-                setError(null);
-                setSaving(true);
-                try {
-                  await api.archiveFavorite(favorite.id);
-                  await queryClient.invalidateQueries({ queryKey: queryKeys.favorites });
-                } catch (cause) {
-                  setError(cause instanceof Error ? cause.message : 'Could not fetch it');
-                } finally {
-                  setSaving(false);
-                }
-              }}
-            >
-              Store it here now
-            </Button>
-          </Card>
-        )}
-
-        <div className="space-y-2">
-          {favorite.generationId && favorite.image && (
-            <Button variant="secondary" className="w-full" onClick={openInGallery}>
-              Show in the gallery
-            </Button>
-          )}
-          <Button
-            variant="primary"
-            size="lg"
-            disabled={!favorite.workflowAvailable}
-            onClick={() => makeMore(true)}
-          >
-            Make more like this
-          </Button>
-          <Button
-            variant="secondary"
-            className="w-full"
-            disabled={!favorite.workflowAvailable}
-            onClick={() => makeMore(false)}
-          >
-            Reproduce exactly
-          </Button>
-          {!favorite.workflowAvailable && (
-            <p className="text-center text-xs text-muted">
-              The workflow this came from has been deleted, so it cannot be re-run. The image and
-              its settings are still here.
-            </p>
-          )}
-        </div>
-
-        <Button
-          variant="danger"
-          className="w-full"
-          busy={remove.isPending}
-          onClick={async () => {
-            setError(null);
-            try {
-              await remove.mutateAsync(favorite.id);
-              onClose();
-            } catch (cause) {
-              setError(cause instanceof Error ? cause.message : 'Could not remove that favourite');
-            }
-          }}
-        >
-          Remove from favourites
-        </Button>
-        <p className="text-center text-xs text-muted">
-          The image itself stays in your gallery and on this device.
-        </p>
-      </div>
-    </Sheet>
-  );
-}
-
-/** Where one picture sits among the images of its run. */
-function imageKey(image: GenerationImage): string {
-  return `${image.subfolder}/${image.filename}`;
-}
-
 /**
  * A record made out of the favourite itself.
  *
@@ -387,56 +247,53 @@ function standInRecord(favorite: Favorite, image: GenerationImage): GenerationRe
 }
 
 /**
- * A favourite, opened in the viewer the gallery opens.
+ * A favourite, in the viewer everything else opens in.
  *
- * It used to get a stripped viewer with no actions on it at all, so the one
- * picture you had already said you cared about was the one you could do least
- * with — no rating, no keep, no save, no settings behind it. The run is fetched
- * for that reason rather than for the swipe: the actions write to a generation
- * and an image, and the favourite carries only a copy of the second.
- *
- * Swiping moves through the rest of that run, which is what the same picture
- * does when it is opened from the gallery.
+ * The entries are the whole list, so a swipe is the next favourite — the same
+ * gesture the gallery answers with the next picture. The run behind whichever
+ * one is open is fetched on top of that: a favourite stores its own copy of the
+ * image and the values, which is enough to look at and to re-run, but not the
+ * printed outputs or the workflow's name, and those are what the details sheet
+ * is for.
  */
 function FavoriteViewer({
-  favorite,
-  image,
+  entries,
+  index,
+  onIndexChange,
   onClose,
+  onShowInGallery,
 }: {
-  favorite: Favorite;
-  image: GenerationImage;
+  entries: ViewerEntry[];
+  index: number;
+  onIndexChange: (index: number) => void;
   onClose: () => void;
+  onShowInGallery: (entry: ViewerEntry) => void;
 }) {
-  const generation = useGeneration(favorite.generationId);
   const [grid, updateGrid] = useGridSettings();
-  const [selected, setSelected] = useState(imageKey(image));
-
-  const entries = useMemo<ViewerEntry[]>(() => {
-    const record = generation.data;
-    if (record && record.images.length > 0) {
-      return record.images.map((candidate) => ({ record, image: candidate }));
-    }
-    return [{ record: standInRecord(favorite, image), image }];
-  }, [generation.data, favorite, image]);
-
+  const current = entries[index];
   /*
-   * Found by name, not by position: the stand-in above is replaced by the real
-   * run the moment it arrives, and a stored index would then point at whichever
-   * picture of that batch happened to be first rather than the one opened.
+   * Only the one being looked at.
+   *
+   * Fetching every favourite's run to build the list would be one request per
+   * picture for something you can only read one of at a time.
    */
-  const index = entries.findIndex((entry) => imageKey(entry.image) === selected);
+  const generation = useGeneration(current?.record.id ?? null);
+
+  const withRealRecord = useMemo<ViewerEntry[]>(() => {
+    const record = generation.data;
+    if (!record || !current || record.id !== current.record.id) return entries;
+    return entries.map((entry, at) => (at === index ? { ...entry, record } : entry));
+  }, [entries, current, generation.data, index]);
 
   return (
     <ViewerWithActions
-      entries={entries}
-      index={index < 0 ? 0 : index}
+      entries={withRealRecord}
+      index={index}
       grid={grid}
       onGridChange={updateGrid}
-      onIndexChange={(next) => {
-        const entry = entries[next];
-        if (entry) setSelected(imageKey(entry.image));
-      }}
+      onIndexChange={onIndexChange}
       onClose={onClose}
+      onShowInGallery={onShowInGallery}
     />
   );
 }

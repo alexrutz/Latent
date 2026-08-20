@@ -117,8 +117,21 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
      * was recorded — from what the node said as well as from the name — and is
      * therefore right for a container this build has never heard of.
      */
-    if ((known?.kind ?? mediaKindOf(filename)) === 'video') {
+    const kind = known?.kind ?? mediaKindOf(filename);
+    if (kind !== 'image') {
       if (preview) {
+        /*
+         * A sound has no preview and never will.
+         *
+         * Said once, plainly, so the grid draws its card and stops asking. A
+         * clip at least has a frame somebody might capture; there is no frame
+         * in a flac.
+         */
+        if (kind === 'audio') {
+          return reply
+            .code(404)
+            .send({ error: 'Sound has no preview', kind: 'audio', noPoster: true });
+        }
         /*
          * The poster, if anything has managed to make one.
          *
@@ -188,7 +201,9 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
       }
 
       if (!UPSTREAM_TYPES.has(type)) {
-        return reply.code(404).send({ error: 'That video is not in the local archive' });
+        return reply
+          .code(404)
+          .send({ error: `That ${kind === 'audio' ? 'track' : 'video'} is not in the local archive` });
       }
 
       let upstream: Response;
@@ -202,7 +217,7 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
       } catch (error) {
         return sendImageError(reply, error);
       }
-      if (!upstream.body) return reply.code(502).send({ error: 'ComfyUI returned an empty video' });
+      if (!upstream.body) return reply.code(502).send({ error: 'ComfyUI returned an empty file' });
 
       reply
         .code(upstream.status === 206 ? 206 : 200)
@@ -439,15 +454,17 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
       return reply.code(400).send({ error: 'Invalid image type' });
     }
     /*
-     * A clip is not an input image.
+     * A clip or a track is not an input image.
      *
      * `LoadImage` reads one frame from a file, so uploading an mp4 to it fails
-     * inside ComfyUI with something unhelpful about PIL. Refusing here says the
-     * true thing instead.
+     * inside ComfyUI with something unhelpful about PIL, and a flac fails
+     * sooner and less clearly. Refusing here says the true thing instead, and
+     * says which of the two it is.
      */
-    if (mediaKindOf(filename) === 'video') {
+    const inputKind = mediaKindOf(filename);
+    if (inputKind !== 'image') {
       return reply.code(400).send({
-        error: 'That is a video. Send a picture to img2img or upscaling, not a clip.',
+        error: `That is a ${inputKind === 'audio' ? 'sound' : 'video'}. Send a picture to img2img or upscaling.`,
       });
     }
 

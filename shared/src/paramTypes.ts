@@ -35,6 +35,14 @@ export type ParamRole =
   | 'length'
   /** Frames per second: the same frames stretched or compressed in time. */
   | 'frame_rate'
+  /**
+   * How long a generated sound runs, in seconds.
+   *
+   * The audio equivalent of `length`, and consequential for the same reason: it
+   * is the piece of music you get and most of the time spent making it. In
+   * seconds rather than frames, because that is what the audio nodes take.
+   */
+  | 'seconds'
   | 'batch_size'
   | 'steps'
   | 'cfg'
@@ -168,6 +176,14 @@ export interface ParamSchema {
      * expecting a picture that it is about to be handed a video.
      */
     video: boolean;
+    /**
+     * Ends in a sound rather than a picture.
+     *
+     * Kept apart from `video` rather than folded into a "not a still image"
+     * flag: a video has frames to draw and a poster to grab, and audio has
+     * neither, so the screens that ask this question want different answers.
+     */
+    audio: boolean;
   };
   /** Node classes referenced by the workflow but missing from `/object_info`. */
   missingNodeTypes: string[];

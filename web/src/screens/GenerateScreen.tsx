@@ -816,6 +816,11 @@ function GenerateForm({
                       video
                     </span>
                   )}
+                  {item.producesAudio && (
+                    <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">
+                      sound
+                    </span>
+                  )}
                   {item.id === workflowId && <span aria-hidden>✓</span>}
                 </span>
               </button>

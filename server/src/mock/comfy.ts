@@ -10,6 +10,7 @@ import {
   BINARY_IMAGE_TYPE_PNG,
   contentTypeOf as contentTypeFor,
   isNodeLink,
+  isAudioOutputClass,
   isVideoOutputClass,
 } from '@latent/shared';
 import type { ApiWorkflow, ComfyImageRef, HistoryEntry } from '@latent/shared';
@@ -17,6 +18,7 @@ import { CHECKPOINTS, LORAS, objectInfoFixture, UPSCALE_MODELS } from '@latent/s
 
 import { renderPlaceholderClip, renderPlaceholderWebm } from './gif.js';
 import { renderPlaceholder } from './png.js';
+import { renderPlaceholderWav } from './wav.js';
 
 /**
  * A stand-in for a real ComfyUI server.
@@ -224,9 +226,27 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
         !isTextNode &&
         (objectInfoFixture[node.class_type]?.output_node === true ||
           /^(SaveImage|PreviewImage)/.test(node.class_type) ||
-          isVideoOutputClass(node.class_type));
+          isVideoOutputClass(node.class_type) ||
+          isAudioOutputClass(node.class_type));
 
-      if (isOutput && isVideoOutputClass(node.class_type)) {
+      if (isOutput && isAudioOutputClass(node.class_type)) {
+        /*
+         * A sound node, reported under `audio` the way ComfyUI reports one.
+         *
+         * A playable WAV rather than a labelled blob: the point of the mock is
+         * that everything downstream of it is real, and "downstream" here ends
+         * at a browser deciding whether it can play the file.
+         */
+        const seconds = findSeconds(workflow);
+        const filename = `Latent_${String(job.number).padStart(5, '0')}_${nodeId}.wav`;
+        files.set(`output//${filename}`, renderPlaceholderWav(String(seed), seconds));
+
+        const output = {
+          audio: [{ filename, subfolder: '', type: 'output', format: 'audio/wav' }],
+        };
+        outputs[nodeId] = output as (typeof outputs)[string];
+        send(clientId, 'executed', { prompt_id: promptId, node: nodeId, output });
+      } else if (isOutput && isVideoOutputClass(node.class_type)) {
         /*
          * A video node, reported the way its own pack reports one.
          *
@@ -341,6 +361,17 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       }
     }
     return 8;
+  }
+
+  /** How long the sound runs, capped so a test never renders a whole song. */
+  function findSeconds(workflow: ApiWorkflow): number {
+    for (const node of Object.values(workflow)) {
+      for (const name of ['seconds', 'duration', 'length_seconds']) {
+        const value = node.inputs?.[name];
+        if (typeof value === 'number' && value > 0) return Math.min(value, 3);
+      }
+    }
+    return 1;
   }
 
   function findBatchSize(workflow: ApiWorkflow): number {

@@ -83,6 +83,14 @@ export async function loadReviewImage(
    * show and the turn goes ahead without one.
    */
   const row = ctx.store.findImage(image);
+  /*
+   * A sound has nothing to show it.
+   *
+   * No poster, no frame, nothing a vision encoder can be handed — so the turn
+   * happens without a picture rather than with a placeholder, and the model
+   * judges an audio prompt on the words it was given.
+   */
+  if (mediaKindOf(image.filename) === 'audio') return null;
   if (mediaKindOf(image.filename) === 'video') {
     if (!row?.thumb_path) return null;
     const poster = await ctx.archive.read(row.thumb_path).catch(() => null);

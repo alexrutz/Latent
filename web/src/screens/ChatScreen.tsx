@@ -510,24 +510,34 @@ export function ChatScreen() {
 
           {/* Ask for a prompt without saying so. What it does with the answer
               — queue it, or show it first — is the setting beside it. */}
-          {!streaming && (
+          {(!streaming || asking) && (
             /*
-              Busy while it is being asked for.
+              Feedback the moment it is pressed, and until it has an answer.
 
-              Against a local model the gap between the press and the first
-              frame is a second or two, and an unchanged button in it reads as a
-              tap that missed — so people press it again, and the second press
-              queues a second prompt. The spinner is the whole fix.
+              Three things were wrong with the version that only set `busy`.
+              The button was hidden the instant the reply began streaming, so
+              the state it was meant to show lasted a few hundred milliseconds
+              and then the button vanished — which reads as a tap that missed,
+              and people press it again. `busy` also put a spinner *beside* the
+              glyph in a forty-pixel square, where there is room for one of the
+              two. And nothing at all happened on the press itself, which on a
+              phone is the only feedback that arrives instantly: the press is a
+              transform, so it does not wait for a network round trip to be
+              visible.
             */
             <Button
               variant="secondary"
-              className="size-10 shrink-0 rounded-xl p-0 text-base"
-              busy={asking}
+              className={cn(
+                'size-10 shrink-0 rounded-xl p-0 text-base transition-transform active:scale-90',
+                asking && 'scale-95 text-accent',
+              )}
+              disabled={asking}
               onClick={() => void store().askForPrompt()}
               aria-label="Build a prompt"
+              aria-busy={asking}
               title="Build a prompt from this conversation"
             >
-              ✦
+              {asking ? <Spinner className="size-4" /> : '✦'}
             </Button>
           )}
 

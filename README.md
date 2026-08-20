@@ -41,6 +41,12 @@ form. Nothing about your ComfyUI setup changes.
 - **Gallery.** Every result, with the exact settings that produced it. Swipe
   through the whole gallery, pinch to zoom, tap to close, save to your camera
   roll, re-run, or send a result straight to img2img or an upscale pass.
+- **Sound, too.** A workflow ending in music or speech — MiniMax-Music3, a Qwen
+  TTS graph, whatever you run — is queued, played, rated, kept and favourited
+  like everything else. The picker says which workflows make sound, the length
+  in seconds gets a control of its own, and a track plays in the viewer with its
+  own card rather than a thumbnail that never arrives. See [Audio
+  workflows](#audio-workflows).
 - **Video, not just pictures.** A workflow ending in a clip — LTX-2.5,
   MiniMax-H3, Wan, whatever you run, in whatever quantisation loads on your card
   — is queued, watched, rated, kept and favourited exactly like a render that
@@ -478,8 +484,9 @@ So a stolen disk, a backup, or someone sitting at the machine gets nothing but
 ciphertext. Changing your password re-wraps the master key, which takes
 milliseconds — no image is ever re-encrypted.
 
-**Videos are the exception**, and deliberately so: see
-[Video workflows](#video-workflows) for why a clip is stored as itself.
+**Videos and sounds are the exception**, and deliberately so: see [Video
+workflows](#video-workflows) and [Audio workflows](#audio-workflows) for why a
+clip and a track are stored as themselves.
 
 **Your notes about what you like** are encrypted with the same master key —
 see [What you like](#what-you-like). They are text rather than files, so they
@@ -543,6 +550,45 @@ encryption is whole-file AES-GCM, which cannot be read from the middle, and a
 video is watched by asking for the middle; encrypting it would mean holding an
 entire clip in memory to answer every seek. Posters, prompts and settings are
 handled as they always were, and every still image stays encrypted.
+
+## Audio workflows
+
+A workflow whose last node writes a sound rather than a picture works the same
+way, and for the same reason: everything between the prompt and the save node is
+a graph like any other. Latent reads the save node at import, so the picker
+marks those entries **sound**, and the form puts **Seconds** — how long the
+track runs, which is the audio equivalent of a video's frame count — on the main
+screen rather than in the advanced list.
+
+The models are not special-cased any more than the video ones are.
+[MiniMax-Music3](https://huggingface.co/MiniMaxAI/MiniMax-Music3) for music,
+[Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice) for
+speech, or anything else your ComfyUI can load — in whatever quantisation fits
+your card. For a speech graph the prompt field is the words to say, which is
+what makes everything built around prompts work for it without knowing anything
+about speech.
+
+**Which save nodes are recognised.** Core's `SaveAudio`, `SaveAudioMP3`,
+`SaveAudioOpus` and `PreviewAudio`, and the packs that suffix those names. They
+file their result under an `audio` key, which nothing was reading before — the
+symptom is a run that finishes successfully and leaves an empty gallery row.
+
+**Listening to them.** A track opens in the same viewer as everything else, as
+a card with the prompt and the browser's own player. The actions underneath are
+the ones that make sense — rate, keep, favourite, save, reuse the settings,
+delete — and img2img and upscaling are disabled, because those read a still
+picture.
+
+**Tiles.** A sound has no frame, so its tile is a card with a ♪ and the length
+on it rather than a thumbnail that never arrives. Nothing invents a picture for
+it, and nothing waits for one. The length itself comes from the browser the
+first time you play it — the one thing here that can read the file — exactly as
+a video's poster does.
+
+**Streaming and storage.** Served in byte ranges like a clip, so a scrubber
+works, and stored **unencrypted** for the same reason: whole-file AES-GCM cannot
+be read from the middle, and seeking is asking for the middle. See [the
+encrypted archive](#the-archive-is-encrypted), whose one exception this shares.
 
 ## An input folder
 

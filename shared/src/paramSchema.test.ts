@@ -136,7 +136,7 @@ describe('buildParamSchema — SD1.5 txt2img', () => {
 
   it('finds the output node and reports capabilities', () => {
     expect(schema.outputNodeIds).toEqual(['9']);
-    expect(schema.capabilities).toEqual({ img2img: false, seeded: true, video: false });
+    expect(schema.capabilities).toEqual({ img2img: false, seeded: true, video: false, audio: false });
     expect(schema.missingNodeTypes).toEqual([]);
   });
 });
@@ -178,7 +178,7 @@ describe('buildParamSchema — img2img and upscale', () => {
   it('handles a prompt-free, sampler-free upscale graph', () => {
     const schema = build(upscale);
     expect(byRole(schema.fields, 'prompt')).toHaveLength(0);
-    expect(schema.capabilities).toEqual({ img2img: true, seeded: false, video: false });
+    expect(schema.capabilities).toEqual({ img2img: true, seeded: false, video: false, audio: false });
     expect(byId(schema.fields, '2.model_name')?.role).toBe('model');
     expect(schema.outputNodeIds).toEqual(['4']);
   });

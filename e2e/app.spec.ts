@@ -7,6 +7,7 @@ import { expect, request as apiRequest, test, type Page } from '@playwright/test
 import {
   img2img,
   ltxVideoGguf,
+  minimaxMusic,
   sd15Txt2Img,
   videoCombine,
   sd15Txt2ImgUi,
@@ -655,22 +656,37 @@ test.describe('gallery, favourites and the prompt builder', () => {
     const favorite = page.locator('img[alt="a keeper"]').first();
     await expect(favorite).toBeVisible({ timeout: 20_000 });
 
+    // One tap opens the picture itself, and re-running it is an action on it.
     await favorite.click();
-    await expect(page.getByRole('button', { name: 'Make more like this' })).toBeVisible();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Reseed', exact: true })).toBeVisible();
 
-    // Favourites carry their own rating, separate from the gallery's.
-    await page.getByRole('button', { name: '4 stars' }).click();
+    /*
+     * Favourites carry their own rating, separate from the gallery's: the
+     * stars on the picture say it came out well, these say you want more like
+     * it. It lives with the rest of what a favourite knows, behind Details.
+     */
+    await page.getByRole('button', { name: 'Details' }).click();
+    // Scoped to the sheet: the picture's own stars are on the panel behind it,
+    // and telling the two apart is the point of them being separate.
+    await page
+      .getByRole('group', { name: 'Want more like this' })
+      .getByRole('button', { name: '4 stars' })
+      .click();
     await page.screenshot({ path: 'test-results/12-favourites.png' });
 
     await page.getByRole('button', { name: 'Done' }).click();
+    await page.getByRole('button', { name: 'Close' }).click();
     await expect(page.getByText('★★★★').first()).toBeVisible();
   });
 
   /**
-   * A favourite opens in the viewer the gallery opens.
+   * A favourite opens in the viewer the gallery opens, in one tap.
    *
    * It used to get a stripped one with nothing on it, so the picture you had
-   * already said you cared about was the one you could do least with.
+   * already said you cared about was the one you could do least with. Then it
+   * got a page of its own in front of the viewer, which was one tap too many
+   * for looking at a picture you are already looking at a thumbnail of.
    */
   test('opens a favourite in the gallery’s own viewer', async ({ page }) => {
     await generate(page, 'the same viewer');
@@ -684,8 +700,6 @@ test.describe('gallery, favourites and the prompt builder', () => {
     const favorite = page.locator('img[alt="the same viewer"]').first();
     await expect(favorite).toBeVisible({ timeout: 20_000 });
     await favorite.click();
-
-    await page.getByRole('button', { name: 'Open the picture' }).click();
     await expect(page.getByTestId('viewer-image')).toBeVisible();
 
     // Every action the gallery's viewer carries, including the rating that
@@ -712,6 +726,46 @@ test.describe('gallery, favourites and the prompt builder', () => {
     // And the settings behind the picture are readable, as they are anywhere else.
     await page.getByRole('button', { name: 'Details' }).click();
     await expect(page.getByText('the same viewer').first()).toBeVisible();
+  });
+
+  /**
+   * Swiping in Favourites moves through the favourites.
+   *
+   * The list you are looking at is the list you swipe: opening the third
+   * favourite and flicking gives the second, exactly as the gallery gives the
+   * next picture. It used to give the next image of the *batch* the favourite
+   * came out of — pictures you had not asked to see, from a list you were not
+   * in.
+   */
+  test('swipes from one favourite to the next', async ({ page }) => {
+    for (const title of ['first favourite', 'second favourite']) {
+      await generate(page, title);
+      await open(page, '/gallery');
+      await page.locator(`img[alt*="${title}"]`).first().click();
+      await page.getByRole('button', { name: /Favourite/ }).click();
+      await page.getByRole('button', { name: 'Close' }).click();
+    }
+
+    await page.getByRole('link', { name: 'Favourites' }).click();
+    await expect(page.locator('img[alt="first favourite"]').first()).toBeVisible({
+      timeout: 20_000,
+    });
+
+    await page.locator('main img').first().click();
+    const counter = page.getByText(/^\d+ \/ 2$/);
+    await expect(counter).toBeVisible();
+
+    const stage = page.locator('div.touch-none').first();
+    const box = (await stage.boundingBox()) as { x: number; y: number; width: number; height: number };
+    const midY = box.y + box.height / 2;
+    const base = { pointerId: 1, bubbles: true, isPrimary: true };
+    const from = box.x + box.width * 0.8;
+    const to = from - box.width * 0.6;
+    await stage.dispatchEvent('pointerdown', { ...base, clientX: from, clientY: midY });
+    await stage.dispatchEvent('pointermove', { ...base, clientX: to, clientY: midY });
+    await stage.dispatchEvent('pointerup', { ...base, clientX: to, clientY: midY });
+
+    await expect(counter).toHaveText('2 / 2');
   });
 
   test('switches favourites between thumbnails and a compact list', async ({ page }) => {
@@ -5122,6 +5176,120 @@ test.describe('the twenty-seventh wave', () => {
     await expect(
       page.getByText('The model server’s own, from the flags it was started with.'),
     ).toBeVisible();
+  });
+});
+
+/**
+ * Sound, from the picker to the player.
+ *
+ * A music or speech workflow is queued and watched exactly like one that draws
+ * a picture. What differs is the far end: there is no frame at all — not a
+ * missing one, none — so the tile is a card rather than a thumbnail waiting for
+ * a poster, and the viewer is a player rather than something to zoom.
+ */
+test.describe('generating audio', () => {
+  test.beforeEach(async () => {
+    await resetState();
+  });
+
+  test('marks a sound workflow in the picker and plays what it produced', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'MiniMax Music', graph: minimaxMusic } }),
+    );
+
+    await open(page, '/');
+    await page.getByRole('button', { name: 'Workflow' }).click();
+    const picker = page.getByRole('dialog', { name: 'Workflow' });
+    // Which of these makes a sound is worth knowing before you open the form.
+    await expect(
+      picker.getByRole('button', { name: /MiniMax Music/ }).getByText('sound'),
+    ).toBeVisible();
+    await picker.getByRole('button', { name: /MiniMax Music/ }).click();
+
+    // How long the track runs is a control on the main screen, in seconds —
+    // the audio equivalent of a video's frame count.
+    await expect(page.getByText('Seconds', { exact: true }).first()).toBeVisible();
+    await page.screenshot({ path: 'test-results/93-audio-form.png' });
+
+    await page.getByPlaceholder('Describe the image…').first().fill('slow shoegaze instrumental');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await expect
+      .poll(
+        async () => {
+          const gallery = await withApi(async (ctx) => {
+            const response = await ctx.get('/api/gallery');
+            return (await response.json()) as {
+              items: { title: string; images: { kind: string }[] }[];
+            };
+          });
+          return gallery.items.find((item) => item.title === 'slow shoegaze instrumental')
+            ?.images?.[0]?.kind;
+        },
+        { timeout: 60_000 },
+      )
+      .toBe('audio');
+
+    await open(page, '/gallery');
+
+    // A card, not a thumbnail that never arrives.
+    const placeholder = page.getByTestId('audio-placeholder').first();
+    await expect(placeholder).toBeVisible({ timeout: 30_000 });
+    await page.screenshot({ path: 'test-results/94-audio-grid.png' });
+
+    await placeholder.click();
+
+    const player = page.getByTestId('viewer-audio').locator('audio');
+    await expect(player).toBeVisible();
+    await expect(player).toHaveAttribute('src', /\/api\/view\?.*\.wav/);
+    await expect(player).toHaveAttribute('controls', '');
+
+    /*
+     * It really plays. The mock writes a real WAV precisely so this assertion
+     * can exist: `duration` is only a number once something has decoded the
+     * file, so this is the browser saying it can play what Latent served.
+     */
+    await expect
+      .poll(async () => player.evaluate((node: HTMLAudioElement) => node.duration), {
+        timeout: 30_000,
+      })
+      .toBeGreaterThan(0);
+    await page.screenshot({ path: 'test-results/95-audio-viewer.png' });
+
+    // The actions that hand a picture to another graph are not offered.
+    await expect(page.getByRole('button', { name: 'img2img' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Upscale' })).toBeDisabled();
+
+    // Rating stores it here, exactly as it does for a picture.
+    await page.getByRole('button', { name: '4 stars' }).click();
+    await expect
+      .poll(async () => {
+        const gallery = await withApi(async (ctx) => {
+          const response = await ctx.get('/api/gallery');
+          return (await response.json()) as { items: { images: { archived: boolean }[] }[] };
+        });
+        return gallery.items[0]?.images?.[0]?.archived;
+      })
+      .toBe(true);
+
+    /*
+     * And how long it runs reaches the server from the only thing that can
+     * read it — the browser that just played it — so the tile can say.
+     */
+    await expect
+      .poll(
+        async () => {
+          const gallery = await withApi(async (ctx) => {
+            const response = await ctx.get('/api/gallery');
+            return (await response.json()) as {
+              items: { images: { durationMs: number | null }[] }[];
+            };
+          });
+          return gallery.items[0]?.images?.[0]?.durationMs ?? 0;
+        },
+        { timeout: 30_000 },
+      )
+      .toBeGreaterThan(0);
   });
 });
 

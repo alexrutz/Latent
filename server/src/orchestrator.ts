@@ -106,10 +106,11 @@ const BINARY_OUTPUT_KEYS = new Set(['images', 'gifs', 'audio', 'video', 'latents
  * use `videos`. Reading only `images` is how a video workflow finished
  * successfully and left an empty gallery row behind.
  *
- * `audio` is deliberately absent: nothing in this app can play it yet, and a
- * row that cannot be opened is worse than no row.
+ * `audio` is there for the music and speech models, which file their result
+ * under it — and which are otherwise indistinguishable from a picture workflow
+ * from out here.
  */
-const FILE_OUTPUT_KEYS = ['images', 'gifs', 'videos', 'video'] as const;
+const FILE_OUTPUT_KEYS = ['images', 'gifs', 'videos', 'video', 'audio'] as const;
 
 /** One output entry as a node reported it, before it is known to be a file. */
 interface OutputFile extends ComfyImageRef {

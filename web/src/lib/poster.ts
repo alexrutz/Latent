@@ -75,7 +75,11 @@ function grabFrame(source: HTMLVideoElement | HTMLImageElement): string | null {
  */
 export function reportPoster(
   image: GenerationImage,
-  source: HTMLVideoElement | HTMLImageElement,
+  /**
+   * An `<audio>` element is here for its duration alone: it has no frame, so
+   * `grabFrame` is never reached for one.
+   */
+  source: HTMLVideoElement | HTMLImageElement | HTMLAudioElement,
   /** Called once the server has it, so the grid can stop showing a plate. */
   onStored?: () => void,
 ): void {
@@ -89,12 +93,20 @@ export function reportPoster(
    * filed as this clip's poster forever.
    */
   const decoded =
-    source instanceof HTMLVideoElement ? source.readyState >= 2 : source.complete;
+    source instanceof HTMLVideoElement
+      ? source.readyState >= 2
+      : source instanceof HTMLImageElement
+        ? source.complete
+        : false;
+  // `decoded` is only ever true for the two elements that have a frame, so an
+  // audio element never reaches the canvas.
   const poster =
-    !image.hasThumbnail && !postered.has(key) && decoded ? grabFrame(source) : null;
+    !image.hasThumbnail && !postered.has(key) && decoded
+      ? grabFrame(source as HTMLVideoElement | HTMLImageElement)
+      : null;
 
   const duration =
-    source instanceof HTMLVideoElement &&
+    source instanceof HTMLMediaElement &&
     Number.isFinite(source.duration) &&
     source.duration > 0 &&
     !timed.has(key)

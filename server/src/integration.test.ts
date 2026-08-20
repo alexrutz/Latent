@@ -37,6 +37,8 @@ import type {
 import { defaultSampling } from '@latent/shared';
 import {
   ltxVideoGguf,
+  minimaxMusic,
+  qwenSpeech,
   sd15Txt2Img,
   videoCombine,
   withLlamaServer,
@@ -5548,6 +5550,141 @@ describe('chat', () => {
  * files it under, how it is fetched, and how it is stored. Each of those is a
  * place a still-image assumption used to sit.
  */
+describe('audio workflows', () => {
+  /** What every RIFF/WAVE file starts with, so "did we get it" has a real answer. */
+  const RIFF = Buffer.from('RIFF', 'ascii');
+
+  async function renderTrack(name: string, graph: unknown) {
+    const workflow = await json<WorkflowDetail>(
+      api('/api/workflows', { method: 'POST', body: JSON.stringify({ name, graph }) }),
+    );
+
+    await api('/api/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        workflowId: workflow.id,
+        values: { '5.steps': 2, '2.text': `track for ${name}` },
+      }),
+    });
+
+    const record = await waitFor(async () => {
+      const page = await json<GalleryPage>(api('/api/gallery'));
+      const found = page.items.find((item) => item.title === `track for ${name}`);
+      return found && found.status === 'completed' && found.images.length > 0 ? found : null;
+    }, 20_000);
+
+    return { workflow, record, image: record.images[0] as GenerationRecord['images'][number] };
+  }
+
+  /**
+   * A music model is a picture workflow that ends in a sound.
+   *
+   * Everything between the prompt and the save node is the same, which is why
+   * this works at all — and everything after it differs: the output arrives
+   * under a key nothing was reading, it has no frame to draw, and it is played
+   * by asking for the middle of the file.
+   */
+  it('renders a track, streams it in ranges, and keeps it as itself', async () => {
+    const { workflow, record, image } = await renderTrack('MiniMax Music', minimaxMusic);
+
+    // Known before anything has run, off the graph's save node.
+    expect(workflow.capabilities.audio).toBe(true);
+    expect(workflow.capabilities.video).toBe(false);
+    expect(workflow.producesAudio).toBe(true);
+    // And the length is a field of its own — seconds, not frames.
+    const seconds = workflow.schema.fields.find((field) => field.id === '4.seconds');
+    expect(seconds?.role).toBe('seconds');
+    expect(seconds?.group).toBe('main');
+
+    expect(image.kind).toBe('audio');
+    expect(image.filename.endsWith('.wav')).toBe(true);
+
+    const query = new URLSearchParams({
+      filename: image.filename,
+      subfolder: image.subfolder,
+      type: image.type,
+      id: String(image.id),
+    });
+
+    const whole = await api(`/api/view?${query}`);
+    expect(whole.status).toBe(200);
+    expect(whole.headers.get('content-type')).toBe('audio/wav');
+    expect(whole.headers.get('accept-ranges')).toBe('bytes');
+    const full = Buffer.from(await whole.arrayBuffer());
+    expect(full.subarray(0, 4)).toEqual(RIFF);
+
+    // Seeking is the same byte range it is for a clip.
+    const part = await api(`/api/view?${query}`, { headers: { range: 'bytes=0-43' } });
+    expect(part.status).toBe(206);
+    expect(part.headers.get('content-range')).toBe(`bytes 0-43/${full.length}`);
+    expect(Buffer.from(await part.arrayBuffer())).toEqual(full.subarray(0, 44));
+
+    /*
+     * There is no preview and never will be. Said once, plainly, so the grid
+     * draws its card instead of asking again for every tile.
+     */
+    const preview = await api(`/api/view?${query}&preview=webp;70`);
+    expect(preview.status).toBe(404);
+    const answer = await json<{ noPoster?: boolean; kind?: string }>(preview);
+    expect(answer.noPoster).toBe(true);
+    expect(answer.kind).toBe('audio');
+
+    // A sound is not an input image, and saying which it is beats a PIL error.
+    const toInput = await api('/api/images/to-input', {
+      method: 'POST',
+      body: JSON.stringify(image),
+    });
+    expect(toInput.status).toBe(400);
+    expect((await json<{ error: string }>(toInput)).error).toMatch(/sound/i);
+
+    // Rating copies it here, in the clear, for the same reason a clip is: a
+    // track is played by asking for the middle of the file.
+    const rated = await json<GenerationRecord>(
+      api(`/api/gallery/${record.id}/rating`, {
+        method: 'PUT',
+        body: JSON.stringify({ image, rating: 5 }),
+      }),
+    );
+    expect(rated.images[0]?.archived).toBe(true);
+
+    const stored = (readdirSync(join(dataDir, 'archive'), { recursive: true }) as string[])
+      .filter((entry) => entry.endsWith('.wav'))
+      .map((entry) => readFileSync(join(dataDir, 'archive', entry)));
+    expect(stored.length).toBeGreaterThan(0);
+    expect(stored.every((bytes) => !Vault.isEncrypted(bytes))).toBe(true);
+    expect(stored[0]?.subarray(0, 4)).toEqual(RIFF);
+
+    const archived = await api(`/api/view?${query}`, { headers: { range: 'bytes=4-11' } });
+    expect(archived.status).toBe(206);
+    expect(archived.headers.get('x-latent-source')).toBe('archive');
+    expect(Buffer.from(await archived.arrayBuffer())).toEqual(full.subarray(4, 12));
+
+    /*
+     * How long it runs, from the only thing that can read it: the browser
+     * playing it. The same route a video's poster arrives by, with no poster.
+     */
+    const timed = await api('/api/images/poster', {
+      method: 'PUT',
+      body: JSON.stringify({ image, durationMs: 30_000 }),
+    });
+    expect(timed.status).toBe(204);
+    const after = await json<GenerationRecord>(api(`/api/gallery/${record.id}`));
+    expect(after.images[0]?.durationMs).toBe(30_000);
+    // And still no thumbnail: nothing invented a picture for it.
+    expect(after.images[0]?.hasThumbnail).toBe(false);
+  }, 40_000);
+
+  /** The speech models file their result the same way, in a different container. */
+  it('takes a speech workflow as an audio workflow too', async () => {
+    const { workflow, image } = await renderTrack('Qwen speech', qwenSpeech);
+    expect(workflow.producesAudio).toBe(true);
+    expect(image.kind).toBe('audio');
+    // The words to say are the prompt field, which is what makes the whole
+    // chat module work for speech without knowing anything about speech.
+    expect(workflow.schema.fields.find((field) => field.id === '2.text')?.role).toBe('prompt');
+  }, 40_000);
+});
+
 describe('video workflows', () => {
   /** The bytes a WebM starts with, so "did we get the file" has a real answer. */
   const EBML = Buffer.from([0x1a, 0x45, 0xdf, 0xa3]);

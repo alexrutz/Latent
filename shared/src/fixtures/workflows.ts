@@ -422,6 +422,73 @@ export const videoCombine: ApiWorkflow = {
   },
 };
 
+/**
+ * A music workflow, of the shape the audio models actually ship with.
+ *
+ * MiniMax-Music3 and its neighbours are a checkpoint, a text encoder for the
+ * style prompt, an empty audio latent whose one interesting number is a length
+ * in *seconds*, a sampler, a decoder and a save node that writes flac. Nothing
+ * about the middle differs from a picture graph — which is the point: the parts
+ * that differ are the length in seconds and the file at the end.
+ */
+export const minimaxMusic: ApiWorkflow = {
+  '1': {
+    class_type: 'CheckpointLoaderSimple',
+    inputs: { ckpt_name: 'minimax-music3-Q6_K.gguf' },
+  },
+  '2': {
+    class_type: 'CLIPTextEncode',
+    inputs: {
+      text: 'slow shoegaze instrumental, tape hiss, distant guitars',
+      clip: ['1', 1],
+    },
+    _meta: { title: 'CLIP Text Encode (Prompt)' },
+  },
+  '3': {
+    class_type: 'CLIPTextEncode',
+    inputs: { text: 'spoken word, applause', clip: ['1', 1] },
+    _meta: { title: 'CLIP Text Encode (Negative)' },
+  },
+  '4': {
+    class_type: 'EmptyLatentAudio',
+    inputs: { seconds: 30, batch_size: 1 },
+  },
+  '5': {
+    class_type: 'KSampler',
+    inputs: {
+      seed: 909,
+      steps: 24,
+      cfg: 4.5,
+      sampler_name: 'euler',
+      scheduler: 'normal',
+      denoise: 1,
+      model: ['1', 0],
+      positive: ['2', 0],
+      negative: ['3', 0],
+      latent_image: ['4', 0],
+    },
+  },
+  '6': { class_type: 'VAEDecodeAudio', inputs: { samples: ['5', 0], vae: ['1', 2] } },
+  '7': {
+    class_type: 'SaveAudio',
+    inputs: { audio: ['6', 0], filename_prefix: 'audio/Latent' },
+  },
+};
+
+/** A speech workflow: the same shape, with words to say rather than a style. */
+export const qwenSpeech: ApiWorkflow = {
+  ...minimaxMusic,
+  '2': {
+    class_type: 'CLIPTextEncode',
+    inputs: { text: 'Good evening. The harbour is closed until Thursday.', clip: ['1', 1] },
+    _meta: { title: 'CLIP Text Encode (Prompt)' },
+  },
+  '7': {
+    class_type: 'SaveAudioMP3',
+    inputs: { audio: ['6', 0], filename_prefix: 'speech/Latent', quality: 'V0' },
+  },
+};
+
 export const workflowFixtures = {
   sd15Txt2Img,
   sdxlBaseRefiner,
@@ -434,6 +501,8 @@ export const workflowFixtures = {
   withPresetChat,
   ltxVideoGguf,
   videoCombine,
+  minimaxMusic,
+  qwenSpeech,
 };
 
 /**

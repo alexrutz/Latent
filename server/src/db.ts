@@ -792,7 +792,9 @@ export function toGenerationImage(row: ImageRow): GenerationImage {
     kept: Boolean(row.kept),
     archived: Boolean(row.archived_path),
     hasThumbnail: Boolean(row.thumb_path),
-    kind: row.kind === 'video' ? 'video' : 'image',
+    // Narrowed rather than cast: the column is text, and a row written by a
+    // future version — or by hand — must not become a `kind` nothing handles.
+    kind: row.kind === 'video' || row.kind === 'audio' ? row.kind : 'image',
     durationMs: row.duration_ms ?? null,
     width: row.width,
     height: row.height,
@@ -1155,7 +1157,7 @@ export class Store {
         version: 1,
         fields: [],
         outputNodeIds: [],
-        capabilities: { img2img: false, seeded: false, video: false },
+        capabilities: { img2img: false, seeded: false, video: false, audio: false },
         missingNodeTypes: [],
       }),
       overrides: parseJson<FieldOverrides>(row.overrides_json, {}),
@@ -1255,7 +1257,7 @@ export class Store {
       version: 1,
       fields: [],
       outputNodeIds: [],
-      capabilities: { img2img: false, seeded: false, video: false },
+      capabilities: { img2img: false, seeded: false, video: false, audio: false },
       missingNodeTypes: [],
     });
     return {
@@ -1268,6 +1270,7 @@ export class Store {
       visible: row.visible !== 0,
       sourcePath: row.source_path,
       producesVideo: schema.capabilities?.video === true,
+      producesAudio: schema.capabilities?.audio === true,
     };
   }
 

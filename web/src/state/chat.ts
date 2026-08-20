@@ -282,6 +282,22 @@ async function waitForGeneration(id: string, stillWanted: () => boolean): Promis
 }
 
 /**
+ * Whether a failure is the connection going away rather than something wrong.
+ *
+ * `fetch` rejects with a bare `TypeError` for every transport-level problem,
+ * and the message is whatever the engine feels like: Safari says "Load failed",
+ * Chrome "Failed to fetch", Firefox "NetworkError when attempting to fetch
+ * resource". None of them mean the server is broken — the commonest cause by
+ * far is the page being suspended while you look at something else.
+ */
+function droppedConnection(cause: unknown): boolean {
+  if (cause instanceof DOMException && cause.name === 'AbortError') return true;
+  if (cause instanceof TypeError) return true;
+  const message = cause instanceof Error ? cause.message : String(cause ?? '');
+  return /load failed|failed to fetch|network ?error|connection|aborted/i.test(message);
+}
+
+/**
  * Why an autonomous run has stopped short of the threshold.
  *
  * Written for the strip above the composer, which is the only place a run that
@@ -444,9 +460,20 @@ export const useChatStore = create<ChatStore>((set, get) => {
     } catch (cause) {
       if (get().chat?.id === chatId) set({ streaming: null });
       if (!controller.signal.aborted) {
-        set({
-          error: cause instanceof Error ? cause.message : 'The model did not answer',
-        });
+        /*
+         * A dropped connection is not a failure to report.
+         *
+         * Leaving the tab — or locking the phone — suspends the page, and the
+         * browser kills the open stream underneath it. What came back was
+         * "Load failed", shown in red next to a chat that was working
+         * perfectly, on a server that was still running. The reply itself is
+         * not lost: the server keeps what the model had produced, so the
+         * honest response is to re-read the conversation and show that, which
+         * is what happens for every other outcome here anyway.
+         */
+        if (!droppedConnection(cause)) {
+          set({ error: cause instanceof Error ? cause.message : 'The model did not answer' });
+        }
         // Either way the server is the authority on what was stored — including
         // a message that may or may not have reached it.
         await get().refresh();
@@ -771,6 +798,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const startedRun = body.generationId;
       if (typeof startedRun === 'string' && startedRun !== '') {
         set({ waitingFor: startedRun });
+        /*
+         * Re-read now, not after the render.
+         *
+         * The message carrying the run's id is what puts the progress bar on
+         * screen, and the conversation was only re-read once the picture was
+         * already there — so the bar existed for the one frame between the
+         * refresh and the picture replacing it. The whole wait, which is the
+         * part worth watching, showed nothing but a line of text.
+         */
+        await get().refresh();
+        if (get().chat?.id !== chat.id) return;
         await waitForGeneration(startedRun, () => get().chat?.id === chat.id);
         if (get().chat?.id !== chat.id) return;
 
@@ -815,6 +853,23 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
   };
 });
+
+/*
+ * Coming back to the app re-reads the conversation.
+ *
+ * A suspended page has its open stream killed, so what is on screen when you
+ * return is whatever had arrived when you left — possibly half a sentence, with
+ * the rest of the reply sitting finished on the server. Re-reading on the way
+ * back is the cheapest possible repair, and it costs one request nobody waits
+ * for. Skipped while a request is in flight, which is the case where what is on
+ * screen is already the truth.
+ */
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || inFlight) return;
+    void useChatStore.getState().refresh();
+  });
+}
 
 /** True when a reply is arriving, for the composer's Stop button. */
 export const selectStreaming = (state: ChatStore) => state.streaming;

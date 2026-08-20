@@ -51,6 +51,12 @@ const IMAGE_EXTENSIONS = new Set([
   '.webm',
   '.mkv',
   '.mov',
+  '.flac',
+  '.wav',
+  '.mp3',
+  '.ogg',
+  '.opus',
+  '.m4a',
 ]);
 /** Guards against a pathological tree, and against symlink loops. */
 const MAX_DEPTH = 8;
@@ -207,16 +213,16 @@ export class Importer {
         const subfolder = segments.join('/');
 
         /*
-         * A clip is not read into memory and not encrypted.
+         * A clip or a track is not read into memory and not encrypted.
          *
          * The same two reasons as everywhere else: whole-file AES cannot be
-         * read from the middle, and a video is watched by asking for the
+         * read from the middle, and both of these are played by asking for the
          * middle — and a folder of them is gigabytes that have no business
-         * passing through a Buffer on the way to disk. It carries no settings
+         * passing through a Buffer on the way to disk. Neither carries settings
          * either: the PNG text chunk a ComfyUI output hides its prompt in has
-         * no equivalent in an mp4.
+         * no equivalent in an mp4 or a flac.
          */
-        if (mediaKindOf(filename) === 'video') {
+        if (mediaKindOf(filename) !== 'image') {
           const imageId = this.store.insertImportedImage({
             generationId: randomUUID(),
             promptId: `import:${path}`,
@@ -225,7 +231,7 @@ export class Importer {
             subfolder,
             modifiedAt: Math.round(info.mtimeMs),
           });
-          await this.archive.storeVideo(imageId, filename, createReadStream(absolute));
+          await this.archive.storeStreamed(imageId, filename, createReadStream(absolute));
           if (rating > 0) this.store.setImageRating(imageId, rating);
           result.imported += 1;
           continue;

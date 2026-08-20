@@ -431,6 +431,49 @@ export const objectInfoFixture: ObjectInfo = {
     },
   },
 
+  /* -------------------------------------------------------------- */
+  /* Audio                                                            */
+  /* -------------------------------------------------------------- */
+
+  EmptyLatentAudio: {
+    display_name: 'Empty Latent Audio',
+    output: ['LATENT'],
+    input: {
+      required: {
+        // Seconds, not frames: the one number that decides what you get, and
+        // most of the time spent making it.
+        seconds: ['FLOAT', { default: 47.6, min: 1, max: 1000, step: 0.1 }],
+        batch_size: ['INT', { default: 1, min: 1, max: 4096 }],
+      },
+    },
+  },
+  VAEDecodeAudio: {
+    display_name: 'VAE Decode (Audio)',
+    output: ['AUDIO'],
+    input: { required: { samples: ['LATENT'], vae: ['VAE'] } },
+  },
+  /** Core ComfyUI's own audio saver: files its result under `audio`, as flac. */
+  SaveAudio: {
+    display_name: 'Save Audio (FLAC)',
+    output: [],
+    output_node: true,
+    input: {
+      required: { audio: ['AUDIO'], filename_prefix: ['STRING', { default: 'audio/ComfyUI' }] },
+    },
+  },
+  SaveAudioMP3: {
+    display_name: 'Save Audio (MP3)',
+    output: [],
+    output_node: true,
+    input: {
+      required: {
+        audio: ['AUDIO'],
+        filename_prefix: ['STRING', { default: 'audio/ComfyUI' }],
+        quality: [['V0', '128k', '320k'], { default: 'V0' }],
+      },
+    },
+  },
+
   EmptyLatentByAspectRatio: {
     display_name: 'Empty Latent (Aspect Ratio)',
     output: ['LATENT', 'INT', 'INT'],

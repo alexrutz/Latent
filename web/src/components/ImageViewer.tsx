@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   formatDuration,
+  formatTrackLength,
   mediaKindOf,
+  playsInAudioElement,
   playsInVideoElement,
   regionFraction,
   viewBox,
@@ -211,7 +213,7 @@ export function ImageViewer({
    */
   const queryClient = useQueryClient();
   const capturePoster = useCallback(
-    (element: HTMLVideoElement | HTMLImageElement) => {
+    (element: HTMLVideoElement | HTMLImageElement | HTMLAudioElement) => {
       if (!image) return;
       reportPoster(image, element, () => {
         void queryClient.invalidateQueries({ queryKey: ['gallery'] });
@@ -407,6 +409,7 @@ export function ImageViewer({
   };
 
   const plays = playsInVideoElement(image.filename);
+  const sounds = playsInAudioElement(image.filename);
 
   return (
     /*
@@ -425,7 +428,41 @@ export function ImageViewer({
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       >
-        {plays ? (
+        {sounds ? (
+          /*
+            A sound, with nothing to look at.
+
+            No frame, no poster, no zoom: what a track has is a title, a length
+            and a scrubber, so that is what the screen is. Centred as a card
+            rather than stretched over the viewport, because a full-bleed audio
+            element is an invisible box that swallows every gesture — and the
+            gestures still have work to do here, since a swipe is the next
+            output and a tap closes the viewer.
+          */
+          <div className="flex size-full items-center justify-center p-6">
+            <div
+              data-testid="viewer-audio"
+              className="w-full max-w-sm space-y-3 rounded-2xl border border-line bg-surface-2 p-4 text-center"
+              onPointerDown={(event) => event.stopPropagation()}
+              onPointerMove={(event) => event.stopPropagation()}
+              onPointerUp={(event) => event.stopPropagation()}
+            >
+              <p aria-hidden className="text-3xl">
+                ♪
+              </p>
+              <p className="text-sm break-words">{record.title}</p>
+              <audio
+                src={imageUrl(image)}
+                controls
+                preload="metadata"
+                // The length is the one fact about a track worth storing, and
+                // the browser is the only thing here that can read it.
+                onLoadedMetadata={(event) => capturePoster(event.currentTarget)}
+                className="w-full"
+              />
+            </div>
+          </div>
+        ) : plays ? (
           /*
             A clip gets the browser's own controls, and keeps its hands off the
             gestures.
@@ -496,7 +533,7 @@ export function ImageViewer({
           needs no transform of its own. Until it arrives the stretched copy
           underneath is what you see, which is blurry rather than blank.
         */}
-        {detail && !plays && (
+        {detail && !plays && !sounds && (
           <img
             data-testid="viewer-detail"
             src={detail}
@@ -666,8 +703,10 @@ export function Still({
   onShown?: () => void;
 }) {
   const [failed, setFailed] = useState(false);
-  const isVideo = mediaKindOf(image.filename) === 'video';
-  const duration = formatDuration(image.durationMs);
+  const kind = mediaKindOf(image.filename);
+  const isVideo = kind === 'video';
+  const isAudio = kind === 'audio';
+  const duration = isAudio ? formatTrackLength(image.durationMs) : formatDuration(image.durationMs);
 
   /*
    * Two shapes, because there are two kinds of caller.
@@ -680,19 +719,33 @@ export function Still({
    */
   const fills = fit === 'cover';
 
-  // A video with nothing to show yet, or a picture whose file has gone.
-  if (failed || (isVideo && !image.hasThumbnail)) {
+  /*
+   * A tile with no picture behind it.
+   *
+   * Three cases: a sound, which will never have one; a video whose poster
+   * nobody has captured yet; and a picture whose file has gone. A sound is not
+   * a failure to show something — it is a thing of a different kind — so it
+   * gets a plate of its own rather than the "missing" one.
+   */
+  if (failed || isAudio || (isVideo && !image.hasThumbnail)) {
     return (
       <span
         ref={() => onShown?.()}
-        data-testid={isVideo ? 'video-placeholder' : undefined}
+        data-testid={isAudio ? 'audio-placeholder' : isVideo ? 'video-placeholder' : undefined}
         className={cn(
           'grid place-items-center gap-1 bg-surface-2 text-muted',
           fills ? 'size-full' : 'aspect-video w-full',
           className,
         )}
       >
-        {isVideo ? (
+        {isAudio && !failed ? (
+          <span className="flex flex-col items-center gap-0.5">
+            <span aria-hidden className="text-lg leading-none">
+              ♪
+            </span>
+            <span className="text-[10px]">{duration ?? 'sound'}</span>
+          </span>
+        ) : isVideo ? (
           <span className="flex flex-col items-center gap-0.5">
             <span aria-hidden className="text-lg leading-none">
               ▶

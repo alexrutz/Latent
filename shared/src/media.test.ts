@@ -3,10 +3,14 @@ import { describe, expect, it } from 'vitest';
 import {
   contentTypeOf,
   formatDuration,
+  formatTrackLength,
+  isAudioOutputClass,
   isVideoOutputClass,
   mediaKindFor,
   mediaKindOf,
+  playsInAudioElement,
   playsInVideoElement,
+  producesAudio,
   producesVideo,
 } from './media.js';
 
@@ -41,12 +45,43 @@ describe('what an output is', () => {
     expect(playsInVideoElement('still.png')).toBe(false);
   });
 
+  /**
+   * A sound is a third kind, not a video without a picture.
+   *
+   * Everything that treats "not an image" as "a video" gets a track wrong:
+   * there is no frame to grab, no poster to wait for, and a `<video>` element
+   * playing a flac is a black rectangle with a scrubber.
+   */
+  it('knows a sound from a picture and from a clip', () => {
+    expect(mediaKindOf('Latent_00001_.flac')).toBe('audio');
+    expect(mediaKindOf('song.mp3')).toBe('audio');
+    expect(mediaKindOf('voice.WAV')).toBe('audio');
+    expect(mediaKindOf('take.opus')).toBe('audio');
+    expect(mediaKindOf('clip.webm')).toBe('video');
+    expect(mediaKindOf('still.png')).toBe('image');
+
+    expect(playsInAudioElement('song.mp3')).toBe(true);
+    expect(playsInAudioElement('clip.webm')).toBe(false);
+    expect(playsInVideoElement('song.mp3')).toBe(false);
+  });
+
+  it('believes a node that says its output is a sound', () => {
+    expect(mediaKindFor('track.weird', 'audio/flac')).toBe('audio');
+    // The name still wins where it knows: a `.wav` is a sound whatever a
+    // confused node calls it.
+    expect(mediaKindFor('track.wav', 'video/h264-mp4')).toBe('audio');
+  });
+
   it('serves each container as itself', () => {
     expect(contentTypeOf('a.webm')).toBe('video/webm');
     expect(contentTypeOf('a.mp4')).toBe('video/mp4');
     expect(contentTypeOf('a.gif')).toBe('image/gif');
     expect(contentTypeOf('a.jpg')).toBe('image/jpeg');
     expect(contentTypeOf('a.png')).toBe('image/png');
+    expect(contentTypeOf('a.flac')).toBe('audio/flac');
+    expect(contentTypeOf('a.mp3')).toBe('audio/mpeg');
+    expect(contentTypeOf('a.wav')).toBe('audio/wav');
+    expect(contentTypeOf('a.opus')).toBe('audio/opus');
   });
 });
 
@@ -83,5 +118,48 @@ describe('a workflow that ends in a clip', () => {
       producesVideo({ '1': { class_type: 'KSampler' }, '2': { class_type: 'SaveImage' } }),
     ).toBe(false);
     expect(producesVideo({})).toBe(false);
+  });
+});
+
+describe('how long a track runs', () => {
+  /**
+   * Minutes and seconds, always.
+   *
+   * A clip is measured in seconds and a song in minutes, so the same format
+   * reads wrong for one of them: `6s` beside `3:41` looks like a mistake, and
+   * `0:06` beside it does not.
+   */
+  it('reads as a track rather than a stopwatch', () => {
+    expect(formatTrackLength(6_000)).toBe('0:06');
+    expect(formatTrackLength(221_000)).toBe('3:41');
+    expect(formatTrackLength(3_600_000)).toBe('60:00');
+  });
+
+  it('says nothing when nothing has measured it', () => {
+    expect(formatTrackLength(null)).toBeNull();
+    expect(formatTrackLength(0)).toBeNull();
+  });
+});
+
+describe('a workflow that ends in a sound', () => {
+  it('recognises the savers, whichever pack they come from', () => {
+    expect(isAudioOutputClass('SaveAudio')).toBe(true);
+    expect(isAudioOutputClass('SaveAudioMP3')).toBe(true);
+    expect(isAudioOutputClass('SaveAudioOpus')).toBe(true);
+    expect(isAudioOutputClass('PreviewAudio')).toBe(true);
+    expect(isAudioOutputClass('SaveImage')).toBe(false);
+    expect(isAudioOutputClass('SaveWEBM')).toBe(false);
+  });
+
+  it('answers for a whole graph, before anything has run', () => {
+    expect(
+      producesAudio({ '1': { class_type: 'KSampler' }, '2': { class_type: 'SaveAudio' } }),
+    ).toBe(true);
+    expect(
+      producesAudio({ '1': { class_type: 'KSampler' }, '2': { class_type: 'SaveImage' } }),
+    ).toBe(false);
+    // And a picture workflow is not a sound one, which is the mistake that
+    // would put a player where a thumbnail belongs.
+    expect(producesVideo({ '2': { class_type: 'SaveAudio' } })).toBe(false);
   });
 });

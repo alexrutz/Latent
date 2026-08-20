@@ -7,12 +7,17 @@
  * be streamed in ranges rather than sent whole, it plays rather than draws, and
  * it has no business being handed to an img2img graph.
  *
+ * Audio is the third: a music model or a voice model leaves a flac or an mp3,
+ * which has no frame to draw at all. Everything that treats "not an image" as
+ * "a video" gets that wrong — there is no poster to grab, no size to measure,
+ * and a `<video>` element playing a sound file is a black rectangle.
+ *
  * Decided by the file's own extension rather than by which key ComfyUI filed it
  * under. Node packs disagree about that key — core uses `images` even for a
  * video, VideoHelperSuite uses `gifs`, others `videos` — and the extension is
  * the one thing all of them are honest about.
  */
-export type MediaKind = 'image' | 'video';
+export type MediaKind = 'image' | 'video' | 'audio';
 
 /** Containers a browser plays in a `<video>` element. */
 const VIDEO_EXTENSIONS = new Set(['mp4', 'm4v', 'webm', 'mkv', 'mov', 'ogv', 'avi']);
@@ -27,6 +32,15 @@ const VIDEO_EXTENSIONS = new Set(['mp4', 'm4v', 'webm', 'mkv', 'mov', 'ogv', 'av
  */
 const ANIMATED_IMAGE_EXTENSIONS = new Set(['gif', 'apng']);
 
+/**
+ * Containers a browser plays in an `<audio>` element.
+ *
+ * `flac` and `wav` are first because they are what the audio models actually
+ * write: ComfyUI's `SaveAudio` produces flac, `SaveAudioMP3` and
+ * `SaveAudioOpus` the other two. Safari plays all of these.
+ */
+const AUDIO_EXTENSIONS = new Set(['flac', 'wav', 'mp3', 'ogg', 'oga', 'opus', 'm4a', 'aac', 'aiff']);
+
 /** The extension, lowercased, without the dot. */
 export function extensionOf(filename: string): string {
   const dot = filename.lastIndexOf('.');
@@ -37,6 +51,7 @@ export function extensionOf(filename: string): string {
 /** Whether this file moves, by name alone. */
 export function mediaKindOf(filename: string): MediaKind {
   const extension = extensionOf(filename);
+  if (AUDIO_EXTENSIONS.has(extension)) return 'audio';
   return VIDEO_EXTENSIONS.has(extension) || ANIMATED_IMAGE_EXTENSIONS.has(extension)
     ? 'video'
     : 'image';
@@ -45,6 +60,11 @@ export function mediaKindOf(filename: string): MediaKind {
 /** True for the containers that need a `<video>` element rather than an `<img>`. */
 export function playsInVideoElement(filename: string): boolean {
   return VIDEO_EXTENSIONS.has(extensionOf(filename));
+}
+
+/** True for the files that want an `<audio>` element and no picture at all. */
+export function playsInAudioElement(filename: string): boolean {
+  return AUDIO_EXTENSIONS.has(extensionOf(filename));
 }
 
 /**
@@ -56,8 +76,10 @@ export function playsInVideoElement(filename: string): boolean {
  * it.
  */
 export function mediaKindFor(filename: string, format?: string | null): MediaKind {
-  if (mediaKindOf(filename) === 'video') return 'video';
+  const byName = mediaKindOf(filename);
+  if (byName !== 'image') return byName;
   if (format && /^video\//i.test(format)) return 'video';
+  if (format && /^audio\//i.test(format)) return 'audio';
   return 'image';
 }
 
@@ -86,6 +108,22 @@ export function contentTypeOf(filename: string): string {
       return 'video/ogg';
     case 'avi':
       return 'video/x-msvideo';
+    case 'flac':
+      return 'audio/flac';
+    case 'wav':
+      return 'audio/wav';
+    case 'mp3':
+      return 'audio/mpeg';
+    case 'ogg':
+    case 'oga':
+      return 'audio/ogg';
+    case 'opus':
+      return 'audio/opus';
+    case 'm4a':
+    case 'aac':
+      return 'audio/mp4';
+    case 'aiff':
+      return 'audio/aiff';
     case 'png':
     default:
       return 'image/png';
@@ -136,4 +174,39 @@ export function producesVideo(graph: Record<string, { class_type?: string }>): b
   return Object.values(graph ?? {}).some((node) =>
     typeof node?.class_type === 'string' ? isVideoOutputClass(node.class_type) : false,
   );
+}
+
+/**
+ * Node classes that end a graph in a sound rather than a picture.
+ *
+ * Core ComfyUI writes audio with `SaveAudio` (flac), `SaveAudioMP3` and
+ * `SaveAudioOpus`; `PreviewAudio` is the same thing into the temp folder. Node
+ * packs around the music and speech models — MiniMax-Music, the Qwen TTS
+ * graphs, VHS — suffix their own, so these are prefixes like the video ones.
+ */
+const AUDIO_OUTPUT_PATTERNS = [/^SaveAudio/i, /^PreviewAudio/i, /SaveAudio/i, /AudioSave/i];
+
+export function isAudioOutputClass(classType: string): boolean {
+  return AUDIO_OUTPUT_PATTERNS.some((pattern) => pattern.test(classType));
+}
+
+/** Whether a graph, as submitted, ends in something you listen to. */
+export function producesAudio(graph: Record<string, { class_type?: string }>): boolean {
+  return Object.values(graph ?? {}).some((node) =>
+    typeof node?.class_type === 'string' ? isAudioOutputClass(node.class_type) : false,
+  );
+}
+
+/**
+ * `3:41`, for a track rather than a clip.
+ *
+ * A song is minutes long where a video workflow's output is seconds, so this is
+ * always minutes-and-seconds — `0:06` for a six-second sample reads correctly
+ * next to `3:41`, where `6s` would not.
+ */
+export function formatTrackLength(ms: number | null | undefined): string | null {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return null;
+  const total = Math.round(ms / 1000);
+  const minutes = Math.floor(total / 60);
+  return `${minutes}:${String(total % 60).padStart(2, '0')}`;
 }

@@ -35,6 +35,15 @@ export interface WorkflowSummary {
    * expecting pictures that it is about to be handed a video instead.
    */
   producesVideo: boolean;
+  /**
+   * Whether this workflow ends in something you listen to.
+   *
+   * Apart from `producesVideo` rather than one "not a picture" flag: the two
+   * differ in what the screen has to do about them. A clip has a frame to show
+   * and a poster to capture; a track has neither, so a tile for one is a card
+   * rather than a thumbnail that failed to load.
+   */
+  producesAudio: boolean;
 }
 
 export interface WorkflowDetail extends WorkflowSummary {

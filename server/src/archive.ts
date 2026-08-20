@@ -210,12 +210,12 @@ export class Archive {
   async capture(client: ComfyClient, imageId: number, ref: ComfyImageRef): Promise<StoredImage> {
     const response = await client.view(ref);
 
-    // A clip goes to disk as it arrives. It is routinely a hundred times the
-    // size of a picture, and there is no reason for it to be a Buffer on the
-    // way past.
-    if (mediaKindOf(ref.filename) === 'video') {
-      if (!response.body) throw new Error('ComfyUI returned an empty video');
-      return this.storeVideo(
+    // A clip or a track goes to disk as it arrives. Either is routinely a
+    // hundred times the size of a picture, and there is no reason for one to be
+    // a Buffer on the way past.
+    if (mediaKindOf(ref.filename) !== 'image') {
+      if (!response.body) throw new Error('ComfyUI returned an empty file');
+      return this.storeStreamed(
         imageId,
         ref.filename,
         Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]),
@@ -229,7 +229,7 @@ export class Archive {
   }
 
   /**
-   * Keep a video, as itself.
+   * Keep a clip or a track, as itself.
    *
    * Two deliberate differences from a picture. It is **not encrypted**: the
    * archive's encryption is whole-file AES-GCM, which cannot be read from the
@@ -242,7 +242,7 @@ export class Archive {
    * The pictures alongside it stay encrypted exactly as before. This is the one
    * relaxation, and it is confined to the file type that forced it.
    */
-  async storeVideo(imageId: number, filename: string, source: Readable): Promise<StoredImage> {
+  async storeStreamed(imageId: number, filename: string, source: Readable): Promise<StoredImage> {
     const staging = join('.staging', randomUUID());
     const stagingPath = this.resolvePath(staging);
     if (!stagingPath) throw new Error('Refusing to write outside the archive directory');
