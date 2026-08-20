@@ -969,6 +969,8 @@ export interface ChatSettings {
   tools: ChatToolSettings;
   /** Whether a finished picture is shown to the model, and how picky it is. */
   review: ChatReviewSettings;
+  /** An endless run of pictures out of your notes. See `WanderRun`. */
+  wander: WanderRun;
   /**
    * Whether it accepts its own rewrites and carries on. See `AutonomousRun`.
    *
@@ -1484,6 +1486,48 @@ export interface ChatReviewSettings {
 }
 
 /**
+ * Wandering: picture after picture, out of what you like.
+ *
+ * A different thing from `AutonomousRun`, which is about *one* picture getting
+ * closer to its prompt. This one never converges on anything — each round draws
+ * a few of your notes at random, makes a picture that holds them together, and
+ * moves on. It is for the evening when you do not want to decide anything and
+ * would rather be shown things.
+ *
+ * Drawn on the server, because the notes are encrypted there and are
+ * deliberately never on screen: the point is to be surprised by your own taste,
+ * not to read a list of it.
+ */
+export interface WanderRun {
+  /**
+   * Which workflow renders these. Empty means whatever the chat generates with.
+   *
+   * Worth setting separately: the workflow you are iterating with is often the
+   * slow one, and an endless run wants the fast one.
+   */
+  workflowId: string;
+  /**
+   * How many notes are drawn for each picture.
+   *
+   * The whole dial of this mode. One note is a variation on a theme; five is a
+   * collage that mostly holds together; more than that and every picture starts
+   * to look like every other, because they all contain everything.
+   */
+  attributes: number;
+  /**
+   * Where the sampling for these turns comes from.
+   *
+   * `chat` keeps whatever the conversation uses. `own` is there because this is
+   * not a conversation: nobody is reading the words, the same few notes come
+   * round again, and a model at its careful settings writes the same prompt
+   * from them every time. Creativity is the whole product here.
+   */
+  sampling: 'chat' | 'own';
+  /** Used when `sampling` is `own`. */
+  ownSampling: ChatSampling;
+}
+
+/**
  * Leaving it to get on with it.
  *
  * Everything the loop needs already exists separately: the model writes a
@@ -1712,6 +1756,14 @@ export interface BuildPromptCall {
   negativePrompt?: string;
   /** What the model was going for, in a sentence. */
   reason: string;
+  /**
+   * Written by a wandering run, from notes drawn at random. See `WanderRun`.
+   *
+   * Recorded by the server rather than claimed by the model, and used for one
+   * thing on the screen: a picture made this way opens what made it, because
+   * "what was that one?" is the only question an endless stream raises.
+   */
+  fromWander?: boolean;
 }
 
 /**

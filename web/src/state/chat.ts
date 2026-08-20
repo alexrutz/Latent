@@ -141,6 +141,21 @@ interface ChatStore {
   haltAutonomous: () => void;
 
   /**
+   * Wandering: picture after picture out of what you like, until you stop it.
+   *
+   * Held here rather than in the screen for the same reason everything else
+   * about the conversation is: the loop has to survive a tab switch, and
+   * looking at the gallery while it runs is exactly what people do with it.
+   */
+  wandering: boolean;
+  /** How many pictures this run has made, for the strip above the composer. */
+  wanderRounds: number;
+  startWander: () => Promise<void>;
+  /** One round. Called by the loop rather than by the screen. */
+  wanderOnce: () => Promise<void>;
+  stopWander: () => void;
+
+  /**
    * The tool dialog has been folded away without being decided.
    *
    * It covers the screen and blurs everything behind it, which is right while
@@ -322,7 +337,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
    * perfectionism threshold, which is the loop this whole mode is.
    */
   const decideAutoAccept = (call: ChatToolCall): boolean => {
-    const { mode, askedForPrompt, autoRounds, autoHalted } = get();
+    const { mode, askedForPrompt, autoRounds, autoHalted, wandering } = get();
+
+    /*
+     * A wandering round is accepted without asking, always.
+     *
+     * There is nobody to ask: the whole mode is "show me things", and a dialog
+     * between every picture would make it a mode about tapping.
+     */
+    if (wandering && call.tool === 'build_prompt' && call.fromWander) return true;
 
     if (call.tool === 'build_prompt' && askedForPrompt && mode.promptButton === 'generate') {
       return true;
@@ -500,6 +523,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
     autoAccepting: false,
     autoHalted: false,
     autoNote: null,
+    wandering: false,
+    wanderRounds: 0,
 
     notePictureShown: (generationId) => {
       shown.add(generationId);
@@ -520,6 +545,53 @@ export const useChatStore = create<ChatStore>((set, get) => {
 
     haltAutonomous: () =>
       set({ autoHalted: true, autoAccepting: false, autoNote: 'Stopped. Say something to go on.' }),
+
+    /**
+     * Start wandering, and keep going until something stops it.
+     *
+     * One round is: ask the server for a prompt built from a few notes drawn at
+     * random, let the dialog queue it, wait for the picture, and go again. The
+     * loop is event-driven rather than a `while`, because the middle of it
+     * happens in the tool dialog — the one place that knows how to queue a
+     * render the way the Generate screen would. `resolveTool` starts the next
+     * round when this one has produced its picture.
+     */
+    startWander: async () => {
+      const { chat, wandering, streaming } = get();
+      if (!chat || wandering || streaming || inFlight) return;
+
+      set({ wandering: true, wanderRounds: 0, error: null, autoNote: null });
+      await get().wanderOnce();
+    },
+
+    wanderOnce: async () => {
+      const { chat, wandering } = get();
+      if (!chat || !wandering || inFlight) return;
+
+      await stream(
+        () =>
+          fetch(`/api/chat/conversations/${chat.id}/wander`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            signal: inFlight?.signal,
+          }),
+        chat.id,
+      );
+    },
+
+    /*
+     * Stopping is immediate, including the round in flight.
+     *
+     * The picture already rendering is not thrown away — it lands in the
+     * transcript like any other — but nothing new is asked for, and the request
+     * still open is cut off rather than left to arrive after you have gone.
+     */
+    stopWander: () => {
+      if (!get().wandering) return;
+      inFlight?.abort();
+      inFlight = null;
+      set({ wandering: false, streaming: null, autoAccepting: false });
+    },
 
     setDraft: (draft) => {
       set({ draft });
@@ -590,6 +662,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         autoHalted: false,
         autoAccepting: false,
         autoNote: null,
+        wandering: false,
+        wanderRounds: 0,
         streaming: null,
         pendingCall: null,
         callMinimized: false,
@@ -613,6 +687,8 @@ export const useChatStore = create<ChatStore>((set, get) => {
         autoHalted: false,
         autoAccepting: false,
         autoNote: null,
+        wandering: false,
+        wanderRounds: 0,
         error: null,
         attachments: [],
       });
@@ -664,7 +740,15 @@ export const useChatStore = create<ChatStore>((set, get) => {
        * you say — so a stopped loop is released by talking to it, and a long
        * session does not slowly exhaust its budget on renders from an hour ago.
        */
-      set({ error: null, attachments: [], autoRounds: 0, autoHalted: false, autoNote: null });
+      // Saying something is taking over, so a wandering run stands aside.
+      set({
+        error: null,
+        attachments: [],
+        autoRounds: 0,
+        autoHalted: false,
+        autoNote: null,
+        wandering: false,
+      });
 
       /*
        * Your own message goes up immediately.
@@ -718,6 +802,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         autoRounds: 0,
         autoHalted: false,
         autoNote: null,
+        wandering: false,
       });
       try {
         await stream(
@@ -754,6 +839,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         streaming: null,
         autoHalted: true,
         autoAccepting: false,
+        wandering: false,
         ...(get().mode.autonomous.enabled ? { autoNote: 'Stopped. Say something to go on.' } : {}),
       });
       await get().refresh();
@@ -826,6 +912,21 @@ export const useChatStore = create<ChatStore>((set, get) => {
         await waitForPicture(startedRun);
         if (get().chat?.id !== chat.id) return;
         set({ waitingFor: null });
+      }
+
+      /*
+       * A wandering round says nothing about the picture it just made.
+       *
+       * The follow-up turn is where the model comments on a render, and in this
+       * mode there is nothing to comment to: the next thing wanted is the next
+       * picture. So the round ends here and the loop goes again — which is also
+       * what keeps a long run from filling the transcript with small talk.
+       */
+      if (get().wandering && pendingCall.call.tool === 'build_prompt') {
+        set((state) => ({ wanderRounds: state.wanderRounds + 1 }));
+        if (get().chat?.id !== chat.id) return;
+        await get().wanderOnce();
+        return;
       }
 
       // After a decision the model usually has something short to say about it.

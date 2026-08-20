@@ -105,6 +105,7 @@ async function testLlama(config: ConnectionConfig): Promise<ConnectionTestResult
     tools: { prompt_blocks: 'off', build_prompt: 'off', ask_user: 'off' },
     review: { enabled: false, threshold: 'never', keepInView: 0, askWhen: 'never' },
     autonomous: { enabled: false, maxRounds: 0 },
+    wander: { workflowId: '', attributes: 3, sampling: 'chat', ownSampling: defaultSampling() },
     promptDetail: 'balanced',
     taste: 'off',
     generation: { workflowId: '', values: {} },

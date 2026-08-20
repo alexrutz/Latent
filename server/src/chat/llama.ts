@@ -691,9 +691,11 @@ function toolArguments(call: ChatToolCall): Record<string, unknown> {
   const args: Record<string, unknown> = { ...call };
   delete args.callId;
   delete args.tool;
-  // Which turn the question was asked on is Latent's note to itself, and a
-  // field the tool never declared teaches the model to send it back.
+  // Which turn the question was asked on, and which mode wrote the prompt, are
+  // Latent's notes to itself. A field the tool never declared teaches the model
+  // to send it back.
   delete args.fromReview;
+  delete args.fromWander;
   return args;
 }
 
@@ -857,6 +859,48 @@ export function reviewInstruction(
 }
 
 /**
+ * The turn that sets a wandering round going.
+ *
+ * Deliberately not a conversation. The notes arrive already drawn — the model
+ * does not choose them, because a model choosing "at random" from a list picks
+ * the first three and the same three next time — and the answer wanted is one
+ * tool call and nothing else.
+ *
+ * Two instructions carry the mode. *Only these*, because a round that quietly
+ * adds the user's whole profile back in is the same picture every time. And
+ * *not what you have already made*, because the previous rounds are in the
+ * history right above this and a model that cannot see a reason to move will
+ * happily rewrite its last prompt.
+ */
+export function wanderInstruction(notes: string[]): string {
+  if (notes.length === 0) {
+    return (
+      'Make one picture. They have written nothing about what they like yet, so it is entirely ' +
+      'yours: choose something worth looking at, and call `build_prompt` with it. Do not ask ' +
+      'anything and do not answer in words.'
+    );
+  }
+
+  return [
+    'Make one picture out of these, and only these. They are drawn at random from their own ' +
+      'notes about what they like:',
+    '',
+    ...notes.map((note) => `- ${note}`),
+    '',
+    'Find the one scene that holds them together rather than listing them side by side — a ' +
+      'picture that happens to contain three things is not the same as a picture *about* them. ' +
+      'Anything not on that list is yours to choose, so choose boldly; nobody is waiting to ' +
+      'approve it.',
+    '',
+    'Make it a different picture from the ones already in this conversation: a new subject, a ' +
+      'new setting, a new time of day. Repeating yourself is the one way to get this wrong.',
+    '',
+    'Call `build_prompt` with the finished prompt. Do not answer in words and do not ask ' +
+      'anything first.',
+  ].join('\n');
+}
+
+/**
  * Add that turn, folding it into the last one when that is already the user's.
  *
  * Two user messages in a row is something several chat templates refuse
@@ -866,8 +910,10 @@ export function reviewInstruction(
 export function withForcedInstruction(
   messages: OpenAiMessage[],
   force: ChatToolName,
+  /** Said instead of the standard one, when the caller has something to add. */
+  instruction?: string,
 ): OpenAiMessage[] {
-  const text = FORCED_INSTRUCTIONS[force];
+  const text = instruction ?? FORCED_INSTRUCTIONS[force];
   const last = messages[messages.length - 1];
   if (last?.role !== 'user') return [...messages, { role: 'user', content: text }];
 
@@ -1063,6 +1109,16 @@ export class LlamaClient {
       review?: ReviewTurn;
       /** Renders to keep in the conversation; see `toApiMessages`. */
       pictures?: Map<string, string>;
+      /**
+       * Said in place of the standard "call the tool now" line.
+       *
+       * Only meaningful with `force`. A wandering round is a forced
+       * `build_prompt` whose whole content is the notes it was given, and
+       * those belong in the turn rather than in the system prompt: they change
+       * every round, and a system prompt that changes every round throws away
+       * the server's prefix cache.
+       */
+      instruction?: string;
     } = {},
   ): AsyncGenerator<ChatStreamEvent> {
     /*
@@ -1100,7 +1156,7 @@ export class LlamaClient {
     );
     // A forced call needs a turn of its own to answer; see the comment there.
     const conversation = options.force
-      ? withForcedInstruction(history, options.force)
+      ? withForcedInstruction(history, options.force, options.instruction)
       : options.review
         ? [...history, reviewTurn(options.review)]
         : history;

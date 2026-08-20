@@ -2825,6 +2825,8 @@ test.describe('the chat module', () => {
             // Pinned for the same reason as everything else here: a run left on
             // would accept the next test's proposals for it.
             autonomous: { enabled: false, maxRounds: 4 },
+            // Pinned like the rest: a run left on would take over the next test.
+            wander: { workflowId: '', attributes: 3, sampling: 'chat' },
           },
         },
       }),
@@ -3332,6 +3334,131 @@ test.describe('the chat module', () => {
   });
 
   /**
+   * The headings, once there are enough of them to need managing.
+   *
+   * Folded away by default so a dozen fit on a phone screen, renamed in place
+   * because a heading is one word, and ordered with the two buttons rather than
+   * by dragging — a drag on a list of collapsed rows is a gesture that competes
+   * with scrolling it.
+   */
+  test('folds, renames and reorders what you like', async ({ page }) => {
+    await withApi(async (ctx) => {
+      for (const name of ['Colour', 'Places', 'Films']) {
+        await ctx.post('/api/taste/categories', { data: { name } });
+      }
+    });
+
+    await open(page, '/chat');
+    await page.getByRole('button', { name: 'What you like' }).click();
+    const sheet = page.getByRole('dialog', { name: 'What you like' });
+
+    // All three are on screen at once, and none of them is open.
+    for (const name of ['Colour', 'Places', 'Films']) {
+      await expect(sheet.getByRole('button', { name: new RegExp(`^${name}`) })).toBeVisible();
+    }
+    await expect(sheet.getByRole('button', { name: /^Rename/ })).toHaveCount(0);
+    await page.screenshot({ path: 'test-results/98-taste-folded.png' });
+
+    // Opening one shows what is under it, and what can be done to it.
+    await sheet.getByRole('button', { name: /^Colour/ }).click();
+    await sheet.getByRole('button', { name: 'Rename Colour' }).click();
+    const field = sheet.getByRole('textbox', { name: 'Rename Colour' });
+    await field.fill('Colour and light');
+    await field.blur();
+    await expect(sheet.getByRole('button', { name: /^Colour and light/ })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    /*
+     * And the order is the order the model reads them in, so it is worth being
+     * able to change. Moving the first one down puts the second one first.
+     */
+    await sheet.getByRole('button', { name: 'Move Colour and light down' }).click();
+    await expect
+      .poll(async () =>
+        withApi(async (ctx) => {
+          const profile = (await (await ctx.get('/api/taste')).json()) as {
+            categories: { name: string }[];
+          };
+          return profile.categories.map((category) => category.name);
+        }),
+      )
+      .toEqual(['Places', 'Colour and light', 'Films']);
+  });
+
+  /**
+   * Wandering: picture after picture, out of the notes, until you stop it.
+   *
+   * Nothing about this is a conversation — no proposal to accept, no comment on
+   * what came out — so what is worth proving is that the loop actually turns:
+   * one tap produces a picture, and then another, with nobody touching
+   * anything. And that tapping one of them answers the only question an endless
+   * stream raises: what was that one?
+   */
+  test('wanders through what you like, picture after picture', async ({ page }) => {
+    await seedWorkflow();
+    await withApi(async (ctx) => {
+      await ctx.post('/api/taste/entries', { data: { text: 'low fog over water' } });
+      await ctx.post('/api/taste/entries', { data: { text: 'brutalist stairwells' } });
+      await ctx.patch('/api/settings', {
+        data: { chat: { wander: { attributes: 2, sampling: 'chat' } } },
+      });
+    });
+
+    // Two rounds of prompts, and a third in case the loop is quicker than the
+    // assertions — a queue that runs dry mid-test would fail for the wrong
+    // reason.
+    await script(
+      ...[1, 2, 3].map((round) => ({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: `wandering picture ${round}`, reason: 'From the notes.' },
+        },
+      })),
+    );
+
+    await open(page, '/chat');
+    await page.getByRole('button', { name: 'Wander through your notes' }).click();
+
+    // It says what it is doing, and offers the way out.
+    const strip = page.getByTestId('wander-strip');
+    await expect(strip).toBeVisible();
+
+    // Two pictures, with nothing tapped in between.
+    await expect(page.getByRole('button', { name: /What made picture/ })).toHaveCount(2, {
+      timeout: 120_000,
+    });
+    await expect(strip).toContainText('Wandering');
+    await page.screenshot({ path: 'test-results/96-wandering.png' });
+
+    /*
+     * The notes were drawn on the server and never sent out: what the model was
+     * asked is the only place they appear, and the browser sees a prompt.
+     */
+    const asked = await lastRequest();
+    expect(asked).toContain('drawn at random');
+
+    await strip.getByRole('button', { name: 'Stop' }).click();
+    await expect(page.getByTestId('wander-strip')).toHaveCount(0);
+
+    /*
+     * And tapping a picture opens what made it — the prompt and the settings,
+     * the same dialog the prompt text opens in an ordinary conversation.
+     */
+    await page.getByRole('button', { name: /What made picture/ }).first().click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByRole('textbox', { name: 'The prompt' })).toHaveValue(
+      /wandering picture/,
+    );
+    await page.screenshot({ path: 'test-results/97-wander-prompt.png' });
+    await dialog.getByRole('button', { name: 'Close' }).click();
+
+    // The viewer is still one tap away, in the corner.
+    await page.getByRole('button', { name: /Look at picture/ }).first().click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+  });
+
+  /**
    * Notes about what you like, written from the chat and read by the model.
    *
    * The feature exists for the moment the composer is empty: "give me an idea"
@@ -3365,6 +3492,12 @@ test.describe('the chat module', () => {
 
     await sheet.getByLabel('New category').fill('Weather');
     await sheet.getByRole('button', { name: 'Add category' }).click();
+
+    /*
+     * Headings arrive folded: a page of open cards is three of them on a phone,
+     * and a list long enough to be worth having is one whose shape you can see.
+     */
+    await sheet.getByRole('button', { name: /^Weather/ }).click();
     await sheet.getByLabel('Add to Weather').fill('bright noon sun');
     await sheet.getByRole('button', { name: 'Save to Weather' }).click();
     await expect(sheet.getByText('bright noon sun')).toBeVisible({ timeout: 30_000 });

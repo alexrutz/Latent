@@ -42,6 +42,17 @@ export function registerTasteRoutes(app: FastifyInstance, ctx: AppContext): void
     },
   );
 
+  /** The result of a drag: one new sequence for the categories it names. */
+  app.post<{ Body: { ids?: string[] } }>('/api/taste/categories/reorder', async (request, reply) => {
+    if (!ctx.taste.isUnlocked) return locked(reply);
+    const ids = request.body?.ids;
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) {
+      return reply.code(400).send({ error: 'Send the new order as a list of ids' });
+    }
+    ctx.taste.reorderCategories(ids);
+    return ctx.taste.profile();
+  });
+
   /** Deleting a heading keeps the notes under it; they simply stop being filed. */
   app.delete<{ Params: { id: string } }>('/api/taste/categories/:id', async (request, reply) => {
     if (!ctx.taste.isUnlocked) return locked(reply);

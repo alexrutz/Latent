@@ -98,6 +98,11 @@ export class Taste {
     this.store.deleteTasteCategory(id);
   }
 
+  /** The order they are listed in, which is the order they are read in. */
+  reorderCategories(ids: string[]): void {
+    this.store.reorderTasteCategories(ids);
+  }
+
   addEntry(
     id: string,
     input: { categoryId: string | null; text: string; always?: boolean },
@@ -229,4 +234,36 @@ export function activeTaste(profile: TasteProfile): ActiveTaste {
   if (loose?.length) groups.push({ heading: null, notes: loose });
 
   return { groups, standing };
+}
+
+/**
+ * A handful of notes, drawn at random, for one wandering picture.
+ *
+ * The pinned ones come every time — that is what pinning means, and a format
+ * you always want is not something to leave to a coin toss. The rest are shuffled
+ * and cut, so two rounds are two different pictures out of the same taste.
+ *
+ * `random` is injectable so a test can pin the draw down; production passes
+ * nothing and gets `Math.random`.
+ */
+export function drawTaste(
+  profile: TasteProfile,
+  count: number,
+  random: () => number = Math.random,
+): string[] {
+  const { groups, standing } = activeTaste(profile);
+  const pool = groups.flatMap((group) => group.notes);
+
+  // Fisher–Yates on a copy: the profile is not ours to reorder, and a partial
+  // shuffle is exactly as much work as the number of notes actually wanted.
+  const shuffled = [...pool];
+  const wanted = Math.max(0, Math.min(Math.floor(count) || 0, shuffled.length));
+  for (let index = 0; index < wanted; index += 1) {
+    const pick = index + Math.floor(random() * (shuffled.length - index));
+    const held = shuffled[index] as string;
+    shuffled[index] = shuffled[pick] as string;
+    shuffled[pick] = held;
+  }
+
+  return [...standing, ...shuffled.slice(0, wanted)];
 }

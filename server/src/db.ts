@@ -943,6 +943,28 @@ const DEFAULT_SETTINGS: AppSettings = {
      */
     autonomous: { enabled: false, maxRounds: 4 },
     /*
+     * Wandering: off, three notes a picture, the chat's own sampling.
+     *
+     * Three because that is where the mode is actually interesting — one note
+     * is a variation on a theme and six is a collage where every picture
+     * contains everything and they all look alike.
+     */
+    wander: {
+      workflowId: '',
+      attributes: 3,
+      sampling: 'chat',
+      /*
+       * Warm, and only used once "its own" is chosen.
+       *
+       * Every other sampling default in this app is "the server's own flags",
+       * and rightly — but this setting exists precisely because somebody has
+       * said the conversation's settings are too careful for this. Handing them
+       * an identical copy of what they just rejected would be a switch that
+       * does nothing.
+       */
+      ownSampling: { ...defaultSampling(), temperature: { on: true, value: 1.15 } },
+    },
+    /*
      * Enough detail to make a picture, not so much that it makes only one.
      *
      * The failure at either end is real: a sparse prompt varies wildly between
@@ -2153,6 +2175,20 @@ export class Store {
     this.db.transaction(() => {
       this.db.prepare('UPDATE taste_entries SET category_id = NULL WHERE category_id = ?').run(id);
       this.db.prepare('DELETE FROM taste_categories WHERE id = ?').run(id);
+    })();
+  }
+
+  /**
+   * Write a whole order at once.
+   *
+   * One drag is one new sequence, not a series of moves — and a statement per
+   * category would leave the list half-reordered if the connection dropped in
+   * the middle of it.
+   */
+  reorderTasteCategories(ids: string[]): void {
+    const update = this.db.prepare('UPDATE taste_categories SET position = ? WHERE id = ?');
+    this.db.transaction(() => {
+      ids.forEach((id, index) => update.run(index, id));
     })();
   }
 

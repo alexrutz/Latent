@@ -581,6 +581,9 @@ export const useUpdateTasteCategory = () =>
 export const useDeleteTasteCategory = () =>
   useTasteMutation((id: string) => api.deleteTasteCategory(id));
 
+export const useReorderTasteCategories = () =>
+  useTasteMutation((ids: string[]) => api.reorderTasteCategories(ids));
+
 export const useCreateTasteEntry = () =>
   useTasteMutation((input: { text: string; categoryId: string | null; always?: boolean }) =>
     api.createTasteEntry(input),

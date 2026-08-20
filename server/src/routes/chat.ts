@@ -4,7 +4,10 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import type {
   ChatAttachment,
   ChatMessage,
+  ChatSampling,
+  ChatSettings,
   ChatStreamEvent,
+  ChatToolCall,
   ChatToolName,
   ChatToolResult,
   ProposedBlock,
@@ -15,8 +18,10 @@ import {
   LlamaClient,
   LlamaError,
   looksLikeAQuestionWithOptions,
+  wanderInstruction,
 } from '../chat/llama.js';
 import { loadConversationPictures, loadReviewImage } from '../chat/reviewImage.js';
+import { drawTaste } from '../taste.js';
 import type { ConnectionConfig } from '../comfy/connection.js';
 import { toConfig } from './connections.js';
 import type { AppContext } from './context.js';
@@ -54,8 +59,15 @@ function systemPrompt(ctx: AppContext): string {
   return ctx.store.getSystemPrompt(id)?.text ?? '';
 }
 
-/** A client for the model server in use, or nothing when none is configured. */
-function llamaClient(ctx: AppContext): LlamaClient | null {
+/**
+ * A client for the model server in use, or nothing when none is configured.
+ *
+ * `sampling` overrides what the chat's own settings say, which is how a
+ * wandering round gets its own temperature: the request is otherwise identical,
+ * and duplicating the client for one field would duplicate the taste, the
+ * instructions and the connection with it.
+ */
+function llamaClient(ctx: AppContext, settings?: Partial<ChatSettings>): LlamaClient | null {
   const connection = llamaConnection(ctx);
   if (!connection) return null;
   /*
@@ -65,7 +77,7 @@ function llamaClient(ctx: AppContext): LlamaClient | null {
    */
   return new LlamaClient(
     connection,
-    ctx.store.getSettings().chat,
+    { ...ctx.store.getSettings().chat, ...settings },
     systemPrompt(ctx),
     ctx.taste.profileOrNull(),
   );
@@ -330,6 +342,34 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
   );
 
   /**
+   * One round of wandering: a few notes, drawn at random, made into a picture.
+   *
+   * The draw happens here rather than in the browser for two reasons. The notes
+   * are encrypted and only readable on this side — and they are deliberately
+   * never on screen, because the point of the mode is to be surprised by your
+   * own taste rather than to read a list of it.
+   */
+  app.post<{ Params: { id: string } }>(
+    '/api/chat/conversations/:id/wander',
+    async (request, reply) => {
+      const chat = ctx.store.getChat(request.params.id);
+      if (!chat) return reply.code(404).send({ error: 'No such conversation' });
+
+      const wander = ctx.store.getSettings().chat.wander;
+      const profile = ctx.taste.profileOrNull();
+      const notes = profile ? drawTaste(profile, wander.attributes) : [];
+
+      return streamReply(app, ctx, reply, chat.id, 'build_prompt', {
+        instruction: wanderInstruction(notes),
+        // Sampling of its own, when the settings say the conversation's is too
+        // careful for a mode whose whole product is variety.
+        ...(wander.sampling === 'own' ? { sampling: wander.ownSampling } : {}),
+        wander: true,
+      });
+    },
+  );
+
+  /**
    * Carry on after a tool call, without the user saying anything.
    *
    * Separate from answering, because after a decision the model usually has
@@ -360,6 +400,14 @@ async function streamReply(
   reply: FastifyReply,
   chatId: string,
   force?: ChatToolName,
+  options: {
+    /** Said in place of the standard "call the tool now" line. */
+    instruction?: string;
+    /** Sampling for this turn alone. */
+    sampling?: ChatSampling;
+    /** True for a wandering round, which is recorded on the call it produces. */
+    wander?: boolean;
+  } = {},
 ): Promise<void> {
   const chat = ctx.store.getChat(chatId);
   if (!chat) {
@@ -390,7 +438,7 @@ async function streamReply(
   };
   let thinking = '';
 
-  const client = llamaClient(ctx);
+  const client = llamaClient(ctx, options.sampling ? { sampling: options.sampling } : undefined);
   if (!client) {
     // Inside the stream rather than as a status code: the chat screen already
     // knows how to show an error frame, and a 4xx here would have to be
@@ -490,6 +538,7 @@ async function streamReply(
     for await (const event of streamWithFallback(client, chat.messages, {
       signal: controller.signal,
       ...(force ? { force } : {}),
+      ...(options.instruction ? { instruction: options.instruction } : {}),
       ...(!force && afterGeneration && !review ? { withoutTools: true } : {}),
       ...(review ? { review } : {}),
       ...(pictures.size > 0 ? { pictures } : {}),
@@ -498,15 +547,28 @@ async function streamReply(
       if (event.type === 'thinking') thinking += event.text;
       if (event.type === 'tool') {
         /*
-         * Which turn a question was asked on is ours to record, not the
-         * model's to claim: it decides whether the turn after the answer is
-         * still about the picture. Stamped here, stripped again before the
-         * call is ever replayed to the model.
+         * Where a call came from is ours to record, not the model's to claim.
+         *
+         * A question decides whether the turn after the answer is still about
+         * the picture; a wandering prompt decides whether the browser accepts
+         * it without asking, and what tapping its picture opens. Both are
+         * stamped here and stripped again before the call is ever replayed to
+         * the model.
+         *
+         * Stamped on the way *out* as well as into the transcript: the browser
+         * acts on a proposal in the frame it arrives in, not in the re-read
+         * that follows — by which time the dialog it would have skipped is
+         * already on screen.
          */
-        message.toolCall =
+        const stamped: ChatToolCall =
           review && event.call.tool === 'ask_user'
             ? { ...event.call, fromReview: true }
-            : event.call;
+            : options.wander && event.call.tool === 'build_prompt'
+              ? { ...event.call, fromWander: true }
+              : event.call;
+        message.toolCall = stamped;
+        send({ ...event, call: stamped });
+        continue;
       }
       send(event);
     }

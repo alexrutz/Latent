@@ -82,6 +82,10 @@ form. Nothing about your ComfyUI setup changes.
   made](#the-model-sees-what-it-made). The last couple of renders stay in the
   conversation, so “make the sky darker” lands on the picture rather than on its
   own description of it.
+- **A mode that just shows you things.** Switch on wandering and the model makes
+  picture after picture out of a few of your notes drawn at random — a settable
+  number, with its own workflow and its own sampling, until you stop it. Tapping
+  one opens the prompt behind it. See [Wandering](#wandering).
 - **Somewhere to start when you do not know what to make.** Write down what you
   like — concepts, aesthetics, places, films — under headings you make up or
   under none, and the chat draws on it to fill in whatever you left open. How far
@@ -1194,6 +1198,45 @@ means it applies to instructions you wrote yourself as well as to Latent's own,
 and none of the levels reintroduce the keyword pile the rest of the prompt
 spends its length arguing against.
 
+### Wandering
+
+The other endless mode, and the opposite of the one above: it never converges
+on anything. **❋** in the chat header starts it, and from then on it makes a
+picture, then another, then another, until you stop it. Each one is built from
+**a few of your notes drawn at random** — not by asking the model to pick, which
+gets you the same three every time, but drawn on the server before the model is
+asked anything.
+
+Nothing is proposed and nothing is judged. There is no dialog to accept, no
+comment on how it went, no threshold to clear; the transcript is a column of
+pictures with a counter and a **Stop** above the composer. It is for the evening
+when you would rather be shown things than decide any.
+
+Three things are settable, under Settings → Chat → **Wandering**:
+
+| | |
+| --- | --- |
+| **Notes in each picture** | One to six, three by default. One is a variation on a theme; six is a collage where every picture contains everything and they all start to rhyme. |
+| **Rendered with** | Whatever the chat uses, or a workflow of its own — worth setting, because the graph you iterate with is often the slow one and a run that goes all evening wants the fast one. |
+| **Sampling for these** | The chat's, or its own. |
+
+That last one exists because this is not a conversation: nobody is reading the
+words, the same few notes come round again, and a model at its careful settings
+writes the same prompt from them every time. Choosing *its own* opens the same
+sampling dialog the chat has, with its own copy of every parameter, and starts
+you at a warm temperature rather than handing back an identical copy of what you
+just rejected.
+
+**Tapping a picture opens what made it** — the prompt, the settings, and the
+button to run it again — because "what was that one?" is the only question an
+endless stream raises, and the prompt was never read. The viewer is in the
+corner of the picture, one tap away.
+
+A pinned note still applies to every round: pinning means a settled preference,
+and a run that dropped it two rounds in three would be a different feature
+wearing the same switch. Saying anything in the chat stops the run — you have
+taken over, which is what the composer is for.
+
 ### What you like
 
 The hardest part of making pictures is deciding what to make, and "give me an
@@ -1206,6 +1249,14 @@ Notes can be filed under headings you make up, and they can sit under no heading
 at all; being made to file everything is how a list like this ends up empty.
 Everything has its own switch, and switching a heading off silences everything
 under it, so changing your mind for an evening is a tap rather than a deletion.
+
+**Headings arrive folded**, showing their name, how many of their notes are
+switched on, and that switch — so a dozen fit on a phone screen and you can see
+the shape of the list rather than one card of it. Opening one shows the notes
+under it and the three things you occasionally do to a heading: rename it in
+place, move it up or down, delete it. Notes themselves are edited by tapping the
+words; "nearly right" is a note's normal state, and retyping it as a new one was
+the workaround that removes.
 
 **It is encrypted with your password**, like the archive and for the same
 reason: it is never on screen, so nobody would notice it sitting readable in a

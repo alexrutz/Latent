@@ -304,6 +304,65 @@ function RoundsLine({ value, onChange }: { value: number; onChange: (value: numb
 /** The steps the round limit offers. Doubling, because 5 and 6 are not a choice. */
 const ROUND_LIMITS = [2, 3, 4, 6, 8, 12];
 
+/**
+ * How many notes go into each wandering picture.
+ *
+ * The whole dial of that mode, so it gets a line of points like the rest: one
+ * note is a variation on a theme, three is where it is interesting, and six is
+ * a collage in which every picture contains everything and they all start to
+ * look alike.
+ */
+function AttributesLine({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const at = Math.max(0, Math.min(ATTRIBUTE_COUNTS.length - 1, ATTRIBUTE_COUNTS.indexOf(value)));
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm">Notes in each picture</span>
+        <span className="min-w-0 truncate text-[11px] text-muted">
+          {ATTRIBUTE_HINTS[at] ?? ''}
+        </span>
+      </div>
+
+      <div className="flex items-center gap-1">
+        {ATTRIBUTE_COUNTS.map((count, index) => (
+          <button
+            key={count}
+            type="button"
+            aria-pressed={index === at}
+            aria-label={`Notes in each picture: ${count}`}
+            onClick={() => onChange(count)}
+            className="min-w-0 flex-1 py-2"
+          >
+            <span
+              className={cn(
+                'block h-2 rounded-[3px]',
+                index === at ? 'bg-accent' : index < at ? 'bg-accent/30' : 'bg-surface-3',
+              )}
+            />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const ATTRIBUTE_COUNTS = [1, 2, 3, 4, 5, 6];
+const ATTRIBUTE_HINTS = [
+  'one thing at a time',
+  'two, held together',
+  'three — the interesting one',
+  'four, and busier',
+  'five, a collage',
+  'six; they start to rhyme',
+];
+
 function KeepInViewLine({
   value,
   onChange,
@@ -1498,6 +1557,8 @@ function ChatSection() {
   );
   const [checking, setChecking] = useState(false);
   const [showSampling, setShowSampling] = useState(false);
+  const [showWanderSampling, setShowWanderSampling] = useState(false);
+  const workflows = useVisibleWorkflows();
   const status = useChatStatus();
   /** The freshest list we have: what Check just returned, else what was fetched. */
   const models = probe?.models ?? status.data?.models ?? [];
@@ -1517,6 +1578,14 @@ function ChatSection() {
     keepInView: 2,
   };
   const autonomous = chat.autonomous ?? { enabled: false, maxRounds: 4 };
+  const wander = chat.wander ?? {
+    workflowId: '',
+    attributes: 3,
+    sampling: 'chat' as const,
+    ownSampling: defaultSampling(),
+  };
+  const wanderSampling = { ...defaultSampling(), ...(wander.ownSampling ?? {}) };
+  const wanderSamplingOn = SAMPLING_PARAMS.filter((param) => wanderSampling[param.key]?.on).length;
 
   const patch = (change: Partial<typeof chat>) =>
     updateSettings.mutate({ chat: { ...chat, ...change } });
@@ -1755,6 +1824,112 @@ function ChatSection() {
           value={chat.taste ?? 'hints'}
           onChange={(taste) => patch({ taste })}
         />
+      </Card>
+
+      {/* Wandering ---------------------------------------------------- */}
+      <Card className="space-y-3">
+        <div>
+          <p className="text-sm">Wandering</p>
+          <p className="text-[11px] text-muted">
+            The <strong className="text-body">❋</strong> in the chat header starts it: picture
+            after picture, each one made from a few of your notes drawn at random, until you stop
+            it. Nothing is asked and nothing is judged — it is for the evening when you would
+            rather be shown things than decide any.
+          </p>
+        </div>
+
+        <AttributesLine
+          value={wander.attributes}
+          onChange={(attributes) => patch({ wander: { ...wander, attributes } })}
+        />
+
+        <div className="space-y-1.5 border-t border-line pt-3">
+          <p className="text-sm">Rendered with</p>
+          <div className="flex flex-wrap gap-1">
+            <button
+              type="button"
+              aria-pressed={wander.workflowId === ''}
+              onClick={() => patch({ wander: { ...wander, workflowId: '' } })}
+              className={cn(
+                'rounded-lg px-2.5 py-1.5 text-xs',
+                wander.workflowId === '' ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+              )}
+            >
+              Whatever the chat uses
+            </button>
+            {(workflows.data ?? []).map((workflow) => (
+              <button
+                key={workflow.id}
+                type="button"
+                aria-pressed={wander.workflowId === workflow.id}
+                onClick={() => patch({ wander: { ...wander, workflowId: workflow.id } })}
+                className={cn(
+                  'max-w-full truncate rounded-lg px-2.5 py-1.5 text-xs',
+                  wander.workflowId === workflow.id
+                    ? 'bg-accent text-white'
+                    : 'bg-surface-2 text-muted',
+                )}
+              >
+                {workflow.name}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-muted">
+            Worth setting: the workflow you iterate with is often the slow one, and a run that
+            goes all evening wants the fast one.
+          </p>
+        </div>
+
+        {/*
+          Sampling of its own, because this is not a conversation.
+
+          Nobody is reading the words, the same few notes come round again, and
+          a model at its careful settings writes the same prompt from them every
+          time. Variety is the entire product here, which is a different job
+          from answering well.
+        */}
+        <div className="space-y-1.5 border-t border-line pt-3">
+          <p className="text-sm">Sampling for these</p>
+          <div className="flex gap-1">
+            {(
+              [
+                { value: 'chat' as const, label: 'Same as the chat' },
+                { value: 'own', label: 'Its own' },
+              ] as { value: 'chat' | 'own'; label: string }[]
+            ).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={wander.sampling === option.value}
+                onClick={() => patch({ wander: { ...wander, sampling: option.value } })}
+                className={cn(
+                  'flex-1 rounded-lg px-2.5 py-1.5 text-xs',
+                  wander.sampling === option.value
+                    ? 'bg-accent text-white'
+                    : 'bg-surface-2 text-muted',
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {wander.sampling === 'own' && (
+            <div className="flex items-center justify-between gap-3">
+              <p className="min-w-0 flex-1 text-[11px] text-muted">
+                {wanderSamplingOn === 0
+                  ? 'Nothing set, so this is the chat’s after all — turn something on.'
+                  : `${wanderSamplingOn} ${wanderSamplingOn === 1 ? 'parameter' : 'parameters'} of its own.`}
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowWanderSampling(true)}
+                className="shrink-0 rounded-lg bg-surface-2 px-3 py-1.5 text-xs text-body"
+              >
+                Adjust…
+              </button>
+            </div>
+          )}
+        </div>
       </Card>
 
       {/* When it reaches for a tool ---------------------------------- */}
@@ -2042,6 +2217,14 @@ function ChatSection() {
         sampling={sampling}
         onClose={() => setShowSampling(false)}
         onChange={(next) => patch({ sampling: next })}
+      />
+
+      {/* The same dialog, pointed at the wandering run's own copy. */}
+      <SamplingSheet
+        open={showWanderSampling}
+        sampling={wanderSampling}
+        onClose={() => setShowWanderSampling(false)}
+        onChange={(next) => patch({ wander: { ...wander, ownSampling: next } })}
       />
     </section>
   );

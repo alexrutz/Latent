@@ -49,6 +49,32 @@ const MAX_IMAGE_SIDE = 1024;
  * scrolling back through a conversation should show the change that was made at
  * the time, which is the only version of that comparison worth anything.
  */
+/**
+ * The proposal a tool message came out of, when it was a wandering one.
+ *
+ * A wandering round is two messages: the assistant's `build_prompt` call, and
+ * the tool message carrying the run it started. The picture hangs off the
+ * second and the prompt off the first, so tapping the picture has to reach back
+ * one message to find what made it. Only for wandering rounds — everywhere else
+ * a picture opens the viewer, which is what a picture should do.
+ */
+function wanderCallBefore(
+  messages: ChatMessage[],
+  id: string,
+): { messageId: string; call: ChatToolCall } | null {
+  const at = messages.findIndex((message) => message.id === id);
+  if (at < 0) return null;
+  for (let index = at - 1; index >= 0; index -= 1) {
+    const earlier = messages[index]!;
+    const call = earlier.toolCall;
+    if (!call) continue;
+    return call.tool === 'build_prompt' && call.fromWander
+      ? { messageId: earlier.id, call }
+      : null;
+  }
+  return null;
+}
+
 function promptBefore(messages: ChatMessage[], id: string): string {
   const at = messages.findIndex((message) => message.id === id);
   if (at < 0) return '';
@@ -93,6 +119,8 @@ export function ChatScreen() {
   const autoRounds = useChatStore((state) => state.autoRounds);
   const autoHalted = useChatStore((state) => state.autoHalted);
   const autoNote = useChatStore((state) => state.autoNote);
+  const wandering = useChatStore((state) => state.wandering);
+  const wanderRounds = useChatStore((state) => state.wanderRounds);
   const waitingFor = useChatStore((state) => state.waitingFor);
   const store = useChatStore.getState;
 
@@ -277,6 +305,29 @@ export function ChatScreen() {
             ≡
           </button>
           {/*
+            Off wandering: picture after picture, out of your own notes.
+
+            Beside the other two mode buttons because it is the third answer to
+            "what now" — the chat list is what you were doing, the ♥ is what you
+            like, and this is being shown things made out of it without deciding
+            anything.
+          */}
+          <button
+            type="button"
+            aria-pressed={wandering}
+            // Not "…what you like": the ♥ beside it is called that, and two
+            // controls whose names contain one another are two controls nothing
+            // reading the screen aloud can tell apart.
+            aria-label="Wander through your notes"
+            onClick={() => (wandering ? store().stopWander() : void store().startWander())}
+            className={cn(
+              'grid size-9 place-items-center rounded-full text-base',
+              wandering ? CONTROL_FACE_SET : CONTROL_FACE,
+            )}
+          >
+            ❋
+          </button>
+          {/*
             Left to get on with it.
 
             A mode rather than a button that does something: while it is on, the
@@ -358,6 +409,8 @@ export function ChatScreen() {
               previousPrompt={promptBefore(chat.messages, message.id)}
               showDiff={settings.data?.chat.showDiff.underPicture ?? true}
               onRevisit={(call) => setRevisiting({ messageId: message.id, call })}
+              wanderCall={wanderCallBefore(chat.messages, message.id)}
+              onOpenPrompt={(found) => setRevisiting(found)}
             />
           ))}
 
@@ -412,6 +465,34 @@ export function ChatScreen() {
           </span>
           <span className="shrink-0 font-medium underline">Open</span>
         </button>
+      )}
+
+      {/*
+        What a wandering run is up to, and the way out of it.
+
+        The count is the whole of the status: nothing else about this mode is
+        worth a line of text, and a run with no visible end needs a visible
+        stop.
+      */}
+      {wandering && (
+        <div
+          data-testid="wander-strip"
+          className="mx-3 mb-1 flex items-center gap-2 rounded-xl border border-accent/40 bg-accent/10 px-3 py-2 text-xs text-accent"
+        >
+          <Spinner className="size-3" />
+          <span className="min-w-0 flex-1">
+            {wanderRounds === 0
+              ? 'Wandering through what you like…'
+              : `Wandering — ${wanderRounds} so far`}
+          </span>
+          <button
+            type="button"
+            onClick={() => store().stopWander()}
+            className="shrink-0 font-medium underline"
+          >
+            Stop
+          </button>
+        </div>
       )}
 
       {/*
@@ -582,6 +663,15 @@ export function ChatScreen() {
             also decides whether the dialog is folded away.
           */
           autoAccept={autoAccepting}
+          /*
+            A wandering run has a workflow of its own — often the fast one,
+            since it is going to run all evening.
+          */
+          workflowId={
+            pendingCall.call.tool === 'build_prompt' && pendingCall.call.fromWander
+              ? settings.data?.chat.wander.workflowId || undefined
+              : undefined
+          }
           onResolve={(body) => store().resolveTool(body)}
         />
       )}
@@ -646,6 +736,8 @@ function MessageRow({
   previousPrompt,
   showDiff,
   onRevisit,
+  wanderCall,
+  onOpenPrompt,
 }: {
   message: ChatMessage;
   pictureWidth: number;
@@ -653,11 +745,22 @@ function MessageRow({
   previousPrompt: string;
   showDiff: boolean;
   onRevisit: (call: ChatToolCall) => void;
+  /** Set when this run came out of a wandering round; see `wanderCallBefore`. */
+  wanderCall: { messageId: string; call: ChatToolCall } | null;
+  onOpenPrompt: (found: { messageId: string; call: ChatToolCall }) => void;
 }) {
   if (message.role === 'tool' || message.role === 'note') {
     return (
       <div className="space-y-1.5">
-        <p className="text-center text-[11px] text-muted">{message.content}</p>
+        {/*
+          A wandering run is a column of pictures and nothing else.
+
+          "The user accepted the prompt and queued it" is true, useful to the
+          model, and noise on the screen — nobody accepted anything, and a line
+          of it between every picture turns a stream into a transcript of
+          itself. The words still go to the model; they just stop being shown.
+        */}
+        {!wanderCall && <p className="text-center text-[11px] text-muted">{message.content}</p>}
         {message.generationId && (
           <GeneratedRun
             id={message.generationId}
@@ -665,6 +768,14 @@ function MessageRow({
             prompt={message.prompt ?? ''}
             previousPrompt={previousPrompt}
             showDiff={showDiff}
+            /*
+              In a wandering run the picture *is* the message: there is no
+              commentary around it and the prompt was never read, so "what was
+              that one?" is the only question it raises — and the answer is the
+              dialog that shows the prompt and the settings, and runs it again.
+              The viewer is a corner away rather than a tap away.
+            */
+            onOpenPrompt={wanderCall ? () => onOpenPrompt(wanderCall) : undefined}
           />
         )}
       </div>
@@ -697,37 +808,49 @@ function MessageRow({
     );
   }
 
+  const call = message.toolCall;
+  /*
+    A prompt stays reachable for the rest of the conversation.
+
+    Wanting the same picture with one thing changed is the commonest thing
+    there is, and the alternative was a trip to the gallery to find the result
+    and press reuse — which loses the conversation the prompt came out of. Only
+    prompts: a decided question or a saved block has nothing left to do. A
+    rewrite is a prompt like any other — often the better one, since it was
+    written knowing what the last attempt produced.
+  */
+  const reusable =
+    call?.tool === 'build_prompt' || call?.tool === 'revise_prompt' ? message.toolResult : null;
+  /*
+    Except in a wandering round, where the picture is directly below this and
+    opens the same dialog — the row would be a second door to a room you are
+    already standing in.
+  */
+  const quiet = call?.tool === 'build_prompt' && call.fromWander === true;
+
   return (
     <div className="space-y-1">
       {message.thinking && <ThinkingBlock text={message.thinking} />}
       {message.content !== '' && <Markdown text={message.content} />}
-      {message.toolCall &&
-        /*
-          A prompt stays reachable for the rest of the conversation.
-          Wanting the same picture with one thing changed is the commonest
-          thing there is, and the alternative was a trip to the gallery to
-          find the result and press reuse — which loses the conversation the
-          prompt came out of. Only prompts: a decided question or a saved
-          block has nothing left to do. A rewrite is a prompt like any other —
-          often the better one, since it was written knowing what the last
-          attempt produced.
-        */
-        ((message.toolCall.tool === 'build_prompt' || message.toolCall.tool === 'revise_prompt') &&
-        message.toolResult ? (
+      {call &&
+        !quiet &&
+        (reusable ? (
           <button
             type="button"
-            onClick={() => onRevisit(message.toolCall!)}
+            onClick={() => onRevisit(call)}
             className="flex w-full items-center gap-1.5 rounded-lg bg-surface-2/60 px-2 py-1.5 text-left text-[11px] text-muted active:bg-surface-2"
           >
             <span aria-hidden className="text-accent">
               ✦
             </span>
-            <span className="min-w-0 flex-1 truncate">{message.toolCall.prompt}</span>
+            <span className="min-w-0 flex-1 truncate">
+              {call.tool === 'build_prompt' || call.tool === 'revise_prompt' ? call.prompt : ''}
+            </span>
             <span className="shrink-0 text-accent">Again</span>
           </button>
         ) : (
           <p className="text-[11px] text-muted">
-            {TOOL_LABELS[message.toolCall.tool]}
+            {TOOL_LABELS[call.tool]}
             {message.toolResult
               ? ` · ${message.toolResult.decision === 'accepted' ? 'accepted' : 'declined'}`
               : ' · waiting'}
@@ -755,12 +878,15 @@ function GeneratedRun({
   prompt,
   previousPrompt,
   showDiff,
+  onOpenPrompt,
 }: {
   id: string;
   width: number;
   prompt: string;
   previousPrompt: string;
   showDiff: boolean;
+  /** When set, tapping a picture opens what made it rather than the viewer. */
+  onOpenPrompt?: () => void;
 }) {
   const generation = useGeneration(id);
   const [grid, updateGrid] = useGridSettings();
@@ -802,14 +928,33 @@ function GeneratedRun({
           pictures too small to judge. */}
       <div className="flex flex-col items-center gap-1.5">
         {images.map((image, index) => (
-          <button
-            key={image.id ?? `${image.filename}-${index}`}
-            type="button"
-            onClick={() => setViewing(index)}
-            style={style}
-            aria-label={`Open picture ${index + 1}`}
-            className="overflow-hidden rounded-xl bg-surface-2 active:opacity-80"
-          >
+          <div key={image.id ?? `${image.filename}-${index}`} className="relative" style={style}>
+            {/*
+              The corner that still opens it properly.
+
+              Only where the tap has been taken by something else — a wandering
+              picture opens what made it — because a badge on every picture in
+              every conversation would be a permanent apology for an ambiguity
+              that is not there.
+            */}
+            {onOpenPrompt && (
+              <button
+                type="button"
+                onClick={() => setViewing(index)}
+                aria-label={`Look at picture ${index + 1}`}
+                className="absolute top-1.5 right-1.5 z-10 grid size-8 place-items-center rounded-lg bg-black/60 text-sm text-white backdrop-blur active:bg-black/80"
+              >
+                ⤢
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => (onOpenPrompt ? onOpenPrompt() : setViewing(index))}
+              aria-label={
+                onOpenPrompt ? `What made picture ${index + 1}` : `Open picture ${index + 1}`
+              }
+              className="block w-full overflow-hidden rounded-xl bg-surface-2 active:opacity-80"
+            >
             {/* `contain` so each picture keeps its own shape: a portrait and a
                 landscape from one batch should not be cropped into agreeing
                 with each other. */}
@@ -827,7 +972,8 @@ function GeneratedRun({
               */
               onShown={index === 0 ? () => store().notePictureShown(id) : undefined}
             />
-          </button>
+            </button>
+          </div>
         ))}
       </div>
 

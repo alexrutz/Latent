@@ -392,6 +392,12 @@ export const api = {
   deleteTasteCategory: (id: string) =>
     request<void>(`/api/taste/categories/${id}`, { method: 'DELETE' }),
 
+  reorderTasteCategories: (ids: string[]) =>
+    request<TasteProfile>('/api/taste/categories/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
+
   createTasteEntry: (input: { text: string; categoryId: string | null; always?: boolean }) =>
     request<TasteEntry>('/api/taste/entries', { method: 'POST', body: JSON.stringify(input) }),
 

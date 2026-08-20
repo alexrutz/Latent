@@ -9,7 +9,7 @@ import type {
   TasteProfile,
 } from '@latent/shared';
 
-import { activeTaste } from '../taste.js';
+import { activeTaste, drawTaste } from '../taste.js';
 import {
   detailPolicy,
   enabledTools,
@@ -20,6 +20,7 @@ import {
   toApiMessages,
   tastePolicy,
   toolPolicy,
+  wanderInstruction,
   withForcedInstruction,
 } from './llama.js';
 
@@ -817,5 +818,79 @@ describe('how far the notes reach', () => {
   /** Never shown in the chat, so reciting it back would be a small leak. */
   it('tells it not to read the list back', () => {
     expect(tastePolicy(profile(), 'guiding')).toContain('Never read the list back');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Wandering                                                           */
+/* ------------------------------------------------------------------ */
+
+describe('drawing a few notes at random', () => {
+  /**
+   * A pinned note is not a coin toss.
+   *
+   * That is what pinning means everywhere else — a settled preference that
+   * holds — and a mode that dropped it two rounds out of three would be a
+   * different feature wearing the same switch.
+   */
+  it('always includes the pinned ones and draws the rest', () => {
+    const base = profile();
+    base.entries.push(note({ id: 'p', text: 'always 21:9', always: true }));
+
+    // A random that always returns 0 picks the first of whatever is left.
+    const drawn = drawTaste(base, 1, () => 0);
+    expect(drawn).toContain('always 21:9');
+    expect(drawn).toHaveLength(2);
+  });
+
+  it('never draws more than there are, or fewer than asked for', () => {
+    expect(drawTaste(profile(), 99, () => 0)).toHaveLength(2);
+    expect(drawTaste(profile(), 1, () => 0)).toHaveLength(1);
+    expect(drawTaste(profile(), 0, () => 0)).toEqual([]);
+    expect(drawTaste({ categories: [], entries: [] }, 3, () => 0)).toEqual([]);
+  });
+
+  /** Only what is switched on, exactly as everywhere else the notes are read. */
+  it('obeys the switches', () => {
+    const drawn = drawTaste(profile(), 99, () => 0);
+    expect(drawn).not.toContain('neon');
+    expect(drawn).not.toContain('harbours');
+  });
+
+  /**
+   * Two rounds are two pictures.
+   *
+   * The whole mode rests on this: the same three notes every round would be
+   * one picture rendered endlessly with a different seed.
+   */
+  it('draws differently as the random does', () => {
+    const many: TasteProfile = {
+      categories: [],
+      entries: ['a', 'b', 'c', 'd', 'e', 'f'].map((text) => note({ id: text, text })),
+    };
+    const first = drawTaste(many, 2, () => 0);
+    const last = drawTaste(many, 2, () => 0.999);
+    expect(first).not.toEqual(last);
+  });
+});
+
+describe('what a wandering round is told', () => {
+  it('hands over the drawn notes and asks for one call', () => {
+    const text = wanderInstruction(['low fog over water', 'brutalist stairwells']);
+    expect(text).toContain('low fog over water');
+    expect(text).toContain('brutalist stairwells');
+    expect(text).toContain('build_prompt');
+    // Only these: a round that adds the whole profile back in is the same
+    // picture every time.
+    expect(text).toContain('only these');
+    // And not the last one again, since the previous rounds are right above it.
+    expect(text).toContain('different picture');
+  });
+
+  /** An empty profile is a licence, not an error. */
+  it('still asks for a picture when there is nothing written down', () => {
+    const text = wanderInstruction([]);
+    expect(text).toContain('build_prompt');
+    expect(text).toContain('entirely');
   });
 });

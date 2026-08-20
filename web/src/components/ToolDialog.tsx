@@ -57,6 +57,7 @@ export function ToolDialog({
   onMinimize,
   previousPrompt = '',
   autoAccept = false,
+  workflowId,
 }: {
   call: ChatToolCall;
   settings: AppSettings | null;
@@ -82,6 +83,8 @@ export function ToolDialog({
    * first" cannot drift apart in which workflow or which values they use.
    */
   autoAccept?: boolean;
+  /** Forces which workflow an accepted prompt is queued with. */
+  workflowId?: string;
 }) {
   return createPortal(
     <div className="fixed inset-0 z-70 flex items-center justify-center p-4" role="dialog" aria-modal="true">
@@ -131,6 +134,7 @@ export function ToolDialog({
             revisit={revisit}
             previousPrompt={previousPrompt}
             autoAccept={autoAccept}
+            workflowId={workflowId}
           />
         ) : call.tool === 'ask_user' ? (
           <AskUserBody call={call} onResolve={onResolve} />
@@ -306,6 +310,7 @@ function BuildPromptBody({
   revisit,
   previousPrompt,
   autoAccept,
+  workflowId: forced,
 }: {
   call: Extract<ChatToolCall, { tool: 'build_prompt' | 'revise_prompt' }>;
   settings: AppSettings | null;
@@ -313,6 +318,13 @@ function BuildPromptBody({
   revisit?: RevisitActions;
   previousPrompt: string;
   autoAccept: boolean;
+  /**
+   * The workflow this one must use, whatever the settings say.
+   *
+   * Set by a wandering run, which has a workflow of its own: the graph you are
+   * iterating with is often the slow one, and an endless run wants the fast one.
+   */
+  workflowId?: string;
 }) {
   /** A second attempt at a prompt whose picture missed, rather than a first. */
   const revised = call.tool === 'revise_prompt';
@@ -329,7 +341,7 @@ function BuildPromptBody({
    */
   const [override, setOverride] = useState<string | null>(null);
 
-  const preferred = settings?.chat.generation.workflowId ?? '';
+  const preferred = forced || (settings?.chat.generation.workflowId ?? '');
   const fallback =
     localStorage.getItem('latent.lastWorkflowId') ?? workflows.data?.[0]?.id ?? null;
   const wanted = override ?? (preferred !== '' ? preferred : fallback);
@@ -346,7 +358,9 @@ function BuildPromptBody({
    * Overriding to another workflow means its values are the honest starting
    * point — the chat's stored values describe a different graph's fields.
    */
-  const ownSettings = preferred !== '' && workflowId === preferred;
+  // Not for a forced workflow: the chat's stored values describe the graph it
+  // was set up for, and this is a different one.
+  const ownSettings = !forced && preferred !== '' && workflowId === preferred;
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

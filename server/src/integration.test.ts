@@ -6250,6 +6250,158 @@ describe('what the user likes', () => {
     }
   }, 30_000);
 
+  /**
+   * A wandering round: notes drawn here, never on the way out.
+   *
+   * The draw is the server's because the notes are encrypted here and are
+   * deliberately never shown — the mode is for being surprised by your own
+   * taste, not for reading a list of it. What the browser gets back is a
+   * prompt.
+   */
+  it('makes a picture out of a few notes, and keeps the notes to itself', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+
+      /*
+       * A pool of exactly three, so "two were drawn" means something.
+       *
+       * The tests above this one leave their notes for the shared cleanup, and
+       * a draw of two out of nine says nothing about how many were asked for.
+       */
+      const before = await json<TasteProfile>(api('/api/taste'));
+      for (const entry of before.entries) {
+        await api(`/api/taste/entries/${entry.id}`, { method: 'DELETE' });
+      }
+
+      const written = ['low fog over water', 'brutalist stairwells', 'washed-out teal'];
+      for (const text of written) {
+        const made = await json<TasteEntry>(
+          api('/api/taste/entries', { method: 'POST', body: JSON.stringify({ text }) }),
+        );
+        entries.push(made.id);
+      }
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { wander: { attributes: 2, sampling: 'chat' } } }),
+      });
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      llama.script({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a flooded stairwell at dawn', reason: 'Drawn from the notes.' },
+        },
+      });
+      const events = await readStream(
+        await api(`/api/chat/conversations/${chat.id}/wander`, { method: 'POST' }),
+      );
+
+      const sent = llama.requests[llama.requests.length - 1] as {
+        messages: { role: string; content: string }[];
+        tools?: { function: { name: string } }[];
+      };
+      const turn = sent.messages[sent.messages.length - 1]!;
+
+      // Exactly the number asked for, and only from what is switched on.
+      const drawn = written.filter((text) => turn.content.includes(text));
+      expect(drawn).toHaveLength(2);
+      expect(turn.content).toContain('drawn at random');
+      // One tool, and it is the one that writes a prompt.
+      expect(sent.tools?.map((tool) => tool.function.name)).toEqual(['build_prompt']);
+
+      /*
+       * And the call is stamped as a wandering one, which is what makes
+       * tapping its picture open what made it rather than the viewer.
+       */
+      const messageId = events.find(
+        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
+      )?.messageId;
+      const stored = await json<{ messages: ChatMessage[] }>(
+        api(`/api/chat/conversations/${chat.id}`),
+      );
+      const call = stored.messages.find((message) => message.id === messageId)?.toolCall;
+      expect(call?.tool).toBe('build_prompt');
+      expect(call?.tool === 'build_prompt' && call.fromWander).toBe(true);
+    } finally {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { wander: { attributes: 3, sampling: 'chat' } } }),
+      });
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
+   * Sampling of its own, because this is not a conversation.
+   *
+   * Nobody reads the words, the same few notes come round again, and a model at
+   * its careful settings writes the same prompt from them every time.
+   */
+  it('sends the wandering run’s own sampling when it has been given one', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      /*
+       * Both ends set explicitly, because this is about them differing.
+       *
+       * The conversation's own sampling is whatever an earlier test left it as,
+       * and "the plain turn did not send 1.4" would pass on a suite that had
+       * never set anything at all.
+       */
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: {
+            sampling: { ...defaultSampling(), temperature: { on: true, value: 0.2 } },
+            wander: {
+              attributes: 1,
+              sampling: 'own',
+              ownSampling: { ...defaultSampling(), temperature: { on: true, value: 1.4 } },
+            },
+          },
+        }),
+      });
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      llama.script({
+        toolCall: { name: 'build_prompt', arguments: { prompt: 'something else', reason: 'x' } },
+      });
+      await readStream(
+        await api(`/api/chat/conversations/${chat.id}/wander`, { method: 'POST' }),
+      );
+
+      const sent = llama.requests[llama.requests.length - 1] as Record<string, unknown>;
+      expect(sent.temperature).toBe(1.4);
+
+      // …and an ordinary turn is untouched by it.
+      llama.script({ content: 'Fine.' });
+      await readStream(
+        await api(`/api/chat/conversations/${chat.id}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'hello' }),
+        }),
+      );
+      const plain = llama.requests[llama.requests.length - 1] as Record<string, unknown>;
+      expect(plain.temperature).toBe(0.2);
+    } finally {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: {
+            sampling: defaultSampling(),
+            wander: { attributes: 3, sampling: 'chat', ownSampling: defaultSampling() },
+          },
+        }),
+      });
+      await llama.close();
+    }
+  }, 30_000);
+
   /** Signing out and back in leaves the notes where they were. */
   it('keeps the notes readable across a lock and a sign-in', async () => {
     const server = await bootIsolated();
