@@ -8,10 +8,12 @@ import type {
   ChatSettings,
   ChatStreamEvent,
   ChatToolCall,
+  ChatConversationDetail,
   ChatToolName,
   ChatToolResult,
   ProposedBlock,
 } from '@latent/shared';
+import { DEFAULT_WANDER_DRAW } from '@latent/shared';
 
 import {
   DEFAULT_SYSTEM_PROMPT,
@@ -45,6 +47,59 @@ const MAX_ATTACHMENTS = 4;
 function llamaConnection(ctx: AppContext): ConnectionConfig | null {
   const active = ctx.store.getActiveConnection('llama');
   return active ? toConfig(active) : null;
+}
+
+/**
+ * The notes the last few wandering rounds used, so this one can avoid them.
+ *
+ * Read back out of the conversation rather than held in memory: the rounds are
+ * already recorded, this server is restarted often, and a run that forgets what
+ * it just showed you the moment the process reloads is a run whose "don't
+ * repeat yourself" setting does not work on the one machine it matters on.
+ *
+ * `rounds` counts wandering rounds, not messages — the transcript has two or
+ * three messages per round and counting those would make the setting mean
+ * something different depending on how much the model happened to say.
+ */
+function recentWanderNotes(messages: ChatMessage[], rounds: number): string[] {
+  const wanted = Math.max(0, Math.floor(rounds) || 0);
+  if (wanted === 0) return [];
+
+  const seen: string[] = [];
+  let found = 0;
+  for (let index = messages.length - 1; index >= 0 && found < wanted; index -= 1) {
+    const call = messages[index]?.toolCall;
+    if (call?.tool !== 'build_prompt' || !call.wanderNoteIds) continue;
+    seen.push(...call.wanderNoteIds);
+    found += 1;
+  }
+  return seen;
+}
+
+/**
+ * A conversation with the wandering notes put back into words.
+ *
+ * The ids are what is stored; the words live in the vault. Done here rather
+ * than in the store because it needs the vault, and because a locked server
+ * should still be able to hand over the conversation — just without this part
+ * of it, which is exactly what `textFor` does when it cannot read.
+ */
+function withWanderNotes(
+  ctx: AppContext,
+  chat: ChatConversationDetail,
+): ChatConversationDetail {
+  if (!chat.messages.some((message) => message.toolCall?.tool === 'build_prompt')) return chat;
+
+  return {
+    ...chat,
+    messages: chat.messages.map((message) => {
+      const call = message.toolCall;
+      if (call?.tool !== 'build_prompt' || !call.wanderNoteIds?.length) return message;
+      const notes = ctx.taste.textFor(call.wanderNoteIds);
+      if (notes.length === 0) return message;
+      return { ...message, toolCall: { ...call, wanderNotes: notes } };
+    }),
+  };
 }
 
 /**
@@ -133,7 +188,8 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
 
   app.get<{ Params: { id: string } }>('/api/chat/conversations/:id', async (request, reply) => {
     const chat = ctx.store.getChat(request.params.id);
-    return chat ?? reply.code(404).send({ error: 'No such conversation' });
+    if (!chat) return reply.code(404).send({ error: 'No such conversation' });
+    return withWanderNotes(ctx, chat);
   });
 
   app.delete<{ Params: { id: string } }>('/api/chat/conversations/:id', async (request, reply) => {
@@ -353,12 +409,14 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
   );
 
   /**
-   * One round of wandering: a few notes, drawn at random, made into a picture.
+   * One round of wandering: a few notes, drawn under your rules, made into a
+   * picture.
    *
-   * The draw happens here rather than in the browser for two reasons. The notes
-   * are encrypted and only readable on this side — and they are deliberately
-   * never on screen, because the point of the mode is to be surprised by your
-   * own taste rather than to read a list of it.
+   * The draw happens here rather than in the browser because the notes are
+   * encrypted and only readable on this side. Which notes are eligible, how
+   * many may come from one heading and which headings insist on a place is
+   * `settings.chat.wander.draw`; see `WanderDraw` for what each of those is
+   * for.
    */
   app.post<{ Params: { id: string } }>(
     '/api/chat/conversations/:id/wander',
@@ -367,15 +425,24 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       if (!chat) return reply.code(404).send({ error: 'No such conversation' });
 
       const wander = ctx.store.getSettings().chat.wander;
+      const rules = { ...DEFAULT_WANDER_DRAW, ...(wander.draw ?? {}) };
       const profile = ctx.taste.profileOrNull();
-      const notes = profile ? drawTaste(profile, wander.attributes) : [];
+      const drawn = profile
+        ? drawTaste(profile, wander.attributes, {
+            rules,
+            exclude: recentWanderNotes(chat.messages, rules.avoidRepeats),
+          })
+        : [];
 
       return streamReply(app, ctx, reply, chat.id, 'build_prompt', {
-        instruction: wanderInstruction(notes),
+        instruction: wanderInstruction(drawn.map((note) => note.text)),
         // Sampling of its own, when the settings say the conversation's is too
         // careful for a mode whose whole product is variety.
         ...(wander.sampling === 'own' ? { sampling: wander.ownSampling } : {}),
-        wander: true,
+        wander: {
+          ids: drawn.map((note) => note.id),
+          notes: drawn.map((note) => note.text),
+        },
       });
     },
   );
@@ -416,8 +483,14 @@ async function streamReply(
     instruction?: string;
     /** Sampling for this turn alone. */
     sampling?: ChatSampling;
-    /** True for a wandering round, which is recorded on the call it produces. */
-    wander?: boolean;
+    /**
+     * The notes this wandering round drew, or nothing when it is not one.
+     *
+     * Both halves are recorded on the call it produces, and differently: the
+     * ids go into the database and the words go out with the frame, because
+     * one of those two places is encrypted and the other is not.
+     */
+    wander?: { ids: string[]; notes: string[] };
   } = {},
 ): Promise<void> {
   const chat = ctx.store.getChat(chatId);
@@ -587,10 +660,25 @@ async function streamReply(
           review && event.call.tool === 'ask_user'
             ? { ...event.call, fromReview: true }
             : options.wander && event.call.tool === 'build_prompt'
-              ? { ...event.call, fromWander: true }
+              ? { ...event.call, fromWander: true, wanderNoteIds: options.wander.ids }
               : event.call;
         message.toolCall = stamped;
-        send({ ...event, call: stamped });
+        /*
+         * The words go out with the frame; only the ids are kept.
+         *
+         * A chat message is stored in the clear, and these notes are encrypted
+         * on purpose — writing the text here would put the profile in the
+         * database a round at a time. Reading a conversation back fills the
+         * words in again from the vault, so this frame and that read agree
+         * about what is on screen while the database knows nothing.
+         */
+        send({
+          ...event,
+          call:
+            options.wander && stamped.tool === 'build_prompt'
+              ? { ...stamped, wanderNotes: options.wander.notes }
+              : stamped,
+        });
         continue;
       }
       send(event);

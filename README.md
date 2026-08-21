@@ -87,10 +87,12 @@ down the side, and the render on screen beside the form that made it. See
   conversation, so “make the sky darker” lands on the picture rather than on its
   own description of it.
 - **A mode that just shows you things.** Switch on wandering and the model makes
-  picture after picture out of a few of your notes drawn at random — a settable
-  number, with its own workflow and its own sampling, until you stop it — and it
-  keeps going while you are looking at something else. Tapping one opens the
-  viewer; ✦ in its corner opens the prompt behind it. See
+  picture after picture out of a few of your notes, until you stop it — and it
+  keeps going while you are looking at something else. Which notes, and how they
+  are spread, is yours to set in detail: headings that must be in every picture,
+  headings left out of it, at most one thing from any of them, and how long
+  before a note may come round again. Tapping a picture opens the viewer; ✦ in
+  its corner opens the prompt and the notes behind it. See
   [Wandering](#wandering).
 - **Somewhere to start when you do not know what to make.** Write down what you
   like — concepts, aesthetics, places, films — under headings you make up or
@@ -1246,7 +1248,8 @@ Three things are settable, under Settings → Chat → **Wandering**:
 
 | | |
 | --- | --- |
-| **Notes in each picture** | One to six, three by default — and it is exactly that many, never more. One is a variation on a theme; six is a collage where every picture contains everything and they all start to rhyme. |
+| **Notes in each picture** | One to six, three by default. One is a variation on a theme; six is a collage where every picture contains everything and they all start to rhyme. A ceiling rather than a promise — see *what it draws from* below. |
+| **What it draws from** | Which notes are eligible and how they are spread. Its own sheet, because it is the setting this mode lives or dies by; see [Choosing what it draws from](#choosing-what-it-draws-from). |
 | **Rendered with** | Whatever the chat uses, or a workflow of its own — worth setting, because the graph you iterate with is often the slow one and a run that goes all evening wants the fast one. |
 | **Sampling for these** | The chat's, or its own. |
 
@@ -1270,17 +1273,77 @@ another app — does not stop it; the pictures are simply there when you come
 back. It used to stop, because the step that queued each picture happened inside
 the dialog that shows you a proposal, and an unmounted screen has no dialog.
 
-**Only those notes, and nothing else about you.** Two things make that true. The
-draw is the whole budget — pinned notes are in it like any other, rather than
-arriving on top of it, which is the one place pinning does not apply: a pin
-holds against something you asked for, and here you have asked for nothing. And
-the section of the system prompt that normally lists everything you like is left
-out of these turns entirely. Both at once was the mode asking for three things
-and being handed the whole profile underneath, which is how every round ended up
+**Only those notes, and nothing else about you.** The section of the system
+prompt that normally lists everything you like is left out of these turns
+entirely. Having both at once was the mode asking for three things and being
+handed the whole profile underneath, which is how every round ended up
 containing everything.
+
+**And it says what each picture was drawn from.** The notes are never written
+above a picture as it arrives — being shown things is the point, and a caption
+listing your own taste back at you is not being shown anything — but ✦ in the
+corner opens the prompt *and* the handful of notes behind it. The mode used to
+say nothing at all about this, which held right up until a picture came out well
+and there was no way to find out why.
+
+What is stored on the message is the notes' **ids**, not their words. A chat
+message goes into the database in the clear and these notes are encrypted on
+purpose; writing the text there would have put the profile in plaintext one
+round at a time. The words are put back from the vault when the conversation is
+read, so a locked server simply has none to give.
 
 Saying anything in the chat stops the run — you have taken over, which is what
 the composer is for.
+
+### Choosing what it draws from
+
+A flat shuffle of every note you have switched on is the obvious way to run this
+mode, and it is not good enough for a list anyone has actually kept. Notes are
+not interchangeable: a heading called *Format* holds things that belong in every
+picture, one called *Films* holds a dozen near-synonyms of which you want
+exactly one, and one called *Ideas for later* is not something you want turning
+up tonight at all. Nothing but you knows which is which, so Settings → Chat →
+Wandering → **Set up…** is where you say.
+
+**Each heading is one of three things.**
+
+| | |
+| --- | --- |
+| **Sometimes** | The default. Its notes join the pool and may or may not come up. |
+| **Always** | Guaranteed a place in every round, however few notes are being drawn. This is the one the mode needed most: the heading that decides what kind of picture this is at all should not be left to a coin toss. |
+| **Never** | Out of wandering — *without* being switched off for the chat, which is the difference between "not tonight" and "not any more". |
+
+**And each has a cap**, the **≤** beside it, on top of a general one. Setting the
+general cap to one means a round takes at most one thing from each heading,
+which is what stops it being four ways of saying the same thing because one
+heading happened to win the shuffle four times. A heading can override it in
+either direction.
+
+**The caps are hard.** A round would rather come up short than break one: three
+notes wanted, a cap of one, and two headings in play means two notes, not two
+notes plus a repeat to make up the number. Quietly doubling up is exactly the
+fault the rule was set to prevent — so the sheet tells you, in a line at the
+bottom, how many a round can actually reach under the rules as they stand.
+
+Three more, for the cases headings do not cover:
+
+| | |
+| --- | --- |
+| **Notes under no heading** | In the draw or left out. They have no heading to switch off, so they get their own switch — for a profile where the loose notes are the unsorted inbox and the filed ones the considered list. |
+| **Pinned notes** | *In the draw* (the default — a pin means "this holds even when I have asked for something specific", and here nobody has asked for anything, so it buys nothing), *always in* (the other reading: a pinned note is part of everything you make), or *left out*. |
+| **Before a note may come round again** | Off, or one to five rounds. The fault of a long run is not repeated pictures, it is repeated notes: a short list will show you the same one twice within a minute and by the fourth picture it reads as the model being stuck. Dropped the moment it would leave nothing to draw — "don't repeat yourself" cannot mean "stop". |
+
+That last one reads the previous rounds back out of the conversation rather than
+remembering them in memory, so it survives a restart — which is the machine it
+matters on.
+
+**Half of the sheet asks for your password and half does not,** which is the
+same line drawn everywhere else: *at most one from a heading* is a fact about
+the draw and says nothing about you, while choosing between headings means
+reading what they are called, and what they are called is part of the profile.
+So the general rules are open and the list of headings is behind the door.
+Deleting a heading takes its rule with it, so the summary on the settings screen
+never counts a heading that has not existed for weeks.
 
 ### What you like
 

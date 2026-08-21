@@ -461,6 +461,15 @@ function BuildPromptBody({
 
   const imageField = detail ? findFieldByRole(detail.schema, 'image_input') : undefined;
 
+  /*
+   * The notes this round drew, when it was a wandering one.
+   *
+   * Only on a `build_prompt` — a rewrite is a second look at a picture that
+   * already exists, and what it was originally drawn from is on the proposal
+   * further up rather than on this one.
+   */
+  const drawnFrom = call.tool === 'build_prompt' ? (call.wanderNotes ?? []) : [];
+
   return (
     <>
       <div className="flex shrink-0 items-center gap-2 border-b border-line px-3 py-2">
@@ -505,6 +514,37 @@ function BuildPromptBody({
         )}
 
         {call.reason !== '' && <p className="text-xs text-muted">{call.reason}</p>}
+
+        {/*
+          What this one was made of.
+
+          The mode used to say nothing about this, on the argument that being
+          surprised by your own taste is the point and reading a list of it is
+          not. Half right: that holds *while you are being shown things*, and
+          the moment one comes out well the only question is why. So it is here,
+          in the dialog you have to go and open, rather than written above every
+          picture as it arrives.
+
+          Only what this round drew — never the whole profile, which stays
+          behind the password where it belongs.
+        */}
+        {drawnFrom.length > 0 && (
+          <div className="rounded-lg border border-accent/25 bg-accent/5 px-2.5 py-2">
+            <p className="mb-1 text-[10px] tracking-wide text-accent/80 uppercase">
+              Drawn from what you like
+            </p>
+            <ul className="space-y-0.5">
+              {drawnFrom.map((drawn, index) => (
+                <li key={`${drawn}-${index}`} className="text-xs leading-snug">
+                  <span aria-hidden className="mr-1.5 text-muted">
+                    ❋
+                  </span>
+                  {drawn}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/*
           What changed, above the box rather than inside it.

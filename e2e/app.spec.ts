@@ -2896,8 +2896,21 @@ test.describe('the chat module', () => {
             // Pinned for the same reason as everything else here: a run left on
             // would accept the next test's proposals for it.
             autonomous: { enabled: false, maxRounds: 4 },
-            // Pinned like the rest: a run left on would take over the next test.
-            wander: { workflowId: '', attributes: 3, sampling: 'chat' },
+            // Pinned like the rest: a run left on would take over the next
+            // test, and so would its draw rules — settings merge one group
+            // deep, so a test that switches a heading off leaves it off.
+            wander: {
+              workflowId: '',
+              attributes: 3,
+              sampling: 'chat',
+              draw: {
+                categories: {},
+                perCategory: 0,
+                loose: 'draw',
+                pinned: 'draw',
+                avoidRepeats: 0,
+              },
+            },
           },
         },
       }),
@@ -3624,7 +3637,98 @@ test.describe('the chat module', () => {
     await expect(dialog.getByRole('textbox', { name: 'The prompt' })).toHaveValue(
       /wandering picture/,
     );
+
+    /*
+     * And what it was drawn from, which is the other half of "what was that
+     * one?". The notes are never written above the picture as it arrives — the
+     * mode is for being shown things — but a picture that comes out well has to
+     * be able to say why.
+     */
+    await expect(dialog.getByText('Drawn from what you like')).toBeVisible();
+    const drawn = dialog.locator('li', { hasText: /low fog over water|brutalist stairwells/ });
+    await expect(drawn).toHaveCount(2);
     await page.screenshot({ path: 'test-results/97-wander-prompt.png' });
+  });
+
+  /**
+   * Choosing what a round is allowed to draw from.
+   *
+   * The mode began as a flat shuffle of everything switched on, which treats a
+   * heading of near-synonyms and a heading of settled decisions as the same
+   * thing. What is worth proving here is the whole path: the rules are set on
+   * the sheet, and the very next round obeys them — one heading in every
+   * picture, another out of it altogether.
+   */
+  test('sets what wandering draws from, and draws that way', async ({ page }) => {
+    await seedWorkflow();
+    await withTaste(async (ctx, headers) => {
+      const heading = async (name: string) => {
+        const made = (await (
+          await ctx.post('/api/taste/categories', { data: { name }, headers })
+        ).json()) as { id: string };
+        return made.id;
+      };
+      const format = await heading('Format');
+      const later = await heading('Ideas for later');
+      await ctx.post('/api/taste/entries', {
+        data: { text: 'shot on 6x6 film', categoryId: format },
+        headers,
+      });
+      await ctx.post('/api/taste/entries', {
+        data: { text: 'a lighthouse someday', categoryId: later },
+        headers,
+      });
+      await ctx.post('/api/taste/entries', { data: { text: 'low fog over water' }, headers });
+      await ctx.patch('/api/settings', {
+        data: { chat: { wander: { attributes: 2, sampling: 'chat' } } },
+      });
+    });
+
+    await open(page, '/settings');
+    await page.getByRole('button', { name: 'Set up…' }).click();
+
+    const sheet = page.getByRole('dialog', { name: 'What wandering draws from' });
+    await expect(sheet).toBeVisible();
+
+    /*
+     * The rules about the draw itself need no password: "at most one from a
+     * heading" says nothing about who you are.
+     */
+    await sheet.getByRole('radio', { name: 'At most from one heading: 1' }).click();
+
+    // The headings do, because choosing between them means reading them — and
+    // a heading's name is part of the profile like anything else in it.
+    await expect(sheet.getByText('Format')).toHaveCount(0);
+    await sheet.getByLabel('Password').fill(PASSWORD);
+    await sheet.getByRole('button', { name: 'Show the headings' }).click();
+    await expect(sheet.getByText('Format')).toBeVisible({ timeout: 30_000 });
+
+    await sheet.getByRole('radio', { name: 'Format: Always' }).click();
+    await sheet.getByRole('radio', { name: 'Ideas for later: Never' }).click();
+    await page.screenshot({ path: 'test-results/95-wander-setup.png' });
+    await sheet.getByRole('button', { name: 'Done' }).click();
+
+    // Said back on the settings screen, so the rules are visible without
+    // opening anything or typing the password again.
+    await expect(page.getByText(/1 heading always in/)).toBeVisible();
+
+    // And the next round draws that way.
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a square photograph', reason: 'From the notes.' },
+      },
+    });
+    await open(page, '/chat');
+    await page.getByRole('button', { name: 'Wander through your notes' }).click();
+    await expect(page.getByRole('button', { name: /^Open picture/ })).toHaveCount(1, {
+      timeout: 120_000,
+    });
+    await page.getByTestId('wander-strip').getByRole('button', { name: 'Stop' }).click();
+
+    const asked = await lastRequest();
+    expect(asked).toContain('shot on 6x6 film');
+    expect(asked).not.toContain('a lighthouse someday');
   });
 
   /**

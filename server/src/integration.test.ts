@@ -34,7 +34,7 @@ import type {
   WorkflowDetail,
   WorkflowScanResult,
 } from '@latent/shared';
-import { defaultSampling } from '@latent/shared';
+import { DEFAULT_WANDER_DRAW, defaultSampling } from '@latent/shared';
 import {
   ltxVideoGguf,
   minimaxMusic,
@@ -6273,14 +6273,16 @@ describe('what the user likes', () => {
   }, 30_000);
 
   /**
-   * A wandering round: notes drawn here, never on the way out.
+   * A wandering round: the draw happens here, and says what it drew.
    *
-   * The draw is the server's because the notes are encrypted here and are
-   * deliberately never shown — the mode is for being surprised by your own
-   * taste, not for reading a list of it. What the browser gets back is a
-   * prompt.
+   * The draw is the server's because the notes are encrypted here. What goes
+   * back is the prompt and the handful of notes *this round* used — never the
+   * profile, which stays behind the password. And what is stored is their ids,
+   * not their words: a chat message is written to the database in the clear,
+   * and the whole reason these notes are encrypted is that nobody would think
+   * to look at them.
    */
-  it('makes a picture out of a few notes, and keeps the notes to itself', async () => {
+  it('makes a picture out of a few notes, and records which ones', async () => {
     const llama = createMockLlama();
     const url = await llama.listen(0);
 
@@ -6347,10 +6349,205 @@ describe('what the user likes', () => {
       const call = stored.messages.find((message) => message.id === messageId)?.toolCall;
       expect(call?.tool).toBe('build_prompt');
       expect(call?.tool === 'build_prompt' && call.fromWander).toBe(true);
+
+      /*
+       * And it says what it was made of — which is the one question an endless
+       * stream raises, and one the mode used to have no answer to.
+       */
+      const notes = call?.tool === 'build_prompt' ? (call.wanderNotes ?? []) : [];
+      expect(notes.sort()).toEqual(drawn.sort());
+      // The ids are what actually went to disk; the words were put back on the
+      // way out. Both halves have to be there or the round cannot avoid
+      // repeating itself later.
+      const ids = call?.tool === 'build_prompt' ? (call.wanderNoteIds ?? []) : [];
+      expect(ids).toHaveLength(2);
+      for (const id of ids) expect(entries).toContain(id);
     } finally {
       await api('/api/settings', {
         method: 'PATCH',
         body: JSON.stringify({ chat: { wander: { attributes: 3, sampling: 'chat' } } }),
+      });
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
+   * The rules that make the mode usable on a list anyone has curated.
+   *
+   * A flat shuffle treats a heading of near-synonyms and a heading of settled
+   * decisions as the same thing, and the result is four ways of saying "teal"
+   * in one picture and the format note never turning up. This is the whole
+   * feature in one round: a heading that must be in it, a heading that must
+   * not, and a cap that stops any one of them taking over.
+   */
+  it('draws under the rules: one heading always, one never, one at a time', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+
+      // A clean slate, so what comes back names the rules rather than the
+      // leftovers of whatever ran before.
+      const before = await json<TasteProfile>(taste('/api/taste'));
+      for (const entry of before.entries) {
+        await taste(`/api/taste/entries/${entry.id}`, { method: 'DELETE' });
+      }
+      for (const category of before.categories) {
+        await taste(`/api/taste/categories/${category.id}`, { method: 'DELETE' });
+      }
+
+      const heading = async (name: string) => {
+        const made = await json<TasteCategory>(
+          taste('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name }) }),
+        );
+        categories.push(made.id);
+        return made.id;
+      };
+      const wrote = async (categoryId: string | null, text: string) => {
+        const made = await json<TasteEntry>(
+          taste('/api/taste/entries', {
+            method: 'POST',
+            body: JSON.stringify({ text, categoryId }),
+          }),
+        );
+        entries.push(made.id);
+        return made.id;
+      };
+
+      const format = await heading('Format');
+      const colour = await heading('Colour');
+      const later = await heading('Ideas for later');
+
+      await wrote(format, 'shot on 6x6 film');
+      const colours = ['washed-out teal', 'sodium amber', 'cold grey-green'];
+      for (const text of colours) await wrote(colour, text);
+      await wrote(later, 'a lighthouse someday');
+
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: {
+            wander: {
+              attributes: 3,
+              sampling: 'chat',
+              draw: {
+                perCategory: 1,
+                loose: 'draw',
+                pinned: 'draw',
+                avoidRepeats: 0,
+                categories: {
+                  [format]: { role: 'always', max: 0 },
+                  [later]: { role: 'off', max: 0 },
+                },
+              },
+            },
+          },
+        }),
+      });
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      llama.script({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a square photograph', reason: 'From the notes.' },
+        },
+      });
+      await readStream(await api(`/api/chat/conversations/${chat.id}/wander`, { method: 'POST' }));
+
+      const sent = llama.requests[llama.requests.length - 1] as {
+        messages: { role: string; content: string }[];
+      };
+      const turn = sent.messages[sent.messages.length - 1]!.content;
+
+      // The heading that insists is in it.
+      expect(turn).toContain('shot on 6x6 film');
+      // The one switched out of wandering is not — though it is still a note,
+      // and still switched on for the chat.
+      expect(turn).not.toContain('a lighthouse someday');
+      // And the heading of near-synonyms contributed exactly one of its three.
+      expect(colours.filter((text) => turn.includes(text))).toHaveLength(1);
+    } finally {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: { wander: { attributes: 3, sampling: 'chat', draw: DEFAULT_WANDER_DRAW } },
+        }),
+      });
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
+   * Two rounds running, and the second one does not repeat the first.
+   *
+   * The fault of a long run is not repeated pictures, it is repeated notes: a
+   * short list will show you the same one twice within a minute. The previous
+   * round's notes are read back out of the conversation, so this survives a
+   * restart — which is the only place it matters.
+   */
+  it('keeps the last round’s notes out of the next one', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+
+      const before = await json<TasteProfile>(taste('/api/taste'));
+      for (const entry of before.entries) {
+        await taste(`/api/taste/entries/${entry.id}`, { method: 'DELETE' });
+      }
+
+      const written = ['low fog over water', 'brutalist stairwells', 'a wet street at night'];
+      for (const text of written) {
+        const made = await json<TasteEntry>(
+          taste('/api/taste/entries', { method: 'POST', body: JSON.stringify({ text }) }),
+        );
+        entries.push(made.id);
+      }
+
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: {
+            wander: {
+              attributes: 1,
+              sampling: 'chat',
+              draw: { ...DEFAULT_WANDER_DRAW, avoidRepeats: 1 },
+            },
+          },
+        }),
+      });
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      const asked: string[] = [];
+      for (const round of [1, 2, 3]) {
+        llama.script({
+          toolCall: {
+            name: 'build_prompt',
+            arguments: { prompt: `round ${round}`, reason: 'From the notes.' },
+          },
+        });
+        await readStream(
+          await api(`/api/chat/conversations/${chat.id}/wander`, { method: 'POST' }),
+        );
+        const sent = llama.requests[llama.requests.length - 1] as {
+          messages: { content: string }[];
+        };
+        const turn = sent.messages[sent.messages.length - 1]!.content;
+        asked.push(written.find((text) => turn.includes(text)) ?? '');
+      }
+
+      // Each round drew one note, and never the one immediately before it.
+      expect(asked.every((text) => text !== '')).toBe(true);
+      expect(asked[1]).not.toBe(asked[0]);
+      expect(asked[2]).not.toBe(asked[1]);
+    } finally {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: { wander: { attributes: 3, sampling: 'chat', draw: DEFAULT_WANDER_DRAW } },
+        }),
       });
       await llama.close();
     }

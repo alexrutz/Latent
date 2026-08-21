@@ -45,6 +45,7 @@ import type {
 import type { ApiWorkflow, RandomPromptConfig } from '@latent/shared';
 import {
   DEFAULT_RANDOM_PROMPT_CONFIG,
+  DEFAULT_WANDER_DRAW,
   defaultSampling,
   mediaKindOf,
   normaliseRandomPromptConfig,
@@ -952,6 +953,10 @@ const DEFAULT_SETTINGS: AppSettings = {
     wander: {
       workflowId: '',
       attributes: 3,
+      // Everything eligible and nothing capped, which is the flat shuffle this
+      // mode started as. The rules are there to be reached for; see the sheet
+      // under Settings → Chat → Wandering.
+      draw: { ...DEFAULT_WANDER_DRAW },
       sampling: 'chat',
       /*
        * Warm, and only used once "its own" is chosen.

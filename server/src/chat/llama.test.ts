@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { DEFAULT_WANDER_DRAW } from '@latent/shared';
 import type {
   ChatMessage,
   ChatStreamEvent,
@@ -825,15 +826,20 @@ describe('how far the notes reach', () => {
 /* Wandering                                                           */
 /* ------------------------------------------------------------------ */
 
-describe('drawing a few notes at random', () => {
+describe('drawing a few notes for a wandering round', () => {
+  /** The flat shuffle the mode started as, and still the default. */
+  const flat = { rules: DEFAULT_WANDER_DRAW, random: () => 0 };
+  const texts = (drawn: { text: string }[]) => drawn.map((note) => note.text);
+
   /**
-   * Exactly as many as were asked for — pinned ones included in the count.
+   * At most as many as were asked for — pinned ones included in the count.
    *
-   * A deliberate exception to what pinning means elsewhere. A pin says "this
-   * holds even when they have asked for something specific", and in a wandering
-   * round nobody has asked for anything, so there is nothing for it to hold
-   * against. Letting every pinned note in *on top of* the draw is how a long
-   * list turns every round into the same crowded picture.
+   * Pinning has three readings here and this is the default one: a pin says
+   * "this holds even when they have asked for something specific", and in a
+   * wandering round nobody has asked for anything. Letting every pinned note in
+   * *on top of* the draw is how a long list turns every round into the same
+   * crowded picture — which is now the `always` setting, for people who want
+   * exactly that.
    */
   it('draws the number asked for and no more, pins included', () => {
     const base = profile();
@@ -842,22 +848,27 @@ describe('drawing a few notes at random', () => {
       note({ id: 'q', text: 'never any text', always: true }),
     );
 
-    expect(drawTaste(base, 1, () => 0)).toHaveLength(1);
-    expect(drawTaste(base, 3, () => 0)).toHaveLength(3);
+    expect(drawTaste(base, 1, flat)).toHaveLength(1);
+    expect(drawTaste(base, 3, flat)).toHaveLength(3);
   });
 
-  it('never draws more than there are, or fewer than asked for', () => {
-    expect(drawTaste(profile(), 99, () => 0)).toHaveLength(2);
-    expect(drawTaste(profile(), 1, () => 0)).toHaveLength(1);
-    expect(drawTaste(profile(), 0, () => 0)).toEqual([]);
-    expect(drawTaste({ categories: [], entries: [] }, 3, () => 0)).toEqual([]);
+  it('never draws more than there are', () => {
+    expect(drawTaste(profile(), 99, flat)).toHaveLength(2);
+    expect(drawTaste(profile(), 1, flat)).toHaveLength(1);
+    expect(drawTaste(profile(), 0, flat)).toEqual([]);
+    expect(drawTaste({ categories: [], entries: [] }, 3, flat)).toEqual([]);
   });
 
   /** Only what is switched on, exactly as everywhere else the notes are read. */
   it('obeys the switches', () => {
-    const drawn = drawTaste(profile(), 99, () => 0);
+    const drawn = texts(drawTaste(profile(), 99, flat));
     expect(drawn).not.toContain('neon');
     expect(drawn).not.toContain('harbours');
+  });
+
+  /** The id comes back too, because that is what a round records. */
+  it('says which notes they were, not only what they said', () => {
+    expect(drawTaste(profile(), 99, flat).map((drawn) => drawn.id).sort()).toEqual(['a', 'd']);
   });
 
   /**
@@ -871,9 +882,173 @@ describe('drawing a few notes at random', () => {
       categories: [],
       entries: ['a', 'b', 'c', 'd', 'e', 'f'].map((text) => note({ id: text, text })),
     };
-    const first = drawTaste(many, 2, () => 0);
-    const last = drawTaste(many, 2, () => 0.999);
-    expect(first).not.toEqual(last);
+    const first = drawTaste(many, 2, { rules: DEFAULT_WANDER_DRAW, random: () => 0 });
+    const last = drawTaste(many, 2, { rules: DEFAULT_WANDER_DRAW, random: () => 0.999 });
+    expect(texts(first)).not.toEqual(texts(last));
+  });
+
+  /* ---------------------------------------------------------------- */
+  /* The rules                                                         */
+  /* ---------------------------------------------------------------- */
+
+  /** Two headings of near-synonyms, which is the case the caps exist for. */
+  const filed = (): TasteProfile => ({
+    categories: [
+      { id: 'colour', name: 'Colour', active: true, position: 0, createdAt: 1 },
+      { id: 'places', name: 'Places', active: true, position: 1, createdAt: 2 },
+      { id: 'later', name: 'Ideas for later', active: true, position: 2, createdAt: 3 },
+    ],
+    entries: [
+      note({ id: 'c1', categoryId: 'colour', text: 'teal' }),
+      note({ id: 'c2', categoryId: 'colour', text: 'amber' }),
+      note({ id: 'c3', categoryId: 'colour', text: 'sodium' }),
+      note({ id: 'p1', categoryId: 'places', text: 'harbours' }),
+      note({ id: 'p2', categoryId: 'places', text: 'stairwells' }),
+      note({ id: 'l1', categoryId: 'later', text: 'a lighthouse someday' }),
+      note({ id: 'x1', categoryId: null, text: 'loose thought' }),
+    ],
+  });
+
+  const rules = (patch: Partial<typeof DEFAULT_WANDER_DRAW>) => ({
+    rules: { ...DEFAULT_WANDER_DRAW, ...patch },
+    random: () => 0.5,
+  });
+
+  /** The single most useful rule: one thing from each heading, not four. */
+  it('takes at most one from a heading when capped at one', () => {
+    const drawn = drawTaste(filed(), 4, rules({ perCategory: 1 }));
+    const headings = drawn.map((entry) => entry.categoryId);
+    expect(new Set(headings).size).toBe(headings.length);
+  });
+
+  /**
+   * And it comes up short rather than breaking the rule.
+   *
+   * Four wanted, four headings' worth of room — but two of them switched out —
+   * means two notes, not two notes plus a second from somewhere to make up the
+   * number. Quietly doubling up is exactly the fault this rule was asked for.
+   */
+  it('would rather draw fewer than break a cap', () => {
+    const drawn = drawTaste(
+      filed(),
+      4,
+      rules({
+        perCategory: 1,
+        loose: 'off',
+        categories: { later: { role: 'off', max: 0 }, places: { role: 'off', max: 0 } },
+      }),
+    );
+    expect(texts(drawn)).toHaveLength(1);
+    expect(drawn[0]?.categoryId).toBe('colour');
+  });
+
+  /** A heading's own cap beats the general one, in both directions. */
+  it('lets a heading set its own cap', () => {
+    const drawn = drawTaste(
+      filed(),
+      6,
+      rules({ perCategory: 1, categories: { colour: { role: 'draw', max: 2 } } }),
+    );
+    expect(drawn.filter((entry) => entry.categoryId === 'colour')).toHaveLength(2);
+    expect(drawn.filter((entry) => entry.categoryId === 'places')).toHaveLength(1);
+  });
+
+  /** "Never draw from this one" — without switching it off for the chat. */
+  it('leaves a heading out entirely when it is switched off for wandering', () => {
+    const drawn = drawTaste(filed(), 99, rules({ categories: { later: { role: 'off', max: 0 } } }));
+    expect(texts(drawn)).not.toContain('a lighthouse someday');
+    expect(texts(drawn)).toContain('loose thought');
+  });
+
+  /**
+   * The one the mode needs most: a heading that decides what kind of picture
+   * this is at all, guaranteed a place in every round however small.
+   */
+  it('always takes one from a heading marked always', () => {
+    for (const seed of [0, 0.3, 0.9]) {
+      const drawn = drawTaste(filed(), 1, {
+        rules: { ...DEFAULT_WANDER_DRAW, categories: { places: { role: 'always', max: 0 } } },
+        random: () => seed,
+      });
+      expect(drawn.map((entry) => entry.categoryId)).toEqual(['places']);
+    }
+  });
+
+  /** Several of them, each guaranteed, and the rest of the round filled after. */
+  it('gives every insisting heading a place before filling the rest', () => {
+    const drawn = drawTaste(filed(), 3, {
+      rules: {
+        ...DEFAULT_WANDER_DRAW,
+        categories: {
+          places: { role: 'always', max: 0 },
+          colour: { role: 'always', max: 0 },
+        },
+      },
+      random: () => 0.5,
+    });
+    const headings = drawn.map((entry) => entry.categoryId);
+    expect(headings).toContain('places');
+    expect(headings).toContain('colour');
+    expect(drawn).toHaveLength(3);
+  });
+
+  it('can leave the notes filed under no heading out', () => {
+    const drawn = drawTaste(filed(), 99, rules({ loose: 'off' }));
+    expect(texts(drawn)).not.toContain('loose thought');
+  });
+
+  /** The other reading of a pin: part of everything, every round. */
+  it('puts every pinned note in when pinning is set to always', () => {
+    const base = filed();
+    base.entries.push(note({ id: 'pin', categoryId: 'colour', text: '21:9', always: true }));
+
+    const drawn = drawTaste(base, 3, rules({ pinned: 'always' }));
+    expect(texts(drawn)).toContain('21:9');
+    expect(drawn).toHaveLength(3);
+  });
+
+  it('keeps pinned notes out altogether when told to', () => {
+    const base = filed();
+    base.entries.push(note({ id: 'pin', categoryId: 'colour', text: '21:9', always: true }));
+
+    expect(texts(drawTaste(base, 99, rules({ pinned: 'off' })))).not.toContain('21:9');
+  });
+
+  /**
+   * The failure of an endless run is a note coming round again two pictures
+   * later, which reads as the model being stuck.
+   */
+  it('holds back the notes the last rounds used', () => {
+    const stale = ['c1', 'c2', 'c3', 'p1'];
+    const drawn = drawTaste(filed(), 2, {
+      rules: DEFAULT_WANDER_DRAW,
+      exclude: stale,
+      random: () => 0.5,
+    });
+
+    // Which two of the three fresh ones is the shuffle's business; that neither
+    // is one of the four just used is this rule's.
+    expect(drawn).toHaveLength(2);
+    for (const entry of drawn) expect(stale).not.toContain(entry.id);
+  });
+
+  /**
+   * But not to the point of stopping.
+   *
+   * "Do not repeat yourself" cannot mean "draw nothing" — a profile with three
+   * notes and three drawn a round would go silent after the first picture.
+   */
+  it('takes a repeat rather than come back empty', () => {
+    const small: TasteProfile = {
+      categories: [],
+      entries: [note({ id: 'only', text: 'the one note' })],
+    };
+    const drawn = drawTaste(small, 1, {
+      rules: DEFAULT_WANDER_DRAW,
+      exclude: ['only'],
+      random: () => 0,
+    });
+    expect(texts(drawn)).toEqual(['the one note']);
   });
 });
 

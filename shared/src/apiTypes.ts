@@ -1512,8 +1512,15 @@ export interface WanderRun {
    * The whole dial of this mode. One note is a variation on a theme; five is a
    * collage that mostly holds together; more than that and every picture starts
    * to look like every other, because they all contain everything.
+   *
+   * A ceiling rather than a promise: the rules in `draw` can make a round
+   * unable to reach it — a cap of one per heading and three headings is three
+   * notes however high this is set — and a round that quietly doubled up to
+   * hit the number would be breaking the rule that was asked for.
    */
   attributes: number;
+  /** Which notes are eligible, and how they are picked. See `WanderDraw`. */
+  draw: WanderDraw;
   /**
    * Where the sampling for these turns comes from.
    *
@@ -1526,6 +1533,96 @@ export interface WanderRun {
   /** Used when `sampling` is `own`. */
   ownSampling: ChatSampling;
 }
+
+/**
+ * What a wandering round is allowed to draw from, and how.
+ *
+ * A flat shuffle of every note you have switched on is the obvious way to do
+ * this and it is not good enough. Notes are not interchangeable: a heading
+ * called "Format" holds things that belong in every picture, one called "Films"
+ * holds a dozen near-synonyms of which you want exactly one, and one called
+ * "Ideas for later" is not something you want turning up tonight at all. The
+ * draw has to know the difference, and only you can tell it.
+ *
+ * Everything here defaults to the flat shuffle, so an existing setup goes on
+ * behaving as it did until somebody opens the sheet.
+ */
+export interface WanderDraw {
+  /**
+   * Per-heading rules, by category id. A heading not listed is `draw` with no
+   * cap of its own — the default, and the reason a new heading needs no
+   * attention before it starts working.
+   */
+  categories: Record<string, WanderCategoryRule>;
+  /**
+   * At most this many notes from any one heading, unless the heading overrides
+   * it. `0` is no limit.
+   *
+   * Set to one, this is "a round takes at most one thing from each heading",
+   * which is the single most useful rule here: it is what stops a round being
+   * four different ways of saying the same thing because one heading happened
+   * to win the shuffle four times.
+   */
+  perCategory: number;
+  /**
+   * Notes filed under no heading.
+   *
+   * They have no heading to switch off, so they get their own switch. `off` is
+   * for a profile where the loose notes are the unsorted inbox and the filed
+   * ones are the considered list.
+   */
+  loose: 'draw' | 'off';
+  /**
+   * Notes you have pinned.
+   *
+   * `draw` puts them in the pool like any other, with no privilege — the old
+   * behaviour, and defensible: a pin means "this holds even when they have
+   * asked for something specific", and in a wandering round nobody has asked
+   * for anything. `always` is the other reading, that a pinned note is part of
+   * everything you make, and it puts every one of them in every round. `off`
+   * keeps the pins for the conversation and out of this.
+   */
+  pinned: 'draw' | 'always' | 'off';
+  /**
+   * How many rounds back a note stays out of the draw once it has been used.
+   *
+   * The failure mode of an endless run is not repetition of pictures, it is
+   * repetition of *notes*: a profile with eight active notes and three drawn a
+   * round will show you the same one twice within a minute, and by the fourth
+   * picture it reads as the model being stuck. `0` is off.
+   */
+  avoidRepeats: number;
+}
+
+/** What one heading does in the draw. */
+export interface WanderCategoryRule {
+  /**
+   * `draw` is the default: its notes join the pool and may or may not come up.
+   * `always` guarantees the heading a place in every round — the setting for
+   * the heading that decides what kind of picture this is at all. `off` leaves
+   * it out of wandering entirely, without switching it off for the chat.
+   */
+  role: 'off' | 'draw' | 'always';
+  /** At most this many notes from here. `0` defers to `perCategory`. */
+  max: number;
+}
+
+export const DEFAULT_WANDER_DRAW: WanderDraw = {
+  categories: {},
+  // No cap by default: the sheet offers "one from each heading" in a tap, and a
+  // cap arriving unasked-for would quietly change what an existing setup makes.
+  perCategory: 0,
+  loose: 'draw',
+  pinned: 'draw',
+  /*
+   * Two rounds, which is the one new default worth having.
+   *
+   * Unlike the caps it cannot make a round come up short — the exclusion is
+   * dropped the moment it would leave nothing to draw — and the thing it
+   * prevents is the most obvious fault of the mode as it stands.
+   */
+  avoidRepeats: 2,
+};
 
 /**
  * Leaving it to get on with it.
@@ -1764,6 +1861,28 @@ export interface BuildPromptCall {
    * "what was that one?" is the only question an endless stream raises.
    */
   fromWander?: boolean;
+  /**
+   * Which notes this round was built from, by id.
+   *
+   * Ids rather than the words, because this is what gets written to the
+   * database and the notes are encrypted there on purpose — storing the text
+   * on a chat message would put the whole profile in the clear one round at a
+   * time. The words are filled into `wanderNotes` when a conversation is read,
+   * from the vault, so a locked server simply has none to give.
+   *
+   * They are also what a later round reads to avoid repeating itself; see
+   * `WanderDraw.avoidRepeats`.
+   */
+  wanderNoteIds?: string[];
+  /**
+   * The same notes as words, resolved on the way out and never stored.
+   *
+   * What the picture was actually made of, for the dialog that answers "what
+   * was that one?". The mode used to say nothing about this on the grounds
+   * that being surprised by your own taste is the point — which is true right
+   * up until a picture comes out well and there is no way to find out why.
+   */
+  wanderNotes?: string[];
 }
 
 /**

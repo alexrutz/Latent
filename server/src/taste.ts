@@ -1,6 +1,12 @@
 import { randomBytes } from 'node:crypto';
 
-import type { TasteCategory, TasteEntry, TasteProfile } from '@latent/shared';
+import type {
+  TasteCategory,
+  TasteEntry,
+  TasteProfile,
+  WanderCategoryRule,
+  WanderDraw,
+} from '@latent/shared';
 
 import type { Store, TasteCategoryRow, TasteEntryRow } from './db.js';
 import { Vault, VaultLockedError } from './vault.js';
@@ -80,6 +86,30 @@ export class Taste {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * The words behind a list of note ids, in the order asked for.
+   *
+   * What a wandering picture records is ids, because a chat message is stored
+   * in the clear and the notes are encrypted on purpose — see the note on
+   * `BuildPromptCall.wanderNoteIds`. This is the other half of that: the words
+   * are put back on the way out, and only while the vault is open.
+   *
+   * A note that has since been deleted is simply missing rather than a gap
+   * marked "gone": what the list is for is reading, and a picture whose notes
+   * are half deleted is still worth telling what it was made of.
+   */
+  textFor(ids: readonly string[]): string[] {
+    if (!this.vault.isUnlocked) return [];
+    const out: string[] = [];
+    for (const id of ids) {
+      const row = this.store.getTasteEntryRow(id);
+      if (!row) continue;
+      const text = this.open(row.text).trim();
+      if (text !== '') out.push(text);
+    }
+    return out;
   }
 
   addCategory(id: string, name: string): TasteCategory {
@@ -306,41 +336,176 @@ export function activeTaste(profile: TasteProfile): ActiveTaste {
   return { groups, standing };
 }
 
+/** One note that came out of the draw: the words, and what to call it later. */
+export interface DrawnNote {
+  id: string;
+  text: string;
+  /** The heading it came from, or `null` for a note filed under none. */
+  categoryId: string | null;
+}
+
+/** What a draw is allowed to do, beyond how many notes it wants. */
+export interface DrawOptions {
+  rules: WanderDraw;
+  /**
+   * Notes to leave out this time, by id — the last few rounds' worth.
+   *
+   * Advisory, not a rule. Honouring it to the point of drawing nothing would
+   * turn "don't repeat yourself" into "stop", which is not what it means, so a
+   * round that cannot fill itself without them takes them back.
+   */
+  exclude?: readonly string[];
+  /** Injectable so a test can pin the draw down. */
+  random?: () => number;
+}
+
+/** Fisher–Yates on a copy. The profile is not ours to reorder. */
+function shuffled<T>(items: readonly T[], random: () => number): T[] {
+  const out = [...items];
+  for (let index = out.length - 1; index > 0; index -= 1) {
+    const pick = Math.floor(random() * (index + 1));
+    const held = out[index] as T;
+    out[index] = out[pick] as T;
+    out[pick] = held;
+  }
+  return out;
+}
+
 /**
- * A handful of notes, drawn at random, for one wandering picture.
+ * A handful of notes, drawn for one wandering picture, under your rules.
  *
- * Exactly `count` of them, out of everything switched on, and no more. That is
- * the whole point of the mode: a picture made of three things you like is a
- * picture, and a picture made of everything you like is a mess with no subject.
+ * At most `count` of them, and often fewer — see `WanderRun.attributes` for why
+ * that is deliberate. The order is:
  *
- * Pinned notes have no privilege here, which is a deliberate exception to what
- * pinning means elsewhere. A pin says "this holds even when they have asked for
- * something specific" — and in a wandering round nobody has asked for anything,
- * so there is nothing for it to hold against. Letting every pinned note in on
- * top of the draw is exactly how a long list turns every round into the same
- * crowded picture.
+ * 1. Every heading marked `always` gets one note, in a random order of
+ *    headings, so a short round still spreads across them rather than always
+ *    satisfying the same one first.
+ * 2. Every pinned note goes in, if pinning is set to `always`.
+ * 3. The rest of the round is filled at random from everything still eligible.
  *
- * `random` is injectable so a test can pin the draw down; production passes
- * nothing and gets `Math.random`.
+ * Caps are checked at every step, including against the guaranteed notes: a
+ * heading capped at one that is also `always` contributes exactly one, and the
+ * fill cannot add a second.
+ *
+ * What is *not* here is any notion of a note being more important than another
+ * within a heading. Headings are the unit you curate; notes are the things you
+ * wrote down, and ranking them would be a second list to maintain for a mode
+ * whose whole point is not deciding anything.
  */
 export function drawTaste(
   profile: TasteProfile,
   count: number,
-  random: () => number = Math.random,
-): string[] {
-  const { groups, standing } = activeTaste(profile);
-  const pool = [...groups.flatMap((group) => group.notes), ...standing];
+  options: DrawOptions,
+): DrawnNote[] {
+  const random = options.random ?? Math.random;
+  const rules = options.rules;
+  const wanted = Math.max(0, Math.floor(count) || 0);
+  if (wanted === 0) return [];
 
-  // Fisher–Yates on a copy: the profile is not ours to reorder, and a partial
-  // shuffle is exactly as much work as the number of notes actually wanted.
-  const shuffled = [...pool];
-  const wanted = Math.max(0, Math.min(Math.floor(count) || 0, shuffled.length));
-  for (let index = 0; index < wanted; index += 1) {
-    const pick = index + Math.floor(random() * (shuffled.length - index));
-    const held = shuffled[index] as string;
-    shuffled[index] = shuffled[pick] as string;
-    shuffled[pick] = held;
+  const categories = new Map(profile.categories.map((category) => [category.id, category]));
+  const ruleFor = (categoryId: string | null): WanderCategoryRule =>
+    (categoryId ? rules.categories[categoryId] : undefined) ?? { role: 'draw', max: 0 };
+
+  /*
+   * Everything the switches leave in play, before the wandering rules have had
+   * their say. `activeTaste` is the authority on that — a note under a
+   * switched-off heading is off whatever its own switch says — and this mode
+   * has no business disagreeing with it.
+   */
+  const eligible: DrawnNote[] = [];
+  const guaranteedPins: DrawnNote[] = [];
+  for (const entry of profile.entries) {
+    if (!entry.active) continue;
+    const category = entry.categoryId ? categories.get(entry.categoryId) : undefined;
+    if (entry.categoryId && (!category || !category.active)) continue;
+    const text = entry.text.trim();
+    if (text === '') continue;
+
+    const note: DrawnNote = { id: entry.id, text, categoryId: category?.id ?? null };
+
+    if (entry.always) {
+      if (rules.pinned === 'off') continue;
+      if (rules.pinned === 'always') {
+        guaranteedPins.push(note);
+        continue;
+      }
+      // `draw`: in the pool like anything else, and subject to its heading's
+      // cap like anything else.
+    }
+
+    if (note.categoryId === null && rules.loose === 'off') continue;
+    if (ruleFor(note.categoryId).role === 'off') continue;
+    eligible.push(note);
   }
 
-  return shuffled.slice(0, wanted);
+  const cap = (categoryId: string | null): number => {
+    const rule = ruleFor(categoryId);
+    const own = Math.max(0, Math.floor(rule.max) || 0);
+    return own > 0 ? own : Math.max(0, Math.floor(rules.perCategory) || 0);
+  };
+
+  const taken: DrawnNote[] = [];
+  const takenIds = new Set<string>();
+  const perHeading = new Map<string | null, number>();
+
+  const room = (note: DrawnNote): boolean => {
+    if (takenIds.has(note.id)) return false;
+    const limit = cap(note.categoryId);
+    if (limit === 0) return true;
+    return (perHeading.get(note.categoryId) ?? 0) < limit;
+  };
+
+  const take = (note: DrawnNote): void => {
+    taken.push(note);
+    takenIds.add(note.id);
+    perHeading.set(note.categoryId, (perHeading.get(note.categoryId) ?? 0) + 1);
+  };
+
+  /*
+   * The pins first, when they are the kind that always apply.
+   *
+   * Before the `always` headings rather than after: they are the notes you said
+   * hold whatever else is going on, and a round that ran out of room before
+   * reaching them would be ignoring the stronger of the two instructions.
+   */
+  for (const note of guaranteedPins) {
+    if (taken.length >= wanted) break;
+    take(note);
+  }
+
+  // One from each heading that insists on one, headings in a random order.
+  const insisting = shuffled(
+    profile.categories.filter(
+      (category) => category.active && ruleFor(category.id).role === 'always',
+    ),
+    random,
+  );
+  for (const category of insisting) {
+    if (taken.length >= wanted) break;
+    const candidates = shuffled(
+      eligible.filter((note) => note.categoryId === category.id && room(note)),
+      random,
+    );
+    const fresh = candidates.find((note) => !options.exclude?.includes(note.id)) ?? candidates[0];
+    if (fresh) take(fresh);
+  }
+
+  /*
+   * And the rest at random, recently-used notes held back until they are the
+   * only thing left. Two passes rather than one shuffled list with the stale
+   * ones sorted to the end: "prefer fresh" is a preference between two pools,
+   * and each pool still has to be in a random order of its own.
+   */
+  for (const pass of [0, 1]) {
+    const pool = shuffled(
+      eligible.filter((note) => (options.exclude?.includes(note.id) ?? false) === (pass === 1)),
+      random,
+    );
+    for (const note of pool) {
+      if (taken.length >= wanted) return taken;
+      if (room(note)) take(note);
+    }
+  }
+
+  return taken;
 }

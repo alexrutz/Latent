@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   CHAT_IMAGE_SIZES,
+  DEFAULT_WANDER_DRAW,
   defaultSampling,
   fieldPoints,
   fieldPointValues,
@@ -24,6 +25,7 @@ import type {
   ReviewThreshold,
   TasteInfluence,
   ToolEagerness,
+  WanderDraw,
   WidgetValue,
   WorkflowDetail,
   WorkflowSummary,
@@ -58,6 +60,7 @@ import { NumericInput } from '../components/NumericInput';
 import { SortableList, type DragHandleProps } from '../components/SortableList';
 import { FieldChip, Toggle, WorkflowScope } from '../components/ParamControl';
 import { UnlockArchiveDialog } from '../components/UnlockArchive';
+import { WanderSetup } from '../components/WanderSetup';
 import { Button, Card, cn, ErrorNote, Row, Sheet, Spinner } from '../components/ui';
 import { useBlur } from '../state/blur';
 import { ConnectionsScreen } from './ConnectionsScreen';
@@ -303,6 +306,36 @@ function RoundsLine({ value, onChange }: { value: number; onChange: (value: numb
 
 /** The steps the round limit offers. Doubling, because 5 and 6 are not a choice. */
 const ROUND_LIMITS = [2, 3, 4, 6, 8, 12];
+
+/**
+ * The draw rules as one sentence, for the row that opens the sheet.
+ *
+ * By exception rather than by inventory: the row is a summary of what a round
+ * may do, and listing four unchanged defaults back at you says nothing. Only
+ * the headings you have actually singled out are counted, because those are the
+ * settings you would want reminding of.
+ */
+function describeDraw(draw: WanderDraw): string {
+  const rules = Object.values(draw.categories ?? {});
+  const insisting = rules.filter((rule) => rule.role === 'always').length;
+  const excluded = rules.filter((rule) => rule.role === 'off').length;
+
+  const parts: string[] = [];
+  if (insisting > 0) parts.push(`${insisting} heading${insisting === 1 ? '' : 's'} always in`);
+  if (excluded > 0) parts.push(`${excluded} left out`);
+  if (draw.perCategory > 0) parts.push(`at most ${draw.perCategory} from any one`);
+  if (draw.loose === 'off') parts.push('nothing unfiled');
+  if (draw.pinned === 'always') parts.push('pins always in');
+  if (draw.pinned === 'off') parts.push('pins left out');
+
+  if (parts.length === 0) {
+    return 'Everything switched on, drawn flat. Set which headings it must use, which it may not, and how much one of them may contribute.';
+  }
+  // Sentence case, and full stops rather than a heap of commas at the end.
+  return `${parts[0]!.charAt(0).toUpperCase()}${parts[0]!.slice(1)}${
+    parts.length > 1 ? `, ${parts.slice(1).join(', ')}` : ''
+  }.`;
+}
 
 /**
  * How many notes go into each wandering picture.
@@ -1558,6 +1591,7 @@ function ChatSection() {
   const [checking, setChecking] = useState(false);
   const [showSampling, setShowSampling] = useState(false);
   const [showWanderSampling, setShowWanderSampling] = useState(false);
+  const [showWanderDraw, setShowWanderDraw] = useState(false);
   const workflows = useVisibleWorkflows();
   const status = useChatStatus();
   /** The freshest list we have: what Check just returned, else what was fetched. */
@@ -1581,10 +1615,13 @@ function ChatSection() {
   const wander = chat.wander ?? {
     workflowId: '',
     attributes: 3,
+    draw: DEFAULT_WANDER_DRAW,
     sampling: 'chat' as const,
     ownSampling: defaultSampling(),
   };
   const wanderSampling = { ...defaultSampling(), ...(wander.ownSampling ?? {}) };
+  /** Filled in for a rule added since these settings were written. */
+  const wanderDraw = { ...DEFAULT_WANDER_DRAW, ...(wander.draw ?? {}) };
   const wanderSamplingOn = SAMPLING_PARAMS.filter((param) => wanderSampling[param.key]?.on).length;
 
   const patch = (change: Partial<typeof chat>) =>
@@ -1842,6 +1879,30 @@ function ChatSection() {
           value={wander.attributes}
           onChange={(attributes) => patch({ wander: { ...wander, attributes } })}
         />
+
+        {/*
+          Which notes, from where — the part that decides whether this mode is
+          any use at all.
+
+          Its own sheet rather than six more rows here, because it is the only
+          thing in Settings that has to list the headings you wrote, and because
+          half of it is behind the password those headings live behind. The
+          summary is the line above the button: what it says is what a round is
+          currently allowed to do.
+        */}
+        <div className="space-y-1.5 border-t border-line pt-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="min-w-0 flex-1 text-sm">What it draws from</p>
+            <button
+              type="button"
+              onClick={() => setShowWanderDraw(true)}
+              className="shrink-0 rounded-lg bg-surface-2 px-3 py-1.5 text-xs text-body"
+            >
+              Set up…
+            </button>
+          </div>
+          <p className="text-[11px] leading-relaxed text-muted">{describeDraw(wanderDraw)}</p>
+        </div>
 
         <div className="space-y-1.5 border-t border-line pt-3">
           <p className="text-sm">Rendered with</p>
@@ -2217,6 +2278,14 @@ function ChatSection() {
         sampling={sampling}
         onClose={() => setShowSampling(false)}
         onChange={(next) => patch({ sampling: next })}
+      />
+
+      <WanderSetup
+        open={showWanderDraw}
+        onClose={() => setShowWanderDraw(false)}
+        draw={wanderDraw}
+        attributes={wander.attributes}
+        onChange={(draw) => patch({ wander: { ...wander, draw } })}
       />
 
       {/* The same dialog, pointed at the wandering run's own copy. */}

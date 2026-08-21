@@ -15,6 +15,29 @@ import { VaultLockedError } from '../vault.js';
 /** The header a pass travels in. Not a cookie: it must not outlive the tab. */
 const TICKET_HEADER = 'x-latent-taste';
 
+/**
+ * Drop a deleted heading's wandering rule along with the heading.
+ *
+ * The draw would never have consulted it — a rule keyed by an id that no longer
+ * exists matches nothing — but "never consulted" is not the same as harmless.
+ * The settings screen counts these rules to say what wandering is currently
+ * doing, and a tally of headings that have not existed for weeks is a summary
+ * that lies about the app to the only person who could tell.
+ */
+function forgetWanderRule(ctx: AppContext, categoryId: string): void {
+  const settings = ctx.store.getSettings();
+  const rules = settings.chat.wander?.draw?.categories;
+  if (!rules || !(categoryId in rules)) return;
+
+  const { [categoryId]: _gone, ...rest } = rules;
+  ctx.store.updateSettings({
+    chat: {
+      ...settings.chat,
+      wander: { ...settings.chat.wander, draw: { ...settings.chat.wander.draw, categories: rest } },
+    },
+  });
+}
+
 export function registerTasteRoutes(app: FastifyInstance, ctx: AppContext): void {
   const locked = (reply: FastifyReply) =>
     reply.code(423).send({ error: new VaultLockedError().message, locked: true });
@@ -106,6 +129,7 @@ export function registerTasteRoutes(app: FastifyInstance, ctx: AppContext): void
       return reply.code(404).send({ error: 'That category is gone' });
     }
     ctx.taste.deleteCategory(request.params.id);
+    forgetWanderRule(ctx, request.params.id);
     return reply.code(204).send();
   });
 
