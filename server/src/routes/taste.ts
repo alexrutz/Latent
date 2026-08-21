@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import type { AppContext } from './context.js';
 import { VaultLockedError } from '../vault.js';
@@ -12,17 +12,60 @@ import { VaultLockedError } from '../vault.js';
  * an empty list, so the screen can say "sign in" instead of quietly showing
  * nothing and inviting somebody to write their notes a second time.
  */
+/** The header a pass travels in. Not a cookie: it must not outlive the tab. */
+const TICKET_HEADER = 'x-latent-taste';
+
 export function registerTasteRoutes(app: FastifyInstance, ctx: AppContext): void {
   const locked = (reply: FastifyReply) =>
     reply.code(423).send({ error: new VaultLockedError().message, locked: true });
 
-  app.get('/api/taste', async (_request, reply) => {
+  /**
+   * Every route below needs the password, not just the session.
+   *
+   * Answered as 403 with a marker the screen can act on, so it knows to ask
+   * rather than to show an error: being signed in is the wrong question here
+   * and a "something went wrong" would send people looking for a bug.
+   */
+  const barred = (request: FastifyRequest, reply: FastifyReply): boolean => {
+    if (ctx.tasteGate.check(request.headers[TICKET_HEADER])) return false;
+    void reply.code(403).send({ error: 'Enter your password to open this', needsPassword: true });
+    return true;
+  };
+
+  /**
+   * Buy a pass with the app password.
+   *
+   * Rate-limited with the same counter the login uses, per address: this is a
+   * second door onto the same password, and leaving it uncounted would make it
+   * the cheaper one to hammer.
+   */
+  app.post<{ Body: { password?: string } }>('/api/taste/unlock', async (request, reply) => {
     if (!ctx.taste.isUnlocked) return locked(reply);
+    if (!ctx.auth.registerLoginAttempt(request.ip)) {
+      return reply.code(429).send({ error: 'Too many attempts. Wait a minute and try again.' });
+    }
+    if (!ctx.auth.checkPassword(request.body?.password)) {
+      return reply.code(401).send({ error: 'That is not the password.' });
+    }
+    ctx.auth.clearLoginAttempts(request.ip);
+    return { ticket: ctx.tasteGate.issue(), profile: ctx.taste.profile() };
+  });
+
+  /** Hand the pass back, which is what closing the screen does. */
+  app.post('/api/taste/lock', async (request, reply) => {
+    ctx.tasteGate.revoke(request.headers[TICKET_HEADER]);
+    return reply.code(204).send();
+  });
+
+  app.get('/api/taste', async (request, reply) => {
+    if (!ctx.taste.isUnlocked) return locked(reply);
+    if (barred(request, reply)) return reply;
     return ctx.taste.profile();
   });
 
   app.post<{ Body: { name?: string } }>('/api/taste/categories', async (request, reply) => {
     if (!ctx.taste.isUnlocked) return locked(reply);
+    if (barred(request, reply)) return reply;
     const name = request.body?.name?.trim();
     if (!name) return reply.code(400).send({ error: 'Give the category a name' });
     return reply.code(201).send(ctx.taste.addCategory(randomUUID(), name));
@@ -32,6 +75,7 @@ export function registerTasteRoutes(app: FastifyInstance, ctx: AppContext): void
     '/api/taste/categories/:id',
     async (request, reply) => {
       if (!ctx.taste.isUnlocked) return locked(reply);
+      if (barred(request, reply)) return reply;
       const body = request.body ?? {};
       if (body.name !== undefined && body.name.trim() === '') {
         return reply.code(400).send({ error: 'Give the category a name' });
@@ -45,6 +89,7 @@ export function registerTasteRoutes(app: FastifyInstance, ctx: AppContext): void
   /** The result of a drag: one new sequence for the categories it names. */
   app.post<{ Body: { ids?: string[] } }>('/api/taste/categories/reorder', async (request, reply) => {
     if (!ctx.taste.isUnlocked) return locked(reply);
+    if (barred(request, reply)) return reply;
     const ids = request.body?.ids;
     if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) {
       return reply.code(400).send({ error: 'Send the new order as a list of ids' });
@@ -56,6 +101,7 @@ export function registerTasteRoutes(app: FastifyInstance, ctx: AppContext): void
   /** Deleting a heading keeps the notes under it; they simply stop being filed. */
   app.delete<{ Params: { id: string } }>('/api/taste/categories/:id', async (request, reply) => {
     if (!ctx.taste.isUnlocked) return locked(reply);
+    if (barred(request, reply)) return reply;
     if (!ctx.store.getTasteCategoryRow(request.params.id)) {
       return reply.code(404).send({ error: 'That category is gone' });
     }
@@ -67,6 +113,7 @@ export function registerTasteRoutes(app: FastifyInstance, ctx: AppContext): void
     '/api/taste/entries',
     async (request, reply) => {
       if (!ctx.taste.isUnlocked) return locked(reply);
+      if (barred(request, reply)) return reply;
       const text = request.body?.text?.trim();
       if (!text) return reply.code(400).send({ error: 'Write something to remember' });
       return reply.code(201).send(
@@ -84,6 +131,7 @@ export function registerTasteRoutes(app: FastifyInstance, ctx: AppContext): void
     Body: { text?: string; active?: boolean; always?: boolean; categoryId?: string | null };
   }>('/api/taste/entries/:id', async (request, reply) => {
     if (!ctx.taste.isUnlocked) return locked(reply);
+    if (barred(request, reply)) return reply;
     const body = request.body ?? {};
     if (body.text !== undefined && body.text.trim() === '') {
       return reply.code(400).send({ error: 'Write something to remember' });
@@ -95,6 +143,7 @@ export function registerTasteRoutes(app: FastifyInstance, ctx: AppContext): void
 
   app.delete<{ Params: { id: string } }>('/api/taste/entries/:id', async (request, reply) => {
     if (!ctx.taste.isUnlocked) return locked(reply);
+    if (barred(request, reply)) return reply;
     if (!ctx.store.getTasteEntryRow(request.params.id)) {
       return reply.code(404).send({ error: 'That note is gone' });
     }

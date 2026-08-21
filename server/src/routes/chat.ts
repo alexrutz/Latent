@@ -18,6 +18,7 @@ import {
   LlamaClient,
   LlamaError,
   looksLikeAQuestionWithOptions,
+  START_OVER_INSTRUCTION,
   wanderInstruction,
 } from '../chat/llama.js';
 import { loadConversationPictures, loadReviewImage } from '../chat/reviewImage.js';
@@ -332,12 +333,22 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
    * pace settings stay about what the model does *on its own* — which is what
    * they are for.
    */
-  app.post<{ Params: { id: string } }>(
+  app.post<{ Params: { id: string }; Body: { fresh?: boolean } }>(
     '/api/chat/conversations/:id/build',
     async (request, reply) => {
       const chat = ctx.store.getChat(request.params.id);
       if (!chat) return reply.code(404).send({ error: 'No such conversation' });
-      return streamReply(app, ctx, reply, chat.id, 'build_prompt');
+      /*
+       * `fresh` is the second half of the generate button.
+       *
+       * Same forced tool, different thing said: without it a model handed a
+       * conversation that already contains a finished prompt writes that prompt
+       * again with two words moved, which is exactly the state this asks to get
+       * out of.
+       */
+      return streamReply(app, ctx, reply, chat.id, 'build_prompt', {
+        ...(request.body?.fresh ? { instruction: START_OVER_INSTRUCTION } : {}),
+      });
     },
   );
 
@@ -438,7 +449,19 @@ async function streamReply(
   };
   let thinking = '';
 
-  const client = llamaClient(ctx, options.sampling ? { sampling: options.sampling } : undefined);
+  /*
+   * A wandering turn is told a few notes, and nothing else about them.
+   *
+   * The taste section of the system prompt lists *everything* switched on, and
+   * tells the model to let it shape what it suggests. Both at once is the mode
+   * asking for three things and being handed the whole profile underneath —
+   * which is how every round ends up containing everything and they all start
+   * to look alike. The drawn notes are in the turn; the list comes out.
+   */
+  const client = llamaClient(ctx, {
+    ...(options.sampling ? { sampling: options.sampling } : {}),
+    ...(options.wander ? { taste: 'off' as const } : {}),
+  });
   if (!client) {
     // Inside the stream rather than as a status code: the chat screen already
     // knows how to show an error frame, and a 4xx here would have to be

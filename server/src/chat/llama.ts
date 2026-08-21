@@ -859,6 +859,22 @@ export function reviewInstruction(
 }
 
 /**
+ * Throw the last prompt away and write a different one.
+ *
+ * The failure this answers is a conversation that has converged: every rewrite
+ * is the last prompt with two words moved, because the last prompt is sitting
+ * right there in the history being treated as the thing to improve. Saying
+ * "again" is not enough — what has to be said is that the previous composition
+ * is not the starting point, and that a *different picture of the same idea* is
+ * what is wanted.
+ */
+export const START_OVER_INSTRUCTION =
+  'Throw the last prompt away and write a different one. Not a revision of it: a different ' +
+  'composition of the same idea — another subject, another angle, another time of day, ' +
+  'another way in. Keep only what they actually asked for in words. Call `build_prompt` ' +
+  'with it; do not answer in words and do not ask anything first.';
+
+/**
  * The turn that sets a wandering round going.
  *
  * Deliberately not a conversation. The notes arrive already drawn — the model

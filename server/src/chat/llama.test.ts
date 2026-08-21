@@ -827,20 +827,23 @@ describe('how far the notes reach', () => {
 
 describe('drawing a few notes at random', () => {
   /**
-   * A pinned note is not a coin toss.
+   * Exactly as many as were asked for — pinned ones included in the count.
    *
-   * That is what pinning means everywhere else — a settled preference that
-   * holds — and a mode that dropped it two rounds out of three would be a
-   * different feature wearing the same switch.
+   * A deliberate exception to what pinning means elsewhere. A pin says "this
+   * holds even when they have asked for something specific", and in a wandering
+   * round nobody has asked for anything, so there is nothing for it to hold
+   * against. Letting every pinned note in *on top of* the draw is how a long
+   * list turns every round into the same crowded picture.
    */
-  it('always includes the pinned ones and draws the rest', () => {
+  it('draws the number asked for and no more, pins included', () => {
     const base = profile();
-    base.entries.push(note({ id: 'p', text: 'always 21:9', always: true }));
+    base.entries.push(
+      note({ id: 'p', text: 'always 21:9', always: true }),
+      note({ id: 'q', text: 'never any text', always: true }),
+    );
 
-    // A random that always returns 0 picks the first of whatever is left.
-    const drawn = drawTaste(base, 1, () => 0);
-    expect(drawn).toContain('always 21:9');
-    expect(drawn).toHaveLength(2);
+    expect(drawTaste(base, 1, () => 0)).toHaveLength(1);
+    expect(drawTaste(base, 3, () => 0)).toHaveLength(3);
   });
 
   it('never draws more than there are, or fewer than asked for', () => {

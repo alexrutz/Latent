@@ -10,6 +10,7 @@ import { RunProgress } from '../components/LiveBar';
 import { ViewerWithActions } from '../components/ViewerWithActions';
 import { Markdown } from '../components/Markdown';
 import { PromptDiff, promptChanged } from '../components/PromptDiff';
+import { BlurButton } from '../components/BlurButton';
 import { TasteSheet } from '../components/TasteSheet';
 import { ToolDialog } from '../components/ToolDialog';
 import {
@@ -150,6 +151,8 @@ export function ChatScreen() {
   } | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showTaste, setShowTaste] = useState(false);
+  /** Whether the prompt button's two options are showing. */
+  const [choosing, setChoosing] = useState(false);
   /** Set while the transcript is at the end, which is when it follows a reply. */
   const [atBottom, setAtBottom] = useState(true);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -373,6 +376,9 @@ export function ChatScreen() {
           >
             ＋
           </button>
+          {/* Last, as everywhere: see `BlurButton`. The chat shows pictures
+              like any other screen, and this is the corner your thumb knows. */}
+          <BlurButton />
         </div>
       </div>
 
@@ -592,34 +598,89 @@ export function ChatScreen() {
           {/* Ask for a prompt without saying so. What it does with the answer
               — queue it, or show it first — is the setting beside it. */}
           {(!streaming || asking) && (
-            /*
-              Feedback the moment it is pressed, and until it has an answer.
+            <div className="relative shrink-0">
+              {/*
+                Two ways to press it, in the space of one button.
 
-              Three things were wrong with the version that only set `busy`.
-              The button was hidden the instant the reply began streaming, so
-              the state it was meant to show lasted a few hundred milliseconds
-              and then the button vanished — which reads as a tap that missed,
-              and people press it again. `busy` also put a spinner *beside* the
-              glyph in a forty-pixel square, where there is room for one of the
-              two. And nothing at all happened on the press itself, which on a
-              phone is the only feedback that arrives instantly: the press is a
-              transform, so it does not wait for a network round trip to be
-              visible.
-            */
-            <Button
-              variant="secondary"
-              className={cn(
-                'size-10 shrink-0 rounded-xl p-0 text-base transition-transform active:scale-90',
-                asking && 'scale-95 text-accent',
+                The second exists for a conversation that has converged: every
+                prompt is the last one with two words moved, because the last
+                one is right there in the history being treated as the thing to
+                improve. Icons only, and only while the choice is open — a
+                permanent second button would be a permanent question, and the
+                answer is the first one nearly every time.
+              */}
+              {/*
+                Anywhere else closes it.
+
+                A popover with no way out but the button that opened it is a
+                trap on a touch screen, where "click outside" is the gesture
+                everybody tries first.
+              */}
+              {choosing && (
+                <div
+                  className="fixed inset-0 z-10"
+                  onClick={() => setChoosing(false)}
+                  role="presentation"
+                />
               )}
-              disabled={asking}
-              onClick={() => void store().askForPrompt()}
-              aria-label="Build a prompt"
-              aria-busy={asking}
-              title="Build a prompt from this conversation"
-            >
-              {asking ? <Spinner className="size-4" /> : '✦'}
-            </Button>
+              {choosing && (
+                <div className="absolute right-0 bottom-12 z-20 flex gap-1 rounded-xl border border-line bg-surface-2 p-1 shadow-lg shadow-black/40">
+                  <button
+                    type="button"
+                    aria-label="Generate now"
+                    title="Build a prompt from this conversation and generate it"
+                    onClick={() => {
+                      setChoosing(false);
+                      void store().askForPrompt();
+                    }}
+                    className="grid size-9 place-items-center rounded-lg text-base active:bg-surface-3"
+                  >
+                    ✦
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Fresh prompt, then generate"
+                    title="Throw the current prompt away, compose a different one and generate it"
+                    onClick={() => {
+                      setChoosing(false);
+                      void store().askForPrompt({ fresh: true, instant: true });
+                    }}
+                    className="grid size-9 place-items-center rounded-lg text-base text-accent active:bg-surface-3"
+                  >
+                    ⟳
+                  </button>
+                </div>
+              )}
+              {/*
+                Feedback the moment it is pressed, and until it has an answer.
+
+                Three things were wrong with the version that only set `busy`.
+                The button was hidden the instant the reply began streaming, so
+                the state it was meant to show lasted a few hundred milliseconds
+                and then the button vanished — which reads as a tap that missed,
+                and people press it again. `busy` also put a spinner *beside*
+                the glyph in a forty-pixel square, where there is room for one
+                of the two. And nothing at all happened on the press itself,
+                which on a phone is the only feedback that arrives instantly:
+                the press is a transform, so it does not wait for a network
+                round trip to be visible.
+              */}
+              <Button
+                variant="secondary"
+                className={cn(
+                  'size-10 shrink-0 rounded-xl p-0 text-base transition-transform active:scale-90',
+                  (asking || choosing) && 'scale-95 text-accent',
+                )}
+                disabled={asking}
+                onClick={() => setChoosing(!choosing)}
+                aria-label="Build a prompt"
+                aria-expanded={choosing}
+                aria-busy={asking}
+                title="Build a prompt from this conversation"
+              >
+                {asking ? <Spinner className="size-4" /> : '✦'}
+              </Button>
+            </div>
           )}
 
           {/* Stop sits beside Send rather than replacing it: replacing it makes

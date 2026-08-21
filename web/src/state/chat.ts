@@ -150,6 +150,15 @@ interface ChatStore {
   wandering: boolean;
   /** How many pictures this run has made, for the strip above the composer. */
   wanderRounds: number;
+
+  /**
+   * Accept the next proposal whatever the settings say.
+   *
+   * Set by "rewrite, then generate": that button says what to do with the
+   * answer before the answer exists, and the prompt-button setting is about
+   * what the *other* button does.
+   */
+  forceAccept: boolean;
   startWander: () => Promise<void>;
   /** One round. Called by the loop rather than by the screen. */
   wanderOnce: () => Promise<void>;
@@ -171,8 +180,16 @@ interface ChatStore {
   openChat: (id: string) => Promise<void>;
   startNew: () => Promise<void>;
   send: () => Promise<void>;
-  /** Force the build_prompt tool, because the button was pressed. */
-  askForPrompt: () => Promise<void>;
+  /**
+   * Force the build_prompt tool, because the button was pressed.
+   *
+   * `fresh` throws the last prompt away first — the proposal on screen if there
+   * is one, and the conversation's last one either way: the model is told not
+   * to revise it but to compose the same idea differently, which is the way out
+   * of a conversation that has converged on one picture. `instant` accepts what
+   * comes back without showing it, whatever the prompt button's setting says.
+   */
+  askForPrompt: (options?: { fresh?: boolean; instant?: boolean }) => Promise<void>;
   stop: () => Promise<void>;
   /** Record a decision about a tool call, then let the model respond to it. */
   resolveTool: (body: Omit<Parameters<typeof api.resolveTool>[1], 'messageId'>) => Promise<void>;
@@ -337,7 +354,10 @@ export const useChatStore = create<ChatStore>((set, get) => {
    * perfectionism threshold, which is the loop this whole mode is.
    */
   const decideAutoAccept = (call: ChatToolCall): boolean => {
-    const { mode, askedForPrompt, autoRounds, autoHalted, wandering } = get();
+    const { mode, askedForPrompt, autoRounds, autoHalted, wandering, forceAccept } = get();
+
+    // Asked for by name: "rewrite, then generate" is not a preference to weigh.
+    if (forceAccept && call.tool === 'build_prompt') return true;
 
     /*
      * A wandering round is accepted without asking, always.
@@ -525,6 +545,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
     autoNote: null,
     wandering: false,
     wanderRounds: 0,
+    forceAccept: false,
 
     notePictureShown: (generationId) => {
       shown.add(generationId);
@@ -689,6 +710,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
         autoNote: null,
         wandering: false,
         wanderRounds: 0,
+        forceAccept: false,
         error: null,
         attachments: [],
       });
@@ -790,15 +812,36 @@ export const useChatStore = create<ChatStore>((set, get) => {
      * second is a request the model weighs against its pace setting, and the
      * button is not a request.
      */
-    askForPrompt: async () => {
-      const { chat, streaming } = get();
+    askForPrompt: async (options = {}) => {
+      const { chat, streaming, pendingCall } = get();
       if (!chat || streaming || inFlight) return;
+
+      /*
+       * "A different one" starts by throwing this one away.
+       *
+       * Rejecting it properly rather than dropping it: the model is told, and
+       * "they threw that away" is exactly the context that stops the next
+       * attempt from being the same prompt with two words moved.
+       */
+      if (options.fresh && pendingCall) {
+        set({ pendingCall: null, callMinimized: false, autoAccepting: false });
+        try {
+          await api.resolveTool(chat.id, {
+            messageId: pendingCall.messageId,
+            decision: 'rejected',
+            note: 'The user threw that prompt away and asked for a different composition.',
+          });
+        } catch {
+          // Already decided, or gone. What matters next is the new prompt.
+        }
+      }
 
       // The button is a fresh instruction, so it releases a halted run too.
       set({
         error: null,
         askedForPrompt: true,
         asking: true,
+        forceAccept: options.instant === true,
         autoRounds: 0,
         autoHalted: false,
         autoNote: null,
@@ -809,14 +852,16 @@ export const useChatStore = create<ChatStore>((set, get) => {
           () =>
             fetch(`/api/chat/conversations/${chat.id}/build`, {
               method: 'POST',
+              headers: { 'content-type': 'application/json' },
               credentials: 'same-origin',
+              body: JSON.stringify({ fresh: options.fresh === true }),
               signal: inFlight?.signal,
             }),
           chat.id,
         );
       } finally {
         // Whatever came of it, the button has stopped being pressed.
-        set({ asking: false });
+        set({ asking: false, forceAccept: false });
       }
     },
 

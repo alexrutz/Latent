@@ -13,7 +13,7 @@ import { Auth } from './auth.js';
 import { ThumbnailCache, ViewRenderer } from './images/thumbnails.js';
 import { Importer } from './importer.js';
 import { InputLibrary } from './inputLibrary.js';
-import { Taste } from './taste.js';
+import { Taste, TasteGate } from './taste.js';
 import { Vault } from './vault.js';
 import { plainConnection, type ConnectionConfig } from './comfy/connection.js';
 import { loadConfig, type Config } from './config.js';
@@ -129,6 +129,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   const archive = new Archive(config.archiveDir, store, vault);
   const importer = new Importer(store, archive);
   const taste = new Taste(store, vault);
+  const tasteGate = new TasteGate();
   const inputs = new InputLibrary(store);
   const sweeper = new Sweeper(store, archive, app.log);
   /*
@@ -180,6 +181,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     archive,
     vault,
     taste,
+    tasteGate,
     importer,
     inputs,
     stateFiles,
@@ -293,6 +295,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     studyRunner.pause();
     sweeper.stop();
     vault.lock();
+    tasteGate.revokeAll();
     store.close();
   });
 

@@ -1094,7 +1094,22 @@ nothing a vision encoder can use. From a batch it is the first picture — the
 transcript still shows the whole run — and from a video workflow it is the
 poster frame, once something has captured one.
 
-The **✦** button next to Send spins while it is being asked for. Against a local
+The **✦** button next to Send offers two ways to press it, as two icons in a
+small strip above it:
+
+- **✦ Generate now** — a prompt from what you have been discussing, queued or
+  shown first depending on the setting. What the button always did.
+- **⟳ Fresh prompt, then generate** — throws the current prompt away and asks
+  for *a different composition of the same idea*: another subject, another
+  angle, another way in. It generates straight away, without a dialog.
+
+The second is for a conversation that has converged. Ask for another prompt
+normally and you get the last one with two words moved, because the last one is
+sitting in the history being treated as the thing to improve; this one tells the
+model to start over, and refuses the proposal on screen first so it knows the
+last attempt was thrown away rather than accepted.
+
+Whichever you press, the button spins until there is an answer. Against a local
 model the gap before the first frame is a second or two, and a button that
 visibly does nothing in it reads as a tap that missed — which is how you end up
 queueing two prompts.
@@ -1216,7 +1231,7 @@ Three things are settable, under Settings → Chat → **Wandering**:
 
 | | |
 | --- | --- |
-| **Notes in each picture** | One to six, three by default. One is a variation on a theme; six is a collage where every picture contains everything and they all start to rhyme. |
+| **Notes in each picture** | One to six, three by default — and it is exactly that many, never more. One is a variation on a theme; six is a collage where every picture contains everything and they all start to rhyme. |
 | **Rendered with** | Whatever the chat uses, or a workflow of its own — worth setting, because the graph you iterate with is often the slow one and a run that goes all evening wants the fast one. |
 | **Sampling for these** | The chat's, or its own. |
 
@@ -1232,10 +1247,17 @@ button to run it again — because "what was that one?" is the only question an
 endless stream raises, and the prompt was never read. The viewer is in the
 corner of the picture, one tap away.
 
-A pinned note still applies to every round: pinning means a settled preference,
-and a run that dropped it two rounds in three would be a different feature
-wearing the same switch. Saying anything in the chat stops the run — you have
-taken over, which is what the composer is for.
+**Only those notes, and nothing else about you.** Two things make that true. The
+draw is the whole budget — pinned notes are in it like any other, rather than
+arriving on top of it, which is the one place pinning does not apply: a pin
+holds against something you asked for, and here you have asked for nothing. And
+the section of the system prompt that normally lists everything you like is left
+out of these turns entirely. Both at once was the mode asking for three things
+and being handed the whole profile underneath, which is how every round ended up
+containing everything.
+
+Saying anything in the chat stops the run — you have taken over, which is what
+the composer is for.
 
 ### What you like
 
@@ -1257,6 +1279,16 @@ under it and the three things you occasionally do to a heading: rename it in
 place, move it up or down, delete it. Notes themselves are edited by tapping the
 words; "nearly right" is a note's normal state, and retyping it as a new one was
 the workaround that removes.
+
+**It asks for your password, even though you are signed in.** Everything else in
+the app is pictures and settings — what a phone left on a table shows to whoever
+picks it up, which is a risk people accept. This is a written description of
+you, so the door asks again, and nothing behind it appears until it has been
+answered: not the notes, not how many there are. Closing the page hands the pass
+back, and so does signing out; it expires on its own after fifteen minutes. The
+check is the server's, not the screen's — the routes behind it refuse a session
+that has not given the password, so it is a lock rather than a page that looks
+locked.
 
 **It is encrypted with your password**, like the archive and for the same
 reason: it is never on screen, so nobody would notice it sitting readable in a
@@ -1577,9 +1609,11 @@ offset would skip or repeat rows as it does. A cursor is only meaningful in the
 direction its ordering runs, so the comparison flips with the sort and the
 cursor carries the rating alongside the time.
 
-**The blur.** The ◌ button in the gallery header — and the same switch under
-Settings → Display — puts every image in the app heavily out of focus: the grid,
-the viewer, the live preview, the queue's thumbnails. It is one attribute on the
+**The blur.** The ◍ button — **always the last one in the top row**, on the
+gallery and in the chat, so it is in the same corner wherever you are when
+somebody sits down beside you — and the same switch under Settings → Display,
+puts every image in the app heavily out of focus: the grid, the viewer, the live
+preview, the queue's thumbnails, the pictures in a conversation. It is one attribute on the
 root element rather than something each component opts into, because a privacy
 feature that only covers what somebody remembered to wire up is not one. Kept on
 the device, applied before the first paint, so a reload does not flash the

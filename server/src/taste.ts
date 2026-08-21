@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+
 import type { TasteCategory, TasteEntry, TasteProfile } from '@latent/shared';
 
 import type { Store, TasteCategoryRow, TasteEntryRow } from './db.js';
@@ -171,6 +173,74 @@ export class Taste {
   }
 }
 
+/**
+ * A short-lived pass for reading the notes, bought with the app password.
+ *
+ * Signing in is not enough for this one screen. Everything else in the app is
+ * pictures and settings, which a phone left on a table shows to whoever picks
+ * it up and which is a risk people accept; this is a written description of
+ * what somebody likes, and the whole reason it is encrypted at rest is that
+ * nobody would think to look at it. Asking again at the door is the same
+ * argument applied to the screen rather than to the disk.
+ *
+ * A ticket rather than a flag on the session: sessions here are stateless — an
+ * HMAC of the password hash, with no server-side table to hang anything on —
+ * and a client-side "did they type it" would be a lock a `curl` walks past.
+ * Held in memory only, so a restart or a sign-out ends every one of them.
+ */
+export class TasteGate {
+  private readonly tickets = new Map<string, number>();
+
+  constructor(
+    /** How long a pass lasts. Long enough to write a list, short enough to forget. */
+    private readonly lifetimeMs = 15 * 60 * 1000,
+  ) {}
+
+  /** Mint one. The caller has just proved it knows the password. */
+  issue(now = Date.now()): string {
+    this.sweep(now);
+    const ticket = randomBytes(24).toString('base64url');
+    this.tickets.set(ticket, now + this.lifetimeMs);
+    return ticket;
+  }
+
+  /**
+   * Whether this pass is still good — and if so, extend it.
+   *
+   * Sliding rather than fixed: the expiry is there so a pass does not outlive
+   * the sitting it was bought for, and being asked for the password again in
+   * the middle of writing a list is the kind of security that gets switched
+   * off.
+   */
+  check(ticket: unknown, now = Date.now()): boolean {
+    if (typeof ticket !== 'string' || ticket === '') return false;
+    const expires = this.tickets.get(ticket);
+    if (expires === undefined) return false;
+    if (expires <= now) {
+      this.tickets.delete(ticket);
+      return false;
+    }
+    this.tickets.set(ticket, now + this.lifetimeMs);
+    return true;
+  }
+
+  /** Hand one back, when the screen it was for is closed. */
+  revoke(ticket: unknown): void {
+    if (typeof ticket === 'string') this.tickets.delete(ticket);
+  }
+
+  /** Every pass at once: signing out, or locking the vault, ends all of them. */
+  revokeAll(): void {
+    this.tickets.clear();
+  }
+
+  private sweep(now: number): void {
+    for (const [ticket, expires] of this.tickets) {
+      if (expires <= now) this.tickets.delete(ticket);
+    }
+  }
+}
+
 /** What a profile actually contributes, once the switches have had their say. */
 export interface ActiveTaste {
   /** The ordinary notes, grouped under their headings; `null` is no heading. */
@@ -239,9 +309,16 @@ export function activeTaste(profile: TasteProfile): ActiveTaste {
 /**
  * A handful of notes, drawn at random, for one wandering picture.
  *
- * The pinned ones come every time — that is what pinning means, and a format
- * you always want is not something to leave to a coin toss. The rest are shuffled
- * and cut, so two rounds are two different pictures out of the same taste.
+ * Exactly `count` of them, out of everything switched on, and no more. That is
+ * the whole point of the mode: a picture made of three things you like is a
+ * picture, and a picture made of everything you like is a mess with no subject.
+ *
+ * Pinned notes have no privilege here, which is a deliberate exception to what
+ * pinning means elsewhere. A pin says "this holds even when they have asked for
+ * something specific" — and in a wandering round nobody has asked for anything,
+ * so there is nothing for it to hold against. Letting every pinned note in on
+ * top of the draw is exactly how a long list turns every round into the same
+ * crowded picture.
  *
  * `random` is injectable so a test can pin the draw down; production passes
  * nothing and gets `Math.random`.
@@ -252,7 +329,7 @@ export function drawTaste(
   random: () => number = Math.random,
 ): string[] {
   const { groups, standing } = activeTaste(profile);
-  const pool = groups.flatMap((group) => group.notes);
+  const pool = [...groups.flatMap((group) => group.notes), ...standing];
 
   // Fisher–Yates on a copy: the profile is not ours to reorder, and a partial
   // shuffle is exactly as much work as the number of notes actually wanted.
@@ -265,5 +342,5 @@ export function drawTaste(
     shuffled[pick] = held;
   }
 
-  return [...standing, ...shuffled.slice(0, wanted)];
+  return shuffled.slice(0, wanted);
 }

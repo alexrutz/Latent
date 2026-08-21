@@ -116,6 +116,14 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
 
   app.post('/api/auth/logout', async (_request, reply) => {
     ctx.auth.clearSession(reply);
+    /*
+     * And every pass for the notes with it.
+     *
+     * Signing out is the moment somebody else might pick the phone up, which
+     * is the whole case that screen is locked for — a pass that outlived it
+     * would be the lock left on the latch.
+     */
+    ctx.tasteGate.revokeAll();
     return { ok: true };
   });
 

@@ -81,6 +81,20 @@ export function setArchiveLockedHandler(handler: (() => void) | null): void {
   onArchiveLocked = handler;
 }
 
+/**
+ * The pass for the notes about what you like, while one is held.
+ *
+ * In memory and nowhere else: not `localStorage`, not a cookie. The whole point
+ * of asking for the password at that screen is that a reload, a new tab or a
+ * phone picked up tomorrow has to ask again, and anything that survives those
+ * would be the lock quietly unlocking itself.
+ */
+let tasteTicket: string | null = null;
+
+export function setTasteTicket(ticket: string | null): void {
+  tasteTicket = ticket;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     credentials: 'same-origin',
@@ -89,6 +103,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(init.body && !(init.body instanceof FormData)
         ? { 'content-type': 'application/json' }
         : {}),
+      // Only where it belongs: a pass for one screen is not a credential to
+      // spray across every request the app makes.
+      ...(tasteTicket && path.startsWith('/api/taste') ? { 'x-latent-taste': tasteTicket } : {}),
       ...(init.headers ?? {}),
     },
   });
@@ -376,6 +393,16 @@ export const api = {
   /* ---------------------------------------------------------------- */
 
   taste: () => request<TasteProfile>('/api/taste'),
+
+  /** Buy a pass with the app password, and get the notes with it. */
+  unlockTaste: (password: string) =>
+    request<{ ticket: string; profile: TasteProfile }>('/api/taste/unlock', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+
+  /** Hand the pass back, which is what closing the screen does. */
+  lockTaste: () => request<void>('/api/taste/lock', { method: 'POST' }),
 
   createTasteCategory: (name: string) =>
     request<TasteCategory>('/api/taste/categories', {

@@ -1,8 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 import type { TasteCategory, TasteEntry } from '@latent/shared';
 
+import { api, setTasteTicket } from '../api/client';
 import {
+  queryKeys,
   useCreateTasteCategory,
   useCreateTasteEntry,
   useDeleteTasteCategory,
@@ -40,10 +43,40 @@ import { Button, Card, ErrorNote, Sheet, Spinner, cn } from './ui';
  * model — see `server/src/taste.ts`.
  */
 export function TasteSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
-  // Not fetched until it is opened: it is a sheet behind a button, and the
-  // request needs the vault open, which is a worse thing to fail in the
-  // background than on a screen that can say so.
-  const taste = useTaste(open);
+  /**
+   * The password, again, at this door.
+   *
+   * Signing in is not enough for this one screen. Everything else in the app is
+   * pictures and settings — what a phone on a table shows to whoever picks it
+   * up, which is a risk people accept. This is a written description of what
+   * somebody likes, and the reason it is encrypted on disk is that nobody would
+   * think to look at it. The same argument applies to the screen.
+   *
+   * The pass is held here and nowhere else, so closing the sheet or reloading
+   * the page asks again — and the server checks it on every one of these
+   * routes, so it is a lock rather than a screen that merely looks locked.
+   */
+  const [unlocked, setUnlocked] = useState(false);
+
+  // Not fetched until it is opened *and* unlocked.
+  const taste = useTaste(open && unlocked);
+  const queryClient = useQueryClient();
+
+  /*
+   * Closing it hands the pass back.
+   *
+   * Both ends: the server forgets the ticket, and the decrypted notes leave the
+   * cache — so reopening asks again rather than showing the list for a frame
+   * while it makes up its mind. The server expires the pass on its own too, in
+   * case the tab is closed instead.
+   */
+  useEffect(() => {
+    if (open || !unlocked) return;
+    void api.lockTaste().catch(() => undefined);
+    setTasteTicket(null);
+    setUnlocked(false);
+    queryClient.removeQueries({ queryKey: queryKeys.taste });
+  }, [open, unlocked, queryClient]);
   const addCategory = useCreateTasteCategory();
   const addEntry = useCreateTasteEntry();
   const reorder = useReorderTasteCategories();
@@ -79,6 +112,10 @@ export function TasteSheet({ open, onClose }: { open: boolean; onClose: () => vo
           <strong className="text-body">Settings → Chat</strong>.
         </p>
 
+        {!unlocked ? (
+          <TasteUnlock onUnlocked={() => setUnlocked(true)} />
+        ) : (
+          <>
         {taste.isLoading && (
           <div className="grid place-items-center py-8">
             <Spinner className="size-5 text-muted" />
@@ -195,8 +232,75 @@ export function TasteSheet({ open, onClose }: { open: boolean; onClose: () => vo
             )}
           </>
         )}
+          </>
+        )}
       </div>
     </Sheet>
+  );
+}
+
+/**
+ * The door: the app password, and nothing else on screen.
+ *
+ * The notes are not shown behind it — not greyed out, not counted — because a
+ * page that says "you have eleven notes under Colour" has already told whoever
+ * is holding the phone most of what the lock was for.
+ */
+function TasteUnlock({ onUnlocked }: { onUnlocked: () => void }) {
+  const queryClient = useQueryClient();
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (password === '' || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { ticket, profile } = await api.unlockTaste(password);
+      setTasteTicket(ticket);
+      // The profile came back with the pass, so the list is on screen the
+      // moment the password is accepted rather than a request later.
+      queryClient.setQueryData(queryKeys.taste, profile);
+      setPassword('');
+      onUnlocked();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'That did not work');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3 py-6">
+      <p className="text-sm">Your password, to open this.</p>
+      <p className="text-[11px] text-muted">
+        Asked again here even though you are signed in: these notes are a description of you, and
+        the app being open is not the same as you being the one holding it.
+      </p>
+      <input
+        type="password"
+        value={password}
+        autoFocus
+        aria-label="Password"
+        placeholder="Password"
+        onChange={(event) => setPassword(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') void submit();
+        }}
+        className="w-full rounded-xl border border-line bg-surface-2 px-3 py-2.5 text-sm outline-none focus:border-accent"
+      />
+      <Button
+        variant="primary"
+        className="w-full"
+        busy={busy}
+        disabled={password === ''}
+        onClick={() => void submit()}
+      >
+        Open
+      </Button>
+      <ErrorNote>{error}</ErrorNote>
+    </div>
   );
 }
 

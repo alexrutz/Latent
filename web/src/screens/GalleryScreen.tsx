@@ -22,17 +22,16 @@ import {
 } from '../components/ParamOverlay';
 import { ThumbGrid, useTileStyle } from '../components/ThumbGrid';
 import { Toggle } from '../components/ParamControl';
+import { BlurButton } from '../components/BlurButton';
 import {
   cn,
   CONTROL_FACE,
-  CONTROL_FACE_ON,
   CONTROL_FACE_SET,
   EmptyState,
   Sheet,
   Spinner,
 } from '../components/ui';
 import { ViewerWithActions } from '../components/ViewerWithActions';
-import { useBlur } from '../state/blur';
 import { TILE_OPTIONS, useGridSettings } from '../state/grid';
 import { useGalleryTargetStore } from '../state/galleryTarget';
 
@@ -208,8 +207,6 @@ export function GalleryScreen() {
   // still means what it meant.
   const viewerScale = viewerScaleOf(settings);
   const [showLayout, setShowLayout] = useState(false);
-  const blurred = useBlur((state) => state.blurred);
-  const toggleBlur = useBlur((state) => state.toggle);
   const sentinel = useRef<HTMLDivElement>(null);
   const firstResult = useRef<HTMLDivElement>(null);
   const scrolledOnce = useRef(false);
@@ -441,21 +438,6 @@ export function GalleryScreen() {
             onChange={(gridParams) => updateSettings({ gridParams })}
             onWithLabelsChange={(overlayLabels) => updateSettings({ overlayLabels })}
           />
-          {/* Reachable from where the pictures are, not only from Settings —
-              the moment you want it is the moment somebody sits down next to
-              you. */}
-          <button
-            type="button"
-            onClick={toggleBlur}
-            aria-label="Blur every image"
-            aria-pressed={blurred}
-            className={cn(
-              'grid size-9 shrink-0 place-items-center rounded-full text-base',
-              blurred ? CONTROL_FACE_ON : CONTROL_FACE,
-            )}
-          >
-            ◍
-          </button>
           <button
             type="button"
             onClick={() => setShowLayout(true)}
@@ -467,6 +449,16 @@ export function GalleryScreen() {
           >
             ▦
           </button>
+          {/*
+            Last, always, on every screen that has one of these rows.
+
+            Reachable from where the pictures are rather than only from
+            Settings — the moment you want it is the moment somebody sits down
+            next to you — and always in the same corner, because a control you
+            reach for without looking has to be somewhere your thumb already
+            knows.
+          */}
+          <BlurButton />
         </div>
       </div>
 

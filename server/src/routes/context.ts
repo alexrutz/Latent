@@ -12,7 +12,7 @@ import type { Orchestrator } from '../orchestrator.js';
 import type { StateFiles } from '../statefile.js';
 import type { StudyRunner } from '../study.js';
 import type { Sweeper } from '../sweeper.js';
-import type { Taste } from '../taste.js';
+import type { Taste, TasteGate } from '../taste.js';
 import type { Vault } from '../vault.js';
 import type { WorkflowScanner } from '../workflowScan.js';
 
@@ -25,6 +25,8 @@ export interface AppContext {
   vault: Vault;
   /** Notes about what the user likes, readable while the vault is open. */
   taste: Taste;
+  /** Passes for the one screen that asks for the password a second time. */
+  tasteGate: TasteGate;
   importer: Importer;
   /** The read-only folder of pictures to feed into workflows. */
   inputs: InputLibrary;

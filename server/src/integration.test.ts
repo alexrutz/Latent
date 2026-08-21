@@ -5968,22 +5968,44 @@ describe('what the user likes', () => {
   const categories: string[] = [];
   const entries: string[] = [];
 
+  /**
+   * The pass this screen's routes need, bought with the password.
+   *
+   * Being signed in is deliberately not enough for these: see `TasteGate`. The
+   * tests buy one the same way the app does, which is also what proves the
+   * routes are shut without it.
+   */
+  let ticket = '';
+
+  const taste = (path: string, init: RequestInit = {}) =>
+    api(path, { ...init, headers: { ...(init.headers ?? {}), 'x-latent-taste': ticket } });
+
+  beforeAll(async () => {
+    const opened = await json<{ ticket: string }>(
+      api('/api/taste/unlock', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'test-password' }),
+      }),
+    );
+    ticket = opened.ticket;
+  });
+
   afterAll(async () => {
-    for (const id of entries) await api(`/api/taste/entries/${id}`, { method: 'DELETE' });
-    for (const id of categories) await api(`/api/taste/categories/${id}`, { method: 'DELETE' });
+    for (const id of entries) await taste(`/api/taste/entries/${id}`, { method: 'DELETE' });
+    for (const id of categories) await taste(`/api/taste/categories/${id}`, { method: 'DELETE' });
     await api('/api/settings', { method: 'PATCH', body: JSON.stringify({ chat: { taste: 'hints' } }) });
   });
 
   it('keeps categories, notes filed under them, and notes filed under nothing', async () => {
     const colour = await json<TasteCategory>(
-      api('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name: 'Colour' }) }),
+      taste('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name: 'Colour' }) }),
     );
     categories.push(colour.id);
     expect(colour.name).toBe('Colour');
     expect(colour.active).toBe(true);
 
     const filed = await json<TasteEntry>(
-      api('/api/taste/entries', {
+      taste('/api/taste/entries', {
         method: 'POST',
         body: JSON.stringify({ text: 'washed-out teal', categoryId: colour.id }),
       }),
@@ -5991,7 +6013,7 @@ describe('what the user likes', () => {
     // A heading is optional by design: being made to file everything is how a
     // list like this ends up empty.
     const loose = await json<TasteEntry>(
-      api('/api/taste/entries', {
+      taste('/api/taste/entries', {
         method: 'POST',
         body: JSON.stringify({ text: 'rain at night' }),
       }),
@@ -6000,7 +6022,7 @@ describe('what the user likes', () => {
     expect(filed.categoryId).toBe(colour.id);
     expect(loose.categoryId).toBe(null);
 
-    const profile = await json<TasteProfile>(api('/api/taste'));
+    const profile = await json<TasteProfile>(taste('/api/taste'));
     expect(profile.categories.map((entry) => entry.name)).toContain('Colour');
     expect(profile.entries.map((entry) => entry.text).sort()).toEqual([
       'rain at night',
@@ -6010,7 +6032,7 @@ describe('what the user likes', () => {
     // Switching one off is a tap, not a deletion: changing your mind for an
     // evening should not cost you the note.
     const off = await json<TasteEntry>(
-      api(`/api/taste/entries/${loose.id}`, {
+      taste(`/api/taste/entries/${loose.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ active: false }),
       }),
@@ -6022,21 +6044,21 @@ describe('what the user likes', () => {
   /** Deleting the heading is not deleting what was written under it. */
   it('sets a category’s notes loose rather than deleting them with it', async () => {
     const temporary = await json<TasteCategory>(
-      api('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name: 'Passing' }) }),
+      taste('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name: 'Passing' }) }),
     );
     const note = await json<TasteEntry>(
-      api('/api/taste/entries', {
+      taste('/api/taste/entries', {
         method: 'POST',
         body: JSON.stringify({ text: 'brutalist stairwells', categoryId: temporary.id }),
       }),
     );
     entries.push(note.id);
 
-    expect((await api(`/api/taste/categories/${temporary.id}`, { method: 'DELETE' })).status).toBe(
+    expect((await taste(`/api/taste/categories/${temporary.id}`, { method: 'DELETE' })).status).toBe(
       204,
     );
 
-    const profile = await json<TasteProfile>(api('/api/taste'));
+    const profile = await json<TasteProfile>(taste('/api/taste'));
     const survivor = profile.entries.find((entry) => entry.id === note.id);
     expect(survivor?.text).toBe('brutalist stairwells');
     expect(survivor?.categoryId).toBe(null);
@@ -6051,13 +6073,13 @@ describe('what the user likes', () => {
    */
   it('writes ciphertext to the database, not words', async () => {
     const category = await json<TasteCategory>(
-      api('/api/taste/categories', {
+      taste('/api/taste/categories', {
         method: 'POST',
         body: JSON.stringify({ name: 'Distinctive heading' }),
       }),
     );
     const entry = await json<TasteEntry>(
-      api('/api/taste/entries', {
+      taste('/api/taste/entries', {
         method: 'POST',
         body: JSON.stringify({ text: 'an unmistakable phrase', categoryId: category.id }),
       }),
@@ -6102,23 +6124,23 @@ describe('what the user likes', () => {
       await useLlama(url);
 
       const category = await json<TasteCategory>(
-        api('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name: 'Weather' }) }),
+        taste('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name: 'Weather' }) }),
       );
       const kept = await json<TasteEntry>(
-        api('/api/taste/entries', {
+        taste('/api/taste/entries', {
           method: 'POST',
           body: JSON.stringify({ text: 'low fog over water', categoryId: category.id }),
         }),
       );
       const silenced = await json<TasteEntry>(
-        api('/api/taste/entries', {
+        taste('/api/taste/entries', {
           method: 'POST',
           body: JSON.stringify({ text: 'bright noon sun', categoryId: category.id }),
         }),
       );
       categories.push(category.id);
       entries.push(kept.id, silenced.id);
-      await api(`/api/taste/entries/${silenced.id}`, {
+      await taste(`/api/taste/entries/${silenced.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ active: false }),
       });
@@ -6183,13 +6205,13 @@ describe('what the user likes', () => {
     try {
       await useLlama(url);
       const pinned = await json<TasteEntry>(
-        api('/api/taste/entries', {
+        taste('/api/taste/entries', {
           method: 'POST',
           body: JSON.stringify({ text: 'never any text in the picture', always: true }),
         }),
       );
       const ordinary = await json<TasteEntry>(
-        api('/api/taste/entries', {
+        taste('/api/taste/entries', {
           method: 'POST',
           body: JSON.stringify({ text: 'low fog over water' }),
         }),
@@ -6225,7 +6247,7 @@ describe('what the user likes', () => {
       expect(system.content.match(/never any text in the picture/g)).toHaveLength(1);
 
       // Unpinning puts it back among the rest.
-      await api(`/api/taste/entries/${pinned.id}`, {
+      await taste(`/api/taste/entries/${pinned.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ always: false }),
       });
@@ -6271,15 +6293,15 @@ describe('what the user likes', () => {
        * The tests above this one leave their notes for the shared cleanup, and
        * a draw of two out of nine says nothing about how many were asked for.
        */
-      const before = await json<TasteProfile>(api('/api/taste'));
+      const before = await json<TasteProfile>(taste('/api/taste'));
       for (const entry of before.entries) {
-        await api(`/api/taste/entries/${entry.id}`, { method: 'DELETE' });
+        await taste(`/api/taste/entries/${entry.id}`, { method: 'DELETE' });
       }
 
       const written = ['low fog over water', 'brutalist stairwells', 'washed-out teal'];
       for (const text of written) {
         const made = await json<TasteEntry>(
-          api('/api/taste/entries', { method: 'POST', body: JSON.stringify({ text }) }),
+          taste('/api/taste/entries', { method: 'POST', body: JSON.stringify({ text }) }),
         );
         entries.push(made.id);
       }
@@ -6402,32 +6424,95 @@ describe('what the user likes', () => {
     }
   }, 30_000);
 
-  /** Signing out and back in leaves the notes where they were. */
-  it('keeps the notes readable across a lock and a sign-in', async () => {
+  /**
+   * Being signed in is not enough for this one screen.
+   *
+   * Everything else in the app is pictures and settings, which a phone on a
+   * table shows to whoever picks it up. This is a description of a person, and
+   * the reason it is encrypted on disk is that nobody would think to look at
+   * it — so the door asks again, and asks the server rather than the browser.
+   */
+  it('refuses the notes to a session that has not given the password', async () => {
     const server = await bootIsolated();
     try {
       const claim = await server.call('/api/auth/setup', {
         method: 'POST',
         body: JSON.stringify({ password: 'correct horse' }),
       });
-      const sessionCookie = claim.headers.get('set-cookie')?.split(';')[0] ?? '';
+      const cookie = claim.headers.get('set-cookie')?.split(';')[0] ?? '';
 
-      const made = await server.call('/api/taste/entries', {
+      // Signed in, and still shut — with a marker the screen can act on rather
+      // than an error it would have to guess at.
+      const barred = await server.call('/api/taste', { cookie });
+      expect(barred.status).toBe(403);
+      expect((await json<{ needsPassword?: boolean }>(barred)).needsPassword).toBe(true);
+
+      // Writing is shut too, not merely reading.
+      const refused = await server.call('/api/taste/entries', {
         method: 'POST',
-        cookie: sessionCookie,
+        cookie,
+        body: JSON.stringify({ text: 'something private' }),
+      });
+      expect(refused.status).toBe(403);
+
+      // The wrong password buys nothing.
+      const wrong = await server.call('/api/taste/unlock', {
+        method: 'POST',
+        cookie,
+        body: JSON.stringify({ password: 'not it' }),
+      });
+      expect(wrong.status).toBe(401);
+
+      const opened = await json<{ ticket: string; profile: TasteProfile }>(
+        server.call('/api/taste/unlock', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ password: 'correct horse' }),
+        }),
+      );
+      expect(opened.ticket).toBeTruthy();
+      expect(opened.profile.entries).toEqual([]);
+
+      const withTicket = (path: string, init: RequestInit & { cookie?: string } = {}) =>
+        server.call(path, {
+          ...init,
+          cookie,
+          headers: { ...(init.headers ?? {}), 'x-latent-taste': opened.ticket },
+        });
+
+      const made = await withTicket('/api/taste/entries', {
+        method: 'POST',
         body: JSON.stringify({ text: 'something private' }),
       });
       expect(made.status).toBe(201);
 
-      await server.call('/api/auth/logout', { method: 'POST', cookie: sessionCookie });
-
+      /*
+       * And the pass ends with the session it was bought in. Signing out is
+       * the moment somebody else might pick the phone up, which is the whole
+       * case this screen is locked for.
+       */
+      await server.call('/api/auth/logout', { method: 'POST', cookie });
       const login = await server.call('/api/auth/login', {
         method: 'POST',
         body: JSON.stringify({ password: 'correct horse' }),
       });
       const back = login.headers.get('set-cookie')?.split(';')[0] ?? '';
-      const profile = await json<TasteProfile>(server.call('/api/taste', { cookie: back }));
-      expect(profile.entries[0]?.text).toBe('something private');
+
+      const stale = await server.call('/api/taste', {
+        cookie: back,
+        headers: { 'x-latent-taste': opened.ticket },
+      });
+      expect(stale.status).toBe(403);
+
+      // The notes themselves survived all of that.
+      const again = await json<{ profile: TasteProfile }>(
+        server.call('/api/taste/unlock', {
+          method: 'POST',
+          cookie: back,
+          body: JSON.stringify({ password: 'correct horse' }),
+        }),
+      );
+      expect(again.profile.entries[0]?.text).toBe('something private');
     } finally {
       await server.dispose();
     }

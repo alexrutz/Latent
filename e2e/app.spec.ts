@@ -45,6 +45,45 @@ async function withApi<T>(fn: (ctx: Awaited<ReturnType<typeof apiRequest.newCont
 }
 
 /**
+ * The same, with a pass for the notes about what you like.
+ *
+ * Those routes want the password a second time — being signed in is
+ * deliberately not enough for that one screen — so a test that sets them up
+ * buys a pass the way the app does.
+ */
+/**
+ * Open the notes sheet, which asks for the password even though you are in.
+ *
+ * A helper because it is now two steps everywhere, and because the assertion
+ * that it *is* two steps belongs in one test rather than in all of them.
+ */
+async function openTasteSheet(page: Page) {
+  await page.getByRole('button', { name: 'What you like' }).click();
+  const sheet = page.getByRole('dialog', { name: 'What you like' });
+  const password = sheet.getByLabel('Password');
+  if (await password.isVisible().catch(() => false)) {
+    await password.fill(PASSWORD);
+    await sheet.getByRole('button', { name: 'Open' }).click();
+    await expect(password).toBeHidden();
+  }
+  return sheet;
+}
+
+async function withTaste<T>(
+  fn: (
+    ctx: Awaited<ReturnType<typeof apiRequest.newContext>>,
+    headers: Record<string, string>,
+  ) => Promise<T>,
+) {
+  return withApi(async (ctx) => {
+    const opened = (await (
+      await ctx.post('/api/taste/unlock', { data: { password: PASSWORD } })
+    ).json()) as { ticket: string };
+    return fn(ctx, { 'x-latent-taste': opened.ticket });
+  });
+}
+
+/**
  * Sign in if the login screen is showing.
  *
  * Each Playwright test gets a fresh browser context, so the session cookie does
@@ -132,13 +171,19 @@ async function resetState() {
      * Notes about what the user likes go into the system prompt, so one left
      * behind would quietly colour every later chat test's reply.
      */
-    const taste = (await (await ctx.get('/api/taste')).json()) as {
+    const opened = (await (
+      await ctx.post('/api/taste/unlock', { data: { password: PASSWORD } })
+    ).json()) as { ticket: string };
+    const pass = { 'x-latent-taste': opened.ticket };
+    const taste = (await (await ctx.get('/api/taste', { headers: pass })).json()) as {
       categories: { id: string }[];
       entries: { id: string }[];
     };
-    for (const entry of taste.entries ?? []) await ctx.delete(`/api/taste/entries/${entry.id}`);
+    for (const entry of taste.entries ?? []) {
+      await ctx.delete(`/api/taste/entries/${entry.id}`, { headers: pass });
+    }
     for (const category of taste.categories ?? []) {
-      await ctx.delete(`/api/taste/categories/${category.id}`);
+      await ctx.delete(`/api/taste/categories/${category.id}`, { headers: pass });
     }
 
     /*
@@ -2755,6 +2800,28 @@ test.describe('the chat module', () => {
     }
   };
 
+  /**
+   * Press ✦ and take the first of its two options.
+   *
+   * The button offers rather than fires now — "generate now" and "fresh prompt,
+   * then generate" — so every test that used to press it goes through the same
+   * two taps a person does.
+   */
+  const pressPromptButton = async (page: Page) => {
+    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await page.getByRole('button', { name: 'Generate now' }).click();
+  };
+
+  /** Everything the model server has been sent, for "was this ever said". */
+  const allRequests = async (): Promise<string> => {
+    const context = await apiRequest.newContext({ baseURL: LLAMA });
+    try {
+      return JSON.stringify((await (await context.get('/__requests')).json()) as unknown[]);
+    } finally {
+      await context.dispose();
+    }
+  };
+
   /** The whole of the last request, for asserting on what was sent. */
   const lastRequest = async (): Promise<string> => {
     const context = await apiRequest.newContext({ baseURL: LLAMA });
@@ -3334,6 +3401,99 @@ test.describe('the chat module', () => {
   });
 
   /**
+   * Two ways to press the prompt button, in the space of one.
+   *
+   * The second exists for a conversation that has converged: every prompt is
+   * the last one with two words moved, because the last one is sitting in the
+   * history being treated as the thing to improve. Choosing it throws that
+   * prompt away — the model is told so — asks for a different composition, and
+   * generates it without a dialog in the middle.
+   */
+  test('offers a fresh composition beside generate now', async ({ page }) => {
+    await seedWorkflow();
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', { data: { chat: { promptButton: 'generate' } } }),
+    );
+
+    await script(
+      { content: 'A harbour, then.' },
+      {
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a different composition entirely', reason: 'Started over.' },
+        },
+      },
+    );
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('a harbour');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByText('A harbour, then.')).toBeVisible({ timeout: 30_000 });
+
+    // The button does not fire any more — it offers.
+    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await expect(page.getByRole('button', { name: 'Generate now' })).toBeVisible();
+    const fresh = page.getByRole('button', { name: 'Fresh prompt, then generate' });
+    await expect(fresh).toBeVisible();
+    await page.screenshot({ path: 'test-results/100-generate-choice.png' });
+
+    await fresh.click();
+
+    // It generated without asking, and the model was told to start over.
+    await expect(page.getByRole('button', { name: /Open picture/ }).first()).toBeVisible({
+      timeout: 90_000,
+    });
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    /*
+     * Across every request, not the last one: accepting the prompt starts a
+     * turn of its own, so by the time the picture is here the build turn is two
+     * requests back.
+     */
+    expect(await allRequests()).toContain('Throw the last prompt away');
+  });
+
+  /**
+   * The one screen that asks for the password twice.
+   *
+   * Everything else in the app is pictures and settings — what a phone on a
+   * table shows to whoever picks it up. This is a written description of
+   * somebody, so the door asks again, and nothing behind it is on screen until
+   * it has been answered: not the notes, not how many there are.
+   */
+  test('asks for the password before showing what you like', async ({ page }) => {
+    await withTaste(async (ctx, headers) => {
+      await ctx.post('/api/taste/entries', { data: { text: 'a private note' }, headers });
+    });
+
+    await open(page, '/chat');
+    await page.getByRole('button', { name: 'What you like' }).click();
+
+    const sheet = page.getByRole('dialog', { name: 'What you like' });
+    await expect(sheet.getByLabel('Password')).toBeVisible();
+    await expect(sheet.getByText('a private note')).toHaveCount(0);
+    await page.screenshot({ path: 'test-results/99-taste-locked.png' });
+
+    // The wrong one says so and shows nothing.
+    await sheet.getByLabel('Password').fill('not the password');
+    await sheet.getByRole('button', { name: 'Open' }).click();
+    await expect(sheet.getByRole('alert')).toBeVisible();
+    await expect(sheet.getByText('a private note')).toHaveCount(0);
+
+    await sheet.getByLabel('Password').fill(PASSWORD);
+    await sheet.getByRole('button', { name: 'Open' }).click();
+    await expect(sheet.getByText('a private note')).toBeVisible({ timeout: 30_000 });
+
+    /*
+     * And closing it locks again: the pass is held in the tab and handed back,
+     * so coming back is another password rather than a second look.
+     */
+    await sheet.getByRole('button', { name: 'Done' }).click();
+    await page.getByRole('button', { name: 'What you like' }).click();
+    await expect(sheet.getByLabel('Password')).toBeVisible();
+    await expect(sheet.getByText('a private note')).toHaveCount(0);
+  });
+
+  /**
    * The headings, once there are enough of them to need managing.
    *
    * Folded away by default so a dozen fit on a phone screen, renamed in place
@@ -3342,15 +3502,14 @@ test.describe('the chat module', () => {
    * with scrolling it.
    */
   test('folds, renames and reorders what you like', async ({ page }) => {
-    await withApi(async (ctx) => {
+    await withTaste(async (ctx, headers) => {
       for (const name of ['Colour', 'Places', 'Films']) {
-        await ctx.post('/api/taste/categories', { data: { name } });
+        await ctx.post('/api/taste/categories', { data: { name }, headers });
       }
     });
 
     await open(page, '/chat');
-    await page.getByRole('button', { name: 'What you like' }).click();
-    const sheet = page.getByRole('dialog', { name: 'What you like' });
+    const sheet = await openTasteSheet(page);
 
     // All three are on screen at once, and none of them is open.
     for (const name of ['Colour', 'Places', 'Films']) {
@@ -3376,8 +3535,8 @@ test.describe('the chat module', () => {
     await sheet.getByRole('button', { name: 'Move Colour and light down' }).click();
     await expect
       .poll(async () =>
-        withApi(async (ctx) => {
-          const profile = (await (await ctx.get('/api/taste')).json()) as {
+        withTaste(async (ctx, headers) => {
+          const profile = (await (await ctx.get('/api/taste', { headers })).json()) as {
             categories: { name: string }[];
           };
           return profile.categories.map((category) => category.name);
@@ -3397,9 +3556,9 @@ test.describe('the chat module', () => {
    */
   test('wanders through what you like, picture after picture', async ({ page }) => {
     await seedWorkflow();
-    await withApi(async (ctx) => {
-      await ctx.post('/api/taste/entries', { data: { text: 'low fog over water' } });
-      await ctx.post('/api/taste/entries', { data: { text: 'brutalist stairwells' } });
+    await withTaste(async (ctx, headers) => {
+      await ctx.post('/api/taste/entries', { data: { text: 'low fog over water' }, headers });
+      await ctx.post('/api/taste/entries', { data: { text: 'brutalist stairwells' }, headers });
       await ctx.patch('/api/settings', {
         data: { chat: { wander: { attributes: 2, sampling: 'chat' } } },
       });
@@ -3472,10 +3631,12 @@ test.describe('the chat module', () => {
     await script({ content: 'How about a wet street at night?' });
 
     await open(page, '/chat');
-    // Next to the chat list, because it answers the same question: what now?
-    await page.getByRole('button', { name: 'What you like' }).click();
-
-    const sheet = page.getByRole('dialog', { name: 'What you like' });
+    /*
+     * Next to the chat list, because it answers the same question: what now?
+     * And behind the password, because what is behind it is a description of a
+     * person rather than a setting.
+     */
+    const sheet = await openTasteSheet(page);
     await expect(sheet).toBeVisible();
 
     await sheet.getByLabel('Something you like').fill('low fog over water');
@@ -3506,8 +3667,8 @@ test.describe('the chat module', () => {
     await sheet.getByRole('switch', { name: 'bright noon sun feeds in' }).click();
     await expect
       .poll(async () =>
-        withApi(async (ctx) => {
-          const profile = (await (await ctx.get('/api/taste')).json()) as {
+        withTaste(async (ctx, headers) => {
+          const profile = (await (await ctx.get('/api/taste', { headers })).json()) as {
             entries: { text: string; active: boolean }[];
           };
           return profile.entries.find((entry) => entry.text === 'bright noon sun')?.active;
@@ -3915,7 +4076,7 @@ test.describe('the chat module', () => {
     });
 
     await open(page, '/chat');
-    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await pressPromptButton(page);
     // No dialog to decide: it queued.
     await expect
       .poll(
@@ -3953,7 +4114,7 @@ test.describe('the chat module', () => {
     });
 
     await open(page, '/chat');
-    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await pressPromptButton(page);
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible({ timeout: 30_000 });
@@ -3992,7 +4153,7 @@ test.describe('the chat module', () => {
     );
 
     await open(page, '/chat');
-    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await pressPromptButton(page);
     await expect(page.getByRole('button', { name: /Open picture/ }).first()).toBeVisible({
       timeout: 60_000,
     });
@@ -4000,7 +4161,7 @@ test.describe('the chat module', () => {
     // Second prompt, same conversation. The button is hidden while a reply is
     // still arriving, so wait for it rather than racing it.
     await expect(page.getByText('Queued the first.')).toBeVisible({ timeout: 30_000 });
-    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await pressPromptButton(page);
     await expect
       .poll(
         async () =>
@@ -4101,7 +4262,7 @@ test.describe('the chat module', () => {
     });
 
     await open(page, '/chat');
-    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await pressPromptButton(page);
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible({ timeout: 30_000 });
@@ -4159,7 +4320,7 @@ test.describe('the chat module', () => {
     );
 
     await open(page, '/chat');
-    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await pressPromptButton(page);
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible({ timeout: 30_000 });
@@ -4432,6 +4593,35 @@ test.describe('the twenty-third wave', () => {
    * one that broke, because the way this happens is a control added to a row
    * that already fitted.
    */
+  /**
+   * The blur is the last button in every top row.
+   *
+   * It is the one control here reached for without looking — somebody has just
+   * sat down beside you — and a button that is third from the right on one
+   * screen and last on another is a button you have to find first.
+   */
+  test('keeps the blur in the same corner on every screen', async ({ page }) => {
+    for (const route of ['/gallery', '/chat']) {
+      await open(page, route);
+      const blur = page.getByRole('button', { name: 'Blur every image' });
+      await expect(blur).toBeVisible();
+
+      const box = (await blur.boundingBox())!;
+      const others = await page
+        .locator('header, .safe-t')
+        .first()
+        .getByRole('button')
+        .all();
+
+      for (const other of others) {
+        const at = await other.boundingBox();
+        // Same row, and nothing to the right of it.
+        if (!at || Math.abs(at.y - box.y) > 8) continue;
+        expect(at.x, `a button right of the blur on ${route}`).toBeLessThanOrEqual(box.x + 1);
+      }
+    }
+  });
+
   test('keeps every control on the screen', async ({ page }) => {
     for (const route of ['/gallery', '/favorites', '/queue', '/generate', '/chat', '/settings']) {
       await open(page, route);
