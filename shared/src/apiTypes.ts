@@ -1965,6 +1965,169 @@ export type ChatStreamEvent =
   | { type: 'error'; message: string };
 
 /* ------------------------------------------------------------------ */
+/* What a conversation is doing                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Where a conversation has got to, as a state the server holds.
+ *
+ * This is the change the chat module needed most. Every multi-step behaviour
+ * here — a wandering run, an autonomous one, waiting for a render before
+ * saying anything about it — used to be a sequence of steps the *browser*
+ * drove: post this, read the stream, decide, queue, record, wait, post the
+ * next. A loop whose control flow lives in a tab is a loop the operating
+ * system may stop at any moment, and it did: switching apps froze the page,
+ * the open stream was killed under it, timers slowed to one tick a minute, and
+ * whatever step was between two `await`s simply never ran. Worse, a browser
+ * that died between queueing a render and recording the decision left the
+ * conversation with a proposal that had no answer — a state most chat
+ * templates refuse to continue from at all.
+ *
+ * So the loop is the server's, and this is what it is doing. Persisted, so a
+ * restart resumes rather than forgets; read by every client at once, so two
+ * tabs agree; and the whole of what the screen needs to draw, so there is
+ * nothing for a client to work out for itself and get wrong.
+ */
+export interface ChatRun {
+  /** What the conversation is doing right now. */
+  phase: ChatRunPhase;
+  /**
+   * Why it is doing it, which is what decides what happens next.
+   *
+   * `manual` is an ordinary conversation: one reply, then it waits for you.
+   * `auto` accepts the model's own rewrites until a render clears the
+   * perfectionism threshold. `wander` makes picture after picture out of notes
+   * drawn at random. The two loops differ only in what they do when a round
+   * ends, which is exactly what a mode should be.
+   */
+  mode: ChatRunMode;
+  /** Rounds this run has completed, for the strip above the composer. */
+  round: number;
+  /**
+   * The proposal waiting on a person, when the phase is `awaiting`.
+   *
+   * The id of the message carrying it. The transcript already holds the call
+   * itself, so sending it again here would be two copies of one thing that
+   * could disagree.
+   */
+  awaiting: string | null;
+  /** The run this conversation is waiting on, when the phase is `generating`. */
+  generationId: string | null;
+  /**
+   * Why a loop stopped short, in a sentence, or nothing while it is going.
+   *
+   * The strip above the composer is the only place a run that has quietly
+   * stopped is distinguishable from one still going, so a loop that gives up
+   * has to say why here.
+   */
+  note: string | null;
+  /** What went wrong, if anything. Cleared by the next thing you do. */
+  error: string | null;
+  /**
+   * What the next turn is for.
+   *
+   * Stored rather than worked out from the transcript, because two of the three
+   * cannot be: "the ✦ button was pressed" and "that render is finished" are
+   * facts about what happened, not about what the last message looks like. The
+   * old code guessed them from the shape of the history and got the awkward
+   * cases wrong — a rejected proposal and a finished render both leave a `tool`
+   * message behind, and only one of them means the model should be shown a
+   * picture and offered a rewrite.
+   */
+  want: ChatWant;
+  /**
+   * Accept the next prompt this conversation produces, without asking.
+   *
+   * Set by "generate now", which says what to do with the answer before the
+   * answer exists. Distinct from `mode: 'auto'`, which is standing permission
+   * for a whole run — this is one instruction about one proposal.
+   */
+  autoAccept: boolean;
+}
+
+export type ChatWant =
+  /** Whatever the model has to say — an ordinary turn. */
+  | 'reply'
+  /** A prompt, by name. The tool is forced rather than requested. */
+  | 'prompt'
+  /**
+   * A prompt, and not the one already on the table.
+   *
+   * The second half of the generate button. Same forced tool, different thing
+   * said: a model handed a conversation that already contains a finished prompt
+   * writes that prompt again with two words moved, which is exactly the state
+   * this asks to get out of.
+   */
+  | 'freshPrompt'
+  /** A judgement of the render that just finished, and maybe a rewrite. */
+  | 'afterRender';
+
+export type ChatRunPhase =
+  /** Nothing in flight. Waiting for you. */
+  | 'idle'
+  /** The model is answering. Tokens are arriving. */
+  | 'thinking'
+  /** A proposal is on the table and only a person can settle it. */
+  | 'awaiting'
+  /** A render is in progress, and the turn after it waits for the picture. */
+  | 'generating';
+
+export type ChatRunMode = 'manual' | 'auto' | 'wander';
+
+/** A conversation doing nothing, which is what a fresh one is doing. */
+export const IDLE_RUN: ChatRun = {
+  phase: 'idle',
+  mode: 'manual',
+  round: 0,
+  awaiting: null,
+  generationId: null,
+  note: null,
+  error: null,
+  want: 'reply',
+  autoAccept: false,
+};
+
+/**
+ * What a subscriber to a conversation receives.
+ *
+ * One long-lived stream per open conversation rather than one per turn. That
+ * is the other half of moving the loop: a stream that exists only while a
+ * request is in flight cannot tell you about anything that happened while you
+ * were away, so a client coming back from a suspended tab had no way to find
+ * out that three pictures had been made in the meantime except to re-read
+ * everything and guess.
+ *
+ * Every stream opens with a `sync`, so a client that has just connected, just
+ * reconnected, or been asleep for an hour all take the same path: draw what
+ * the server says is true, then follow the deltas.
+ */
+export type ChatEvent =
+  /** The whole truth, sent on connect and after anything that reorders history. */
+  | { type: 'sync'; run: ChatRun; partial: ChatPartialReply | null }
+  /** The run state changed: a phase, a round, a note. */
+  | { type: 'run'; run: ChatRun }
+  /** Reasoning, as it arrives. Shown collapsed, never sent back as context. */
+  | { type: 'thinking'; text: string }
+  /** The reply, as it arrives. */
+  | { type: 'content'; text: string }
+  /** A finished message was stored — the transcript should be re-read. */
+  | { type: 'message'; messageId: string }
+  | { type: 'error'; message: string };
+
+/**
+ * A reply that is part-way through, for a client that has just arrived.
+ *
+ * Held in memory by the runner rather than written to the database per token,
+ * which would be a write per token for a record nobody reads until it is
+ * finished. Its purpose is a client reconnecting mid-sentence: without it, a
+ * tab woken after thirty seconds shows nothing at all until the turn ends.
+ */
+export interface ChatPartialReply {
+  content: string;
+  thinking: string;
+}
+
+/* ------------------------------------------------------------------ */
 /* Parameter studies                                                   */
 /* ------------------------------------------------------------------ */
 

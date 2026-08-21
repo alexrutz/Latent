@@ -7,6 +7,7 @@ import type {
   ChatConversation,
   ChatConversationDetail,
   ChatMessage,
+  ChatRun,
   ChatToolResult,
   ComfyImageRef,
   ConnectionAuthMode,
@@ -47,6 +48,7 @@ import {
   DEFAULT_RANDOM_PROMPT_CONFIG,
   DEFAULT_WANDER_DRAW,
   defaultSampling,
+  IDLE_RUN,
   mediaKindOf,
   normaliseRandomPromptConfig,
 } from '@latent/shared';
@@ -503,6 +505,50 @@ CREATE INDEX idx_taste_entries_order ON taste_entries (category_id, position, cr
 MIGRATIONS.push(`
 ALTER TABLE taste_entries ADD COLUMN always_on INTEGER NOT NULL DEFAULT 0;
 `);
+
+/**
+ * v14: what a conversation is doing, on the server rather than in a tab.
+ *
+ * The chat's multi-step behaviours — a wandering run, an autonomous one,
+ * waiting for a render before saying anything about it — used to be sequences
+ * the browser drove. A loop whose control flow lives in a tab stops when the
+ * tab is frozen, and the conversation was regularly left mid-step with no
+ * record of where it had got to. This row is that record: one per conversation,
+ * written at every transition, so the server can pick a stalled run back up and
+ * any client can be told what is happening rather than having to remember.
+ *
+ * Deliberately one row per chat rather than a log. What is wanted is the
+ * present tense — the history is the messages, and it is already stored.
+ */
+MIGRATIONS.push(`
+CREATE TABLE chat_runs (
+  chat_id       TEXT PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+  phase         TEXT NOT NULL DEFAULT 'idle',
+  mode          TEXT NOT NULL DEFAULT 'manual',
+  round         INTEGER NOT NULL DEFAULT 0,
+  awaiting      TEXT,
+  generation_id TEXT,
+  note          TEXT,
+  error         TEXT,
+  want          TEXT NOT NULL DEFAULT 'reply',
+  auto_accept   INTEGER NOT NULL DEFAULT 0,
+  updated_at    INTEGER NOT NULL
+);
+`);
+
+interface ChatRunRow {
+  chat_id: string;
+  phase: string;
+  mode: string;
+  round: number;
+  awaiting: string | null;
+  generation_id: string | null;
+  note: string | null;
+  error: string | null;
+  want: string;
+  auto_accept: number;
+  updated_at: number;
+}
 
 interface ChatRow {
   id: string;
@@ -1155,6 +1201,81 @@ export class Store {
     this.db
       .prepare('UPDATE chat_messages SET tool_result_json = ? WHERE id = ?')
       .run(JSON.stringify(result), messageId);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* What a conversation is doing                                      */
+  /* ---------------------------------------------------------------- */
+
+  /** Where this conversation has got to. A chat with no row is idle. */
+  getChatRun(chatId: string): ChatRun {
+    const row = this.db
+      .prepare<[string], ChatRunRow>('SELECT * FROM chat_runs WHERE chat_id = ?')
+      .get(chatId);
+    if (!row) return { ...IDLE_RUN };
+
+    return {
+      phase: row.phase as ChatRun['phase'],
+      mode: row.mode as ChatRun['mode'],
+      round: row.round,
+      awaiting: row.awaiting,
+      generationId: row.generation_id,
+      note: row.note,
+      error: row.error,
+      want: row.want as ChatRun['want'],
+      autoAccept: row.auto_accept === 1,
+    };
+  }
+
+  /** Write it back. Every transition goes through here, including to idle. */
+  setChatRun(chatId: string, run: ChatRun): void {
+    this.db
+      .prepare(
+        `INSERT INTO chat_runs
+           (chat_id, phase, mode, round, awaiting, generation_id, note, error,
+            want, auto_accept, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(chat_id) DO UPDATE SET
+           phase = excluded.phase,
+           mode = excluded.mode,
+           round = excluded.round,
+           awaiting = excluded.awaiting,
+           generation_id = excluded.generation_id,
+           note = excluded.note,
+           error = excluded.error,
+           want = excluded.want,
+           auto_accept = excluded.auto_accept,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        chatId,
+        run.phase,
+        run.mode,
+        run.round,
+        run.awaiting,
+        run.generationId,
+        run.note,
+        run.error,
+        run.want,
+        run.autoAccept ? 1 : 0,
+        Date.now(),
+      );
+  }
+
+  /**
+   * Every conversation that was mid-something, for a server just starting up.
+   *
+   * A restart is indistinguishable from a crash from the database's side, and
+   * the honest thing to do about a run that was in flight is to look at it —
+   * which needs knowing which they were.
+   */
+  listUnsettledChats(): string[] {
+    return this.db
+      .prepare<[], { chat_id: string }>(
+        "SELECT chat_id FROM chat_runs WHERE phase <> 'idle' ORDER BY updated_at",
+      )
+      .all()
+      .map((row) => row.chat_id);
   }
 
   close(): void {

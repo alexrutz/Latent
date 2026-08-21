@@ -1267,11 +1267,13 @@ what made it**: the prompt, the settings, and the button to run it again,
 because "what was that one?" is the only question an endless stream raises and
 in this mode the prompt is never written above the picture.
 
-**It keeps going while you are elsewhere.** The loop is held with the
-conversation rather than by the screen, so switching to the gallery — or to
-another app — does not stop it; the pictures are simply there when you come
-back. It used to stop, because the step that queued each picture happened inside
-the dialog that shows you a proposal, and an unmounted screen has no dialog.
+**It keeps going while you are elsewhere.** The loop runs on the server, so
+switching to the gallery — or to another app, or closing the tab — does not stop
+it; the pictures are simply there when you come back, and the counter above the
+composer has kept counting. A restart does not stop it either: where a run has
+got to is written down, and a fresh process picks it up. See
+[How it works](#how-it-works) for why none of that could be true while the loop
+lived in the browser.
 
 **Only those notes, and nothing else about you.** The section of the system
 prompt that normally lists everything you like is left out of these turns
@@ -2016,6 +2018,39 @@ receives a full snapshot and is instantly correct. It also means several devices
 stay in sync, and that ComfyUI needs no CORS configuration and need not be
 exposed to the network at all.
 
+**The chat works the same way, and for the same reason.** A conversation here is
+rarely one request: a prompt is proposed, accepted, rendered, judged, and often
+rewritten — and a wandering run does that indefinitely. All of that used to be a
+sequence the *browser* drove, one call at a time, and a browser is the one part
+of this system you cannot rely on to still be there in ten seconds. A
+backgrounded tab is frozen: its open streams are cut, its timers slow to a crawl,
+and the step between two `await`s never runs. So a run stopped the moment you
+looked at something else, and could stop mid-step — a proposal accepted with no
+render started, which is a state most chat templates then refuse to continue
+from at all.
+
+So the loop is the server's. A client sends an **intent** — say this, ask for a
+prompt, accept that, start wandering, stop — and has no further part in it. What
+a conversation is doing is a state machine with its state written down at every
+transition (`chat_runs`), so it survives a restart as well as a tab switch, and
+so two devices watching one conversation cannot disagree about what is going on.
+Each open conversation has **one long-lived event stream** that opens with the
+present tense rather than replaying a request, which is what makes arriving
+late, reconnecting, and waking from a freeze all the same path.
+
+One thing still waits for a browser, deliberately: the turn that judges a render
+holds until the picture is actually on your screen, because a verdict that
+arrives before the picture is a verdict on nothing. It is a courtesy with a
+deadline — twenty seconds — and it is skipped outright when nobody is watching.
+
+| Where it lives | What it is |
+| --- | --- |
+| `server/src/chat/engine.ts` | The loop: one runner per conversation, a persisted state machine, and the event bus clients subscribe to |
+| `server/src/chat/turn.ts` | One turn — what it is for, what it carries, what it stores. No HTTP in it |
+| `server/src/chat/queue.ts` | Queueing an accepted prompt, in the same act that records the decision |
+| `server/src/routes/chat.ts` | The intents, and the event stream. Nothing else |
+| `web/src/state/chat.ts` | A view: the transcript, what the server says is happening, and the half-written message |
+
 ## Development
 
 ```bash
@@ -2057,8 +2092,11 @@ Use `--project=iPad` to run just those.
 | `server/src/monitor.ts` | The resource and event history behind the Monitor tab |
 | `server/src/chat/llama.ts` | The llama.cpp client: streaming, reasoning tags, tool schemas, and the instructions and pace policy |
 | `shared/src/markdown.ts` | The Markdown subset a chat reply is rendered from |
-| `server/src/routes/chat.ts` | Conversations, the SSE reply stream, and tool decisions |
-| `web/src/state/chat.ts` | The conversation, held outside the screen so a tab switch cannot destroy it |
+| `server/src/chat/engine.ts` | The conversation loop: a persisted state machine per chat, so a run survives a tab switch and a restart |
+| `server/src/chat/turn.ts` | One turn against the model — what it is for, what it carries, what it stores |
+| `server/src/chat/queue.ts` | Queueing an accepted prompt and recording the decision as one act |
+| `server/src/routes/chat.ts` | The intents a client can send, and the event stream it watches |
+| `web/src/state/chat.ts` | The conversation as this device sees it — a view over the engine, with no loop of its own |
 | `shared/src/systemPrompts.ts` | Matching a named system prompt to the workflow field it belongs in |
 | `shared/src/modelServer.ts` | Putting the model server in use into a workflow's llama-server nodes |
 | `shared/src/presetChat.ts` | Reshaping the preset-chat node's form against its own slot names |

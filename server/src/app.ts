@@ -165,8 +165,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
    * turns the study over to its rating phase. Filtering to study runs happens
    * inside, where the shot lookup already is.
    */
-  orchestrator.onSettled = (generationId, ok) =>
-    studyRunner.onGenerationSettled(generationId, ok);
+  orchestrator.onSettled((generationId, ok) => studyRunner.onGenerationSettled(generationId, ok));
 
   // With the password fixed in the environment there is nobody to wait for, so
   // the archive can be unsealed at boot. Otherwise it stays locked until the
@@ -230,7 +229,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     await auth.guard(request, reply);
   });
 
-  registerChatRoutes(app, ctx);
+  const chatEngine = registerChatRoutes(app, ctx);
   registerSystemRoutes(app, ctx);
   registerConnectionRoutes(app, ctx);
   registerWorkflowRoutes(app, ctx);
@@ -294,6 +293,10 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     endless.stop();
     studyRunner.pause();
     sweeper.stop();
+    // Before the store closes: a run mid-step would otherwise reach for a
+    // database that has gone. Its state stays as it is, so the next process
+    // picks it up where this one left it.
+    chatEngine.close();
     vault.lock();
     tasteGate.revokeAll();
     store.close();
@@ -302,6 +305,14 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   orchestrator.start();
   stateFiles.start();
   sweeper.start();
+  /*
+   * Pick up any conversation that was mid-something when this process stopped.
+   *
+   * A restart is indistinguishable from a crash from the database's side, and a
+   * wandering run that quietly ends because the server was updated is exactly
+   * the kind of unreliability this module was rebuilt to remove.
+   */
+  chatEngine.resume();
 
   return { app, ctx, config };
 }

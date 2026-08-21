@@ -120,17 +120,25 @@ export function ChatScreen() {
   const draft = useChatStore((state) => state.draft);
   const attachments = useChatStore((state) => state.attachments);
   const error = useChatStore((state) => state.error);
-  const asking = useChatStore((state) => state.asking);
   const callMinimized = useChatStore((state) => state.callMinimized);
-  const autoRounds = useChatStore((state) => state.autoRounds);
-  const autoHalted = useChatStore((state) => state.autoHalted);
-  const autoNote = useChatStore((state) => state.autoNote);
-  const wandering = useChatStore((state) => state.wandering);
-  const wanderRounds = useChatStore((state) => state.wanderRounds);
-  const waitingFor = useChatStore((state) => state.waitingFor);
+  /*
+   * What the conversation is doing, as one thing the server decided.
+   *
+   * These used to be seven separate flags kept in step by hand on this side —
+   * whether a run was going, how many rounds it had done, whether it had
+   * quietly stopped, what it was waiting on. Keeping them right meant the
+   * screen had to reason about the loop, and a screen that had been asleep
+   * reasoned from stale premises. Now it reads.
+   */
+  const run = useChatStore((state) => state.run);
   const store = useChatStore.getState;
 
   const autonomous = settings.data?.chat.autonomous;
+  const wandering = run.mode === 'wander';
+  /** A prompt has been asked for by name and nothing has come back yet. */
+  const asking = run.phase === 'thinking' && (run.want === 'prompt' || run.want === 'freshPrompt');
+  /** The render the follow-up turn is waiting on, so it can be said out loud. */
+  const waitingFor = run.phase === 'generating' ? run.generationId : null;
 
   /*
    * Every picture in the conversation, in the order it was made.
@@ -162,23 +170,6 @@ export function ChatScreen() {
   const viewerIndex = viewing
     ? viewerEntries.findIndex((entry) => pictureKey(entry.record.id, entry.image) === viewing)
     : -1;
-
-  /*
-   * The two settings the store acts on, kept in step with the server's copy.
-   *
-   * Mirrored rather than read where they are needed: whether a proposal is
-   * accepted for you is decided the moment it arrives — before any dialog
-   * exists to ask a query hook — and it decides more than one thing about that
-   * call, so it has to be settled in one place.
-   */
-  useEffect(() => {
-    const chatSettings = settings.data?.chat;
-    if (!chatSettings) return;
-    store().setMode({
-      autonomous: chatSettings.autonomous,
-      promptButton: chatSettings.promptButton,
-    });
-  }, [settings.data?.chat, store]);
 
   /** A prompt from further up, reopened to run again or to rewind to. */
   const [revisiting, setRevisiting] = useState<{
@@ -535,9 +526,10 @@ export function ChatScreen() {
         >
           <Spinner className="size-3" />
           <span className="min-w-0 flex-1">
-            {wanderRounds === 0
-              ? 'Wandering through what you like…'
-              : `Wandering — ${wanderRounds} so far`}
+            {run.note ??
+              (run.round === 0
+                ? 'Wandering through what you like…'
+                : `Wandering — ${run.round} so far`)}
           </span>
           <button
             type="button"
@@ -565,15 +557,17 @@ export function ChatScreen() {
         >
           <span aria-hidden>∞</span>
           <span className="min-w-0 flex-1">
-            {autoNote ??
-              (autoRounds === 0
+            {run.note ??
+              (run.round === 0
                 ? 'Carrying on by itself, until a picture clears the mark.'
-                : `Round ${autoRounds} of ${autonomous.maxRounds} — carrying on until it clears the mark.`)}
+                : `Round ${run.round} of ${autonomous.maxRounds} — carrying on until it clears the mark.`)}
           </span>
-          {!autoHalted && (
+          {/* Only while there is something to stop. A run that has already
+              said why it finished does not need a button that repeats it. */}
+          {run.phase !== 'idle' && (
             <button
               type="button"
-              onClick={() => store().haltAutonomous()}
+              onClick={() => void store().stop()}
               className="shrink-0 font-medium text-accent underline"
             >
               Stop
@@ -749,7 +743,17 @@ export function ChatScreen() {
             variant="primary"
             className="size-10 shrink-0 rounded-xl p-0"
             onClick={() => void store().send()}
-            disabled={streaming !== null || (draft.trim() === '' && attachments.length === 0)}
+            /*
+              Not while the model is mid-sentence.
+
+              Sending then would interleave two turns, and the second would be
+              answering a conversation the first has not finished writing.
+              Waiting on a render is different — that is a good moment to
+              change your mind, and taking over is what the composer is for.
+            */
+            disabled={
+              run.phase === 'thinking' || (draft.trim() === '' && attachments.length === 0)
+            }
             aria-label="Send"
           >
             {streaming ? <Spinner className="size-4" /> : '↑'}
@@ -805,20 +809,20 @@ export function ChatScreen() {
           onResolve={() => setRevisiting(null)}
           revisit={{
             onClose: () => setRevisiting(null),
-            onRerun: async (generationId, prompt) => {
+            onRerun: async (prompt, workflowId) => {
               const { messageId } = revisiting;
               setRevisiting(null);
               try {
+                // The server queues it and writes the note, in one act — the
+                // dialog no longer starts renders of its own.
                 await api.rerunPrompt(chat.id, {
                   messageId,
-                  ...(generationId ? { generationId } : {}),
                   prompt,
+                  ...(workflowId ? { workflowId } : {}),
                 });
                 await store().refresh();
               } catch (cause) {
-                store().setError(
-                  cause instanceof Error ? cause.message : 'Could not record that',
-                );
+                store().setError(cause instanceof Error ? cause.message : 'Could not record that');
               }
             },
             onRewind: async () => {

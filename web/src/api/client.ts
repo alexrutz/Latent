@@ -37,7 +37,9 @@ import type {
   ConnectionSummary,
   ConnectionTestResult,
   ChatConversation,
+  ChatAttachment,
   ChatConversationDetail,
+  ChatRun,
   EndlessState,
   ProposedBlock,
   GalleryPage,
@@ -578,36 +580,78 @@ export const api = {
   createChat: () =>
     request<ChatConversation>('/api/chat/conversations', { method: 'POST' }),
 
-  chat: (id: string) => request<ChatConversationDetail>(`/api/chat/conversations/${id}`),
+  /** The transcript, and what the conversation is currently doing. */
+  chat: (id: string) =>
+    request<ChatConversationDetail & { run: ChatRun }>(`/api/chat/conversations/${id}`),
 
   deleteChat: (id: string) =>
     request<void>(`/api/chat/conversations/${id}`, { method: 'DELETE' }),
 
-  resolveTool: (
+  /*
+   * The intents.
+   *
+   * Each one says what somebody wants; none of them says how. What follows —
+   * the reply, accepting a proposal, queueing the render, the turn that judges
+   * it, the next wandering round — is the server's, and happens whether or not
+   * this page is still open. See `server/src/chat/engine.ts`.
+   */
+
+  say: (id: string, body: { content: string; attachments?: ChatAttachment[] }) =>
+    request<{ ok: true }>(`/api/chat/conversations/${id}/say`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  askForPrompt: (id: string, body: { fresh?: boolean; instant?: boolean } = {}) =>
+    request<{ ok: true }>(`/api/chat/conversations/${id}/prompt`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  setWandering: (id: string, on: boolean) =>
+    request<{ ok: true }>(`/api/chat/conversations/${id}/wander`, {
+      method: 'POST',
+      body: JSON.stringify({ on }),
+    }),
+
+  decideTool: (
     id: string,
     body: {
       messageId: string;
       decision: 'accepted' | 'rejected';
       blocks?: ProposedBlock[];
       note?: string;
-      generationId?: string;
       prompt?: string;
+      workflowId?: string;
     },
   ) =>
-    request<{ ok: true; summary: string }>(`/api/chat/conversations/${id}/tool`, {
+    request<{ ok: true }>(`/api/chat/conversations/${id}/decide`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),
 
-  /** Note that a prompt from further up the conversation was generated again. */
-  rerunPrompt: (
-    id: string,
-    body: { messageId: string; generationId?: string; prompt?: string },
-  ) =>
-    request<{ ok: true; messageId: string }>(`/api/chat/conversations/${id}/rerun`, {
+  stopChat: (id: string) =>
+    request<{ ok: true }>(`/api/chat/conversations/${id}/stop`, { method: 'POST' }),
+
+  /**
+   * A render is on screen.
+   *
+   * The one thing the server still waits for a browser to say. The point of the
+   * sequence is that you see a picture before the model is told anything about
+   * it, and only this side knows when that happened.
+   */
+  notePictureShown: (id: string, generationId: string) =>
+    request<void>(`/api/chat/conversations/${id}/shown`, {
       method: 'POST',
-      body: JSON.stringify(body),
+      body: JSON.stringify({ generationId }),
     }),
+
+  /** Run a prompt from further up the conversation again. */
+  rerunPrompt: (id: string, body: { messageId: string; prompt?: string; workflowId?: string }) =>
+    request<{ ok: true; messageId: string; generationId: string | null }>(
+      `/api/chat/conversations/${id}/rerun`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
 
   /** Drop everything after a message, keeping the message itself. */
   rewindChat: (id: string, messageId: string) =>

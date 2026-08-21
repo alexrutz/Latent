@@ -3109,11 +3109,16 @@ test.describe('the chat module', () => {
     expect(await lastOffer()).toEqual(['revise_prompt']);
     expect(await lastRequest()).toContain('image_url');
 
-    // And it is a proposal: refusing it leaves the conversation where it was.
+    /*
+     * And it is a proposal: refusing it leaves the conversation where it was,
+     * with the rewrite still in the transcript as something to run later.
+     */
     await script({ content: 'Fair enough.' });
     await rewrite.getByRole('button', { name: 'Reject' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 30_000 });
-    await expect(page.getByText('Proposed a rewrite')).toBeVisible();
+    await expect(page.getByRole('button', { name: /a working harbour at dawn.*Again/ })).toBeVisible(
+      { timeout: 30_000 },
+    );
 
     /*
      * And the picture is still there for the next thing said about it.
@@ -3347,7 +3352,10 @@ test.describe('the chat module', () => {
     // Nothing was ever left waiting on a decision.
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(page.getByRole('button', { name: /waiting on you/ })).toHaveCount(0);
-    await expect(page.getByTestId('autonomous-strip')).toContainText('Round 2 of 4');
+    // Two renders, and the strip says so as it signs off.
+    await expect(page.getByTestId('autonomous-strip')).toContainText(
+      'Cleared the mark after 2 of 4 rounds',
+    );
     await page.screenshot({ path: 'test-results/92-autonomous.png' });
 
     expect(
@@ -3729,6 +3737,78 @@ test.describe('the chat module', () => {
     const asked = await lastRequest();
     expect(asked).toContain('shot on 6x6 film');
     expect(asked).not.toContain('a lighthouse someday');
+  });
+
+  /**
+   * Leaving the tab, which is the whole reason the module was rebuilt.
+   *
+   * A backgrounded page is frozen: its open streams are cut, its timers slow to
+   * a crawl, and any step between two awaits never runs. While the loop lived
+   * in the browser that meant a wandering run stopped the moment you looked at
+   * something else — and often stopped mid-step, with a proposal accepted and
+   * no render started, in a state the conversation could not continue from.
+   *
+   * The loop is the server's now. What this proves is the consequence: go
+   * somewhere else entirely, come back, and it has carried on without you.
+   */
+  test('carries on wandering while you are looking at something else', async ({ page }) => {
+    await seedWorkflow();
+    await withTaste(async (ctx, headers) => {
+      await ctx.post('/api/taste/entries', { data: { text: 'low fog over water' }, headers });
+      await ctx.patch('/api/settings', {
+        data: { chat: { wander: { attributes: 1, sampling: 'chat' } } },
+      });
+    });
+
+    await script(
+      ...[1, 2, 3, 4, 5].map((round) => ({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: `away picture ${round}`, reason: 'From the notes.' },
+        },
+      })),
+    );
+
+    await open(page, '/chat');
+    await page.getByRole('button', { name: 'Wander through your notes' }).click();
+    await expect(page.getByRole('button', { name: /^Open picture/ })).toHaveCount(1, {
+      timeout: 120_000,
+    });
+
+    /*
+     * Away. Not a hidden tab — a different screen entirely, which unmounts the
+     * chat and is exactly what used to kill the run.
+     */
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    await expect(page).toHaveURL(/\/gallery$/);
+
+    // It kept going, and the gallery is where the proof lands.
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const gallery = (await (await ctx.get('/api/gallery?limit=20')).json()) as {
+              items: { title: string }[];
+            };
+            return gallery.items.filter((item) => item.title.includes('away picture')).length;
+          }),
+        { timeout: 120_000 },
+      )
+      .toBeGreaterThanOrEqual(3);
+
+    /*
+     * And coming back shows what happened rather than what was last seen. The
+     * transcript is re-read from the server, and the strip is still counting.
+     */
+    await page.getByRole('link', { name: 'Chat' }).click();
+    await expect(page.getByTestId('wander-strip')).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Open picture/ }).nth(2)).toBeVisible({
+      timeout: 60_000,
+    });
+    await page.screenshot({ path: 'test-results/93-wander-away.png' });
+
+    await page.getByTestId('wander-strip').getByRole('button', { name: 'Stop' }).click();
+    await expect(page.getByTestId('wander-strip')).toHaveCount(0);
   });
 
   /**
@@ -4185,7 +4265,10 @@ test.describe('the chat module', () => {
     await page.getByRole('dialog').getByRole('button', { name: 'Generate', exact: true }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 30_000 });
 
-    // Say something else, so there is a tail to wind back over.
+    // The picture lands and the model says its piece about it…
+    await expect(page.getByText('Queued that one.')).toBeVisible({ timeout: 60_000 });
+
+    // …and then something else, so there is a tail to wind back over.
     await page.getByPlaceholder('Say something…').fill('never mind, tell me a joke');
     await page.getByRole('button', { name: 'Send' }).click();
     await expect(page.getByText('Talking about something else now.')).toBeVisible({

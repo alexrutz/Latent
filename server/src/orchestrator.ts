@@ -850,14 +850,23 @@ export class Orchestrator {
   /**
    * Called once per run as it settles, with whether it produced anything.
    *
-   * Set by whoever needs it — today the study runner, which has to know the
-   * moment a shot lands so it can queue the next and, when it was the last,
-   * turn the study over to its rating phase by itself. A callback rather than
-   * a subscription to the event hub because this is server-internal
-   * bookkeeping, not something a client should be able to miss by having
-   * closed its tab.
+   * Two subscribers today and both for the same reason: the study runner has to
+   * know the moment a shot lands so it can queue the next, and the chat engine
+   * has to know so the turn that judges a picture happens after the picture
+   * exists. A list rather than one slot because the second of those arrived and
+   * would have silently replaced the first.
+   *
+   * Callbacks rather than a subscription to the event hub because this is
+   * server-internal bookkeeping, not something that should be missable by
+   * having closed a tab — which is the whole reason either of them is here.
    */
-  onSettled: ((generationId: string, ok: boolean) => void) | null = null;
+  private readonly settled = new Set<(generationId: string, ok: boolean) => void>();
+
+  /** Subscribe. Returns the way to stop, which long-lived listeners need. */
+  onSettled(listener: (generationId: string, ok: boolean) => void): () => void {
+    this.settled.add(listener);
+    return () => this.settled.delete(listener);
+  }
 
   /** Idempotent: ComfyUI can send both `executing:null` and `execution_success`. */
   private markFinished(
@@ -876,7 +885,14 @@ export class Orchestrator {
 
     this.store.setGenerationStatus(promptId, status, error);
     this.emitGeneration(promptId);
-    this.onSettled?.(existing.id, status === 'completed');
+    for (const listener of this.settled) {
+      try {
+        listener(existing.id, status === 'completed');
+      } catch {
+        // One listener throwing must not stop the others being told, nor leave
+        // the run half-finished from the orchestrator's own point of view.
+      }
+    }
 
     // Keep the map from growing without bound over a long-running server.
     setTimeout(() => this.tracked.delete(promptId), 60_000).unref?.();

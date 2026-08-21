@@ -8,8 +8,8 @@ import WebSocket from 'ws';
 import type {
   ChatMessage,
   ChatSettings,
-  ChatStreamEvent,
-  ChatToolCall,
+  ChatEvent,
+  ChatRun,
   GalleryPage,
   GenerateResponse,
   GenerationRecord,
@@ -4343,16 +4343,201 @@ const useLlama = async (url: string): Promise<string> => {
 };
 
 /** Read a server-sent stream to the end and hand back the events. */
-const readStream = async (response: Response): Promise<ChatStreamEvent[]> => {
+/**
+ * Say what you want, and wait for the conversation to stop working.
+ *
+ * The routes do not stream a reply any more — they take an intent and return.
+ * What follows happens on the server whether or not anybody is watching, which
+ * is the whole point of the rebuild, and it means a test's "and then" is a wait
+ * on the run state rather than the end of a response body.
+ */
+const intent = async (chatId: string, path: string, body?: unknown): Promise<ChatRun> => {
+  const response = await api(`/api/chat/conversations/${chatId}/${path}`, {
+    method: 'POST',
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  expect(response.status).toBeLessThan(300);
+  return settled(chatId);
+};
+
+/**
+ * The same, but handing back the response rather than the settled state.
+ *
+ * For the few tests that are about what the route *answered* — a second
+ * decision on one call has to be refused, and that refusal is a status code.
+ */
+const intentRaw = async (chatId: string, path: string, body?: unknown): Promise<Response> => {
+  const response = await api(`/api/chat/conversations/${chatId}/${path}`, {
+    method: 'POST',
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  if (response.status < 300) await settled(chatId);
+  return response;
+};
+
+/**
+ * Until the model has been asked at least this many times.
+ *
+ * For the tests about a loop that does not stop on its own — an autonomous run
+ * goes until it clears the threshold, and waiting for that would be waiting for
+ * four renders to prove something about the first turn.
+ */
+const askedAtLeast = async (
+  llama: ReturnType<typeof createMockLlama>,
+  count: number,
+  timeoutMs = 20_000,
+): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (llama.requests.length < count) {
+    if (Date.now() > deadline) {
+      throw new Error(`The model was asked ${llama.requests.length} times, wanted ${count}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+};
+
+/**
+ * Wandering, which does not stop on its own — so nor does `settled`.
+ *
+ * Start it, wait for as many rounds as the test is about, then stop it. Rounds
+ * are counted as proposals stamped `fromWander`, which is the one thing every
+ * round produces whether or not there is a workflow behind it to render with.
+ */
+const startWandering = (chatId: string) =>
+  api(`/api/chat/conversations/${chatId}/wander`, {
+    method: 'POST',
+    body: JSON.stringify({ on: true }),
+  });
+
+const stopWandering = async (chatId: string) => {
+  await api(`/api/chat/conversations/${chatId}/stop`, { method: 'POST' });
+  await settled(chatId);
+};
+
+const wandered = async (
+  chatId: string,
+  rounds: number,
+  timeoutMs = 30_000,
+): Promise<ChatMessage[]> => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const detail = await json<{ messages: ChatMessage[] }>(
+      api(`/api/chat/conversations/${chatId}`),
+    );
+    const made = detail.messages.filter(
+      (message) => message.toolCall?.tool === 'build_prompt' && message.toolCall.fromWander,
+    );
+    if (made.length >= rounds) return made;
+    if (Date.now() > deadline) {
+      throw new Error(`Wandering made ${made.length} rounds, wanted ${rounds}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+};
+
+/** Until it is idle, or waiting on a person. Both mean "it is not busy". */
+const settled = async (chatId: string, timeoutMs = 20_000): Promise<ChatRun> => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const detail = await json<{ run: ChatRun }>(api(`/api/chat/conversations/${chatId}`));
+    if (detail.run.phase === 'idle' || detail.run.phase === 'awaiting') return detail.run;
+    if (Date.now() > deadline) {
+      throw new Error(`Conversation ${chatId} is still ${detail.run.phase}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+};
+
+/** The proposal a conversation is waiting on, and the message carrying it. */
+const awaiting = async (chatId: string): Promise<ChatMessage | undefined> => {
+  const detail = await json<{ messages: ChatMessage[]; run: ChatRun }>(
+    api(`/api/chat/conversations/${chatId}`),
+  );
+  return detail.messages.find((message) => message.id === detail.run.awaiting);
+};
+
+/**
+ * Watch a conversation while something happens, and collect what arrived.
+ *
+ * For the handful of tests that are about the stream itself rather than about
+ * what was stored. Subscribes first, so nothing can be missed between the
+ * intent and the first frame.
+ */
+const watching = async (
+  chatId: string,
+  during: () => Promise<unknown>,
+): Promise<ChatEvent[]> => {
+  const controller = new AbortController();
+  const response = await api(`/api/chat/conversations/${chatId}/events`, {
+    signal: controller.signal,
+  });
   expect(response.status).toBe(200);
-  const text = await response.text();
-  return text
-    .split('\n\n')
-    .filter((frame) => frame.startsWith('data:'))
-    .map((frame) => JSON.parse(frame.slice(5).trim()) as ChatStreamEvent);
+
+  const events: ChatEvent[] = [];
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const pump = (async () => {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let split: number;
+        while ((split = buffer.indexOf('\n\n')) >= 0) {
+          const frame = buffer.slice(0, split);
+          buffer = buffer.slice(split + 2);
+          if (frame.startsWith('data:')) {
+            events.push(JSON.parse(frame.slice(5).trim()) as ChatEvent);
+          }
+        }
+      }
+    } catch {
+      // Aborted on purpose, below.
+    }
+  })();
+
+  try {
+    await during();
+    await settled(chatId);
+  } finally {
+    controller.abort();
+    await pump;
+  }
+  return events;
 };
 
 describe('chat', () => {
+
+  async function render(prompt: string): Promise<string> {
+    const workflows = await json<{ id: string }[]>(api('/api/workflows'));
+    const workflowId =
+      workflows[0]?.id ??
+      (
+        await json<WorkflowDetail>(
+          api('/api/workflows', {
+            method: 'POST',
+            body: JSON.stringify({ name: 'review', graph: sd15Txt2Img }),
+          }),
+        )
+      ).id;
+
+    const { generationIds } = await json<GenerateResponse>(
+      api('/api/generate', {
+        method: 'POST',
+        body: JSON.stringify({ workflowId, values: { '6.text': prompt, '3.steps': 2 } }),
+      }),
+    );
+    const id = generationIds[0] as string;
+
+    await waitFor(async () => {
+      const record = await json<GenerationRecord>(api(`/api/gallery/${id}`));
+      return record.status === 'completed' && record.images.length > 0 ? record : null;
+    }, 30_000);
+
+    return id;
+  }
 
   it('streams a reply, keeps the reasoning apart, and stores both', async () => {
     const llama = createMockLlama();
@@ -4376,8 +4561,8 @@ describe('chat', () => {
         content: 'How about a harbour at dawn?',
       });
 
-      const events = await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
+      const events = await watching(chat.id, () =>
+        api(`/api/chat/conversations/${chat.id}/say`, {
           method: 'POST',
           body: JSON.stringify({ content: 'suggest something' }),
         }),
@@ -4407,12 +4592,7 @@ describe('chat', () => {
 
       // Reasoning is deliberately not fed back — it is working, not record.
       llama.script({ content: 'Sure.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'again' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'again' });
       const sent = llama.requests[1] as { messages: { role: string; content: unknown }[] };
       expect(JSON.stringify(sent.messages)).not.toContain('calm');
       expect(sent.messages[0]?.role).toBe('system');
@@ -4446,36 +4626,23 @@ describe('chat', () => {
         },
       });
 
-      const events = await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'block ideas please' }),
-        }),
-      );
+      const run = await intent(chat.id, 'say', { content: 'block ideas please' });
 
-      const call = events.find(
-        (event): event is { type: 'tool'; call: ChatToolCall } => event.type === 'tool',
-      );
-      expect(call?.call.tool).toBe('prompt_blocks');
-      const messageId = events.find(
-        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
-      )?.messageId;
+      const call = (await awaiting(chat.id))?.toolCall;
+      expect(call?.tool).toBe('prompt_blocks');
+      const messageId = run.awaiting;
       expect(messageId).toBeTruthy();
 
       const before = await json<{ id: string }[]>(api('/api/prompt-blocks'));
 
       // Two of the three, and one of them corrected on the way through.
-      await api(`/api/chat/conversations/${chat.id}/tool`, {
-        method: 'POST',
-        body: JSON.stringify({
+      await intentRaw(chat.id, 'decide', {
           messageId,
           decision: 'accepted',
           blocks: [
             { action: 'add', name: 'Golden hour', category: 'Lighting', text: 'warm rim light' },
             { action: 'add', name: 'Overcast', category: 'Lighting', text: 'flat grey daylight' },
-          ],
-        }),
-      });
+          ] });
 
       const after = await json<{ name: string; text: string }[]>(api('/api/prompt-blocks'));
       expect(after.length).toBe(before.length + 2);
@@ -4514,27 +4681,14 @@ describe('chat', () => {
         },
       });
 
-      const events = await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'build me a prompt' }),
-        }),
-      );
-      const messageId = events.find(
-        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
-      )?.messageId;
+      const run = await intent(chat.id, 'say', { content: 'build me a prompt' });
+      const messageId = run.awaiting;
 
-      const first = await api(`/api/chat/conversations/${chat.id}/tool`, {
-        method: 'POST',
-        body: JSON.stringify({ messageId, decision: 'rejected' }),
-      });
+      const first = await intentRaw(chat.id, 'decide', { messageId, decision: 'rejected' });
       expect(first.status).toBe(200);
 
       // A double tap, or two phones, must not queue the same thing twice.
-      const second = await api(`/api/chat/conversations/${chat.id}/tool`, {
-        method: 'POST',
-        body: JSON.stringify({ messageId, decision: 'accepted' }),
-      });
+      const second = await intentRaw(chat.id, 'decide', { messageId, decision: 'accepted' });
       expect(second.status).toBe(409);
     } finally {
       await llama.close();
@@ -4560,12 +4714,7 @@ describe('chat', () => {
       );
 
       llama.script({ content: 'A harbour at dawn, then.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'something calm' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'something calm' });
 
       llama.script({
         toolCall: {
@@ -4573,10 +4722,11 @@ describe('chat', () => {
           arguments: { prompt: 'a harbour at dawn, soft light', reason: 'Calm and blue.' },
         },
       });
-      const events = await readStream(
-        await api(`/api/chat/conversations/${chat.id}/build`, { method: 'POST' }),
-      );
-      expect(events.some((event) => event.type === 'tool')).toBe(true);
+      /*
+       * What the button does with the answer is the setting's business and
+       * another test's; this one is about what the turn asking for it *said*.
+       */
+      await intent(chat.id, 'prompt');
 
       const sent = llama.requests[1] as {
         messages: { role: string; content: string }[];
@@ -4610,59 +4760,31 @@ describe('chat', () => {
    */
   describe('checking the picture against the prompt', () => {
     /** Generate one picture through the real path, and hand back its run. */
-    async function render(prompt: string): Promise<string> {
-      const workflows = await json<{ id: string }[]>(api('/api/workflows'));
-      const workflowId =
-        workflows[0]?.id ??
-        (
-          await json<WorkflowDetail>(
-            api('/api/workflows', {
-              method: 'POST',
-              body: JSON.stringify({ name: 'review', graph: sd15Txt2Img }),
-            }),
-          )
-        ).id;
-
-      const { generationIds } = await json<GenerateResponse>(
-        api('/api/generate', {
-          method: 'POST',
-          body: JSON.stringify({ workflowId, values: { '6.text': prompt, '3.steps': 2 } }),
-        }),
-      );
-      const id = generationIds[0] as string;
-
-      await waitFor(async () => {
-        const record = await json<GenerationRecord>(api(`/api/gallery/${id}`));
-        return record.status === 'completed' && record.images.length > 0 ? record : null;
-      }, 30_000);
-
-      return id;
-    }
 
     /** Get to the point where a prompt has been accepted and has rendered. */
-    async function upToAPicture(llama: ReturnType<typeof createMockLlama>, prompt: string) {
+    /**
+     * A conversation with a prompt on the table, waiting to be accepted.
+     *
+     * It stops one step short on purpose. Accepting is now one act on the
+     * server — queue the render, record the decision, wait for the picture,
+     * take the turn that judges it — so whatever the test wants that judging
+     * turn to say has to be scripted before the accept, not after it. Stopping
+     * here is what makes that possible to write.
+     */
+    async function upToAPrompt(llama: ReturnType<typeof createMockLlama>, prompt: string) {
       const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      // A workflow to generate through; the engine resolves it for itself.
+      await render(prompt);
 
       llama.script({ toolCall: { name: 'build_prompt', arguments: { prompt, reason: 'Calm.' } } });
-      const events = await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'build me a prompt' }),
-        }),
-      );
-      const messageId = events.find(
-        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
-      )?.messageId;
-
-      const generationId = await render(prompt);
-
-      await api(`/api/chat/conversations/${chat.id}/tool`, {
-        method: 'POST',
-        body: JSON.stringify({ messageId, decision: 'accepted', generationId, prompt }),
-      });
-
-      return chat.id;
+      const run = await intent(chat.id, 'say', { content: 'build me a prompt' });
+      expect(run.awaiting).toBeTruthy();
+      return { chatId: chat.id, messageId: run.awaiting as string };
     }
+
+    /** Accept it, which renders it and takes the turn that judges the result. */
+    const acceptAndRender = (chatId: string, messageId: string) =>
+      intent(chatId, 'decide', { messageId, decision: 'accepted' });
 
     /** The last request's final message, which is where the review lands. */
     function lastTurn(llama: ReturnType<typeof createMockLlama>) {
@@ -4698,7 +4820,7 @@ describe('chat', () => {
           }),
         });
 
-        const chatId = await upToAPicture(llama, 'a harbour at dawn, soft light');
+        const { chatId, messageId } = await upToAPrompt(llama, 'a harbour at dawn, soft light');
 
         llama.script({
           content: 'The light is right but there is no harbour.',
@@ -4711,9 +4833,7 @@ describe('chat', () => {
             },
           },
         });
-        const events = await readStream(
-          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
-        );
+        await acceptAndRender(chatId, messageId);
 
         const { sent, last } = lastTurn(llama);
 
@@ -4746,9 +4866,7 @@ describe('chat', () => {
         // picture nobody has looked at yet.
         expect(sent.tools?.map((tool) => tool.function.name)).toEqual(['revise_prompt']);
 
-        const call = events.find(
-          (event): event is { type: 'tool'; call: ChatToolCall } => event.type === 'tool',
-        )?.call;
+        const call = (await awaiting(chatId))?.toolCall;
         expect(call?.tool).toBe('revise_prompt');
         expect(call && 'score' in call ? call.score : null).toBe(4);
 
@@ -4810,21 +4928,14 @@ describe('chat', () => {
           }),
         });
 
-        const chatId = await upToAPicture(llama, 'a harbour at dawn');
+        const { chatId, messageId } = await upToAPrompt(llama, 'a harbour at dawn');
 
         llama.script({ content: 'The light came through.' });
-        await readStream(
-          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
-        );
+        await acceptAndRender(chatId, messageId);
 
         // Two turns later, with something else said in between.
         llama.script({ content: 'Darker it is.' });
-        await readStream(
-          await api(`/api/chat/conversations/${chatId}/messages`, {
-            method: 'POST',
-            body: JSON.stringify({ content: 'make the sky darker' }),
-          }),
-        );
+        await intent(chatId, 'say', { content: 'make the sky darker' });
 
         const { sent, last } = lastTurn(llama);
         // Still in front of it, and still where it happened rather than piled
@@ -4856,11 +4967,9 @@ describe('chat', () => {
           }),
         });
 
-        const chatId = await upToAPicture(llama, 'a harbour at dawn');
+        const { chatId, messageId } = await upToAPrompt(llama, 'a harbour at dawn');
         llama.script({ content: 'Right.' });
-        await readStream(
-          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
-        );
+        await acceptAndRender(chatId, messageId);
 
         // A second prompt, accepted and rendered, in the same conversation.
         llama.script({
@@ -4869,30 +4978,17 @@ describe('chat', () => {
             arguments: { prompt: 'the same harbour at noon', reason: 'Brighter.' },
           },
         });
-        const events = await readStream(
-          await api(`/api/chat/conversations/${chatId}/messages`, {
-            method: 'POST',
-            body: JSON.stringify({ content: 'now at noon' }),
-          }),
-        );
-        const messageId = events.find(
-          (event): event is { type: 'done'; messageId: string } => event.type === 'done',
-        )?.messageId;
-        const second = await render('the same harbour at noon');
-        await api(`/api/chat/conversations/${chatId}/tool`, {
-          method: 'POST',
-          body: JSON.stringify({
-            messageId,
-            decision: 'accepted',
-            generationId: second,
-            prompt: 'the same harbour at noon',
-          }),
-        });
-
+        const run = await intent(chatId, 'say', { content: 'now at noon' });
+        const nextMessageId = run.awaiting as string;
+        // Accepting renders it and takes the turn that judges it, so what that
+        // turn says is scripted before the accept rather than after it.
         llama.script({ content: 'Brighter indeed.' });
-        await readStream(
-          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
-        );
+        await intentRaw(chatId, 'decide', {
+          messageId: nextMessageId,
+          decision: 'accepted',
+          prompt: 'the same harbour at noon',
+        });
+        await settled(chatId);
 
         const { sent } = lastTurn(llama);
         const shown = sent.messages.filter((message) =>
@@ -4926,7 +5022,7 @@ describe('chat', () => {
           }),
         });
 
-        const chatId = await upToAPicture(llama, 'a harbour at dawn');
+        const { chatId, messageId } = await upToAPrompt(llama, 'a harbour at dawn');
 
         llama.script({
           content: 'No harbour.',
@@ -4935,25 +5031,16 @@ describe('chat', () => {
             arguments: { prompt: 'a working harbour at dawn', reason: 'Missing.', score: 4 },
           },
         });
-        const events = await readStream(
-          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
-        );
-        const messageId = events.find(
-          (event): event is { type: 'done'; messageId: string } => event.type === 'done',
-        )?.messageId;
-        expect(messageId).toBeTruthy();
+        const run = await acceptAndRender(chatId, messageId);
+        const nextMessageId = run.awaiting as string;
+        expect(nextMessageId).toBeTruthy();
 
-        const rejected = await api(`/api/chat/conversations/${chatId}/tool`, {
-          method: 'POST',
-          body: JSON.stringify({ messageId, decision: 'rejected' }),
-        });
+        const rejected = await intentRaw(chatId, 'decide', { messageId: nextMessageId, decision: 'rejected' });
         expect(rejected.status).toBe(200);
 
         llama.script({ content: 'Fair enough.' });
-        const after = await readStream(
-          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
-        );
-        expect(after.some((event) => event.type === 'done')).toBe(true);
+        // The conversation carries on by itself, and lands back at rest.
+        expect((await settled(chatId)).phase).toBe('idle');
       } finally {
         await llama.close();
       }
@@ -4991,7 +5078,20 @@ describe('chat', () => {
           }),
         });
 
-        const chatId = await upToAPicture(llama, 'a harbour at dawn');
+        /*
+         * No fixture here, because with nobody to ask there is nothing to tap:
+         * the proposal is accepted, rendered and judged in one go. Both turns
+         * are scripted up front and the run is stopped once the second of them
+         * has been asked for, which is the one this test is about.
+         */
+        const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+        await render('a harbour at dawn');
+        llama.script({
+          toolCall: {
+            name: 'build_prompt',
+            arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+          },
+        });
         llama.script({
           content: 'The harbour is thin.',
           toolCall: {
@@ -5003,11 +5103,13 @@ describe('chat', () => {
             },
           },
         });
-        await readStream(
-          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
-        );
-
+        void api(`/api/chat/conversations/${chat.id}/say`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'build me a prompt' }),
+        });
+        await askedAtLeast(llama, 2);
         const { sent, last } = lastTurn(llama);
+        await api(`/api/chat/conversations/${chat.id}/stop`, { method: 'POST' });
         // Only the rewrite, even though asking is set to its most insistent
         // step — the setting is about a conversation, and this is not one.
         expect(sent.tools?.map((tool) => tool.function.name)).toEqual(['revise_prompt']);
@@ -5041,7 +5143,7 @@ describe('chat', () => {
           }),
         });
 
-        const chatId = await upToAPicture(llama, 'a harbour at dawn');
+        const { chatId, messageId } = await upToAPrompt(llama, 'a harbour at dawn');
 
         // Both are on offer: rewrite it, or ask which way to go.
         llama.script({
@@ -5059,29 +5161,20 @@ describe('chat', () => {
             },
           },
         });
-        const events = await readStream(
-          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
-        );
+        const run = await acceptAndRender(chatId, messageId);
 
         const offered = (
           llama.requests[llama.requests.length - 1] as { tools?: { function: { name: string } }[] }
         ).tools?.map((tool) => tool.function.name);
         expect(offered).toEqual(['revise_prompt', 'ask_user']);
 
-        const messageId = events.find(
-          (event): event is { type: 'done'; messageId: string } => event.type === 'done',
-        )?.messageId;
+        const nextMessageId = run.awaiting as string;
 
-        // Answering it is an ordinary tool decision.
-        await api(`/api/chat/conversations/${chatId}/tool`, {
-          method: 'POST',
-          body: JSON.stringify({
-            messageId,
-            decision: 'accepted',
-            note: 'More of the harbour.',
-          }),
-        });
-
+        /*
+         * Answering it is an ordinary tool decision — and the turn it leads to
+         * is still about the picture, so what that turn says is scripted before
+         * the answer rather than after it.
+         */
         llama.script({
           toolCall: {
             name: 'revise_prompt',
@@ -5092,9 +5185,11 @@ describe('chat', () => {
             },
           },
         });
-        await readStream(
-          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
-        );
+        await intentRaw(chatId, 'decide', {
+          messageId: nextMessageId,
+          decision: 'accepted',
+          note: 'More of the harbour.',
+        });
 
         /*
          * Still the same review: the picture is there and the rewrite is still
@@ -5135,12 +5230,7 @@ describe('chat', () => {
 
         const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
         llama.script({ content: 'All right.' });
-        await readStream(
-          await api(`/api/chat/conversations/${chat.id}/messages`, {
-            method: 'POST',
-            body: JSON.stringify({ content: 'hello' }),
-          }),
-        );
+        await intent(chat.id, 'say', { content: 'hello' });
 
         const system = (
           llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
@@ -5154,12 +5244,7 @@ describe('chat', () => {
           body: JSON.stringify({ chat: { promptDetail: 'sparse' } }),
         });
         llama.script({ content: 'Fine.' });
-        await readStream(
-          await api(`/api/chat/conversations/${chat.id}/messages`, {
-            method: 'POST',
-            body: JSON.stringify({ content: 'again' }),
-          }),
-        );
+        await intent(chat.id, 'say', { content: 'again' });
         const after = (
           llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
         ).messages[0]!;
@@ -5194,12 +5279,10 @@ describe('chat', () => {
           }),
         });
 
-        const chatId = await upToAPicture(llama, 'a lighthouse in a storm');
+        const { chatId, messageId } = await upToAPrompt(llama, 'a lighthouse in a storm');
 
         llama.script({ content: 'It matches well enough.' });
-        await readStream(
-          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
-        );
+        await acceptAndRender(chatId, messageId);
 
         const { sent } = lastTurn(llama);
         expect(JSON.stringify(sent.messages)).toContain('image_url');
@@ -5220,12 +5303,10 @@ describe('chat', () => {
           body: JSON.stringify({ chat: { review: { enabled: false, threshold: 'balanced' } } }),
         });
 
-        const chatId = await upToAPicture(llama, 'a field of rape in flower');
+        const { chatId, messageId } = await upToAPrompt(llama, 'a field of rape in flower');
 
         llama.script({ content: 'Hope it came out well.' });
-        await readStream(
-          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
-        );
+        await acceptAndRender(chatId, messageId);
 
         const { sent } = lastTurn(llama);
         expect(JSON.stringify(sent.messages)).not.toContain('image_url');
@@ -5254,20 +5335,17 @@ describe('chat', () => {
           body: JSON.stringify({ chat: { review: { enabled: true, threshold: 'balanced' } } }),
         });
 
-        const chatId = await upToAPicture(llama, 'a red bicycle against a wall');
+        const { chatId, messageId } = await upToAPrompt(llama, 'a red bicycle against a wall');
 
         llama.script({ content: 'Hope that worked.' });
-        const events = await readStream(
-          await api(`/api/chat/conversations/${chatId}/continue`, { method: 'POST' }),
-        );
+        const run = await acceptAndRender(chatId, messageId);
 
         // The reply arrives, and nothing is reported as broken.
-        const said = events
-          .filter((event): event is { type: 'content'; text: string } => event.type === 'content')
-          .map((event) => event.text)
-          .join('');
-        expect(said).toBe('Hope that worked.');
-        expect(events.some((event) => event.type === 'error')).toBe(false);
+        const stored = await json<{ messages: ChatMessage[] }>(
+          api(`/api/chat/conversations/${chatId}`),
+        );
+        expect(stored.messages[stored.messages.length - 1]?.content).toBe('Hope that worked.');
+        expect(run.error).toBeNull();
 
         // The retry is the turn as it always was: no picture, no tools.
         const { sent } = lastTurn(llama);
@@ -5301,20 +5379,10 @@ describe('chat', () => {
           arguments: { prompt: 'a harbour at dawn', reason: 'Calm and blue.' },
         },
       });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'build me a prompt' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'build me a prompt' });
 
       llama.script({ content: 'Anything else?' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'thanks' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'thanks' });
 
       const sent = llama.requests[1] as {
         messages: {
@@ -5347,9 +5415,19 @@ describe('chat', () => {
 
     try {
       await useLlama(url);
+      /*
+       * With the check switched off, so the turn after the render is the plain
+       * one this test is about. With it on, that turn is a review — which is a
+       * turn that deliberately *does* carry one tool, and is covered above.
+       */
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { review: { enabled: false } } }),
+      });
       const chat = await json<{ id: string }>(
         api('/api/chat/conversations', { method: 'POST' }),
       );
+      await render('a harbour at dawn');
 
       llama.script({
         toolCall: {
@@ -5357,32 +5435,16 @@ describe('chat', () => {
           arguments: { prompt: 'a harbour at dawn', reason: 'Calm and blue.' },
         },
       });
-      const events = await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'build me a prompt' }),
-        }),
-      );
-      const messageId = events.find(
-        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
-      )?.messageId;
+      const run = await intent(chat.id, 'say', { content: 'build me a prompt' });
+      const messageId = run.awaiting;
 
-      // Accepted, and it started a run — which is what makes the next turn
-      // "after a generation" rather than after any other decision.
-      await api(`/api/chat/conversations/${chat.id}/tool`, {
-        method: 'POST',
-        body: JSON.stringify({
-          messageId,
-          decision: 'accepted',
-          generationId: 'gen-from-the-chat',
-          prompt: 'a harbour at dawn',
-        }),
-      });
-
+      /*
+       * Accepted, which starts a run — and that is what makes the next turn
+       * "after a generation" rather than after any other decision. Scripted
+       * first, because accepting now carries straight on into that turn.
+       */
       llama.script({ content: 'That came out well.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/continue`, { method: 'POST' }),
-      );
+      await intentRaw(chat.id, 'decide', { messageId, decision: 'accepted' });
 
       const sent = llama.requests[llama.requests.length - 1] as {
         tools?: unknown[];
@@ -5393,12 +5455,7 @@ describe('chat', () => {
 
       // And only for that one turn: saying something else puts them back.
       llama.script({ content: 'Anything else?' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'make it colder' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'make it colder' });
       const after = llama.requests[llama.requests.length - 1] as { tools?: unknown[] };
       expect(after.tools?.length).toBeGreaterThan(0);
     } finally {
@@ -5426,25 +5483,13 @@ describe('chat', () => {
           },
         },
       });
-      const events = await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'something calm' }),
-        }),
-      );
-      const messageId = events.find(
-        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
-      )?.messageId;
+      const run = await intent(chat.id, 'say', { content: 'something calm' });
+      const messageId = run.awaiting;
 
-      await api(`/api/chat/conversations/${chat.id}/tool`, {
-        method: 'POST',
-        body: JSON.stringify({ messageId, decision: 'accepted', note: 'Portrait' }),
-      });
+      await intentRaw(chat.id, 'decide', { messageId, decision: 'accepted', note: 'Portrait' });
 
       llama.script({ content: 'Portrait it is.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/continue`, { method: 'POST' }),
-      );
+      await settled(chat.id);
 
       const sent = llama.requests[llama.requests.length - 1] as { tools?: unknown[] };
       expect(sent.tools?.length).toBeGreaterThan(0);
@@ -5472,12 +5517,7 @@ describe('chat', () => {
       );
 
       llama.script({ content: 'Sure.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'hello' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'hello' });
 
       const untouched = llama.requests[0] as Record<string, unknown>;
       expect(untouched.temperature).toBeUndefined();
@@ -5505,12 +5545,7 @@ describe('chat', () => {
       });
 
       llama.script({ content: 'Colder, then.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'make it colder' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'make it colder' });
 
       const sent = llama.requests[llama.requests.length - 1] as Record<string, unknown>;
       expect(sent.temperature).toBe(0.35);
@@ -5529,15 +5564,16 @@ describe('chat', () => {
     expect(status.message).toBeTruthy();
 
     const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
-    const response = await api(`/api/chat/conversations/${chat.id}/messages`, {
+    const response = await api(`/api/chat/conversations/${chat.id}/say`, {
       method: 'POST',
       body: JSON.stringify({ content: 'hello' }),
     });
 
-    // The stream opens and reports the failure inside it, rather than a bare
-    // 502 the chat screen would have to translate.
-    const events = await readStream(response);
-    expect(events.some((event) => event.type === 'error')).toBe(true);
+    // Accepted, and the failure is reported on the run rather than as a status
+    // code the chat screen would have to translate.
+    expect(response.status).toBeLessThan(300);
+    const run = await settled(chat.id);
+    expect(run.error).toBeTruthy();
   }, 30_000);
 });
 
@@ -5964,6 +6000,332 @@ describe('video workflows', () => {
  * a description of somebody's taste, and that the active ones — and only those
  * — reach the model.
  */
+/**
+ * The conversation runs on the server, and that is the point.
+ *
+ * Everything the chat module does across several steps — accept a proposal,
+ * queue the render, wait for it, say something about it, go round again — used
+ * to be a sequence the browser drove. A backgrounded tab is frozen: its open
+ * streams are cut, its timers slow to a crawl, and the step between two awaits
+ * never runs. So a run stopped the moment you looked at something else, and
+ * regularly stopped mid-step in a state nothing could continue from.
+ *
+ * These are the tests for the fix, and they are all the same shape: nobody is
+ * watching, and it happens anyway.
+ */
+describe('a conversation that nobody is watching', () => {
+  const render = async (prompt: string) => {
+    const workflows = await json<{ id: string }[]>(api('/api/workflows'));
+    if (workflows.length === 0) {
+      await api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'unwatched', graph: sd15Txt2Img }),
+      });
+    }
+    return prompt;
+  };
+
+  /**
+   * The whole round happens with no client attached at all.
+   *
+   * One request in, and by the time it has settled a prompt has been proposed,
+   * accepted, rendered and judged — with nothing subscribed to the event stream
+   * and nothing polled from outside. That is what a frozen tab looks like from
+   * the server's side, and it is now indistinguishable from an open one.
+   */
+  it('finishes a whole round with nothing subscribed to it', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      await render('a quiet harbour');
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: {
+            promptButton: 'generate',
+            review: { enabled: false, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+            autonomous: { enabled: false, maxRounds: 4 },
+          },
+        }),
+      });
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      llama.script({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a quiet harbour', reason: 'Calm.' },
+        },
+      });
+      llama.script({ content: 'There it is.' });
+
+      // "Generate now", which accepts whatever comes back without asking.
+      const run = await intent(chat.id, 'prompt', { instant: true });
+
+      // Nothing is waiting on anybody, and the picture exists.
+      expect(run.phase).toBe('idle');
+      expect(run.awaiting).toBeNull();
+
+      const stored = await json<{ messages: ChatMessage[] }>(
+        api(`/api/chat/conversations/${chat.id}`),
+      );
+      const rendered = stored.messages.find((message) => message.generationId);
+      expect(rendered?.prompt).toBe('a quiet harbour');
+      expect(stored.messages[stored.messages.length - 1]?.content).toBe('There it is.');
+
+      // And the render is a real one in the gallery, queued by the server.
+      const record = await json<GenerationRecord>(
+        api(`/api/gallery/${rendered?.generationId as string}`),
+      );
+      expect(record.id).toBe(rendered?.generationId);
+    } finally {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: {
+            promptButton: 'dialog',
+            review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'unsure' },
+          },
+        }),
+      });
+      await llama.close();
+    }
+  }, 60_000);
+
+  /**
+   * A wandering run keeps going with nobody there, and stops when told.
+   *
+   * The mode this rebuild was really for: an evening of pictures is worth
+   * nothing if it ends the first time you open another app. Started, left
+   * entirely alone, and three rounds later it has made three of them.
+   */
+  it('keeps a wandering run going with nobody there', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+    let noteId = '';
+
+    try {
+      await useLlama(url);
+      await render('a wandering picture');
+
+      // A note to draw from, bought the same way the app buys one.
+      const opened = await json<{ ticket: string }>(
+        api('/api/taste/unlock', {
+          method: 'POST',
+          body: JSON.stringify({ password: 'test-password' }),
+        }),
+      );
+      noteId = (
+        await json<{ id: string }>(
+          api('/api/taste/entries', {
+            method: 'POST',
+            body: JSON.stringify({ text: 'low fog over water' }),
+            headers: { 'x-latent-taste': opened.ticket },
+          }),
+        )
+      ).id;
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      for (const round of [1, 2, 3, 4]) {
+        llama.script({
+          toolCall: {
+            name: 'build_prompt',
+            arguments: { prompt: `wandering ${round}`, reason: 'From the notes.' },
+          },
+        });
+      }
+
+      await startWandering(chat.id);
+      // At least three, not exactly: the run does not pause to be counted, and
+      // "it kept going" is the claim.
+      const made = await wandered(chat.id, 3, 60_000);
+      expect(made.length).toBeGreaterThanOrEqual(3);
+
+      // Stopping is immediate, and it stays stopped.
+      await stopWandering(chat.id);
+      const after = await json<{ run: ChatRun }>(api(`/api/chat/conversations/${chat.id}`));
+      expect(after.run.mode).toBe('manual');
+      expect(after.run.phase).toBe('idle');
+    } finally {
+      const opened = await json<{ ticket: string }>(
+        api('/api/taste/unlock', {
+          method: 'POST',
+          body: JSON.stringify({ password: 'test-password' }),
+        }),
+      );
+      if (noteId) {
+        await api(`/api/taste/entries/${noteId}`, {
+          method: 'DELETE',
+          headers: { 'x-latent-taste': opened.ticket },
+        });
+      }
+      await llama.close();
+    }
+  }, 90_000);
+
+  /**
+   * A restart picks the run back up.
+   *
+   * The other thing a browser-driven loop could never survive. A wandering run
+   * is meant to go all evening, and this server is restarted often — updated,
+   * crashed, rebooted — so a run that quietly ended each time was a run that
+   * ended most evenings. Where a conversation had got to is written down at
+   * every transition, so a fresh process can read it and carry on.
+   *
+   * The one exception is deliberate: an ordinary reply interrupted mid-sentence
+   * is *not* re-asked. Nobody wants a model answering an hour-old message on
+   * its own initiative, so that one stops and says why.
+   */
+  it('picks a wandering run back up after a restart', async () => {
+    const llama = createMockLlama();
+    const llamaUrl = await llama.listen(0);
+    const root = mkdtempSync(join(tmpdir(), 'latent-resume-'));
+    const dir = join(root, 'data');
+
+    const boot = async () => {
+      const instance = await buildApp({
+        comfyUrl: 'http://127.0.0.1:1',
+        dbPath: join(dir, 'latent.db'),
+        dataDir: dir,
+        stateDir: join(root, 'above'),
+        webDir: join(dir, 'no-web'),
+        password: 'resume-password',
+        logLevel: 'silent',
+      });
+      await instance.app.listen({ port: 0, host: '127.0.0.1' });
+      const address = instance.app.server.address();
+      if (!address || typeof address === 'string') throw new Error('No port');
+      const base = `http://127.0.0.1:${address.port}`;
+      const login = await fetch(`${base}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: 'resume-password' }),
+      });
+      const cookie = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+      const call = (path: string, init: RequestInit = {}) =>
+        fetch(`${base}${path}`, {
+          ...init,
+          headers: { 'content-type': 'application/json', cookie, ...(init.headers ?? {}) },
+        });
+      return { instance, call };
+    };
+
+    const one = await boot();
+    let chatId = '';
+    try {
+      await one.call('/api/connections', {
+        method: 'POST',
+        body: JSON.stringify({ kind: 'llama', name: 'model', url: llamaUrl }),
+      });
+      const connections = (await (await one.call('/api/connections')).json()) as {
+        id: string;
+        kind: string;
+      }[];
+      const model = connections.find((entry) => entry.kind === 'llama')!;
+      await one.call(`/api/connections/${model.id}/activate`, { method: 'POST' });
+
+      chatId = (
+        (await (await one.call('/api/chat/conversations', { method: 'POST' })).json()) as {
+          id: string;
+        }
+      ).id;
+
+      llama.script({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'before the restart', reason: 'From the notes.' },
+        },
+      });
+      await one.call(`/api/chat/conversations/${chatId}/wander`, {
+        method: 'POST',
+        body: JSON.stringify({ on: true }),
+      });
+
+      // Wait until the run is genuinely under way before pulling the plug.
+      const deadline = Date.now() + 20_000;
+      for (;;) {
+        const detail = (await (
+          await one.call(`/api/chat/conversations/${chatId}`)
+        ).json()) as { run: ChatRun };
+        if (detail.run.mode === 'wander') break;
+        if (Date.now() > deadline) throw new Error('The run never started');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    } finally {
+      await one.instance.app.close();
+    }
+
+    // A new process, the same database, and a run it never started.
+    llama.script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'after the restart', reason: 'From the notes.' },
+      },
+    });
+
+    const two = await boot();
+    try {
+      const deadline = Date.now() + 30_000;
+      for (;;) {
+        const detail = (await (
+          await two.call(`/api/chat/conversations/${chatId}`)
+        ).json()) as { messages: ChatMessage[] };
+        const asked = detail.messages.some(
+          (message) =>
+            message.toolCall?.tool === 'build_prompt' &&
+            message.toolCall.prompt === 'after the restart',
+        );
+        if (asked) break;
+        if (Date.now() > deadline) throw new Error('The run did not resume');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      await two.call(`/api/chat/conversations/${chatId}/stop`, { method: 'POST' });
+    } finally {
+      await two.instance.app.close();
+      await llama.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  /**
+   * Two watchers see the same thing, and a late one is caught up.
+   *
+   * The other half of moving the loop: a stream that only exists while a
+   * request is in flight cannot tell you about anything that happened while you
+   * were away. This one opens with the present tense, so arriving late and
+   * arriving early are the same path.
+   */
+  it('tells a client that arrives late what it missed', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+
+      llama.script({ content: 'Something you did not see happen.' });
+      await intent(chat.id, 'say', { content: 'say something' });
+
+      // Subscribing afterwards still describes where the conversation is.
+      const events = await watching(chat.id, async () => undefined);
+      const sync = events.find((event) => event.type === 'sync');
+      expect(sync).toBeTruthy();
+      expect(sync?.type === 'sync' && sync.run.phase).toBe('idle');
+
+      const stored = await json<{ messages: ChatMessage[] }>(
+        api(`/api/chat/conversations/${chat.id}`),
+      );
+      expect(stored.messages[stored.messages.length - 1]?.content).toBe(
+        'Something you did not see happen.',
+      );
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+});
+
 describe('what the user likes', () => {
   const categories: string[] = [];
   const entries: string[] = [];
@@ -6147,12 +6509,7 @@ describe('what the user likes', () => {
 
       const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
       llama.script({ content: 'Right.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'give me an idea' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'give me an idea' });
 
       const system = (
         llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
@@ -6170,12 +6527,7 @@ describe('what the user likes', () => {
         body: JSON.stringify({ chat: { taste: 'off' } }),
       });
       llama.script({ content: 'Fine.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'again' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'again' });
       const after = (
         llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
       ).messages[0]!;
@@ -6229,12 +6581,7 @@ describe('what the user likes', () => {
 
       const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
       llama.script({ content: 'Right.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'a portrait of a fisherman, close up' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'a portrait of a fisherman, close up' });
 
       const system = (
         llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
@@ -6252,12 +6599,7 @@ describe('what the user likes', () => {
         body: JSON.stringify({ always: false }),
       });
       llama.script({ content: 'Fine.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'again' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'again' });
       const after = (
         llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
       ).messages[0]!;
@@ -6319,11 +6661,15 @@ describe('what the user likes', () => {
           arguments: { prompt: 'a flooded stairwell at dawn', reason: 'Drawn from the notes.' },
         },
       });
-      const events = await readStream(
-        await api(`/api/chat/conversations/${chat.id}/wander`, { method: 'POST' }),
-      );
+      /*
+       * Wandering is a loop, so it is started and then stopped rather than
+       * awaited: "one round" is a thing to catch, not a request to finish.
+       */
+      await startWandering(chat.id);
+      const rounds = await wandered(chat.id, 1);
+      await stopWandering(chat.id);
 
-      const sent = llama.requests[llama.requests.length - 1] as {
+      const sent = llama.requests[0] as {
         messages: { role: string; content: string }[];
         tools?: { function: { name: string } }[];
       };
@@ -6340,13 +6686,7 @@ describe('what the user likes', () => {
        * And the call is stamped as a wandering one, which is what makes
        * tapping its picture open what made it rather than the viewer.
        */
-      const messageId = events.find(
-        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
-      )?.messageId;
-      const stored = await json<{ messages: ChatMessage[] }>(
-        api(`/api/chat/conversations/${chat.id}`),
-      );
-      const call = stored.messages.find((message) => message.id === messageId)?.toolCall;
+      const call = rounds[0]?.toolCall;
       expect(call?.tool).toBe('build_prompt');
       expect(call?.tool === 'build_prompt' && call.fromWander).toBe(true);
 
@@ -6453,9 +6793,11 @@ describe('what the user likes', () => {
           arguments: { prompt: 'a square photograph', reason: 'From the notes.' },
         },
       });
-      await readStream(await api(`/api/chat/conversations/${chat.id}/wander`, { method: 'POST' }));
+      await startWandering(chat.id);
+      await wandered(chat.id, 1);
+      await stopWandering(chat.id);
 
-      const sent = llama.requests[llama.requests.length - 1] as {
+      const sent = llama.requests[0] as {
         messages: { role: string; content: string }[];
       };
       const turn = sent.messages[sent.messages.length - 1]!.content;
@@ -6520,7 +6862,6 @@ describe('what the user likes', () => {
       });
 
       const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
-      const asked: string[] = [];
       for (const round of [1, 2, 3]) {
         llama.script({
           toolCall: {
@@ -6528,15 +6869,19 @@ describe('what the user likes', () => {
             arguments: { prompt: `round ${round}`, reason: 'From the notes.' },
           },
         });
-        await readStream(
-          await api(`/api/chat/conversations/${chat.id}/wander`, { method: 'POST' }),
-        );
-        const sent = llama.requests[llama.requests.length - 1] as {
-          messages: { content: string }[];
-        };
-        const turn = sent.messages[sent.messages.length - 1]!.content;
-        asked.push(written.find((text) => turn.includes(text)) ?? '');
       }
+
+      // Three rounds of one run, rather than three runs: what is being tested
+      // is what the *second* round knows about the first.
+      await startWandering(chat.id);
+      await wandered(chat.id, 3);
+      await stopWandering(chat.id);
+
+      const asked = llama.requests.slice(0, 3).map((request) => {
+        const sent = request as { messages: { content: string }[] };
+        const turn = sent.messages[sent.messages.length - 1]!.content;
+        return written.find((text) => turn.includes(text)) ?? '';
+      });
 
       // Each round drew one note, and never the one immediately before it.
       expect(asked.every((text) => text !== '')).toBe(true);
@@ -6590,21 +6935,16 @@ describe('what the user likes', () => {
       llama.script({
         toolCall: { name: 'build_prompt', arguments: { prompt: 'something else', reason: 'x' } },
       });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/wander`, { method: 'POST' }),
-      );
+      await startWandering(chat.id);
+      await wandered(chat.id, 1);
+      await stopWandering(chat.id);
 
-      const sent = llama.requests[llama.requests.length - 1] as Record<string, unknown>;
+      const sent = llama.requests[0] as Record<string, unknown>;
       expect(sent.temperature).toBe(1.4);
 
       // …and an ordinary turn is untouched by it.
       llama.script({ content: 'Fine.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'hello' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'hello' });
       const plain = llama.requests[llama.requests.length - 1] as Record<string, unknown>;
       expect(plain.temperature).toBe(0.2);
     } finally {

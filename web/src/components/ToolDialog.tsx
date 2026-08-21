@@ -7,7 +7,6 @@ import type { AppSettings, ChatToolCall, ProposedBlock } from '@latent/shared';
 import { useVisibleWorkflows, useWorkflow } from '../api/queries';
 import { PromptDiff, promptChanged } from './PromptDiff';
 import { useFormDrafts } from '../state/formDraft';
-import { queuePrompt } from '../lib/queuePrompt';
 import { Button, cn, ErrorNote, Spinner } from './ui';
 
 /**
@@ -28,10 +27,17 @@ export interface ToolDecision {
   decision: 'accepted' | 'rejected';
   blocks?: ProposedBlock[];
   note?: string;
-  /** The run an accepted prompt started, so the transcript can show it. */
-  generationId?: string;
-  /** The prompt as it was queued, so the next one can be marked against it. */
+  /** The prompt as edited here, which is what the server queues. */
   prompt?: string;
+  /**
+   * The workflow this one prompt runs through.
+   *
+   * Only when the picker was used. The dialog no longer queues anything itself
+   * — it used to, and a page that died between queueing and recording left the
+   * conversation holding a proposal nothing would ever answer — so the override
+   * travels with the decision instead of being applied here.
+   */
+  workflowId?: string;
 }
 
 /**
@@ -42,8 +48,8 @@ export interface ToolDecision {
  * and winding the conversation back to it.
  */
 export interface RevisitActions {
-  /** Queued again; the run's id, so the transcript can show what it made. */
-  onRerun: (generationId: string | null, prompt: string) => void | Promise<void>;
+  /** Run it again, with the prompt as edited and any workflow chosen here. */
+  onRerun: (prompt: string, workflowId?: string) => void | Promise<void>;
   /** Drop everything said after this prompt and carry on from here. */
   onRewind: () => void | Promise<void>;
   onClose: () => void;
@@ -418,40 +424,33 @@ function BuildPromptBody({
     : formDraft;
 
   /**
-   * Queue it exactly as the Generate screen would.
+   * Hand it over to be queued.
    *
-   * The same workflow, the same values, the same seed handling — the whole
-   * point is that accepting here is not a different way of generating with
-   * different results. Only the prompt fields are replaced.
+   * The dialog used to queue the render itself and then tell the conversation
+   * about it, which was two requests with the whole point of the thing in
+   * between: a page frozen in the gap left a proposal with no answer and a
+   * render nobody was waiting for. Now it says "accepted, this prompt, this
+   * workflow" and the server does both in one act.
    */
   const generate = async () => {
-    if (!detail) return;
     setBusy(true);
     setError(null);
 
     try {
-      // The same function the app uses when it accepts a prompt itself, so the
-      // two cannot drift into queueing the same prompt differently.
-      const generationId = await queuePrompt(
-        { detail, draft, ownSettings },
-        // As edited, not as proposed.
-        prompt,
-        call.negativePrompt,
-      );
-
       if (revisit) {
         // Decided long ago; there is no decision left to record, only a run.
-        await revisit.onRerun(generationId, prompt);
+        await revisit.onRerun(prompt, override ?? undefined);
         return;
       }
 
       await onResolve({
         decision: 'accepted',
-        note: `The user accepted the ${revised ? 'revised ' : ''}prompt and queued it: ` +
+        note:
+          `The user accepted the ${revised ? 'revised ' : ''}prompt and queued it: ` +
           `"${prompt.slice(0, 200)}"`,
-        ...(generationId ? { generationId } : {}),
         // As edited, not as proposed: the transcript shows what actually ran.
         prompt,
+        ...(override ? { workflowId: override } : {}),
       });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not queue that');
