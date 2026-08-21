@@ -32,7 +32,7 @@ import {
   Spinner,
 } from '../components/ui';
 import { ViewerWithActions } from '../components/ViewerWithActions';
-import { TILE_OPTIONS, useGridSettings } from '../state/grid';
+import { maxColumns, TILE_OPTIONS, useGridSettings } from '../state/grid';
 import { useGalleryTargetStore } from '../state/galleryTarget';
 
 /** A stable identity for one picture, unique across runs. */
@@ -462,7 +462,16 @@ export function GalleryScreen() {
         </div>
       </div>
 
-      <div className="flex gap-1 rounded-full bg-surface p-1">
+      {/*
+        Three pills, not three-quarters of a metre of segmented control.
+
+        The row is full-width on a phone because the phone's width is three
+        thumbs across and every pill needs one. Stretched to a tablet each pill
+        becomes a third of the screen with a five-letter word in the middle of
+        it — the same three targets, ten times the furniture. Held to a size the
+        words justify instead.
+      */}
+      <div className="flex gap-1 rounded-full bg-surface p-1 tablet:max-w-md">
         {FILTERS.map((filter) => (
           <button
             key={filter.label}
@@ -491,7 +500,7 @@ export function GalleryScreen() {
           <input
             type="range"
             min={1}
-            max={5}
+            max={maxColumns()}
             step={1}
             value={settings.columns}
             onChange={(event) => updateSettings({ columns: Number(event.target.value) })}

@@ -33,6 +33,7 @@ import {
   useWorkflows,
 } from '../api/queries';
 import { AlwaysBlocks } from '../components/AlwaysBlocks';
+import { GenerateWorkbench } from '../components/GenerateWorkbench';
 import { LiveBar } from '../components/LiveBar';
 import { LoraEditor } from '../components/LoraEditor';
 import { PointLine } from '../components/PointLine';
@@ -46,6 +47,7 @@ import {
 } from '../components/ParamControl';
 import { Button, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { pruneDrafts, useFormDrafts } from '../state/formDraft';
+import { useWide } from '../state/layout';
 import { useLiveStore } from '../state/live';
 import { usePendingStore } from '../state/pending';
 import { savePromptDraft } from '../state/promptDraft';
@@ -189,6 +191,7 @@ export function GenerateScreen() {
   const allWorkflows = useWorkflows();
   const consumePending = usePendingStore((state) => state.consume);
   const pending = usePendingStore((state) => state.pending);
+  const wide = useWide();
 
   const [workflowId, setWorkflowId] = useState<string | null>(
     () => localStorage.getItem(LAST_WORKFLOW_KEY),
@@ -246,7 +249,7 @@ export function GenerateScreen() {
     );
   }
 
-  return (
+  const form = (
     <GenerateForm
       key={workflowId ?? 'none'}
       workflowQuery={workflow}
@@ -255,6 +258,28 @@ export function GenerateScreen() {
       onSelectWorkflow={setWorkflowId}
       consumePending={consumePending}
     />
+  );
+
+  if (!wide) return form;
+
+  /*
+   * Two panes: the settings, and what they made.
+   *
+   * The form keeps a fixed width rather than sharing the space evenly. It is a
+   * column of labelled rows and chips whose ideal width is a phone's — wider
+   * only spreads a label away from its own control — while the picture beside
+   * it is worth every pixel that is left. So the form gets what it needs and
+   * the render gets the rest, which on a nine-inch screen turned sideways is
+   * roughly half each and on anything bigger is mostly picture.
+   *
+   * The form scrolls inside its own column, not with the page: the whole point
+   * is that the render stays put while you go through the settings.
+   */
+  return (
+    <div className="flex h-full min-h-0">
+      <div className="min-h-0 w-[25rem] shrink-0 overflow-y-auto overscroll-contain">{form}</div>
+      <GenerateWorkbench workflowId={workflowId} />
+    </div>
   );
 }
 
@@ -288,6 +313,7 @@ function GenerateForm({
    */
   const finished = useLiveStore((state) => state.finished);
   const barInRow = Boolean(job || finished);
+  const wide = useWide();
   const comfyOnline = useLiveStore((state) => state.live.comfyOnline);
 
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -520,7 +546,17 @@ function GenerateForm({
     // options actually are. min-h-full so `mt-auto` on the pinned footer has
     // something to push against on a form too short to scroll.
     <WorkflowScope workflowId={detail.id}>
-      <div className="safe-t flex min-h-full flex-col gap-3 px-4 pt-2 pb-2">
+      {/*
+        A column, capped, in the middle.
+
+        The cap only bites where there is no pane beside the form — a tablet
+        held upright, where Generate is one column across seven hundred points.
+        Stretched that far a chip is a label and a value at opposite ends of a
+        hand's width, and the prompt is one line of forty words. Where the pane
+        *is* beside it the form is already narrower than this, so the cap costs
+        nothing and there is no second layout to keep in step.
+      */}
+      <div className="safe-t flex min-h-full flex-col gap-3 px-4 pt-2 pb-2 tablet:mx-auto tablet:w-full tablet:max-w-[40rem]">
       {/* Workflow selector + connection state */}
       <div className="flex items-center gap-2">
         <button
@@ -579,9 +615,20 @@ function GenerateForm({
             columns line the labels up, so the sampler block can be scanned down
             instead of hunted through.
           */
-          <div key={`chips-${runIndex}`} className="grid grid-cols-2 gap-1.5">
+          <div
+            key={`chips-${runIndex}`}
+            className={cn(
+              'grid gap-1.5',
+              // Three across where the form has the whole screen to itself, two
+              // where it is sharing it with the render — the column is four
+              // hundred points there, and a third of that is not a chip.
+              wide ? 'grid-cols-2' : 'grid-cols-2 tablet:grid-cols-3',
+            )}
+          >
+            {/* `col-span-full` rather than `col-span-2`: "full" means the whole
+                row, and the row is not always two columns wide. */}
             {run.fields.map((field) => (
-              <div key={field.id} className={cn('min-w-0', field.width === 'full' && 'col-span-2')}>
+              <div key={field.id} className={cn('min-w-0', field.width === 'full' && 'col-span-full')}>
                 <FieldChip
                   field={field}
                   value={values[field.id] ?? field.defaultValue}
@@ -726,14 +773,19 @@ function GenerateForm({
           at together — and the form is what the space is for. The bar only
           appears while something is running or has just finished, so an idle
           screen still gives the button the full width.
+
+          Not where the pane is beside the form, which is showing the same run
+          at ten times the size with the same progress underneath it. A
+          thumbnail of the picture you are already looking at is not a summary
+          of anything, and dropping it gives Generate the whole width back.
         */}
         <div className="flex items-stretch gap-2">
-          <LiveBar inline />
+          {!wide && <LiveBar inline />}
           <Button
             variant="primary"
             size="lg"
-            fullWidth={!barInRow}
-            className={barInRow ? 'shrink-0' : undefined}
+            fullWidth={!barInRow || wide}
+            className={barInRow && !wide ? 'shrink-0' : undefined}
             onClick={submit}
             busy={generate.isPending || setEndless.isPending}
             disabled={!comfyOnline}

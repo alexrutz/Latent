@@ -2760,35 +2760,57 @@ test.describe('the sixteenth wave', () => {
  * what these tests are about is the plumbing around the model — the stream, the
  * tool dialogs, and what accepting one actually does — rather than the model.
  */
+const LLAMA = 'http://127.0.0.1:8189';
+
+/** Queue what the mock model will say next. */
+const script = async (...replies: unknown[]) => {
+  const context = await apiRequest.newContext({ baseURL: LLAMA });
+  try {
+    await context.post('/__script', { data: replies });
+  } finally {
+    await context.dispose();
+  }
+};
+
+/**
+ * Throw away anything a previous test queued or sent.
+ *
+ * The scripted replies are a queue on the mock, so a test that ends before
+ * consuming what it scripted hands its leftovers to whichever test runs next
+ * — which then reads a reply meant for something else and fails for a reason
+ * that has nothing to do with it. One failure became fourteen that way.
+ *
+ * At the top level rather than inside the chat suite, because the tablet suite
+ * drives the chat too and a helper two suites need is not one suite's.
+ */
+const resetLlama = async () => {
+  const context = await apiRequest.newContext({ baseURL: LLAMA });
+  try {
+    await context.post('/__reset');
+  } finally {
+    await context.dispose();
+  }
+};
+
+/**
+ * Point the chat at the stand-in model server.
+ *
+ * A connection like any other now, in the same list as ComfyUI's — which is
+ * the whole point of the change: one list, one dialog, one way of saying
+ * "talk to this box".
+ */
+const useLlama = async (url = LLAMA): Promise<string> => {
+  return withApi(async (ctx) => {
+    const created = await ctx.post('/api/connections', {
+      data: { kind: 'llama', name: `Model server ${url}`, url },
+    });
+    const connection = (await created.json()) as { id: string };
+    await ctx.post(`/api/connections/${connection.id}/activate`);
+    return connection.id;
+  });
+};
+
 test.describe('the chat module', () => {
-  const LLAMA = 'http://127.0.0.1:8189';
-
-  /** Queue what the mock model will say next. */
-  const script = async (...replies: unknown[]) => {
-    const context = await apiRequest.newContext({ baseURL: LLAMA });
-    try {
-      await context.post('/__script', { data: replies });
-    } finally {
-      await context.dispose();
-    }
-  };
-
-  /**
-   * Throw away anything a previous test queued or sent.
-   *
-   * The scripted replies are a queue on the mock, so a test that ends before
-   * consuming what it scripted hands its leftovers to whichever test runs next
-   * — which then reads a reply meant for something else and fails for a reason
-   * that has nothing to do with it. One failure became fourteen that way.
-   */
-  const resetLlama = async () => {
-    const context = await apiRequest.newContext({ baseURL: LLAMA });
-    try {
-      await context.post('/__reset');
-    } finally {
-      await context.dispose();
-    }
-  };
 
   /** How many requests the model server has been sent so far. */
   const requestCount = async (): Promise<number> => {
@@ -2844,24 +2866,6 @@ test.describe('the chat module', () => {
     } finally {
       await context.dispose();
     }
-  };
-
-  /**
-   * Point the chat at the stand-in model server.
-   *
-   * A connection like any other now, in the same list as ComfyUI's — which is
-   * the whole point of the change: one list, one dialog, one way of saying
-   * "talk to this box".
-   */
-  const useLlama = async (url = LLAMA): Promise<string> => {
-    return withApi(async (ctx) => {
-      const created = await ctx.post('/api/connections', {
-        data: { kind: 'llama', name: `Model server ${url}`, url },
-      });
-      const connection = (await created.json()) as { id: string };
-      await ctx.post(`/api/connections/${connection.id}/activate`);
-      return connection.id;
-    });
   };
 
   test.beforeEach(async () => {
@@ -5853,5 +5857,246 @@ test.describe('generating video', () => {
     await page.getByRole('button', { name: 'Close' }).click();
     await expect(page.getByTestId('video-placeholder')).toHaveCount(0);
     await page.screenshot({ path: 'test-results/87-video-poster.png' });
+  });
+});
+
+/**
+ * The tablet layout.
+ *
+ * Only run on the `iPad` project — 1024×768, a nine-and-a-half-inch screen on
+ * its side — which is what `@tablet` in every name here selects. What is worth
+ * asserting is not that things look different: it is the three claims tablet
+ * mode actually makes. Every destination is reachable without a menu; the two
+ * halves of the loop this app is built around are on screen together; and
+ * nothing that was a full-width phone control is now a full-width tablet one.
+ */
+test.describe('on a tablet', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await resetLlama();
+    await seedWorkflow();
+  });
+
+  /**
+   * Navigation down the side, with nothing behind a menu.
+   *
+   * The four modules that live behind "More" on a phone are only there because
+   * six labelled tabs is as many as a phone's width can carry. A rail has room
+   * for all ten, so the menu should not exist at all — asserting its absence is
+   * the point, since keeping it would be the easy way to ship this and would
+   * leave the tablet with a phone's compromise for no reason.
+   */
+  test('@tablet puts every module on a rail instead of behind a menu', async ({ page }) => {
+    await open(page, '/');
+
+    const rail = page.getByTestId('side-rail');
+    await expect(rail).toBeVisible();
+    await expect(page.getByRole('button', { name: 'More modules' })).toHaveCount(0);
+
+    for (const label of [
+      'Generate',
+      'Gallery',
+      'Favourites',
+      'Chat',
+      'Queue',
+      'Settings',
+      'Blocks',
+      'Random',
+      'Monitor',
+      'Study',
+    ]) {
+      await expect(rail.getByRole('link', { name: label })).toBeVisible();
+    }
+
+    // And it navigates, rather than merely listing.
+    await rail.getByRole('link', { name: 'Monitor' }).click();
+    await expect(page).toHaveURL(/\/monitor$/);
+    await page.screenshot({ path: 'test-results/99-tablet-rail.png' });
+  });
+
+  /**
+   * The prompt and the picture, on screen at once.
+   *
+   * This is the whole argument for tablet mode. On a phone, changing one word
+   * of a prompt and seeing what it did means Generate → a bar → a viewer → back
+   * → back, and the previous attempt is never visible at the same time as the
+   * words that made it. Here the form keeps its column and the render lives
+   * beside it.
+   */
+  test('@tablet generates with the result beside the form', async ({ page }) => {
+    await open(page, '/');
+
+    const workbench = page.getByTestId('workbench');
+    await expect(workbench).toBeVisible();
+    // Nothing made yet, and it says so rather than showing an empty box.
+    await expect(workbench.getByText(/Nothing rendered yet/)).toBeVisible();
+
+    await page.getByPlaceholder('Describe the image…').fill('a pier at dawn');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    // The picture lands in the pane, and the form is still there beside it —
+    // still filled in, still the thing you would edit next.
+    await expect(workbench.getByTestId('workbench-still')).toBeVisible({ timeout: 40_000 });
+    await expect(page.getByPlaceholder('Describe the image…')).toHaveValue('a pier at dawn');
+    await page.screenshot({ path: 'test-results/99-tablet-generate.png' });
+
+    /*
+     * And it opens the gallery's own viewer, over this workflow's runs — the
+     * pane is a way into the pictures, not a dead end showing one of them.
+     */
+    await workbench.getByRole('button', { name: /^Open / }).click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+    await page.getByRole('button', { name: 'Close' }).click();
+  });
+
+  /**
+   * The conversation and what it made, side by side.
+   *
+   * The chat's pictures are strung out through the transcript, which is the
+   * wrong shape for comparing them — most obviously in a wandering run, which
+   * is nothing but one picture after another with a few words in between.
+   */
+  test('@tablet shows the chat’s pictures beside the conversation', async ({ page }) => {
+    await useLlama();
+    // Only what this test depends on: a prompt proposal that arrives as a
+    // dialog, and no review turn afterwards to script a second reply for.
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', {
+        data: {
+          chat: {
+            promptButton: 'dialog',
+            generation: { workflowId: '', values: {} },
+            tools: { build_prompt: 'settled', prompt_blocks: 'off', ask_user: 'off' },
+            review: { enabled: false, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+            autonomous: { enabled: false, maxRounds: 4 },
+          },
+        },
+      }),
+    );
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a harbour at night', reason: 'Asked for.' },
+      },
+    });
+
+    await open(page, '/chat');
+    const pictures = page.getByTestId('chat-pictures');
+    await expect(pictures).toBeVisible();
+    await expect(pictures.getByText(/Nothing yet/)).toBeVisible();
+
+    await page.getByPlaceholder('Say something…').fill('a harbour');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    await dialog.getByRole('button', { name: /^Generate/ }).click();
+
+    // It arrives in the panel, numbered by where it sits rather than named by
+    // a title every picture in the conversation would share.
+    const first = pictures.getByRole('button', { name: 'Picture 1 in this conversation' });
+    await expect(first).toBeVisible({ timeout: 60_000 });
+    await page.screenshot({ path: 'test-results/99-tablet-chat.png' });
+
+    // And it is a way into the viewer, like every other picture in the app.
+    await first.click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+    await page.getByRole('button', { name: 'Close' }).click();
+  });
+
+  /**
+   * Turned upright, it is still a tablet — but not a wide one.
+   *
+   * 768 across is the 9.7-inch screen in portrait, and the two-pane screens do
+   * not fit in it: a form beside a picture there is 340 points each, which is
+   * narrower than the phone the form was drawn for. So the rail and the
+   * proportions stay and the second pane goes, which is the whole reason there
+   * are two thresholds rather than one.
+   */
+  test('@tablet keeps the rail but drops the second pane in portrait', async ({ page }) => {
+    await page.setViewportSize({ width: 768, height: 1024 });
+    await open(page, '/');
+
+    await expect(page.getByTestId('side-rail')).toBeVisible();
+    await expect(page.getByTestId('workbench')).toHaveCount(0);
+
+    // And the form does not stretch to the full width just because it can.
+    const form = page.getByPlaceholder('Describe the image…');
+    const box = (await form.boundingBox())!;
+    expect(box.width).toBeLessThan(768 - 84 - 40);
+    await page.screenshot({ path: 'test-results/99-tablet-portrait.png' });
+
+    /*
+     * Turning it back brings the pane with it. Nothing here is decided once at
+     * startup — it is two media queries, so a rotation is a re-layout.
+     */
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await expect(page.getByTestId('workbench')).toBeVisible();
+  });
+
+  /**
+   * Sheets stop being sheets.
+   *
+   * A bottom sheet is a shape for a phone: it comes up from the edge the hand
+   * is at, and it is full width because there is no width to spare. Left alone
+   * on a tablet it is a band of controls a foot wide, hanging off an edge
+   * nobody is holding.
+   */
+  test('@tablet opens sheets as panels in the middle, not bands along the bottom', async ({
+    page,
+  }) => {
+    await open(page, '/gallery');
+    await page.getByRole('button', { name: 'Layout' }).click();
+
+    const panel = page.getByRole('dialog', { name: 'Layout' });
+    await expect(panel).toBeVisible();
+
+    const box = (await panel.boundingBox())!;
+    const viewport = page.viewportSize()!;
+
+    // Narrower than the screen, and clear of the bottom edge rather than sitting
+    // on it — the two things that make it a panel rather than a sheet.
+    expect(box.width).toBeLessThan(viewport.width * 0.7);
+    expect(box.y + box.height).toBeLessThan(viewport.height - 16);
+    expect(box.y).toBeGreaterThan(16);
+    await page.screenshot({ path: 'test-results/99-tablet-sheet.png' });
+  });
+
+  /**
+   * Nothing stretched to a hundred and forty characters a line.
+   *
+   * The failure this guards against is the one that makes a phone app on a
+   * tablet look unfinished: rows whose label is at one edge of the screen and
+   * whose control is at the other. Measured rather than read off a class list,
+   * because the complaint is about what is on the screen.
+   */
+  test('@tablet holds the settings to a readable column', async ({ page }) => {
+    await open(page, '/settings');
+    await expect(page.getByRole('heading', { name: 'ComfyUI', exact: true })).toBeVisible();
+
+    const width = await page
+      .locator('main .readable')
+      .first()
+      .evaluate((node) => node.getBoundingClientRect().width);
+    const viewport = page.viewportSize()!;
+
+    expect(width).toBeLessThan(viewport.width * 0.85);
+    await page.screenshot({ path: 'test-results/99-tablet-settings.png' });
+  });
+
+  /**
+   * The grid uses the width it has been given.
+   *
+   * A tablet opening on two columns is two postcards and a scroll for the
+   * third, which is the same picture count as a phone on twice the glass.
+   */
+  test('@tablet starts the gallery on more columns than a phone would', async ({ page }) => {
+    await open(page, '/gallery');
+    await page.getByRole('button', { name: 'Layout' }).click();
+    const slider = page.getByRole('dialog').getByLabel('Columns');
+    await expect(slider).toHaveValue('4');
+    // And it can go further than a phone's five, which is where a phone runs
+    // out of picture rather than out of room.
+    await expect(slider).toHaveAttribute('max', '8');
   });
 });

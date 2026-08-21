@@ -180,7 +180,7 @@ export function MonitorScreen() {
   const latest = samples[samples.length - 1];
 
   return (
-    <div className="safe-t px-4 pt-3 pb-6">
+    <div className="readable safe-t px-4 pt-3 pb-6">
       <div className="mb-1 flex items-center justify-between gap-2">
         <h1 className="text-xl font-semibold">Monitor</h1>
         <div className="flex gap-1 rounded-full bg-surface p-1">

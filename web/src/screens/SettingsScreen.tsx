@@ -469,7 +469,7 @@ export function SettingsScreen() {
   );
 
   return (
-    <div className="safe-t space-y-6 px-4 pt-3 pb-6">
+    <div className="readable safe-t space-y-6 px-4 pt-3 pb-6">
       <h1 className="text-xl font-semibold">Settings</h1>
 
       {/* Connection ------------------------------------------------- */}

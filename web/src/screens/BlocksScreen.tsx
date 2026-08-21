@@ -82,7 +82,7 @@ export function BlocksScreen() {
   }
 
   return (
-    <div className="safe-t px-4 pt-3 pb-6">
+    <div className="readable safe-t px-4 pt-3 pb-6">
       <div className="mb-3 flex items-center justify-between gap-2">
         <h1 className="text-xl font-semibold">Blocks</h1>
         <Button variant="secondary" size="sm" onClick={() => setEditing('new')}>

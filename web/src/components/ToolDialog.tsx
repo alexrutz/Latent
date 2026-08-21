@@ -93,7 +93,16 @@ export function ToolDialog({
       */}
       <div className="absolute inset-0 bg-ink/50 backdrop-blur-sm" role="presentation" />
 
-      <div className="animate-rise relative flex max-h-[85svh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl">
+      {/*
+        Wider on a tablet, because what is in it is a paragraph.
+
+        A prompt is a long sentence and a set of questions is several; at a
+        phone's width both are a narrow ribbon of text scrolling past a fixed
+        pair of buttons. The cap is still a cap — a dialog as wide as a
+        nine-inch screen would put Reject and Generate a hand's width apart —
+        but it is the width of a page rather than of a phone.
+      */}
+      <div className="animate-rise relative flex max-h-[85svh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl tablet:max-h-[80svh] tablet:max-w-xl">
         {/*
           A strip of its own, above everything the dialog decides.
 

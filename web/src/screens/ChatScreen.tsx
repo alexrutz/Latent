@@ -5,7 +5,7 @@ import type { ChatMessage, ChatToolCall } from '@latent/shared';
 
 import { api } from '../api/client';
 import { useGeneration, useGenerations, useSettings, useUpdateSettings } from '../api/queries';
-import { Still, type ViewerEntry } from '../components/ImageViewer';
+import { Still, Thumb, type ViewerEntry } from '../components/ImageViewer';
 import { RunProgress } from '../components/LiveBar';
 import { ViewerWithActions } from '../components/ViewerWithActions';
 import { Markdown } from '../components/Markdown';
@@ -24,6 +24,7 @@ import {
 } from '../components/ui';
 import { useChatStore } from '../state/chat';
 import { useGridSettings } from '../state/grid';
+import { useWide } from '../state/layout';
 
 /**
  * Talking to a local model about what to make.
@@ -157,6 +158,7 @@ export function ChatScreen() {
   );
   const [viewing, setViewing] = useState<string | null>(null);
   const [grid, updateGrid] = useGridSettings();
+  const wide = useWide();
   const viewerIndex = viewing
     ? viewerEntries.findIndex((entry) => pictureKey(entry.record.id, entry.image) === viewing)
     : -1;
@@ -329,7 +331,18 @@ export function ChatScreen() {
       composer. A chat is the one place where more text on screen is simply
       better, so nothing else competes for the height.
     */
-    <div className="safe-t flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0">
+      {/*
+        The conversation itself, in a column that stops widening once the lines
+        are long enough to read.
+
+        A tablet's full width is about a hundred and forty characters a line,
+        which is roughly twice what anyone reads comfortably — the eye loses the
+        start of the next line on the way back. Capping it is not leaving the
+        space unused; on a wide screen the space goes to the pictures beside it,
+        and on a narrower one an even margin is what a page looks like.
+      */}
+      <div className="safe-t flex min-h-0 min-w-0 flex-1 flex-col tablet:mx-auto tablet:w-full tablet:max-w-[46rem]">
       <div className="flex shrink-0 items-center justify-between gap-2 px-4 pt-2 pb-1">
         <h1 className="min-w-0 truncate text-base font-semibold">{chat.title || 'Chat'}</h1>
         <div className="flex shrink-0 items-center gap-1">
@@ -743,6 +756,27 @@ export function ChatScreen() {
           </Button>
         </div>
       </div>
+      </div>
+
+      {/*
+        Every picture this conversation has made, down the side.
+
+        The transcript is the reasoning and this is the result, and on a phone
+        you can only ever have one of them: the pictures are strung out through
+        several screens of text, so comparing the last four means scrolling past
+        what was said about them. Here they are a contact sheet that stays put
+        while the conversation moves.
+
+        It earns its width most in a wandering run, which is nothing but a
+        column of pictures with a few words between them — the transcript is the
+        wrong shape for that, and this is the right one.
+      */}
+      {wide && (
+        <ConversationPictures
+          entries={viewerEntries}
+          onOpen={(entry) => setViewing(pictureKey(entry.record.id, entry.image))}
+        />
+      )}
 
       {pendingCall && !callMinimized && (
         <ToolDialog
@@ -837,6 +871,77 @@ export function ChatScreen() {
         />
       </Sheet>
     </div>
+  );
+}
+
+/**
+ * The conversation's output as a contact sheet, beside the conversation.
+ *
+ * Two columns rather than one: a strip of single thumbnails down a 17-rem
+ * column wastes half of it on margins, and two side by side is the smallest
+ * number that lets you actually compare one attempt with the next — which is
+ * what the panel is for.
+ *
+ * It follows the newest picture the way the transcript follows the newest
+ * message, and for the same reason: both are logs, and the end is where the
+ * thing you are waiting for appears.
+ */
+function ConversationPictures({
+  entries,
+  onOpen,
+}: {
+  entries: ViewerEntry[];
+  onOpen: (entry: ViewerEntry) => void;
+}) {
+  const endRef = useRef<HTMLDivElement>(null);
+  const count = entries.length;
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: 'end' });
+  }, [count]);
+
+  return (
+    <aside
+      data-testid="chat-pictures"
+      aria-label="Pictures from this conversation"
+      className="safe-t flex w-[17rem] shrink-0 flex-col border-l border-line bg-surface/30"
+    >
+      <div className="flex shrink-0 items-baseline gap-2 px-3 pt-3 pb-2">
+        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Made here</h2>
+        {count > 0 && <span className="text-xs text-muted tabular-nums">{count}</span>}
+      </div>
+
+      {count === 0 ? (
+        <p className="px-3 text-xs leading-relaxed text-muted">
+          Nothing yet. Every picture this conversation makes collects here, in
+          the order it was made.
+        </p>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-3">
+          <div className="grid grid-cols-2 gap-2">
+            {entries.map((entry, index) => (
+              <Thumb
+                key={pictureKey(entry.record.id, entry.image)}
+                image={entry.image}
+                alt={entry.record.title}
+                /*
+                  Numbered, because that is what identifies one here: the
+                  titles in a wandering run are all variations on the same
+                  sentence, and position is how you would point at it. Not
+                  "Open picture N" — the transcript already calls its own
+                  pictures that, and two controls with the same name are two
+                  nothing reading the screen aloud can tell apart.
+                */
+                label={`Picture ${index + 1} in this conversation`}
+                onClick={() => onOpen(entry)}
+                className="aspect-square w-full"
+              />
+            ))}
+          </div>
+          <div ref={endRef} />
+        </div>
+      )}
+    </aside>
   );
 }
 

@@ -6,7 +6,7 @@ import { useLiveStore } from '../state/live';
 import { scrollToTop } from '../state/scroll';
 import { cn } from './ui';
 
-interface Tab {
+export interface Tab {
   to: string;
   label: string;
   icon: string;
@@ -30,7 +30,7 @@ interface Tab {
  * platform's own colours and style, which next to five monochrome marks looks
  * like a sticker somebody left on the app.
  */
-const TABS: Tab[] = [
+export const TABS: Tab[] = [
   { to: '/', label: 'Generate', icon: '✦' },
   { to: '/gallery', label: 'Gallery', icon: '▦' },
   { to: '/favorites', label: 'Favourites', icon: '★' },
@@ -39,8 +39,15 @@ const TABS: Tab[] = [
   { to: '/settings', label: 'Settings', icon: '⚙' },
 ];
 
-/** Set up once and then left alone, which is why they are behind a tap. */
-const MORE: Tab[] = [
+/**
+ * Set up once and then left alone, which is why they are behind a tap.
+ *
+ * Behind a tap on a phone, that is. A tablet's rail lists all ten destinations
+ * at once — see `SideRail` — because the reason these four are hidden is that
+ * six tabs is all a phone's width can label legibly, and that reason does not
+ * survive turning the bar on its side.
+ */
+export const MORE: Tab[] = [
   { to: '/blocks', label: 'Blocks', icon: '¶' },
   { to: '/variation', label: 'Random', icon: '⁂' },
   { to: '/monitor', label: 'Monitor', icon: '∿' },
@@ -61,9 +68,9 @@ const MORE_AFTER = '/queue';
  * `currentColor` throughout, so the one mark serves both the filled active tile
  * and the outlined resting one.
  */
-function ChatMark() {
+export function ChatMark({ className = 'size-[1.15rem]' }: { className?: string } = {}) {
   return (
-    <svg viewBox="0 0 24 24" className="size-[1.15rem]" fill="none" aria-hidden>
+    <svg viewBox="0 0 24 24" className={className} fill="none" aria-hidden>
       <path
         d="M4 10.2c0-2.9 2.4-5.2 5.4-5.2h5.2c3 0 5.4 2.3 5.4 5.2s-2.4 5.3-5.4 5.3H11l-3.6 3v-3.3C5.5 14.4 4 12.5 4 10.2Z"
         stroke="currentColor"

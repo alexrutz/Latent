@@ -363,13 +363,21 @@ export function RunProgress({ generationId, queued }: { generationId: string; qu
   );
 }
 
-function sinceUpdate(now: number, liveAt: number): number {
+/**
+ * How long ago the last update from the server was.
+ *
+ * Exported because the tablet's Generate pane counts the same clock — the
+ * elapsed time and the ETA there are the same two numbers this bar shows, and
+ * two copies of "count down from the last event" would drift apart the first
+ * time either was corrected.
+ */
+export function sinceUpdate(now: number, liveAt: number): number {
   if (now === 0 || liveAt === 0) return 0;
   return Math.max(0, now - liveAt);
 }
 
 /** The server's ETA, counted down by however long ago it arrived. */
-function remainingEta(stats: JobStats, now: number, liveAt: number): number | null {
+export function remainingEta(stats: JobStats, now: number, liveAt: number): number | null {
   if (stats.etaMs === null) return null;
   return Math.max(0, stats.etaMs - sinceUpdate(now, liveAt));
 }

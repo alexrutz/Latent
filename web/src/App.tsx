@@ -5,6 +5,7 @@ import { setArchiveLockedHandler } from './api/client';
 import { useLiveCacheSync, useStatus } from './api/queries';
 import { BottomTabs } from './components/BottomTabs';
 import { LiveBar } from './components/LiveBar';
+import { SideRail } from './components/SideRail';
 import { ArchiveLockedBar, UnlockArchiveDialog } from './components/UnlockArchive';
 import { cn, Spinner } from './components/ui';
 import { BlocksScreen } from './screens/BlocksScreen';
@@ -19,12 +20,14 @@ import { QueueScreen } from './screens/QueueScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { SetupScreen } from './screens/SetupScreen';
 import { VariationScreen } from './screens/VariationScreen';
+import { useTablet } from './state/layout';
 import { registerScrollContainer } from './state/scroll';
 import { useLiveSocket } from './state/useLiveSocket';
 
 export function App() {
   const status = useStatus();
   const pathname = useLocation().pathname;
+  const tablet = useTablet();
   const onGenerate = pathname === '/';
   /*
    * The chat manages its own height and its composer is pinned to the bottom of
@@ -72,10 +75,16 @@ export function App() {
     return <LoginScreen onAuthenticated={() => void status.refetch()} />;
   }
 
-  return (
-    // 100dvh (not vh) so the layout tracks the collapsing mobile URL bar
-    // instead of hiding the tab bar behind it.
-    <div className="flex h-[100dvh] flex-col overflow-hidden">
+  /*
+   * Everything but the navigation, which is on a different side depending on
+   * how much screen there is.
+   *
+   * One column either way — the archive warning, the screen, the progress bar —
+   * so the only thing tablet mode changes about the shell is whether that
+   * column sits above a bar or beside a rail.
+   */
+  const column = (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {archiveLocked && <ArchiveLockedBar onUnlock={() => setUnlocking(true)} />}
 
       <main
@@ -108,7 +117,22 @@ export function App() {
         for two things you look at together.
       */}
       {!onGenerate && !onChat && <LiveBar />}
-      <BottomTabs />
+    </div>
+  );
+
+  return (
+    // 100dvh (not vh) so the layout tracks the collapsing mobile URL bar
+    // instead of hiding the tab bar behind it.
+    <div className={cn('flex h-[100dvh] overflow-hidden', tablet ? 'flex-row' : 'flex-col')}>
+      {/*
+        Either way the navigation is in the document where it is on the screen:
+        first on a tablet, where it runs down the left, and last on a phone,
+        where it sits along the bottom. Keeping the two in step is what makes
+        the reading order and the tab order match what you can see.
+      */}
+      {tablet && <SideRail />}
+      {column}
+      {!tablet && <BottomTabs />}
 
       <UnlockArchiveDialog open={unlocking} onClose={() => setUnlocking(false)} />
     </div>

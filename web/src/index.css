@@ -109,6 +109,72 @@
   padding-top: env(safe-area-inset-top, 0px);
 }
 
+@utility safe-l {
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+/*
+ * The safe area under a bottom sheet — which a centred one is not sitting in.
+ *
+ * On a phone the panel is flush with the bottom edge, so its last row of
+ * buttons has to clear the home indicator. On a tablet the same panel is in the
+ * middle of the screen with its own margin all round, and the inset would be
+ * twenty stray points of padding along one side of a centred box.
+ */
+@utility sheet-safe-b {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+
+  @media (min-width: 600px) and (min-height: 600px) {
+    padding-bottom: 0;
+  }
+}
+
+/*
+ * Tablets.
+ *
+ * Both axes, deliberately. A width test on its own calls a phone in landscape a
+ * tablet — an iPhone Pro Max is 932 points wide that way — and hands 430 points
+ * of height to a layout built around having plenty of it, which is the worst of
+ * both. A tablet is a screen that is big in *both* directions, so that is what
+ * is asked.
+ *
+ * The line is drawn at 600 because that is the gap: the widest phone is 430
+ * points across its short side, and the narrowest thing anyone calls a tablet
+ * is 600. Everything real sits well clear of it on one side or the other — an
+ * iPad is 768 in portrait, the small ones 656 — so the exact number is not
+ * load-bearing, which is what you want from a threshold.
+ *
+ * `wide` is the second half of the same idea: enough width to put two things
+ * side by side and have both of them still be usable. Below it a tablet gets
+ * one column — a better-proportioned one than the phone's, but one. A 9.7-inch
+ * tablet is `tablet` held upright and `wide` turned on its side, which is the
+ * distinction people already have in their hands.
+ *
+ * Kept as media queries rather than a class on the root: it costs no
+ * JavaScript, it is right on the first paint rather than after one, and it
+ * follows a rotation or a split-screen drag with no listener involved. The two
+ * queries are repeated verbatim in `state/layout.ts`, where the structural
+ * decisions that CSS cannot make are taken — they must stay in step.
+ */
+@custom-variant tablet (@media (min-width: 600px) and (min-height: 600px));
+@custom-variant wide (@media (min-width: 900px) and (min-height: 600px));
+
+/*
+ * A column that stops growing once it is wide enough to read.
+ *
+ * Every list-and-settings screen in the app is a stack of rows with a label on
+ * the left and a control on the right. Stretched to a tablet's full width those
+ * two ends are a hand's span apart, and the eye has to travel the whole way to
+ * find out what the switch it is looking at belongs to. Filling the space is
+ * not the same as using it.
+ */
+@utility readable {
+  @media (min-width: 600px) and (min-height: 600px) {
+    margin-inline: auto;
+    max-width: 46rem;
+  }
+}
+
 /* Hide the scrollbar on horizontal chip rows without disabling scrolling. */
 @utility no-scrollbar {
   scrollbar-width: none;
@@ -157,8 +223,32 @@
   }
 }
 
+/*
+ * What a panel that is not sliding up from an edge does instead.
+ *
+ * A hundred-per-cent upward translate is a sheet arriving from the bottom of
+ * the screen. Centre the same panel on a tablet and that becomes a box flying
+ * up out of the middle of the page from somewhere below it, which reads as a
+ * glitch rather than as a movement. A short lift and a touch of scale says the
+ * same thing — this is new, and it is in front — without implying an edge.
+ */
+@keyframes latent-pop {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 @utility animate-rise {
   animation: latent-rise 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+
+  @media (min-width: 600px) and (min-height: 600px) {
+    animation: latent-pop 0.18s ease-out;
+  }
 }
 
 @utility animate-fade {

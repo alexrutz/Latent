@@ -618,7 +618,19 @@ export function ImageViewer({
           existed to make the buttons legible, when the buttons already carry
           their own backgrounds and do that themselves.
         */}
-        {footer && <div className="safe-b px-3 pt-2 pb-2">{footer}</div>}
+        {/*
+          Held to the middle on a big screen.
+
+          The actions belong to the picture, and stretched across a tablet they
+          stop reading as a row of controls and start reading as a strip of
+          furniture along the bottom of the window — with the rating at one far
+          corner and Delete at the other.
+        */}
+        {footer && (
+          <div className="safe-b px-3 pt-2 pb-2 tablet:mx-auto tablet:w-full tablet:max-w-3xl">
+            {footer}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -635,6 +647,7 @@ export function ImageViewer({
 export function Thumb({
   image,
   alt,
+  label,
   className,
   style,
   onClick,
@@ -644,6 +657,15 @@ export function Thumb({
 }: {
   image: GenerationImage;
   alt: string;
+  /**
+   * A name for the thumbnail that is not the picture's own.
+   *
+   * Left off nearly everywhere, because a grid of pictures is named by its
+   * pictures. Set where position is what identifies one — a numbered list of
+   * attempts, where "the third" is how you would refer to it out loud and the
+   * titles are all variations on the same sentence.
+   */
+  label?: string;
   className?: string;
   style?: React.CSSProperties;
   onClick?: () => void;
@@ -659,6 +681,7 @@ export function Thumb({
       type="button"
       onClick={onClick}
       style={style}
+      {...(label ? { 'aria-label': label } : {})}
       {...longPress}
       className={cn(
         'relative overflow-hidden rounded-xl bg-surface-2 active:opacity-80',
@@ -690,7 +713,18 @@ export function Still({
   image: GenerationImage;
   alt: string;
   className?: string;
-  fit?: 'cover' | 'contain';
+  /**
+   * Which of the three shapes a caller is asking for.
+   *
+   * `cover` fills a box the caller sized and crops what does not fit — a grid
+   * tile. `contain` takes a width and makes its own height from the picture's
+   * proportions — a sheet, a chat bubble. `inside` is the third: a box whose
+   * height is also fixed, with the picture letterboxed in it. That one exists
+   * for the tablet's Generate pane, where the stage is whatever height the
+   * window leaves over and a portrait render would otherwise be taller than the
+   * space it was given and cropped at the bottom.
+   */
+  fit?: 'cover' | 'contain' | 'inside';
   onMeasured?: (width: number, height: number) => void;
   /**
    * Called once there is something to look at.
@@ -717,7 +751,7 @@ export function Still({
    * those collapsed them to nothing, since their height is what was being asked
    * for in the first place.
    */
-  const fills = fit === 'cover';
+  const fills = fit !== 'contain';
 
   /*
    * A tile with no picture behind it.
@@ -777,7 +811,9 @@ export function Still({
         }}
         onError={() => setFailed(true)}
         className={cn(
-          fills ? 'size-full object-cover' : 'block h-auto w-full object-contain',
+          fit === 'cover' && 'size-full object-cover',
+          fit === 'inside' && 'size-full object-contain',
+          fit === 'contain' && 'block h-auto w-full object-contain',
         )}
       />
       {/* A poster is a picture of a video, and looks exactly like a picture.

@@ -262,8 +262,13 @@ export function ViewerWithActions({
             label underneath says the same in a fifth of the width, so
             everything stays reachable without a sheet and the image keeps the
             room.
+
+            One row of ten where there is width for it. Two rows of five is a
+            compromise a phone forces; on a tablet the second row is a hundred
+            pixels of picture given away for nothing, and ten cells across a
+            capped footer are still comfortably wider than a thumb.
           */}
-          <div className="grid grid-cols-5 gap-1">
+          <div className="grid grid-cols-5 gap-1 tablet:grid-cols-10">
             <ViewerAction
               glyph={existingFavorite ? '★' : '☆'}
               // The label carries the state as well as the colour: "on or off"

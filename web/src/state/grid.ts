@@ -2,21 +2,47 @@ import { useEffect, useState } from 'react';
 
 import { DEFAULT_GRID_SETTINGS, type GenerationImage, type GridSettings, type TileSpan } from '@latent/shared';
 
+import { TABLET_QUERY } from './layout';
+
 const STORAGE_KEY = 'latent.grid';
+
+/**
+ * How many columns the grid may be set to on this screen.
+ *
+ * Five is as many as a phone can show and still have each picture be a picture
+ * rather than a swatch. A tablet is twice the width, and the same argument that
+ * caps a phone at five puts the cap at eight here — three columns on a
+ * nine-inch screen is four hundred pixels a thumbnail, which is not a grid, it
+ * is a slideshow with the scrollbar doing the work.
+ *
+ * Read once, not watched. It is the ceiling on a slider, and a number that
+ * moved while somebody was dragging would be worse than one that is briefly
+ * generous after a rotation.
+ */
+export function maxColumns(): number {
+  return typeof window !== 'undefined' && window.matchMedia(TABLET_QUERY).matches ? 8 : 5;
+}
 
 /**
  * Grid layout preferences.
  *
  * Kept on the device rather than the server: how many columns feel right
- * depends on the screen you are holding, not on the account.
+ * depends on the screen you are holding, not on the account. Which is also why
+ * the first-run default is not a constant — two columns is right for a phone
+ * and absurd on a tablet, where it means two pictures the size of postcards and
+ * a scroll for the third.
  */
 export function useGridSettings(): [GridSettings, (patch: Partial<GridSettings>) => void] {
   const [settings, setSettings] = useState<GridSettings>(() => {
+    const initial =
+      typeof window !== 'undefined' && window.matchMedia(TABLET_QUERY).matches
+        ? { ...DEFAULT_GRID_SETTINGS, columns: 4 }
+        : DEFAULT_GRID_SETTINGS;
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
-      return stored ? { ...DEFAULT_GRID_SETTINGS, ...JSON.parse(stored) } : DEFAULT_GRID_SETTINGS;
+      return stored ? { ...initial, ...JSON.parse(stored) } : initial;
     } catch {
-      return DEFAULT_GRID_SETTINGS;
+      return initial;
     }
   });
 

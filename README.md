@@ -10,6 +10,10 @@ numbers, tap generate, look at the picture.
 Latent is that. You import a workflow once, and it becomes a clean, thumb-sized
 form. Nothing about your ComfyUI setup changes.
 
+On a tablet it becomes a different layout rather than a bigger one — navigation
+down the side, and the render on screen beside the form that made it. See
+[On a tablet](#on-a-tablet).
+
 <p align="center">
   <img src="docs/screenshots/generate.png" width="240" alt="The generate screen">
   <img src="docs/screenshots/progress.png" width="240" alt="Live progress">
@@ -1575,10 +1579,12 @@ mark inside a ring so it is findable without reading anything. It is the middle
 because it is the easiest place on a phone to hit one-handed and because it is
 increasingly where a session starts.
 
-Blocks, Random and Monitor sit behind the **⋯** tab, which opens a small menu
-above the bar. They are screens you *set up* and then leave alone for weeks;
+Blocks, Random, Monitor and Study sit behind the **⋯** tab, which opens a small
+menu above the bar. They are screens you *set up* and then leave alone for weeks;
 spending an eighth of the bar's width on each of them permanently, and shrinking
 the labels on the ones you use every minute to pay for it, was the wrong trade.
+(On a tablet there is no menu — the rail lists all ten. See
+[On a tablet](#on-a-tablet).)
 
 **Tapping the tab you are already on goes back to the top**, the way every other
 phone app behaves. Without it a long gallery scroll is a one-way trip.
@@ -1599,6 +1605,78 @@ between what you were writing and the keys you were writing it with. There is no
 event for "the keyboard is up", so it is inferred from `visualViewport` — the
 part of the page you can actually see — and the bar hides while that is short.
 Nothing on it is reachable mid-sentence anyway.
+
+## On a tablet
+
+A tablet is not a big phone. It is held in two hands or stood on a table,
+nothing about its bottom edge is privileged, and it has room to show two things
+at once — which changes what the app should be, not just how big it should be.
+So on a screen that size the layout is a different one. Nothing is configured
+and nothing is detected at startup: it is two media queries, so rotating the
+thing re-lays it out, and so does dragging a split-screen divider.
+
+**The line is drawn on the shorter side.** A screen counts as a tablet when it
+is at least 600 points in *both* directions. A width test alone calls a phone in
+landscape a tablet — a Pro Max is 932 points across that way — and hands 430
+points of height to a layout built on having plenty of it. Six hundred is the
+gap: the widest phone is 430 across its short side and the narrowest tablet is
+600, so nothing real is near the threshold.
+
+**Navigation runs down the left, with every module on it.** Ten destinations,
+labels you read rather than shapes you learn the position of, and no **⋯** menu
+— Blocks, Random, Monitor and Study were only ever behind one because six
+labelled tabs is as many as a phone's width carries. A rule separates the four
+you set up and leave alone from the six you use daily, which is the same
+distinction the menu was making, at no cost. It also gives back the sixty points
+of height the bottom bar was taking, and height is the scarce axis on a
+nine-inch screen turned sideways.
+
+**Generate puts the render beside the form.** This is the argument for the whole
+thing. On a phone, changing one word of a prompt and seeing what it did is
+Generate → a bar → a viewer → back → back, and the previous attempt is never on
+screen at the same time as the words that made it. Here the form keeps a column
+of its own and the rest of the width is the picture: the live preview while it
+samples, with the progress, the elapsed time and the ETA under it; the finished
+render when it lands; and this workflow's recent output as a strip along the
+bottom, any of which opens the gallery's own viewer. The form does not stretch
+to fill half a screen — it is a column of labelled rows whose ideal width is
+about a phone's — so what it does not need goes to the render.
+
+**The chat gets a contact sheet.** The transcript is held to a readable column
+and every picture the conversation has made collects in a panel beside it, in
+the order it was made, each one a way into the viewer. That is worth most in a
+[wandering](#wandering) run, which is nothing but one picture after another with
+a few words in between — the wrong shape for a transcript and the right one for
+a grid.
+
+**Sheets become panels.** A bottom sheet is a phone shape: it arrives from the
+edge your hand is at and spans the full width because there is no width to
+spare. On a tablet the same content is centred, capped, and clear of every edge,
+with a lift instead of a slide and no grab handle — that handle means "push me
+back down", which is a small lie in the middle of a screen.
+
+**Nothing is stretched to a hundred and forty characters a line.** Settings, the
+queue, the blocks, the monitor and the studies all sit in a column that stops
+growing once it is wide enough to read. Filling the space is not the same as
+using it: a row whose label is at one edge and whose switch is at the other is
+worse than one you can take in at a glance. The same goes for the smaller
+things — the gallery's filter pills, the favourites' thumbnail switch, and the
+viewer's action row, which becomes one row of ten instead of two rows of five
+and hands the second row back to the picture.
+
+**The grid opens on four columns rather than two,** and can be set as high as
+eight. Two columns of a nine-inch screen is two postcards and a scroll for the
+third — the same picture count as a phone, on twice the glass. Like the rest of
+the grid settings this is per device, so a phone and a tablet signed in to the
+same server each keep their own.
+
+**Upright, it is a tablet but not a wide one.** A 9.7-inch screen in portrait is
+768 points across, and a form beside a picture there is 340 points each — which
+is narrower than the phone the form was drawn for. So the second pane is only
+for the wider layout, at 900 points and up, and portrait keeps the rail, the
+panels and the proportions with a single column. In practice that means the
+9.7-inch tablet has one layout upright and the other on its side, which is the
+distinction already in your hands.
 
 ## In the gallery
 
@@ -1889,14 +1967,23 @@ against a real ComfyUI.
 
 ```bash
 npm test           # unit + server integration tests (Vitest)
-npm run test:e2e   # mobile browser tests (Playwright, iPhone viewport)
+npm run test:e2e   # browser tests (Playwright, iPhone and iPad viewports)
 npm run typecheck
 npm run build
 ```
 
-`npm run test:e2e` needs `npm run build` first. If your environment ships a
-pre-installed browser that doesn't match Playwright's expected build, point at
-it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
+`npm run test:e2e` needs `npm run build` first — it serves the production bundle
+from the real server, so a stale `dist/` means you are testing the last change
+rather than this one. If your environment ships a pre-installed browser that
+doesn't match Playwright's expected build, point at it:
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
+
+Two projects. **iPhone 14** runs everything about behaviour; **iPad** is 1024×768
+and runs only the tests named `@tablet`, which are the ones about the
+[tablet layout](#on-a-tablet). The split is deliberate: the rest of the suite is
+about what the app does rather than how it is arranged, and running four hundred
+assertions twice to prove a button still exists buys nothing.
+Use `--project=iPad` to run just those.
 
 ### Layout
 
@@ -1919,6 +2006,9 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 | `server/src/taste.ts` | The notes about what you like, sealed and unsealed with the same key |
 | `server/src/images/` | A dependency-free PNG decoder/resizer, and the thumbnail cache the gallery is served from |
 | `server/src/mock/` | The mock ComfyUI — and a scriptable stand-in for `llama-server` — used for development and tests |
+| `web/src/state/layout.ts` | Where a tablet begins, for the layout decisions CSS cannot make — the `tablet:` and `wide:` variants in `index.css` are the same two queries |
+| `web/src/components/SideRail.tsx` | The tablet's navigation, and the four modules a phone hides behind a menu |
+| `web/src/components/GenerateWorkbench.tsx` | The render, beside the form that made it |
 | `web/` | React + Vite PWA |
 | `e2e/` | Playwright tests |
 

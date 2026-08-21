@@ -988,7 +988,7 @@ export function StudyScreen() {
 
   if (openId === null || !study.data) {
     return (
-      <div className="safe-t px-4 pt-3 pb-6">
+      <div className="readable safe-t px-4 pt-3 pb-6">
         <StudyList onOpen={setOpenId} />
       </div>
     );
@@ -998,7 +998,7 @@ export function StudyScreen() {
   const phase = detail.status;
 
   return (
-    <div className="safe-t space-y-4 px-4 pt-3 pb-6">
+    <div className="readable safe-t space-y-4 px-4 pt-3 pb-6">
       <div className="flex items-center gap-2">
         <button
           type="button"

@@ -80,7 +80,15 @@ export function FavoritesScreen() {
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-surface px-3 py-2">
+      {/*
+        A switch belongs next to what it is called.
+
+        Full width is right above a phone's grid and wrong above a tablet's,
+        where it puts the words at one edge of the screen and the switch at the
+        other with three feet of empty bar between them. The grid underneath
+        still takes the whole width — it is pictures, and pictures want it.
+      */}
+      <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-surface px-3 py-2 tablet:max-w-md">
         <span className="text-sm">Show thumbnails</span>
         <Toggle
           checked={settings.favoriteThumbnails}

@@ -30,6 +30,9 @@ export default defineConfig({
   projects: [
     {
       name: 'iPhone 14',
+      // The tablet layout has a project of its own below; these assertions are
+      // about the phone one and would be checking a different tree here.
+      grepInvert: /@tablet/,
       // The iPhone viewport, touch behaviour, DPR and user agent, but driven by
       // Chromium — WebKit is not available in every environment, and none of
       // what these tests assert is engine-specific.
@@ -39,6 +42,24 @@ export default defineConfig({
         // Sandboxes and CI images often ship one pre-installed browser whose
         // build number doesn't match this Playwright version. Point at it
         // explicitly when told to; otherwise use Playwright's own download.
+        ...(CHROMIUM_PATH ? { launchOptions: { executablePath: CHROMIUM_PATH } } : {}),
+      },
+    },
+    /*
+     * The 9.7-inch tablet, on its side.
+     *
+     * 1024×768, which is both breakpoints at once — wide enough for the
+     * two-pane screens and therefore for everything the narrower tablet layout
+     * does as well. Only the tests tagged `@tablet` run here: the rest of the
+     * suite is about behaviour rather than layout, and running four hundred
+     * assertions twice to check that a button still exists buys nothing.
+     */
+    {
+      name: 'iPad',
+      grep: /@tablet/,
+      use: {
+        ...devices['iPad (gen 6) landscape'],
+        defaultBrowserType: 'chromium',
         ...(CHROMIUM_PATH ? { launchOptions: { executablePath: CHROMIUM_PATH } } : {}),
       },
     },

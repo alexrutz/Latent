@@ -147,6 +147,14 @@ interface SheetProps {
  * Editing a number in a cramped inline field is the worst part of using a
  * desktop UI on a phone; raising a sheet puts the control under the thumb and
  * gives it room to be a real slider or a real list.
+ *
+ * On a tablet the same content is a panel in the middle of the screen instead.
+ * A sheet is a shape for a phone: it comes up from the bottom edge because that
+ * is where the hand is, and it spans the full width because there is no width
+ * to spare. Neither applies to a nine-inch screen, where the same sheet is a
+ * band of controls a foot wide with two inches of them in the middle, hanging
+ * off an edge nobody is holding. The rules inside are untouched — only where
+ * the box is, and how wide it is allowed to get.
  */
 export function Sheet({
   open,
@@ -191,7 +199,7 @@ export function Sheet({
      * full-screen layers of their own. A sheet is only ever open because
      * something asked for it, so it is always the thing on top.
      */
-    <div className="fixed inset-0 z-70 flex flex-col justify-end">
+    <div className="fixed inset-0 z-70 flex flex-col justify-end tablet:items-center tablet:justify-center tablet:p-6">
       <div
         className="animate-fade absolute inset-0 bg-black/60"
         onClick={onClose}
@@ -203,7 +211,7 @@ export function Sheet({
         aria-modal="true"
         aria-label={typeof title === 'string' ? title : 'Options'}
         className={cn(
-          'animate-rise safe-b relative flex flex-col rounded-t-[var(--radius-sheet)]',
+          'animate-rise sheet-safe-b relative flex flex-col rounded-t-[var(--radius-sheet)]',
           'border-t border-line bg-surface',
           /*
            * `svh`, not `dvh`.
@@ -216,10 +224,28 @@ export function Sheet({
            * true.
            */
           full ? 'h-[92svh]' : 'max-h-[85svh]',
+          /*
+           * The same box, in the middle, with a width it cannot exceed. `full`
+           * still means "as much as you can have" — it is what Advanced and the
+           * notes use, and they are lists that genuinely fill a screen — but
+           * even that stops short of the edges here, because a dialog touching
+           * all four sides of a tablet is not a dialog any more.
+           */
+          'tablet:w-full tablet:rounded-[var(--radius-sheet)] tablet:border',
+          full ? 'tablet:h-[85svh] tablet:max-w-2xl' : 'tablet:max-h-[80svh] tablet:max-w-lg',
         )}
       >
+        {/*
+          The grab handle is a phone thing.
+
+          It says "this came up from the bottom edge and can be pushed back
+          down", which is true of a sheet and a small lie in the middle of a
+          tablet screen. What replaces it there is the panel's own rounding on
+          all four corners and the Done button, which was always the real way
+          out. The row itself stays, so the title keeps the same air above it.
+        */}
         <div className="flex shrink-0 items-center justify-between px-4 pt-2 pb-1">
-          <div className="mx-auto h-1 w-10 rounded-full bg-surface-3" />
+          <div className="mx-auto h-1 w-10 rounded-full bg-surface-3 tablet:invisible" />
         </div>
         {title && (
           <div className="flex shrink-0 items-center justify-between gap-3 px-4 pb-2">
