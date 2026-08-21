@@ -1,6 +1,7 @@
 import {
   useInfiniteQuery,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
   type QueryClient,
@@ -9,6 +10,7 @@ import { useEffect, useMemo } from 'react';
 
 import type {
   AppSettings,
+  GenerationRecord,
   ComfyImageRef,
   FavoriteSort,
   FieldOverrides,
@@ -248,6 +250,28 @@ export function useGeneration(id: string | null) {
       const status = query.state.data?.status;
       return status === 'queued' || status === 'running' ? 2_000 : false;
     },
+  });
+}
+
+/**
+ * Several runs at once, for a screen that shows a column of them.
+ *
+ * The chat's viewer swipes across every picture in the conversation rather than
+ * across one run's batch — they are the last things generated, in the order
+ * they were made, which is exactly the list you want to move through. That
+ * needs all their records at once, and one hook per message is not something a
+ * list can do.
+ */
+export function useGenerations(ids: string[]) {
+  return useQueries({
+    queries: ids.map((id) => ({
+      queryKey: ['generation', id] as const,
+      queryFn: () => api.generation(id),
+      refetchInterval: (query: { state: { data?: GenerationRecord } }) => {
+        const status = query.state.data?.status;
+        return status === 'queued' || status === 'running' ? 2_000 : false;
+      },
+    })),
   });
 }
 

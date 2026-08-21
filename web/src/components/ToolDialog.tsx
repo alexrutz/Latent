@@ -1,13 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { findFieldByRole } from '@latent/shared';
 import type { AppSettings, ChatToolCall, ProposedBlock } from '@latent/shared';
 
-import { api } from '../api/client';
 import { useVisibleWorkflows, useWorkflow } from '../api/queries';
 import { PromptDiff, promptChanged } from './PromptDiff';
 import { useFormDrafts } from '../state/formDraft';
+import { queuePrompt } from '../lib/queuePrompt';
 import { Button, cn, ErrorNote, Spinner } from './ui';
 
 /**
@@ -56,7 +56,6 @@ export function ToolDialog({
   revisit,
   onMinimize,
   previousPrompt = '',
-  autoAccept = false,
   workflowId,
 }: {
   call: ChatToolCall;
@@ -82,7 +81,6 @@ export function ToolDialog({
    * than through a copy of its logic, so "generate straight away" and "show me
    * first" cannot drift apart in which workflow or which values they use.
    */
-  autoAccept?: boolean;
   /** Forces which workflow an accepted prompt is queued with. */
   workflowId?: string;
 }) {
@@ -133,7 +131,6 @@ export function ToolDialog({
             onResolve={onResolve}
             revisit={revisit}
             previousPrompt={previousPrompt}
-            autoAccept={autoAccept}
             workflowId={workflowId}
           />
         ) : call.tool === 'ask_user' ? (
@@ -192,10 +189,16 @@ function AskUserBody({
         {call.reason !== '' && <p className="mt-0.5 text-xs text-muted">{call.reason}</p>}
       </div>
 
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 py-3">
-        {/* Several at once, because that is how the decisions arrive: two
-            related choices are one moment's thinking and two taps, and asking
-            them a turn apart is two waits for a local model to reply. */}
+      {/*
+       * Several at once, because that is how the decisions arrive: two related
+       * choices are one moment's thinking and two taps, and asking them a turn
+       * apart is two waits for a local model to reply.
+       *
+       * Which only works if they are on screen together. Divided by hairlines
+       * rather than by whitespace, so the rows can sit close without running
+       * into each other — four questions used to be a scroll on a phone.
+       */}
+      <div className="min-h-0 flex-1 divide-y divide-line overflow-y-auto px-3">
         {call.questions.map((entry, index) => (
           <QuestionRow
             key={`${entry.question}-${index}`}
@@ -239,7 +242,20 @@ function AskUserBody({
   );
 }
 
-/** One question: its ready answers, and a box for the one it did not think of. */
+/**
+ * One question: its ready answers, and a box for the one it did not think of.
+ *
+ * The answers wrap rather than being cut off. They used to be one line each
+ * with an ellipsis, which is fine for "Portrait" and useless for the answers
+ * worth reading — a model that has thought about the question writes "warm,
+ * low sun through haze" and the button showed "warm, low sun…". A tall button
+ * is a readable one, and there are rarely more than four.
+ *
+ * The typed answer is folded behind the last chip. It is the least-used part of
+ * the row by a distance, and left open it cost every question a field's worth
+ * of height — which is the difference between four questions on a phone screen
+ * and seven.
+ */
 function QuestionRow({
   entry,
   answer,
@@ -251,14 +267,15 @@ function QuestionRow({
   disabled: boolean;
   onAnswer: (text: string) => void;
 }) {
-  const [own, setOwn] = useState('');
   const chosen = entry.options.includes(answer);
+  const [typing, setTyping] = useState(false);
+  const own = chosen ? '' : answer;
 
   return (
-    <div className="space-y-1.5">
-      <p className="text-sm leading-relaxed">{entry.question}</p>
+    <div className="space-y-1.5 py-2.5">
+      <p className="text-sm leading-snug">{entry.question}</p>
 
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap items-stretch gap-1.5">
         {entry.options.map((option) => (
           <button
             key={option}
@@ -266,30 +283,47 @@ function QuestionRow({
             disabled={disabled}
             aria-pressed={answer === option}
             onClick={() => {
-              setOwn('');
+              setTyping(false);
               onAnswer(answer === option ? '' : option);
             }}
             className={cn(
-              'max-w-full truncate rounded-xl px-3 py-2 text-left text-sm disabled:opacity-50',
+              'max-w-full whitespace-normal break-words rounded-xl px-2.5 py-1.5 text-left text-[0.8125rem] leading-snug disabled:opacity-50',
               answer === option ? 'bg-accent text-white' : 'bg-surface-2 active:bg-surface-3',
             )}
           >
             {option}
           </button>
         ))}
+
+        {/* One more chip, in the same row: the answer it did not think of is
+            often the real one, but it is not worth a field of its own until
+            somebody reaches for it. Once opened it stays — closing a field
+            because you looked away from it is how a half-typed answer is
+            lost — and tapping a ready answer instead is what folds it back. */}
+        {!typing && own === '' && (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => setTyping(true)}
+            aria-label={`Say it yourself: ${entry.question}`}
+            className="rounded-xl border border-dashed border-line px-2.5 py-1.5 text-[0.8125rem] leading-snug text-muted active:bg-surface-2 disabled:opacity-50"
+          >
+            Say it yourself…
+          </button>
+        )}
       </div>
 
-      <input
-        value={chosen ? '' : (own || answer)}
-        onChange={(event) => {
-          setOwn(event.target.value);
-          onAnswer(event.target.value);
-        }}
-        disabled={disabled}
-        aria-label={`Your own answer to: ${entry.question}`}
-        placeholder="Or say it yourself…"
-        className="w-full rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-xs focus:border-accent focus:outline-none"
-      />
+      {(typing || own !== '') && (
+        <input
+          value={own}
+          autoFocus={typing}
+          onChange={(event) => onAnswer(event.target.value)}
+          disabled={disabled}
+          aria-label={`Your own answer to: ${entry.question}`}
+          placeholder="Or say it yourself…"
+          className="w-full rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-xs focus:border-accent focus:outline-none"
+        />
+      )}
     </div>
   );
 }
@@ -309,7 +343,6 @@ function BuildPromptBody({
   onResolve,
   revisit,
   previousPrompt,
-  autoAccept,
   workflowId: forced,
 }: {
   call: Extract<ChatToolCall, { tool: 'build_prompt' | 'revise_prompt' }>;
@@ -317,7 +350,6 @@ function BuildPromptBody({
   onResolve: (decision: ToolDecision) => void | Promise<void>;
   revisit?: RevisitActions;
   previousPrompt: string;
-  autoAccept: boolean;
   /**
    * The workflow this one must use, whatever the settings say.
    *
@@ -389,32 +421,14 @@ function BuildPromptBody({
     setError(null);
 
     try {
-      const values = { ...draft?.values };
-      for (const field of detail.schema.fields) {
-        if (field.hidden) continue;
-        if (field.role === 'prompt') values[field.id] = prompt;
-        if (field.role === 'negative_prompt' && call.negativePrompt) {
-          values[field.id] = call.negativePrompt;
-        }
-      }
-
-      const lockedSeeds = draft?.lockedSeeds ?? [];
-      const queued = await api.generate({
-        workflowId: detail.id,
-        values,
-        randomizeSeeds: detail.schema.fields.some(
-          (field) => field.role === 'seed' && !lockedSeeds.includes(field.id),
-        ),
-        lockedSeedFields: lockedSeeds,
-        batchCount: draft?.batchCount ?? 1,
-      });
-
-      // Only when the form is what ran. Writing the chat's own values into the
-      // form would change what Generate does next, which is not what was asked.
-      if (!ownSettings) useFormDrafts.getState().patch(detail.id, { values });
-
-      // The first of the batch. The transcript shows the whole run from it.
-      const generationId = queued.generationIds[0] ?? null;
+      // The same function the app uses when it accepts a prompt itself, so the
+      // two cannot drift into queueing the same prompt differently.
+      const generationId = await queuePrompt(
+        { detail, draft, ownSettings },
+        // As edited, not as proposed.
+        prompt,
+        call.negativePrompt,
+      );
 
       if (revisit) {
         // Decided long ago; there is no decision left to record, only a run.
@@ -436,36 +450,7 @@ function BuildPromptBody({
     }
   };
 
-  /*
-   * Queue it as soon as there is something to queue with.
-   *
-   * `detail` arrives a tick after the dialog mounts, so this waits for it
-   * rather than firing on mount and finding no workflow. The ref is what keeps
-   * a re-render from queueing the same prompt twice.
-   */
-  const fired = useRef(false);
-  useEffect(() => {
-    if (!autoAccept || fired.current || !detail || busy) return;
-    fired.current = true;
-    void generate();
-  }, [autoAccept, detail, busy, generate]);
-
   const imageField = detail ? findFieldByRole(detail.schema, 'image_input') : undefined;
-
-  /*
-   * Nothing to read while it queues itself.
-   *
-   * Showing the whole dialog for the half-second before it closes would be a
-   * flash of buttons nobody is meant to press.
-   */
-  if (autoAccept && error === null) {
-    return (
-      <div className="flex items-center gap-3 px-4 py-5">
-        <Spinner className="size-4 text-muted" />
-        <p className="min-w-0 flex-1 truncate text-sm text-muted">Generating that prompt…</p>
-      </div>
-    );
-  }
 
   return (
     <>

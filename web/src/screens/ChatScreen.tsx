@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { CHAT_IMAGE_SIZES } from '@latent/shared';
 import type { ChatMessage, ChatToolCall } from '@latent/shared';
 
 import { api } from '../api/client';
-import { useGeneration, useSettings, useUpdateSettings } from '../api/queries';
-import { Still } from '../components/ImageViewer';
+import { useGeneration, useGenerations, useSettings, useUpdateSettings } from '../api/queries';
+import { Still, type ViewerEntry } from '../components/ImageViewer';
 import { RunProgress } from '../components/LiveBar';
 import { ViewerWithActions } from '../components/ViewerWithActions';
 import { Markdown } from '../components/Markdown';
@@ -76,6 +76,11 @@ function wanderCallBefore(
   return null;
 }
 
+/** What identifies one picture across the conversation's whole list. */
+function pictureKey(recordId: string, image: { subfolder: string; filename: string }): string {
+  return `${recordId}/${image.subfolder}/${image.filename}`;
+}
+
 function promptBefore(messages: ChatMessage[], id: string): string {
   const at = messages.findIndex((message) => message.id === id);
   if (at < 0) return '';
@@ -116,7 +121,6 @@ export function ChatScreen() {
   const error = useChatStore((state) => state.error);
   const asking = useChatStore((state) => state.asking);
   const callMinimized = useChatStore((state) => state.callMinimized);
-  const autoAccepting = useChatStore((state) => state.autoAccepting);
   const autoRounds = useChatStore((state) => state.autoRounds);
   const autoHalted = useChatStore((state) => state.autoHalted);
   const autoNote = useChatStore((state) => state.autoNote);
@@ -126,6 +130,36 @@ export function ChatScreen() {
   const store = useChatStore.getState;
 
   const autonomous = settings.data?.chat.autonomous;
+
+  /*
+   * Every picture in the conversation, in the order it was made.
+   *
+   * The viewer opens over this rather than over the one run you tapped: these
+   * are the last things generated, one after another, which is exactly the list
+   * a swipe should move through — and it is what the gallery does with the
+   * gallery. A wandering run makes that the whole point, since it *is* a column
+   * of one picture after another.
+   */
+  const runIds = useMemo(
+    () =>
+      (chat?.messages ?? [])
+        .map((message) => message.generationId)
+        .filter((id): id is string => typeof id === 'string' && id !== ''),
+    [chat?.messages],
+  );
+  const runs = useGenerations(runIds);
+  const viewerEntries = useMemo<ViewerEntry[]>(
+    () =>
+      runs.flatMap(({ data: record }) =>
+        record ? record.images.map((image) => ({ record, image })) : [],
+      ),
+    [runs],
+  );
+  const [viewing, setViewing] = useState<string | null>(null);
+  const [grid, updateGrid] = useGridSettings();
+  const viewerIndex = viewing
+    ? viewerEntries.findIndex((entry) => pictureKey(entry.record.id, entry.image) === viewing)
+    : -1;
 
   /*
    * The two settings the store acts on, kept in step with the server's copy.
@@ -417,6 +451,7 @@ export function ChatScreen() {
               onRevisit={(call) => setRevisiting({ messageId: message.id, call })}
               wanderCall={wanderCallBefore(chat.messages, message.id)}
               onOpenPrompt={(found) => setRevisiting(found)}
+              onOpenPicture={setViewing}
             />
           ))}
 
@@ -716,15 +751,6 @@ export function ChatScreen() {
           settings={settings.data ?? null}
           previousPrompt={previousPrompt}
           /*
-            Decided when the call arrived, not here.
-
-            Both reasons to accept a proposal for you — the ✦ button and an
-            autonomous run — are answers to "does this one get accepted", and
-            the store is where that question is settled, because the same answer
-            also decides whether the dialog is folded away.
-          */
-          autoAccept={autoAccepting}
-          /*
             A wandering run has a workflow of its own — often the fast one,
             since it is going to run all evening.
           */
@@ -775,6 +801,29 @@ export function ChatScreen() {
         />
       )}
 
+      {/*
+        The gallery's viewer, over the whole conversation.
+
+        A picture is a picture whichever list you came in by, and here the list
+        is the conversation: these are the last things generated, one after
+        another, so a swipe moves to the one before it rather than being trapped
+        in the batch you happened to tap. That matters most while wandering,
+        where the conversation *is* a column of pictures.
+      */}
+      {viewerIndex >= 0 && (
+        <ViewerWithActions
+          entries={viewerEntries}
+          index={viewerIndex}
+          grid={grid}
+          onGridChange={updateGrid}
+          onIndexChange={(next) => {
+            const entry = viewerEntries[next];
+            if (entry) setViewing(pictureKey(entry.record.id, entry.image));
+          }}
+          onClose={() => setViewing(null)}
+        />
+      )}
+
       <TasteSheet open={showTaste} onClose={() => setShowTaste(false)} />
 
       <Sheet open={showHistory} onClose={() => setShowHistory(false)} title="Saved chats">
@@ -799,6 +848,7 @@ function MessageRow({
   onRevisit,
   wanderCall,
   onOpenPrompt,
+  onOpenPicture,
 }: {
   message: ChatMessage;
   pictureWidth: number;
@@ -809,6 +859,8 @@ function MessageRow({
   /** Set when this run came out of a wandering round; see `wanderCallBefore`. */
   wanderCall: { messageId: string; call: ChatToolCall } | null;
   onOpenPrompt: (found: { messageId: string; call: ChatToolCall }) => void;
+  /** Opens the viewer over every picture in the conversation, at this one. */
+  onOpenPicture: (key: string) => void;
 }) {
   if (message.role === 'tool' || message.role === 'note') {
     return (
@@ -829,12 +881,12 @@ function MessageRow({
             prompt={message.prompt ?? ''}
             previousPrompt={previousPrompt}
             showDiff={showDiff}
+            onOpen={onOpenPicture}
             /*
-              In a wandering run the picture *is* the message: there is no
-              commentary around it and the prompt was never read, so "what was
-              that one?" is the only question it raises — and the answer is the
-              dialog that shows the prompt and the settings, and runs it again.
-              The viewer is a corner away rather than a tap away.
+              In a wandering run the prompt was never read, so "what was that
+              one?" is the question the picture raises — and the answer is a
+              corner button, because tapping the picture itself opens the
+              viewer, here as everywhere else in the app.
             */
             onOpenPrompt={wanderCall ? () => onOpenPrompt(wanderCall) : undefined}
           />
@@ -939,6 +991,7 @@ function GeneratedRun({
   prompt,
   previousPrompt,
   showDiff,
+  onOpen,
   onOpenPrompt,
 }: {
   id: string;
@@ -946,12 +999,12 @@ function GeneratedRun({
   prompt: string;
   previousPrompt: string;
   showDiff: boolean;
-  /** When set, tapping a picture opens what made it rather than the viewer. */
+  /** Open the conversation's viewer at this picture. */
+  onOpen: (key: string) => void;
+  /** For a wandering round: the corner button that shows what made it. */
   onOpenPrompt?: () => void;
 }) {
   const generation = useGeneration(id);
-  const [grid, updateGrid] = useGridSettings();
-  const [viewing, setViewing] = useState<number | null>(null);
   const store = useChatStore.getState;
 
   const record = generation.data;
@@ -991,29 +1044,27 @@ function GeneratedRun({
         {images.map((image, index) => (
           <div key={image.id ?? `${image.filename}-${index}`} className="relative" style={style}>
             {/*
-              The corner that still opens it properly.
+              What made it, in the corner.
 
-              Only where the tap has been taken by something else — a wandering
-              picture opens what made it — because a badge on every picture in
-              every conversation would be a permanent apology for an ambiguity
-              that is not there.
+              Only on a wandering round, where the prompt is not written above
+              the picture — everywhere else the row with the prompt is right
+              there, and a badge on every picture in every conversation would be
+              a permanent apology for an ambiguity that is not there.
             */}
             {onOpenPrompt && (
               <button
                 type="button"
-                onClick={() => setViewing(index)}
-                aria-label={`Look at picture ${index + 1}`}
+                onClick={onOpenPrompt}
+                aria-label={`What made picture ${index + 1}`}
                 className="absolute top-1.5 right-1.5 z-10 grid size-8 place-items-center rounded-lg bg-black/60 text-sm text-white backdrop-blur active:bg-black/80"
               >
-                ⤢
+                ✦
               </button>
             )}
             <button
               type="button"
-              onClick={() => (onOpenPrompt ? onOpenPrompt() : setViewing(index))}
-              aria-label={
-                onOpenPrompt ? `What made picture ${index + 1}` : `Open picture ${index + 1}`
-              }
+              onClick={() => onOpen(pictureKey(id, image))}
+              aria-label={`Open picture ${index + 1}`}
               className="block w-full overflow-hidden rounded-xl bg-surface-2 active:opacity-80"
             >
             {/* `contain` so each picture keeps its own shape: a portrait and a
@@ -1045,25 +1096,6 @@ function GeneratedRun({
         </div>
       )}
 
-      {/*
-        The gallery's viewer, not a stripped one.
-
-        A picture is a picture whichever list you came in by — and this is the
-        one you are most likely to want to rate, keep or favourite the moment
-        you see it, because you have just asked for it. Opening a cut-down
-        viewer here meant going to the gallery to do anything with the result of
-        the conversation you were having.
-      */}
-      {viewing !== null && (
-        <ViewerWithActions
-          entries={images.map((image) => ({ record, image }))}
-          index={viewing}
-          grid={grid}
-          onGridChange={updateGrid}
-          onIndexChange={setViewing}
-          onClose={() => setViewing(null)}
-        />
-      )}
     </>
   );
 }

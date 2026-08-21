@@ -11,6 +11,7 @@ import type {
 } from '@latent/shared';
 
 import { ApiError, api } from '../api/client';
+import { queuePrompt, resolveTarget } from '../lib/queuePrompt';
 import { useLiveStore } from './live';
 
 /**
@@ -118,15 +119,6 @@ interface ChatStore {
   autoRounds: number;
 
   /**
-   * The proposal on screen is one the app is accepting itself.
-   *
-   * Decided when the call arrives rather than by the dialog, because the same
-   * decision also settles whether it is folded away — a proposal about to be
-   * accepted must not be — and two places deciding that disagreed.
-   */
-  autoAccepting: boolean;
-
-  /**
    * The autonomous run has been stopped, until you say something next.
    *
    * Set by the Stop button and by any decision you make yourself: taking one
@@ -160,8 +152,6 @@ interface ChatStore {
    */
   forceAccept: boolean;
   startWander: () => Promise<void>;
-  /** One round. Called by the loop rather than by the screen. */
-  wanderOnce: () => Promise<void>;
   stopWander: () => void;
 
   /**
@@ -234,6 +224,11 @@ const waiting = new Map<string, (() => void)[]>();
 
 /** How long to wait for a picture to appear before carrying on without it. */
 const SHOWN_CEILING_MS = 20_000;
+
+/** How many rounds in a row a wandering run may make nothing before giving up. */
+const BARREN_WANDER_ROUNDS = 3;
+/** And how long to leave it before trying again, so a failing run is not a spin. */
+const BARREN_WANDER_PAUSE_MS = 2_000;
 
 /**
  * Wait until the picture is on screen, or until waiting stops being sensible.
@@ -377,6 +372,144 @@ export const useChatStore = create<ChatStore>((set, get) => {
   };
 
   /**
+   * Record a decision, wait out any render it started, and carry on.
+   *
+   * Split out of `resolveTool` because a decision does not always come from a
+   * dialog: the app makes some of them itself — the ✦ button, an autonomous
+   * round, a wandering one — and those used to be made *by* the dialog, in a
+   * component. Switching to another tab unmounted the screen, the dialog never
+   * mounted, and a wandering run stopped without a word. Everything that
+   * decides now goes through here, and nothing about it needs a screen.
+   */
+  const settle = async (
+    chatId: string,
+    messageId: string,
+    body: Omit<Parameters<typeof api.resolveTool>[1], 'messageId'>,
+  ): Promise<void> => {
+    try {
+      await api.resolveTool(chatId, { messageId, ...body });
+    } catch (cause) {
+      set({ error: cause instanceof Error ? cause.message : 'Could not record that' });
+      return;
+    }
+
+    /*
+     * A decision that started a render is answered when the render is over.
+     *
+     * The model's turn after an accepted prompt is *about* the picture — and
+     * replying while it is still sampling meant talking about something nobody
+     * had seen, including itself.
+     */
+    const startedRun = body.generationId;
+    if (typeof startedRun === 'string' && startedRun !== '') {
+      set({ waitingFor: startedRun });
+      /*
+       * Re-read now, not after the render: the message carrying the run's id is
+       * what puts the progress bar on screen, and the whole wait is the part
+       * worth watching.
+       */
+      await get().refresh();
+      if (get().chat?.id !== chatId) return;
+      await waitForGeneration(startedRun, () => get().chat?.id === chatId);
+      if (get().chat?.id !== chatId) return;
+
+      await get().refresh();
+      /*
+       * The picture goes on screen before the model is told anything — except
+       * where nothing is going to be told.
+       *
+       * Waiting for a render to be *drawn* is what keeps a judgement of a
+       * picture from arriving before the picture. A wandering round makes no
+       * judgement, and waiting for a paint that cannot happen while the screen
+       * is unmounted would stall the loop for the twenty seconds that wait
+       * takes to give up — every round, every time you look at something else.
+       */
+      if (!get().wandering) await waitForPicture(startedRun);
+      if (get().chat?.id !== chatId) return;
+      set({ waitingFor: null });
+    }
+
+    /*
+     * A wandering round says nothing about the picture it just made.
+     *
+     * The follow-up turn is where the model comments on a render, and in this
+     * mode there is nothing to comment to: the next thing wanted is the next
+     * picture. So the round simply ends — counted, so the run above knows it
+     * produced something — and `startWander` asks for the next one. Asking for
+     * it from here is what used to happen, and it could not work: this code
+     * runs inside the round's own stream, and a round refuses to start while
+     * another is open. The loop hit that guard, returned, and the run stopped
+     * after exactly one picture.
+     */
+    if (get().wandering && body.decision === 'accepted' && body.generationId) {
+      set((state) => ({ wanderRounds: state.wanderRounds + 1 }));
+      return;
+    }
+
+    // After a decision the model usually has something short to say about it.
+    await stream(
+      () =>
+        fetch(`/api/chat/conversations/${chatId}/continue`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          signal: inFlight?.signal,
+        }),
+      chatId,
+    );
+  };
+
+  /**
+   * Queue a prompt the app decided to accept, with no dialog in the way.
+   *
+   * The dialog is where *you* accept one; this is the same work for the calls
+   * nobody is going to look at. Deliberately not "mount the dialog and press
+   * its button": that is what put the loop inside a component.
+   */
+  const acceptPrompt = async (
+    chatId: string,
+    messageId: string,
+    call: Extract<ChatToolCall, { tool: 'build_prompt' | 'revise_prompt' }>,
+  ): Promise<void> => {
+    const settings = await api.settings().catch(() => null);
+    const forced =
+      call.tool === 'build_prompt' && call.fromWander
+        ? settings?.chat.wander.workflowId || undefined
+        : undefined;
+
+    let generationId: string | null = null;
+    try {
+      const target = await resolveTarget(settings, forced);
+      if (!target) {
+        throw new Error('No workflow is switched on, so there is nothing to generate with');
+      }
+      generationId = await queuePrompt(target, call.prompt, call.negativePrompt);
+    } catch (cause) {
+      /*
+       * A failure here stops the loop rather than spinning it.
+       *
+       * Whatever went wrong — no workflow, ComfyUI unreachable — will go wrong
+       * again next round, and an endless run of failures is worse than a
+       * stopped one with a message.
+       */
+      set({
+        error: cause instanceof Error ? cause.message : 'Could not queue that',
+        wandering: false,
+        autoHalted: true,
+      });
+      return;
+    }
+
+    await settle(chatId, messageId, {
+      decision: 'accepted',
+      note:
+        `The user accepted the ${call.tool === 'revise_prompt' ? 'revised ' : ''}prompt and ` +
+        `queued it: "${call.prompt.slice(0, 200)}"`,
+      ...(generationId ? { generationId } : {}),
+      prompt: call.prompt,
+    });
+  };
+
+  /**
    * Read one server-sent stream to the end, updating as it goes.
    *
    * Every write checks that the conversation it belongs to is still the one on
@@ -477,16 +610,34 @@ export const useChatStore = create<ChatStore>((set, get) => {
      */
     const auto = decideAutoAccept(call.call);
 
+    /*
+     * An accepted proposal never becomes a dialog.
+     *
+     * It used to: the call was put on screen with a flag telling the dialog to
+     * press its own button, which flickered for the moment it took and — worse
+     * — made the queueing depend on a component being mounted. Tab away and the
+     * dialog was never rendered, so nothing was queued, so a wandering run
+     * stopped. The work happens here now, and the transcript's progress bar is
+     * the feedback.
+     */
+    if (auto && (call.call.tool === 'build_prompt' || call.call.tool === 'revise_prompt')) {
+      const accepted = call.call;
+      set((state) => ({
+        chat: refreshed,
+        autoNote: null,
+        askedForPrompt: false,
+        autoRounds: state.mode.autonomous.enabled ? state.autoRounds + 1 : state.autoRounds,
+      }));
+      await acceptPrompt(chatId, call.messageId, accepted);
+      return;
+    }
+
     set((state) => ({
       chat: refreshed,
       pendingCall: call,
-      // A proposal about to be accepted is not folded away: the dialog is what
-      // accepts it, and one that never mounts never does.
-      callMinimized: call.call.tool === 'revise_prompt' && !auto,
-      autoAccepting: auto,
-      autoRounds: auto && state.mode.autonomous.enabled ? state.autoRounds + 1 : state.autoRounds,
-      ...(auto ? { autoNote: null } : {}),
-      ...(!auto && state.mode.autonomous.enabled && !state.autoHalted
+      // A rewrite waits folded away; see the comment above.
+      callMinimized: call.call.tool === 'revise_prompt',
+      ...(state.mode.autonomous.enabled && !state.autoHalted
         ? { autoNote: stoppedBecause(call.call, state) }
         : {}),
     }));
@@ -540,7 +691,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
     callMinimized: false,
     mode: { autonomous: { enabled: false, maxRounds: 0 }, promptButton: 'dialog' },
     autoRounds: 0,
-    autoAccepting: false,
     autoHalted: false,
     autoNote: null,
     wandering: false,
@@ -561,43 +711,73 @@ export const useChatStore = create<ChatStore>((set, get) => {
      * It means "not this one, not yet", and an app that then accepted it two
      * seconds later would be ignoring the clearest instruction available.
      */
-    minimizeCall: () => set({ callMinimized: true, autoAccepting: false }),
+    minimizeCall: () => set({ callMinimized: true }),
     restoreCall: () => set({ callMinimized: false }),
 
     haltAutonomous: () =>
-      set({ autoHalted: true, autoAccepting: false, autoNote: 'Stopped. Say something to go on.' }),
+      set({ autoHalted: true, autoNote: 'Stopped. Say something to go on.' }),
 
     /**
      * Start wandering, and keep going until something stops it.
      *
-     * One round is: ask the server for a prompt built from a few notes drawn at
-     * random, let the dialog queue it, wait for the picture, and go again. The
-     * loop is event-driven rather than a `while`, because the middle of it
-     * happens in the tool dialog — the one place that knows how to queue a
-     * render the way the Generate screen would. `resolveTool` starts the next
-     * round when this one has produced its picture.
+     * One round is one call: ask the server for a prompt built from a few notes
+     * drawn at random, queue it, wait for the picture. All of that happens
+     * inside the round's stream — `consume` accepts the proposal and `settle`
+     * waits out the render — so when the request resolves, the round is over
+     * and the next one can be asked for.
+     *
+     * A plain `while` here, deliberately. It used to be event-driven, with the
+     * end of a round asking for the next one, and that meant the loop lived
+     * partly in a component and partly inside its own stream: neither could
+     * start a round, because a round refuses to start while another is open.
+     * Nothing in this loop touches the screen, which is the point — it keeps
+     * turning while you are looking at the gallery, or at another app.
      */
     startWander: async () => {
       const { chat, wandering, streaming } = get();
       if (!chat || wandering || streaming || inFlight) return;
+      const chatId = chat.id;
 
       set({ wandering: true, wanderRounds: 0, error: null, autoNote: null });
-      await get().wanderOnce();
-    },
 
-    wanderOnce: async () => {
-      const { chat, wandering } = get();
-      if (!chat || !wandering || inFlight) return;
+      /*
+       * A round that made nothing is worth retrying, but not for ever.
+       *
+       * The usual cause is a reply with no proposal in it, or a stream the
+       * browser cut off while the page was suspended — both worth another go.
+       * A run that cannot make a picture at all is not, and without a ceiling
+       * it would ask again as fast as the server can say no.
+       */
+      let barren = 0;
+      while (get().wandering && get().chat?.id === chatId) {
+        const before = get().wanderRounds;
 
-      await stream(
-        () =>
-          fetch(`/api/chat/conversations/${chat.id}/wander`, {
-            method: 'POST',
-            credentials: 'same-origin',
-            signal: inFlight?.signal,
-          }),
-        chat.id,
-      );
+        await stream(
+          () =>
+            fetch(`/api/chat/conversations/${chatId}/wander`, {
+              method: 'POST',
+              credentials: 'same-origin',
+              signal: inFlight?.signal,
+            }),
+          chatId,
+        );
+
+        if (!get().wandering || get().chat?.id !== chatId) return;
+        if (get().wanderRounds > before) {
+          barren = 0;
+          continue;
+        }
+
+        barren += 1;
+        if (barren >= BARREN_WANDER_ROUNDS) {
+          set({
+            wandering: false,
+            error: get().error ?? 'Wandering stopped: the last few rounds made no picture.',
+          });
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, BARREN_WANDER_PAUSE_MS));
+      }
     },
 
     /*
@@ -611,7 +791,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
       if (!get().wandering) return;
       inFlight?.abort();
       inFlight = null;
-      set({ wandering: false, streaming: null, autoAccepting: false });
+      set({ wandering: false, streaming: null });
     },
 
     setDraft: (draft) => {
@@ -681,7 +861,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         chat: opened,
         autoRounds: 0,
         autoHalted: false,
-        autoAccepting: false,
         autoNote: null,
         wandering: false,
         wanderRounds: 0,
@@ -706,7 +885,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
         askedForPrompt: false,
         autoRounds: 0,
         autoHalted: false,
-        autoAccepting: false,
         autoNote: null,
         wandering: false,
         wanderRounds: 0,
@@ -824,7 +1002,7 @@ export const useChatStore = create<ChatStore>((set, get) => {
        * attempt from being the same prompt with two words moved.
        */
       if (options.fresh && pendingCall) {
-        set({ pendingCall: null, callMinimized: false, autoAccepting: false });
+        set({ pendingCall: null, callMinimized: false });
         try {
           await api.resolveTool(chat.id, {
             messageId: pendingCall.messageId,
@@ -883,7 +1061,6 @@ export const useChatStore = create<ChatStore>((set, get) => {
       set({
         streaming: null,
         autoHalted: true,
-        autoAccepting: false,
         wandering: false,
         ...(get().mode.autonomous.enabled ? { autoNote: 'Stopped. Say something to go on.' } : {}),
       });
@@ -891,99 +1068,26 @@ export const useChatStore = create<ChatStore>((set, get) => {
     },
 
     resolveTool: async (body) => {
-      const { chat, pendingCall, autoAccepting } = get();
+      const { chat, pendingCall } = get();
       if (!chat || !pendingCall) return;
 
+      /*
+       * Every decision that reaches here is one you made.
+       *
+       * The app's own go straight through `acceptPrompt`, so a dialog being
+       * answered means somebody answered it — and a mode whose whole content is
+       * "decide for me" has nothing left to do until you hand it back, which
+       * saying something does.
+       */
       set({
         pendingCall: null,
         askedForPrompt: false,
         callMinimized: false,
-        autoAccepting: false,
-        /*
-         * A decision you made yourself ends the autonomous run.
-         *
-         * Accepting or rejecting a proposal by hand is you deciding, and a mode
-         * whose whole content is "decide for me" has nothing left to do until
-         * you hand it back — which saying something does.
-         */
-        ...(autoAccepting
-          ? {}
-          : { autoHalted: true, autoNote: 'You took that one. Say something to go on.' }),
+        autoHalted: true,
+        autoNote: 'You took that one. Say something to go on.',
       });
-      try {
-        await api.resolveTool(chat.id, { messageId: pendingCall.messageId, ...body });
-      } catch (cause) {
-        set({ error: cause instanceof Error ? cause.message : 'Could not record that' });
-        return;
-      }
 
-      /*
-       * A decision that started a render is answered when the render is over.
-       *
-       * The model's turn after an accepted prompt is *about* the picture — and
-       * replying while it is still sampling meant talking about something
-       * nobody had seen, including itself. The wait lives here rather than on
-       * the screen because the screen is unmounted the moment you look at the
-       * gallery, which is exactly what you do while a picture renders.
-       */
-      const startedRun = body.generationId;
-      if (typeof startedRun === 'string' && startedRun !== '') {
-        set({ waitingFor: startedRun });
-        /*
-         * Re-read now, not after the render.
-         *
-         * The message carrying the run's id is what puts the progress bar on
-         * screen, and the conversation was only re-read once the picture was
-         * already there — so the bar existed for the one frame between the
-         * refresh and the picture replacing it. The whole wait, which is the
-         * part worth watching, showed nothing but a line of text.
-         */
-        await get().refresh();
-        if (get().chat?.id !== chat.id) return;
-        await waitForGeneration(startedRun, () => get().chat?.id === chat.id);
-        if (get().chat?.id !== chat.id) return;
-
-        /*
-         * The picture goes on screen before the model is told anything.
-         *
-         * The run being finished is not the same as the render being visible:
-         * the record has to be refetched and the image downloaded, and against
-         * a fast model the reply used to win that race — so the judgement of a
-         * picture arrived before the picture did. `waitingFor` stays set until
-         * it is actually there, which is also what keeps the "waiting for the
-         * picture" line honest.
-         */
-        await get().refresh();
-        await waitForPicture(startedRun);
-        if (get().chat?.id !== chat.id) return;
-        set({ waitingFor: null });
-      }
-
-      /*
-       * A wandering round says nothing about the picture it just made.
-       *
-       * The follow-up turn is where the model comments on a render, and in this
-       * mode there is nothing to comment to: the next thing wanted is the next
-       * picture. So the round ends here and the loop goes again — which is also
-       * what keeps a long run from filling the transcript with small talk.
-       */
-      if (get().wandering && pendingCall.call.tool === 'build_prompt') {
-        set((state) => ({ wanderRounds: state.wanderRounds + 1 }));
-        if (get().chat?.id !== chat.id) return;
-        await get().wanderOnce();
-        return;
-      }
-
-      // After a decision the model usually has something short to say about it.
-      await stream(
-        () =>
-          fetch(`/api/chat/conversations/${chat.id}/continue`, {
-            method: 'POST',
-            credentials: 'same-origin',
-            signal: inFlight?.signal,
-          }),
-        chat.id,
-      );
+      await settle(chat.id, pendingCall.messageId, body);
     },
 
     refresh: async () => {

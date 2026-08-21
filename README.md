@@ -84,8 +84,10 @@ form. Nothing about your ComfyUI setup changes.
   own description of it.
 - **A mode that just shows you things.** Switch on wandering and the model makes
   picture after picture out of a few of your notes drawn at random — a settable
-  number, with its own workflow and its own sampling, until you stop it. Tapping
-  one opens the prompt behind it. See [Wandering](#wandering).
+  number, with its own workflow and its own sampling, until you stop it — and it
+  keeps going while you are looking at something else. Tapping one opens the
+  viewer; ✦ in its corner opens the prompt behind it. See
+  [Wandering](#wandering).
 - **Somewhere to start when you do not know what to make.** Write down what you
   like — concepts, aesthetics, places, films — under headings you make up or
   under none, and the chat draws on it to fill in whatever you left open. How far
@@ -1140,7 +1142,9 @@ step on a five-point scale in Settings, centred in the conversation. Tapping a
 finished picture opens **the gallery's own viewer** — the same rating, keep,
 favourite, save, reuse and details actions — because the picture you have just
 asked for is the one you are most likely to want to keep, and going to the
-gallery to do it loses the conversation it came out of.
+gallery to do it loses the conversation it came out of. The viewer holds **every
+picture in the conversation**, in the order they were made, so a swipe is the
+previous attempt rather than the end of a batch of one.
 
 The size is a share of the *width*, not of the window's height. Height sounds
 tidier and is not: the chat window gets shorter when the keyboard opens, so one
@@ -1178,6 +1182,13 @@ would change the picture and the conversation does not imply it — portrait or
 landscape, photograph or illustration — the model stops and asks, with two to
 four ready answers and a box for the one it did not think of. Skipping tells it
 to decide for itself.
+
+Several questions come in one call, so they are laid out to be answered in one
+go: the answers **wrap onto as many lines as they need** rather than being cut
+off with an ellipsis — an answer worth tapping is often a phrase, not a word —
+and the box for your own answer is **folded behind the last chip** until you
+reach for it, which is the difference between four questions on a phone screen
+and seven.
 
 **Edit the prompt blocks** is the other. Writing a block library by hand is the
 tedious part of [random prompt mode](#random-prompt-mode), so the model can
@@ -1242,10 +1253,18 @@ sampling dialog the chat has, with its own copy of every parameter, and starts
 you at a warm temperature rather than handing back an identical copy of what you
 just rejected.
 
-**Tapping a picture opens what made it** — the prompt, the settings, and the
-button to run it again — because "what was that one?" is the only question an
-endless stream raises, and the prompt was never read. The viewer is in the
-corner of the picture, one tap away.
+**Tapping a picture opens the viewer**, the same one the gallery uses, over
+every picture in the conversation — so a swipe is the one before it, which in a
+wandering run is exactly the last thing you were shown. **✦ in the corner opens
+what made it**: the prompt, the settings, and the button to run it again,
+because "what was that one?" is the only question an endless stream raises and
+in this mode the prompt is never written above the picture.
+
+**It keeps going while you are elsewhere.** The loop is held with the
+conversation rather than by the screen, so switching to the gallery — or to
+another app — does not stop it; the pictures are simply there when you come
+back. It used to stop, because the step that queued each picture happened inside
+the dialog that shows you a proposal, and an unmounted screen has no dialog.
 
 **Only those notes, and nothing else about you.** Two things make that true. The
 draw is the whole budget — pinned notes are in it like any other, rather than

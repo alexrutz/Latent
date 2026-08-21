@@ -3584,7 +3584,7 @@ test.describe('the chat module', () => {
     await expect(strip).toBeVisible();
 
     // Two pictures, with nothing tapped in between.
-    await expect(page.getByRole('button', { name: /What made picture/ })).toHaveCount(2, {
+    await expect(page.getByRole('button', { name: /^Open picture/ })).toHaveCount(2, {
       timeout: 120_000,
     });
     await expect(strip).toContainText('Wandering');
@@ -3601,8 +3601,19 @@ test.describe('the chat module', () => {
     await expect(page.getByTestId('wander-strip')).toHaveCount(0);
 
     /*
-     * And tapping a picture opens what made it — the prompt and the settings,
-     * the same dialog the prompt text opens in an ordinary conversation.
+     * A picture opens the viewer, here as everywhere else — and the viewer is
+     * over the whole conversation, so a swipe is the picture before it rather
+     * than the end of a batch of one.
+     */
+    await page.getByRole('button', { name: /^Open picture/ }).last().click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+    await expect(page.getByText(/^\d+ \/ 2$/)).toBeVisible();
+    await page.screenshot({ path: 'test-results/97-wander-viewer.png' });
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    /*
+     * What made it is the corner button: in a wandering round the prompt is
+     * never written above the picture, so this is the only way to it.
      */
     await page.getByRole('button', { name: /What made picture/ }).first().click();
     const dialog = page.getByRole('dialog');
@@ -3610,11 +3621,6 @@ test.describe('the chat module', () => {
       /wandering picture/,
     );
     await page.screenshot({ path: 'test-results/97-wander-prompt.png' });
-    await dialog.getByRole('button', { name: 'Close' }).click();
-
-    // The viewer is still one tap away, in the corner.
-    await page.getByRole('button', { name: /Look at picture/ }).first().click();
-    await expect(page.getByTestId('viewer-image')).toBeVisible();
   });
 
   /**
@@ -3772,10 +3778,14 @@ test.describe('the chat module', () => {
     await expect(dialog).toBeVisible({ timeout: 30_000 });
     await expect(dialog.getByText('Portrait or landscape?')).toBeVisible();
     await expect(dialog.getByText('It decides the composition.')).toBeVisible();
-    // The answer it did not think of is always available too.
-    await expect(
-      dialog.getByRole('textbox', { name: /Your own answer to/ }),
-    ).toBeVisible();
+    /*
+     * The answer it did not think of is always available too — folded behind
+     * the last chip, because it is reached for far less often than it costs in
+     * height when several questions are on screen at once.
+     */
+    await expect(dialog.getByRole('textbox', { name: /Your own answer to/ })).toHaveCount(0);
+    await dialog.getByRole('button', { name: /^Say it yourself/ }).click();
+    await expect(dialog.getByRole('textbox', { name: /Your own answer to/ })).toBeVisible();
     await page.screenshot({ path: 'test-results/61-ask-user.png' });
 
     // Tapping picks; Send confirms. Two taps rather than one, because a call
@@ -3791,6 +3801,66 @@ test.describe('the chat module', () => {
      * belongs to, so the result is written back as pairs.
      */
     await expect(page.getByText('Portrait or landscape? — Landscape')).toBeVisible();
+  });
+
+  /**
+   * Four questions at once, with answers long enough to be worth reading.
+   *
+   * Both halves of the same problem. An answer that says something useful —
+   * "warm, low sun through haze" rather than "warm" — used to be cut to one
+   * line with an ellipsis, so the button hid the very thing it was offering.
+   * And the row it sits in was tall enough that four questions did not fit on
+   * a phone, which defeats the point of asking them together.
+   */
+  test('fits several questions on the screen, answers unabridged', async ({ page }) => {
+    const questions = [
+      {
+        question: 'What light?',
+        options: [
+          'warm, low sun through haze, long shadows across the grass',
+          'flat overcast with no shadows',
+        ],
+      },
+      { question: 'How close?', options: ['a wide shot with room around it', 'tight on the face'] },
+      { question: 'What time of year?', options: ['deep winter, everything bare', 'high summer'] },
+      { question: 'On film or digital?', options: ['grainy 400-speed colour film', 'clean digital'] },
+    ];
+
+    await script({
+      toolCall: { name: 'ask_user', arguments: { questions, reason: 'It decides the look.' } },
+    });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('a house on a hill');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+
+    // Every question is on screen, without scrolling to find the last of them.
+    for (const entry of questions) {
+      await expect(dialog.getByText(entry.question)).toBeInViewport();
+    }
+    await page.screenshot({ path: 'test-results/61-ask-user-many.png' });
+
+    /*
+     * And the long answer is shown in full: it wraps onto a second line rather
+     * than being trimmed, so what the button says is what tapping it means.
+     */
+    const long = dialog.getByRole('button', {
+      name: 'warm, low sun through haze, long shadows across the grass',
+    });
+    await expect(long).toHaveCSS('text-overflow', 'clip');
+    const wrapped = await long.evaluate((node) => {
+      const style = getComputedStyle(node);
+      const lines = Math.round(
+        (node.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) /
+          parseFloat(style.lineHeight),
+      );
+      return { lines, full: node.scrollWidth <= node.clientWidth + 1 };
+    });
+    expect(wrapped.full).toBe(true);
+    expect(wrapped.lines).toBeGreaterThan(1);
   });
 
   /**
