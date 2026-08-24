@@ -686,6 +686,12 @@ function summarise(
     .slice(0, 5);
 }
 
+/** What a row does, said in words rather than as the raw enum value. */
+const ACTION_LABELS: Record<Exclude<ProposedBlock['action'], 'add'>, string> = {
+  update: 'change',
+  remove: 'remove',
+};
+
 /**
  * Proposed blocks, one row at a time.
  *
@@ -702,7 +708,14 @@ function PromptBlocksBody({
   onResolve: (decision: ToolDecision) => void | Promise<void>;
 }) {
   const [blocks, setBlocks] = useState(call.blocks);
-  const [kept, setKept] = useState<boolean[]>(() => call.blocks.map(() => true));
+  /*
+   * A proposal that names nothing in the library starts off, and stays off.
+   *
+   * The server has already tried to find it. Leaving the row switched on would
+   * put a tick next to something that cannot happen, which is the whole of the
+   * fault this dialog used to have: it agreed, and then nothing was removed.
+   */
+  const [kept, setKept] = useState<boolean[]>(() => call.blocks.map((block) => !block.missing));
   const [editing, setEditing] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -749,16 +762,29 @@ function PromptBlocksBody({
         <ul className="space-y-1.5">
           {blocks.map((block, index) => (
             <li
-              key={`${block.name}-${index}`}
+              /*
+               * By position, not by name.
+               *
+               * The name is edited in place in this very list, so keying on it
+               * gave every row a new identity on each keystroke: React threw the
+               * row away, built a new one, and the input lost focus after every
+               * single character typed into it.
+               */
+              key={index}
               className={cn(
                 'rounded-lg border px-2.5 py-2',
-                kept[index] ? 'border-accent/40 bg-accent/10' : 'border-line bg-surface-2 opacity-60',
+                block.missing
+                  ? 'border-warn/40 bg-warn/5'
+                  : kept[index]
+                    ? 'border-accent/40 bg-accent/10'
+                    : 'border-line bg-surface-2 opacity-60',
               )}
             >
               <div className="flex items-start gap-2">
                 <button
                   type="button"
                   aria-pressed={kept[index]}
+                  disabled={block.missing}
                   aria-label={`Keep ${block.name}`}
                   onClick={() =>
                     setKept((current) => current.map((on, at) => (at === index ? !on : on)))
@@ -768,6 +794,7 @@ function PromptBlocksBody({
                     kept[index]
                       ? 'border-accent bg-accent text-white'
                       : 'border-line text-transparent',
+                    block.missing && 'opacity-40',
                   )}
                 >
                   ✓
@@ -785,8 +812,11 @@ function PromptBlocksBody({
                       <input
                         value={block.category}
                         onChange={(event) => patch(index, { category: event.target.value })}
-                        aria-label="Block category"
-                        placeholder="Category"
+                        // "Group" everywhere it is read, `category` everywhere it
+                        // is stored. The library screen has always called it a
+                        // group; this dialog was the one place saying otherwise.
+                        aria-label="Block group"
+                        placeholder="Group"
                         className="w-full rounded-md border border-line bg-surface px-2 py-1 text-xs focus:border-accent focus:outline-none"
                       />
                       <textarea
@@ -799,16 +829,32 @@ function PromptBlocksBody({
                     </div>
                   ) : (
                     <>
-                      <p className="truncate text-xs font-medium">
-                        {block.name}
-                        {block.category !== '' && (
-                          <span className="ml-1.5 font-normal text-muted">{block.category}</span>
-                        )}
+                      <p className="flex min-w-0 items-baseline gap-1.5 text-xs font-medium">
                         {block.action !== 'add' && (
-                          <span className="ml-1.5 font-normal text-warn">{block.action}</span>
+                          <span
+                            className={cn(
+                              'shrink-0 rounded px-1 py-px text-[10px] font-normal',
+                              block.action === 'remove'
+                                ? 'bg-warn/15 text-warn'
+                                : 'bg-accent/15 text-accent',
+                            )}
+                          >
+                            {ACTION_LABELS[block.action]}
+                          </span>
+                        )}
+                        <span className="truncate">{block.name}</span>
+                        {block.category !== '' && (
+                          <span className="shrink-0 font-normal text-muted">{block.category}</span>
                         )}
                       </p>
-                      <p className="text-[11px] break-words text-muted">{block.text}</p>
+                      {block.missing ? (
+                        <p className="text-[11px] text-warn">
+                          Nothing in your library is called this, so it cannot be{' '}
+                          {block.action === 'remove' ? 'removed' : 'changed'}.
+                        </p>
+                      ) : (
+                        <p className="text-[11px] break-words text-muted">{block.text}</p>
+                      )}
                     </>
                   )}
                 </div>

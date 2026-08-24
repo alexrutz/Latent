@@ -100,6 +100,22 @@ const TOOL_LABELS: Record<ChatToolCall['tool'], string> = {
   ask_user: 'Asked something',
 };
 
+/**
+ * The same, but honest about what a block proposal actually did.
+ *
+ * "Proposed blocks" for a call whose every row deletes one reads as the
+ * opposite of what happened, and the line in the transcript is often the only
+ * trace left once the dialog has been answered.
+ */
+function toolLabel(call: ChatToolCall): string {
+  if (call.tool !== 'prompt_blocks') return TOOL_LABELS[call.tool];
+  const actions = new Set(call.blocks.map((block) => block.action));
+  if (actions.size !== 1) return 'Proposed block changes';
+  if (actions.has('remove')) return 'Proposed removing blocks';
+  if (actions.has('update')) return 'Proposed changing blocks';
+  return 'Proposed blocks';
+}
+
 export function ChatScreen() {
   const settings = useSettings();
   const updateSettings = useUpdateSettings();
@@ -506,7 +522,7 @@ export function ChatScreen() {
         >
           <span aria-hidden>◳</span>
           <span className="min-w-0 flex-1 truncate">
-            {TOOL_LABELS[pendingCall.call.tool]} — waiting on you
+            {toolLabel(pendingCall.call)} — waiting on you
           </span>
           <span className="shrink-0 font-medium underline">Open</span>
         </button>
@@ -1072,7 +1088,7 @@ function MessageRow({
           </button>
         ) : (
           <p className="text-[11px] text-muted">
-            {TOOL_LABELS[call.tool]}
+            {toolLabel(call)}
             {message.toolResult
               ? ` · ${message.toolResult.decision === 'accepted' ? 'accepted' : 'declined'}`
               : ' · waiting'}

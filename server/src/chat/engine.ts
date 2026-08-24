@@ -13,6 +13,7 @@ import { DEFAULT_WANDER_DRAW, IDLE_RUN } from '@latent/shared';
 
 import type { AppContext } from '../routes/context.js';
 import { drawTaste } from '../taste.js';
+import { resolveProposedBlocks } from './blocks.js';
 import { START_OVER_INSTRUCTION, wanderInstruction } from './llama.js';
 import { queueChatPrompt } from './queue.js';
 import { runTurn, type TurnKind } from './turn.js';
@@ -962,27 +963,49 @@ function stoppedBecause(
  * the point of the dialog is that a block can be corrected before it is saved,
  * and taking the model's version afterwards would throw that away.
  */
-function applyBlocks(ctx: AppContext, blocks: ProposedBlock[]): string {
+function applyBlocks(ctx: AppContext, proposed: ProposedBlock[]): string {
   let added = 0;
   let updated = 0;
   let removed = 0;
+  const lost: string[] = [];
+
+  /*
+   * Matched against the library again, here at the end.
+   *
+   * It was matched once already when the proposal was made, but that can be
+   * several turns and one visit to the library screen ago, so an id from then
+   * is not something to delete a row on faith. Re-running it also means the
+   * name a person corrected in the dialog is the name that gets looked up —
+   * fixing a proposal the model got slightly wrong is the point of being able
+   * to edit it, and it would be strange if the one field that identifies the
+   * block were the one field editing could not help with.
+   */
+  const blocks = resolveProposedBlocks(proposed, ctx.store.listPromptBlocks());
 
   for (const block of blocks) {
-    if (block.action === 'remove') {
-      if (block.id) {
+    /*
+     * Both of the old failures lived here. A removal whose id was never filled
+     * in was skipped without a word, and a change whose id was never filled in
+     * fell through to the insert below and quietly made a duplicate of the very
+     * block it had been asked to correct.
+     */
+    if (block.action !== 'add') {
+      if (block.missing || !block.id) {
+        lost.push(block.name);
+        continue;
+      }
+
+      if (block.action === 'remove') {
         ctx.store.deletePromptBlock(block.id);
         removed += 1;
+      } else {
+        ctx.store.updatePromptBlock(block.id, {
+          name: block.name,
+          category: block.category,
+          text: block.text,
+        });
+        updated += 1;
       }
-      continue;
-    }
-
-    if (block.action === 'update' && block.id) {
-      ctx.store.updatePromptBlock(block.id, {
-        name: block.name,
-        category: block.category,
-        text: block.text,
-      });
-      updated += 1;
       continue;
     }
 
@@ -1000,5 +1023,21 @@ function applyBlocks(ctx: AppContext, blocks: ProposedBlock[]): string {
     removed > 0 ? `${removed} removed` : '',
   ].filter(Boolean);
 
-  return parts.length > 0 ? `The user kept ${parts.join(', ')}.` : 'The user kept none of them.';
+  /*
+   * Said plainly, including the part that did not work.
+   *
+   * This sentence is the tool result, which is the only thing the model ever
+   * learns about what became of its proposal. "The user kept none of them"
+   * after a removal that failed to find its block is a lie that reads as a
+   * refusal, and the model's next move is to propose the same removal again.
+   */
+  const failed =
+    lost.length > 0
+      ? `Could not find ${lost.map((name) => `“${name}”`).join(', ')} in the library — ` +
+        'nothing was changed for those. Check the list of blocks above before naming one again.'
+      : '';
+
+  const done = parts.length > 0 ? `The user kept ${parts.join(', ')}.` : '';
+  if (done === '' && failed === '') return 'The user kept none of them.';
+  return [done, failed].filter(Boolean).join(' ');
 }

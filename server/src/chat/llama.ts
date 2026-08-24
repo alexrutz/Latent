@@ -9,6 +9,7 @@ import type {
   ChatToolName,
   ChatToolSettings,
   ProposedBlock,
+  PromptBlock,
   PromptDetail,
   ReviewAsk,
   ReviewThreshold,
@@ -20,6 +21,7 @@ import { samplingOverrides } from '@latent/shared';
 
 import { authHeaders, type ConnectionConfig } from '../comfy/connection.js';
 import { activeTaste } from '../taste.js';
+import { blockLibrary } from './blocks.js';
 
 /**
  * Talking to a local llama.cpp server.
@@ -123,6 +125,12 @@ They keep a library of reusable fragments — lighting, mood, camera, subject �
 that a random-prompt mode draws from. Blocks are fragments, not sentences, and
 each belongs to a group.
 
+The library as it stands is listed below when you can edit it. Adding, changing
+and removing are all the same call: to change or remove one, name it and its
+group exactly as they appear in that list. Removing is a real option — a
+fragment that is vague, duplicated, or never worth drawing makes every random
+prompt worse, and saying so is more use than adding a fourth one like it.
+
 Nothing you propose takes effect on its own: every tool call is shown to them
 first and they accept, edit or refuse it. So propose things properly rather than
 pasting a prompt into your reply — a pasted prompt is something they have to
@@ -150,21 +158,35 @@ export const TOOLS = [
               type: 'object',
               properties: {
                 action: { type: 'string', enum: ['add', 'update', 'remove'] },
-                id: {
+                name: {
                   type: 'string',
-                  description: 'Required for update and remove; the existing block’s id.',
+                  description:
+                    'Short label, e.g. "Golden hour". For update and remove, the name of the ' +
+                    'existing block exactly as it is listed.',
                 },
-                name: { type: 'string', description: 'Short label, e.g. "Golden hour".' },
                 category: {
                   type: 'string',
-                  description: 'Group it belongs to, e.g. "Lighting".',
+                  description:
+                    'The group it belongs to, e.g. "Lighting". For update and remove, the group ' +
+                    'the existing block is listed under.',
                 },
                 text: {
                   type: 'string',
-                  description: 'The prompt fragment itself, not a sentence about it.',
+                  description:
+                    'The prompt fragment itself, not a sentence about it. Required for add and ' +
+                    'update. Leave it out for remove — the block’s own wording is used.',
                 },
               },
-              required: ['action', 'name', 'category', 'text'],
+              /*
+               * Only what every action genuinely needs.
+               *
+               * `text` was required, which meant a removal had to invent a
+               * fragment for a block it wanted gone before the call would
+               * validate — and under grammar-constrained decoding that is not a
+               * suggestion the model can decline. It invented one, the invention
+               * did not match anything, and the removal went nowhere.
+               */
+              required: ['action', 'name'],
             },
           },
         },
@@ -1059,6 +1081,14 @@ export class LlamaClient {
      * a locked server, and the section is then simply absent.
      */
     private readonly taste: TasteProfile | null = null,
+    /**
+     * The prompt blocks as they stand, for the tool that edits them.
+     *
+     * Passed in for the same reason the notes are: reading the library is the
+     * store's business, not a model client's. Empty when the tool is off, and
+     * the section is then simply absent.
+     */
+    private readonly library: readonly PromptBlock[] = [],
   ) {
     this.dispatcher = connection.allowSelfSigned
       ? new Agent({ connect: { rejectUnauthorized: false } })
@@ -1167,7 +1197,13 @@ export class LlamaClient {
       (this.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT) +
         toolPolicy(this.settings.tools) +
         detailPolicy(this.settings.promptDetail) +
-        tastePolicy(this.taste, this.settings.taste),
+        tastePolicy(this.taste, this.settings.taste) +
+        // Only when there is a tool that can act on it, and never on the turn
+        // that judges a picture — a review has no business rewriting a library,
+        // and the section is pure cost on a turn that cannot use it.
+        (this.settings.tools.prompt_blocks !== 'off' && tools.length > 0 && !options.review
+          ? blockLibrary(this.library)
+          : ''),
       options.pictures,
     );
     // A forced call needs a turn of its own to answer; see the comment there.
@@ -1546,13 +1582,23 @@ export function parseCall(call: PartialCall): ChatToolCall | null {
           block.action === 'update' || block.action === 'remove' ? block.action : 'add';
         const name = typeof block.name === 'string' ? block.name.trim() : '';
         const text = typeof block.text === 'string' ? block.text.trim() : '';
-        if (name === '' || (action !== 'remove' && text === '')) return null;
+        const id = typeof block.id === 'string' && block.id !== '' ? block.id : '';
+        /*
+         * What each action cannot do without.
+         *
+         * Only an addition needs wording: a removal is identified rather than
+         * described, and a change that leaves a field out means "leave that one
+         * alone" — both are filled in from the block itself once it has been
+         * found. See `resolveProposedBlocks`.
+         */
+        if (name === '' && id === '') return null;
+        if (action === 'add' && text === '') return null;
         return {
           action,
           name,
           text,
           category: typeof block.category === 'string' ? block.category.trim() : '',
-          ...(typeof block.id === 'string' && block.id !== '' ? { id: block.id } : {}),
+          ...(id === '' ? {} : { id }),
         };
       })
       .filter((block): block is NonNullable<typeof block> => block !== null);

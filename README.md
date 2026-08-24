@@ -1201,7 +1201,18 @@ tedious part of [random prompt mode](#random-prompt-mode), so the model can
 propose them: a list arrives with a checkbox each, an **Edit** on every row, and
 a count on the accept button. What gets written is the list *as you edited it* —
 not what was proposed — and anything you unchecked is never touched. It adds,
-updates and removes, so "these four are near-duplicates" is a thing it can fix.
+changes and removes, so "these four are near-duplicates" is a thing it can fix.
+
+Changing and removing need the model to know what is already there, so **the
+library goes into the system prompt** whenever this tool is switched on —
+grouped the way the library screen groups it, with the wording of each block, so
+the model can tell a genuinely new fragment from a fourth phrasing of one you
+already have. A block is named rather than addressed: the model says "Vague
+mood, under Mood", the server matches that against the real library before you
+are shown anything, and the row you see carries the block's own text rather than
+the model's description of it. A name matching two blocks is left unresolved
+instead of guessed at — a wrong deletion has no undo — and a row that matches
+nothing says so on its face and cannot be accepted.
 
 **Saved conversations** are a side effect rather than a feature: every chat is
 kept, listed by its first line, and renameable — but the model has no memory
@@ -2048,6 +2059,7 @@ deadline — twenty seconds — and it is skipped outright when nobody is watchi
 | `server/src/chat/engine.ts` | The loop: one runner per conversation, a persisted state machine, and the event bus clients subscribe to |
 | `server/src/chat/turn.ts` | One turn — what it is for, what it carries, what it stores. No HTTP in it |
 | `server/src/chat/queue.ts` | Queueing an accepted prompt, in the same act that records the decision |
+| `server/src/chat/blocks.ts` | The block library as the model sees it, and how a proposal is matched back to it |
 | `server/src/routes/chat.ts` | The intents, and the event stream. Nothing else |
 | `web/src/state/chat.ts` | A view: the transcript, what the server says is happening, and the half-written message |
 
@@ -2095,6 +2107,7 @@ Use `--project=iPad` to run just those.
 | `server/src/chat/engine.ts` | The conversation loop: a persisted state machine per chat, so a run survives a tab switch and a restart |
 | `server/src/chat/turn.ts` | One turn against the model — what it is for, what it carries, what it stores |
 | `server/src/chat/queue.ts` | Queueing an accepted prompt and recording the decision as one act |
+| `server/src/chat/blocks.ts` | The block library in the system prompt, and matching a proposed change to a real block |
 | `server/src/routes/chat.ts` | The intents a client can send, and the event stream it watches |
 | `web/src/state/chat.ts` | The conversation as this device sees it — a view over the engine, with no loop of its own |
 | `shared/src/systemPrompts.ts` | Matching a named system prompt to the workflow field it belongs in |

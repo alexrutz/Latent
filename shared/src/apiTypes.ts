@@ -1832,12 +1832,30 @@ export type ChatCallName = ChatToolName | 'revise_prompt';
 
 /** A block the model proposes adding, changing or removing. */
 export interface ProposedBlock {
-  /** Set when changing or removing one that already exists. */
+  /**
+   * The existing block this changes or removes.
+   *
+   * Filled in by the server rather than by the model. A model that has been
+   * shown the library knows a block by its name and group, not by a uuid it
+   * would have to copy out by hand, so a change or a removal is matched
+   * against the real library before the proposal is ever stored. See
+   * `resolveProposedBlocks`.
+   */
   id?: string;
   name: string;
   category: string;
   text: string;
   action: 'add' | 'update' | 'remove';
+  /**
+   * Set when a change or a removal names nothing in the library.
+   *
+   * Kept in the proposal instead of being dropped from it, because a silently
+   * missing row is how "it cannot delete blocks" looked from the outside: the
+   * model said it had removed something, the dialog agreed, and nothing
+   * happened. A proposal that cannot be carried out says so on its own row and
+   * cannot be accepted.
+   */
+  missing?: boolean;
 }
 
 export interface PromptBlocksCall {

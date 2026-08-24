@@ -4503,6 +4503,105 @@ test.describe('the chat module', () => {
   });
 
   /**
+   * Throwing one out, which is the half that never worked.
+   *
+   * The model names a block and its group — no id, no text, because it has been
+   * shown the library and has no reason to quote a uuid back. Everything after
+   * that is the server's job: find the block, show the person the fragment that
+   * is actually going to go, and delete that one.
+   */
+  test('removes a block the model asks to remove', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/prompt-blocks', {
+        data: { name: 'Vague mood', category: 'Mood', text: 'nice vibes' },
+      }),
+    );
+    await script(
+      {
+        content: 'That one is doing no work.',
+        toolCall: {
+          name: 'prompt_blocks',
+          arguments: {
+            reason: 'Too vague to draw anything from.',
+            blocks: [{ action: 'remove', name: 'Vague mood', category: 'Mood' }],
+          },
+        },
+      },
+      { content: 'Gone.' },
+    );
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('anything worth throwing out?');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    // Said in words, not as the raw action name, and showing the block's own
+    // wording rather than whatever the model guessed it said.
+    await expect(dialog.getByText('remove', { exact: true })).toBeVisible();
+    await expect(dialog.getByText('nice vibes')).toBeVisible();
+    await page.screenshot({ path: 'test-results/72-block-removal.png' });
+
+    await dialog.getByRole('button', { name: 'Keep 1' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    const blocks = await withApi(async (ctx) =>
+      (await (await ctx.get('/api/prompt-blocks')).json()) as { name: string }[],
+    );
+    expect(blocks.some((block) => block.name === 'Vague mood')).toBe(false);
+  });
+
+  /**
+   * Typing a whole word into a proposed block, which used to be impossible.
+   *
+   * The rows were keyed by the block's name while the name was the thing being
+   * edited, so every keystroke gave the row a new identity, React rebuilt it,
+   * and the field lost focus — one character went in and the rest went nowhere.
+   * `fill` would not have caught it; this types.
+   */
+  test('keeps the cursor in a block field while you type into it', async ({ page }) => {
+    await script(
+      {
+        toolCall: {
+          name: 'prompt_blocks',
+          arguments: {
+            reason: 'One idea.',
+            blocks: [
+              { action: 'add', name: 'Golden hour', category: 'Lighting', text: 'warm rim light' },
+            ],
+          },
+        },
+      },
+      { content: 'Saved.' },
+    );
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('one block please');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    await dialog.getByRole('button', { name: 'Edit Golden hour' }).click();
+
+    const name = dialog.getByRole('textbox', { name: 'Block name' });
+    await name.fill('');
+    await name.pressSequentially('Dawn haze');
+    await expect(name).toHaveValue('Dawn haze');
+    await expect(name).toBeFocused();
+
+    // And the group field says "group", the same word the library screen uses.
+    await expect(dialog.getByRole('textbox', { name: 'Block group' })).toBeVisible();
+
+    await dialog.getByRole('button', { name: 'Keep 1' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    const blocks = await withApi(async (ctx) =>
+      (await (await ctx.get('/api/prompt-blocks')).json()) as { name: string }[],
+    );
+    expect(blocks.some((block) => block.name === 'Dawn haze')).toBe(true);
+  });
+
+  /**
    * The dialog covers the screen, and the answer is often behind it.
    *
    * "Is this different from the last one?" and "what did I say five messages

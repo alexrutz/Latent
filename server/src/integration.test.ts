@@ -4664,6 +4664,198 @@ describe('chat', () => {
     }
   }, 30_000);
 
+  /**
+   * The one that did not work.
+   *
+   * A removal had to carry the block's id, the model had never been shown one,
+   * and `applyBlocks` skipped anything without one — silently, so the
+   * conversation said the block was gone and the library still had it. The
+   * library is in the prompt now and the name is what finds the block, so this
+   * walks the whole path: what the model is told, what it sends back, what the
+   * dialog is shown, and what is left in the library afterwards.
+   */
+  it('removes a block the model names, with no id and no text', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+
+      const doomed = await json<{ id: string }>(
+        api('/api/prompt-blocks', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'Vague mood', category: 'Mood', text: 'nice vibes' }),
+        }),
+      );
+      await api('/api/prompt-blocks', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Golden hour', category: 'Lighting', text: 'warm rim light' }),
+      });
+
+      const chat = await json<{ id: string }>(
+        api('/api/chat/conversations', { method: 'POST' }),
+      );
+
+      llama.script({
+        content: 'That one is doing no work.',
+        toolCall: {
+          name: 'prompt_blocks',
+          arguments: {
+            reason: 'Too vague to draw anything from.',
+            // As a model that has read the library writes it: a name and a
+            // group, no uuid, and nothing invented to fill a required field.
+            blocks: [{ action: 'remove', name: 'Vague mood', category: 'Mood' }],
+          },
+        },
+      });
+
+      const run = await intent(chat.id, 'say', { content: 'anything worth throwing out?' });
+      const messageId = run.awaiting;
+      expect(messageId).toBeTruthy();
+
+      // The model was shown the library, which is the only way it could name one.
+      const sent = JSON.stringify(llama.requests[0]?.messages ?? []);
+      expect(sent).toContain('Vague mood');
+      expect(sent).toContain('warm rim light');
+
+      // And the proposal reaching the dialog already points at the real block.
+      const call = (await awaiting(chat.id))?.toolCall;
+      expect(call?.tool).toBe('prompt_blocks');
+      const proposed = call?.tool === 'prompt_blocks' ? call.blocks[0] : undefined;
+      expect(proposed?.id).toBe(doomed.id);
+      expect(proposed?.missing).toBeUndefined();
+      // Described by the block itself, not by what the model guessed about it.
+      expect(proposed?.text).toBe('nice vibes');
+
+      await intentRaw(chat.id, 'decide', {
+        messageId,
+        decision: 'accepted',
+        blocks: call?.tool === 'prompt_blocks' ? call.blocks : [],
+      });
+
+      const after = await json<{ id: string; name: string }[]>(api('/api/prompt-blocks'));
+      expect(after.some((block) => block.id === doomed.id)).toBe(false);
+      expect(after.some((block) => block.name === 'Golden hour')).toBe(true);
+
+      const stored = await json<{ messages: ChatMessage[] }>(
+        api(`/api/chat/conversations/${chat.id}`),
+      );
+      expect(stored.messages.find((message) => message.role === 'tool')?.content).toContain(
+        '1 removed',
+      );
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
+  it('says so when a removal names nothing in the library', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      const chat = await json<{ id: string }>(
+        api('/api/chat/conversations', { method: 'POST' }),
+      );
+
+      llama.script({
+        toolCall: {
+          name: 'prompt_blocks',
+          arguments: {
+            reason: 'Cleaning up.',
+            blocks: [{ action: 'remove', name: 'Never existed', category: 'Mood' }],
+          },
+        },
+      });
+
+      const run = await intent(chat.id, 'say', { content: 'tidy the library' });
+      const messageId = run.awaiting;
+
+      const call = (await awaiting(chat.id))?.toolCall;
+      const proposed = call?.tool === 'prompt_blocks' ? call.blocks[0] : undefined;
+      expect(proposed?.missing).toBe(true);
+
+      const before = await json<{ id: string }[]>(api('/api/prompt-blocks'));
+
+      await intentRaw(chat.id, 'decide', {
+        messageId,
+        decision: 'accepted',
+        blocks: call?.tool === 'prompt_blocks' ? call.blocks : [],
+      });
+
+      // Nothing was touched, and the model is told why rather than being left
+      // to read "the user kept none of them" as a refusal and try again.
+      expect((await json<{ id: string }[]>(api('/api/prompt-blocks'))).length).toBe(before.length);
+      const stored = await json<{ messages: ChatMessage[] }>(
+        api(`/api/chat/conversations/${chat.id}`),
+      );
+      const toolMessage = stored.messages.find((message) => message.role === 'tool');
+      expect(toolMessage?.content).toContain('Could not find');
+      expect(toolMessage?.content).toContain('Never existed');
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
+  it('changes a block in place instead of adding a second one like it', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      // A name nothing else in this file uses: two blocks called the same thing
+      // are deliberately left unresolved, which is a different test.
+      const existing = await json<{ id: string }>(
+        api('/api/prompt-blocks', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'Storm light', category: 'Lighting', text: 'grey' }),
+        }),
+      );
+      const before = await json<{ id: string }[]>(api('/api/prompt-blocks'));
+
+      const chat = await json<{ id: string }>(
+        api('/api/chat/conversations', { method: 'POST' }),
+      );
+
+      llama.script({
+        toolCall: {
+          name: 'prompt_blocks',
+          arguments: {
+            reason: 'Sharper wording.',
+            blocks: [
+              {
+                action: 'update',
+                name: 'Storm light',
+                category: 'Lighting',
+                text: 'flat grey daylight, no shadows',
+              },
+            ],
+          },
+        },
+      });
+
+      const run = await intent(chat.id, 'say', { content: 'improve storm light' });
+      const call = (await awaiting(chat.id))?.toolCall;
+
+      await intentRaw(chat.id, 'decide', {
+        messageId: run.awaiting,
+        decision: 'accepted',
+        blocks: call?.tool === 'prompt_blocks' ? call.blocks : [],
+      });
+
+      const after = await json<{ id: string; name: string; text: string }[]>(
+        api('/api/prompt-blocks'),
+      );
+      // The old fault: no id meant this fell through to an insert.
+      expect(after.length).toBe(before.length);
+      expect(after.find((block) => block.id === existing.id)?.text).toBe(
+        'flat grey daylight, no shadows',
+      );
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
   it('refuses to decide the same tool call twice', async () => {
     const llama = createMockLlama();
     const url = await llama.listen(0);

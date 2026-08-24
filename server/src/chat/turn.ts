@@ -10,6 +10,7 @@ import type {
 
 import type { AppContext } from '../routes/context.js';
 import { toConfig } from '../routes/connections.js';
+import { resolveProposedBlocks } from './blocks.js';
 import { loadConversationPictures, loadReviewImage } from './reviewImage.js';
 import { LlamaClient, LlamaError, looksLikeAQuestionWithOptions } from './llama.js';
 
@@ -127,7 +128,7 @@ export async function runTurn(
          * opens and what the round was drawn from. Both are stamped here and
          * stripped again before the call is ever replayed to the model.
          */
-        const stamped = stamp(event.call, options.kind, Boolean(carried.review));
+        const stamped = stamp(ctx, event.call, options.kind, Boolean(carried.review));
         message.toolCall = stamped;
         /*
          * The words go out with the frame; only the ids are kept.
@@ -324,11 +325,33 @@ async function carriage(
   };
 }
 
-/** Where a call came from, recorded by us rather than claimed by the model. */
-function stamp(call: ChatToolCall, kind: TurnKind, review: boolean): ChatToolCall {
+/**
+ * What the model claimed, made true before anyone is shown it.
+ *
+ * Two jobs, both of them the server's rather than the model's. Where a call
+ * came from is recorded here — a question decides whether the turn after the
+ * answer is still about the picture, a wandering prompt decides what tapping
+ * its picture opens.
+ *
+ * And a proposal against the block library is matched to the library, so that
+ * "remove Golden hour" is already pointing at the block it will delete by the
+ * time it reaches the dialog. Doing it here rather than at the moment the user
+ * accepts is what makes the dialog honest: it shows the fragment that is going
+ * to go, and a proposal that matches nothing says so instead of being accepted
+ * and quietly doing nothing.
+ */
+function stamp(
+  ctx: AppContext,
+  call: ChatToolCall,
+  kind: TurnKind,
+  review: boolean,
+): ChatToolCall {
   if (review && call.tool === 'ask_user') return { ...call, fromReview: true };
   if (kind.kind === 'wander' && call.tool === 'build_prompt') {
     return { ...call, fromWander: true, wanderNoteIds: kind.noteIds };
+  }
+  if (call.tool === 'prompt_blocks') {
+    return { ...call, blocks: resolveProposedBlocks(call.blocks, ctx.store.listPromptBlocks()) };
   }
   return call;
 }
@@ -408,15 +431,22 @@ export function llamaClient(
   const active = ctx.store.getActiveConnection('llama');
   if (!active) return null;
 
+  const settings = { ...ctx.store.getSettings().chat, ...overrides };
+
   /*
    * The notes go in per client, so switching one on takes effect on the next
    * message rather than on the next restart — and a locked vault simply means
    * `null`, which leaves the section out instead of failing the turn.
+   *
+   * The block library goes in the same way and for the same reason, plus one
+   * of its own: it is read fresh every turn, so a block accepted in one round
+   * is there to be seen in the next rather than in the next conversation.
    */
   return new LlamaClient(
     toConfig(active),
-    { ...ctx.store.getSettings().chat, ...overrides },
+    settings,
     systemPrompt(ctx),
     ctx.taste.profileOrNull(),
+    settings.tools.prompt_blocks === 'off' ? [] : ctx.store.listPromptBlocks(),
   );
 }
