@@ -250,21 +250,45 @@ describe('the image controls every chat node now carries', () => {
    * them out whether or not a picture is wired in — and on a text-only chat
    * node they are two settings that cannot change anything.
    */
+  /** The same node with something wired to `image`, and the switch as given. */
+  const wiredTo = (useImage: boolean) =>
+    buildParamSchema(
+      {
+        ...withPresetChat,
+        '22': {
+          ...withPresetChat['22']!,
+          inputs: { ...withPresetChat['22']!.inputs, image: ['9', 0], use_image: useImage },
+        },
+      },
+      objectInfoFixture,
+    );
+
   it('hides them when no picture is connected', () => {
     expect(field('22.image_max_size')?.hidden).toBe(true);
     expect(field('22.image_quality')?.hidden).toBe(true);
+    // The switch too: it switches off a picture that was never coming.
+    expect(field('22.use_image')?.hidden).toBe(true);
   });
 
   it('shows them as soon as one is', () => {
-    const withImage = {
-      ...withPresetChat,
-      '22': {
-        ...withPresetChat['22']!,
-        inputs: { ...withPresetChat['22']!.inputs, image: ['9', 0] },
-      },
-    };
-    const wired = buildParamSchema(withImage, objectInfoFixture);
+    const wired = wiredTo(true);
     expect(field('22.image_max_size', wired)?.hidden).toBe(false);
     expect(field('22.image_quality', wired)?.hidden).toBe(false);
+    expect(field('22.use_image', wired)?.hidden).toBe(false);
+  });
+
+  /*
+   * The switch is the point of contact between the two halves of this repo:
+   * comfyllama can ignore a connected image, and the form has to say so rather
+   * than offering an encoding setting for a picture that is not being sent.
+   */
+  it('drops the encoding controls again when the picture is switched off', () => {
+    const off = wiredTo(false);
+    expect(field('22.image_max_size', off)?.hidden).toBe(true);
+    expect(field('22.image_quality', off)?.hidden).toBe(true);
+  });
+
+  it('keeps the switch itself, because it is what turns the picture back on', () => {
+    expect(field('22.use_image', wiredTo(false))?.hidden).toBe(false);
   });
 });

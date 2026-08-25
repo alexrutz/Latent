@@ -342,6 +342,7 @@ export const withPresetChat: ApiWorkflow = {
       // node comes out of ComfyUI now that every one of them can take pictures.
       image_max_size: 1024,
       image_quality: 90,
+      use_image: true,
     },
     _meta: { title: 'Chat with Prompt Presets' },
   },

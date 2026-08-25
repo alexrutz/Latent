@@ -10,3 +10,6 @@ playwright-report
 .env
 .env.*
 docs/screenshots
+
+# Vendored ComfyUI nodes: copied out to ComfyUI, never into the server image.
+comfyllama

@@ -658,18 +658,32 @@ function nodeTitleOf(node: ApiWorkflowNode, objectInfo: ObjectInfo): string {
 /** How an image is encoded before being sent — meaningless without one. */
 const IMAGE_ENCODING_INPUTS = new Set(['image_max_size', 'image_quality']);
 
+/** The switch in front of a chat node's image. See `idleImageControl`. */
+const IMAGE_SWITCH_INPUT = 'use_image';
+
 /**
- * A control for an image the node has not been given.
+ * A control for an image the node is not going to send.
  *
- * comfyllama's chat nodes each grew an optional `image` alongside a size and a
- * quality, so any of them can be multimodal. The two knobs are widgets and are
- * therefore exported whether or not anything is wired to `image` — which on a
- * text-only chat node is two settings that cannot affect the result, on a form
- * where a screenful is four of them.
+ * comfyllama's chat nodes each grew an optional `image` alongside a size, a
+ * quality and a `use_image` switch, so any of them can be multimodal. All three
+ * are widgets and are therefore exported whether or not anything is wired to
+ * `image` — which on a text-only chat node is three settings that cannot affect
+ * the result, on a form where a screenful is four of them.
+ *
+ * Two different reasons to leave one out, in the same shape:
+ *
+ * - Nothing is wired to `image`. Then none of them mean anything, the switch
+ *   included: it switches off a picture that was never coming.
+ * - Something is wired but the switch is off. Then the picture is not being
+ *   sent, so how it would have been encoded is moot — but the switch itself
+ *   stays, because it is the thing that turns the picture back on. Hiding the
+ *   only control that undoes a state is how a form traps somebody in it.
  */
 function idleImageControl(node: { inputs?: Record<string, unknown> }, inputName: string): boolean {
+  const wired = isNodeLink(node.inputs?.image);
+  if (inputName === IMAGE_SWITCH_INPUT) return !wired;
   if (!IMAGE_ENCODING_INPUTS.has(inputName)) return false;
-  return !isNodeLink(node.inputs?.image);
+  return !wired || node.inputs?.[IMAGE_SWITCH_INPUT] === false;
 }
 
 /**

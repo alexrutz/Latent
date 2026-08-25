@@ -282,6 +282,20 @@ export const objectInfoFixture: ObjectInfo = {
         system: ['STRING', { default: 'You are a helpful assistant.', multiline: true }],
         prompt: ['STRING', { default: '', multiline: true, dynamicPrompts: true }],
       },
+      /*
+       * The image and its three controls, in the node's own order.
+       *
+       * `use_image` comes last because comfyllama appends it there: ComfyUI
+       * stores widget values positionally, so a switch inserted above the two
+       * encoding controls would have shifted them in every already-saved
+       * workflow.
+       */
+      optional: {
+        image: ['IMAGE'],
+        image_max_size: ['INT', { default: 1024, min: 0, max: 4096, step: 64 }],
+        image_quality: ['INT', { default: 90, min: 30, max: 100 }],
+        use_image: ['BOOLEAN', { default: true }],
+      },
     },
   },
   /**
@@ -340,6 +354,8 @@ export const objectInfoFixture: ObjectInfo = {
         image: ['IMAGE'],
         image_max_size: ['INT', { default: 1024, min: 0, max: 4096, step: 64 }],
         image_quality: ['INT', { default: 90, min: 30, max: 100 }],
+        /* The switch that ignores a connected image; last, as the node has it. */
+        use_image: ['BOOLEAN', { default: true }],
       },
     },
   },

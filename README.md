@@ -2000,6 +2000,66 @@ widget. A workflow saying `127.0.0.1` means "the Ollama next to ComfyUI", so
 when ComfyUI is somewhere else that host is substituted; if nothing answers, the
 field says so and stays typeable.
 
+## The llama.cpp nodes, in this repo
+
+`comfyllama/` is a copy of [comfyllama](https://github.com/alexrutz/comfyllama)
+— llama.cpp nodes for ComfyUI — kept here rather than referenced, because the
+two are changed together often enough that a submodule was two commits and a
+pointer update for what should be one edit. Copy the folder into
+`ComfyUI/custom_nodes/` and it is a normal custom-node install; nothing in it
+depends on Latent, and Latent runs perfectly well without it.
+
+What the nodes are for is in `comfyllama/README.md`. What matters from this
+side is that Latent already knows about three of them:
+
+- **`LlamaServerConnect`** has its address, token and model filled in from the
+  connection Latent is already using for chat, so a workflow that asks a model
+  for something on the way through does not carry a second copy of your setup.
+  See `shared/src/modelServer.ts`.
+- **`LlamaServerPresetChat`** carries six system prompts and switches between
+  them by name. Those names live in *values*, not in the node definition, so a
+  form built from `/object_info` alone would offer `Preset 1…6` and choosing one
+  would fail. `shared/src/presetChat.ts` reshapes the form against the values in
+  hand and settles the choice on the way to the graph.
+- **`EmptyLatentByAspectRatio`** gives a ratio and a megapixel budget instead of
+  a width and a height, and its `divisible_by` is a combo whose options are
+  numbers rather than strings.
+
+Every chat node also takes an optional picture, with a `use_image` switch in
+front of it. Latent's form follows that switch: the two encoding controls
+disappear when there is no picture wired in *or* when the switch is off, and the
+switch itself only appears once something is actually connected to it — but
+never disappears while it is off, because it is the thing that turns the picture
+back on.
+
+The node definitions and the fixture Latent's tests build forms from are checked
+against each other by `shared/src/fixtures/comfyllama.test.ts`, which asks the
+vendored Python what it actually declares. Two copies of a definition drift, and
+this one would drift silently — the tests would go on passing against a node
+nobody has any more. It skips itself where there is no Python, so `npm test`
+still runs on a machine that only has Node.
+
+### Updating it
+
+It is a plain copy, so replacing it is a plain copy:
+
+```bash
+git clone https://github.com/alexrutz/comfyllama /tmp/comfyllama
+rm -rf comfyllama && mkdir comfyllama
+(cd /tmp/comfyllama && tar -c --exclude=.git .) | tar -x -C comfyllama
+npm test   # the fixture check says whether anything Latent depends on moved
+```
+
+Changes made here go back the other way by copying the folder into a checkout of
+comfyllama and committing there. Latent's own tooling is kept out of it —
+`eslint.config.js`, `.prettierignore` and `.dockerignore` all exclude it, since
+it lives by ComfyUI's conventions rather than this repo's, and its own tests are
+Python:
+
+```bash
+cd comfyllama && python3 -m unittest discover -s tests
+```
+
 ## The terminal
 
 Set `LATENT_TERMINAL=1` and Settings gains a shell on the machine running
