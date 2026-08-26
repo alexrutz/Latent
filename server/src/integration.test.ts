@@ -5322,6 +5322,214 @@ describe('chat', () => {
       }
     }, 40_000);
 
+    /**
+     * Switching it on has to mean something wherever the loop happens to be.
+     *
+     * The fault: the mode was read once, when a run started, and carried for
+     * the rest of it — while the strip on the screen read the setting. Turn it
+     * on part way through and the two said different things, so it "sometimes
+     * iterated and sometimes waited" with nothing on screen to explain which.
+     * A run parked on a proposal is the worst case, because being parked is
+     * exactly the state with no next step to notice the change.
+     */
+    describe('turning it on part way through a run', () => {
+      const setAutonomous = (chatId: string, on: boolean) =>
+        intent(chatId, 'autonomous', { on });
+
+      /**
+       * Open the event stream and leave again.
+       *
+       * `watching` waits for the run to settle, which is the one thing that
+       * must not happen here — the point is that arriving sets it going. So
+       * this only opens the connection, which is what the server reacts to.
+       */
+      const lookIn = async (chatId: string): Promise<() => void> => {
+        const controller = new AbortController();
+        const response = await api(`/api/chat/conversations/${chatId}/events`, {
+          signal: controller.signal,
+        });
+        expect(response.status).toBe(200);
+        void response.body?.getReader().read().catch(() => undefined);
+        return () => controller.abort();
+      };
+
+      /** Wait until a proposal has been answered, however it was answered. */
+      const decided = (chatId: string, messageId: string) =>
+        waitFor(async () => {
+          const stored = await json<{ messages: ChatMessage[] }>(
+            api(`/api/chat/conversations/${chatId}`),
+          );
+          const message = stored.messages.find((entry) => entry.id === messageId);
+          return message?.toolResult?.decision ?? null;
+        });
+
+      it('takes up the proposal that was already waiting', async () => {
+        const llama = createMockLlama();
+        const url = await llama.listen(0);
+
+        try {
+          await useLlama(url);
+          // Off to begin with: this is a run that started as an ordinary one.
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({ chat: { autonomous: { enabled: false, maxRounds: 4 } } }),
+          });
+
+          const { chatId, messageId } = await upToAPrompt(llama, 'a harbour at dawn');
+          const parked = await json<{ run: ChatRun }>(api(`/api/chat/conversations/${chatId}`));
+          expect(parked.run.phase).toBe('awaiting');
+          expect(parked.run.mode).toBe('manual');
+
+          const after = await setAutonomous(chatId, true);
+
+          // The proposal is taken, not left sitting behind a truthful-looking
+          // strip. Both halves: the decision is recorded and a render started.
+          expect(after.phase).not.toBe('awaiting');
+          expect(after.mode).toBe('auto');
+          const stored = await json<{ messages: ChatMessage[] }>(
+            api(`/api/chat/conversations/${chatId}`),
+          );
+          const decided = stored.messages.find((message) => message.id === messageId);
+          expect(decided?.toolResult?.decision).toBe('accepted');
+
+          await api(`/api/chat/conversations/${chatId}/stop`, { method: 'POST' });
+        } finally {
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({ chat: { autonomous: { enabled: false, maxRounds: 4 } } }),
+          });
+          await llama.close();
+        }
+      }, 40_000);
+
+      /**
+       * The same switch lives in Settings, which patches the setting and never
+       * reaches this conversation. Coming back to it is the next chance to act.
+       */
+      it('engages on a waiting run when the switch was flipped elsewhere', async () => {
+        const llama = createMockLlama();
+        const url = await llama.listen(0);
+
+        try {
+          await useLlama(url);
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({ chat: { autonomous: { enabled: false, maxRounds: 4 } } }),
+          });
+
+          const { chatId, messageId } = await upToAPrompt(llama, 'a quiet street');
+
+          // Exactly what the Settings screen does: no intent, just the setting.
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({ chat: { autonomous: { enabled: true, maxRounds: 4 } } }),
+          });
+
+          // Opening the conversation is what notices.
+          const leave = await lookIn(chatId);
+          expect(await decided(chatId, messageId)).toBe('accepted');
+          leave();
+
+          await api(`/api/chat/conversations/${chatId}/stop`, { method: 'POST' });
+        } finally {
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({ chat: { autonomous: { enabled: false, maxRounds: 4 } } }),
+          });
+          await llama.close();
+        }
+      }, 40_000);
+
+      /**
+       * A run that stopped because it used its budget must not make the switch
+       * a no-op — pressing it then looks exactly like the fault being fixed.
+       *
+       * So it is staged properly: one round allowed, spent, and the run parked
+       * on the rewrite it was not allowed to take. Pressing ∞ again is fresh
+       * permission and picks that rewrite up.
+       */
+      it('picks a run back up after it has spent its rounds', async () => {
+        const llama = createMockLlama();
+        const url = await llama.listen(0);
+
+        try {
+          await useLlama(url);
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({
+              chat: {
+                review: { enabled: true, threshold: 'balanced', askWhen: 'unsure' },
+                autonomous: { enabled: true, maxRounds: 1 },
+              },
+            }),
+          });
+
+          const chat = await json<{ id: string }>(
+            api('/api/chat/conversations', { method: 'POST' }),
+          );
+          await render('a lighthouse in fog');
+          llama.script({
+            toolCall: {
+              name: 'build_prompt',
+              arguments: { prompt: 'a lighthouse in fog', reason: 'Quiet.' },
+            },
+          });
+          llama.script({
+            content: 'The fog is thin.',
+            toolCall: {
+              name: 'revise_prompt',
+              arguments: { prompt: 'a lighthouse in heavy fog', reason: 'More fog.', score: 5 },
+            },
+          });
+
+          // One round is allowed and taken; the rewrite after it is not.
+          const spent = await intent(chat.id, 'say', { content: 'build me a prompt' });
+          expect(spent.phase).toBe('awaiting');
+          expect(spent.round).toBe(1);
+          expect(spent.note).toContain('1 of 1');
+          const parked = spent.awaiting as string;
+          expect(parked).toBeTruthy();
+
+          // Pressing it again is permission, not a repeat of a setting already
+          // set — the round count starts over and the rewrite is taken.
+          llama.script({ content: 'Better.' });
+          await setAutonomous(chat.id, true);
+          expect(await decided(chat.id, parked)).toBe('accepted');
+
+          await api(`/api/chat/conversations/${chat.id}/stop`, { method: 'POST' });
+        } finally {
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({ chat: { autonomous: { enabled: false, maxRounds: 4 } } }),
+          });
+          await llama.close();
+        }
+      }, 60_000);
+
+      it('leaves a wandering run alone, which is a different thing entirely', async () => {
+        const llama = createMockLlama();
+        const url = await llama.listen(0);
+
+        try {
+          await useLlama(url);
+          const chat = await json<{ id: string }>(
+            api('/api/chat/conversations', { method: 'POST' }),
+          );
+          await intent(chat.id, 'wander', { on: true });
+          const after = await setAutonomous(chat.id, true);
+          expect(after.mode).toBe('wander');
+
+          await api(`/api/chat/conversations/${chat.id}/stop`, { method: 'POST' });
+        } finally {
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({ chat: { autonomous: { enabled: false, maxRounds: 4 } } }),
+          });
+          await llama.close();
+        }
+      }, 40_000);
+    });
+
     it('asks how to improve the match, and keeps the picture for the answer', async () => {
       const llama = createMockLlama();
       const url = await llama.listen(0);

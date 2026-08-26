@@ -235,6 +235,26 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): ChatE
   );
 
   /**
+   * Carry on by itself, from here.
+   *
+   * A route rather than a settings patch because it has to reach the run as
+   * well as the setting: turning it on while a proposal is waiting has to take
+   * that proposal, or the switch does nothing visible and the strip above it
+   * starts describing a loop that is not running.
+   */
+  app.post<{ Params: { id: string }; Body: { on?: boolean } }>(
+    '/api/chat/conversations/:id/autonomous',
+    async (request, reply) => {
+      const chat = ctx.store.getChat(request.params.id);
+      if (!chat) return reply.code(404).send({ error: 'No such conversation' });
+      return settle(
+        reply,
+        engine.runner(chat.id).accept({ type: 'autonomous', on: request.body?.on !== false }),
+      );
+    },
+  );
+
+  /**
    * What the user decided about a proposal.
    *
    * Accepting a prompt queues it here, in the same act that records the

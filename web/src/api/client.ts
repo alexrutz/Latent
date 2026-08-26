@@ -614,6 +614,19 @@ export const api = {
       body: JSON.stringify({ on }),
     }),
 
+  /**
+   * Carry on by itself, and take up whatever is waiting.
+   *
+   * Writes the setting server-side rather than being paired with a settings
+   * patch here: two writes for one switch is how the strip and the loop came to
+   * disagree about whether a run was autonomous.
+   */
+  setAutonomous: (id: string, on: boolean) =>
+    request<{ ok: true }>(`/api/chat/conversations/${id}/autonomous`, {
+      method: 'POST',
+      body: JSON.stringify({ on }),
+    }),
+
   decideTool: (
     id: string,
     body: {

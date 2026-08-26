@@ -4,7 +4,7 @@ import { CHAT_IMAGE_SIZES } from '@latent/shared';
 import type { ChatMessage, ChatToolCall } from '@latent/shared';
 
 import { api } from '../api/client';
-import { useGeneration, useGenerations, useSettings, useUpdateSettings } from '../api/queries';
+import { useGeneration, useGenerations, useSettings } from '../api/queries';
 import { Still, Thumb, type ViewerEntry } from '../components/ImageViewer';
 import { RunProgress } from '../components/LiveBar';
 import { ViewerWithActions } from '../components/ViewerWithActions';
@@ -118,7 +118,6 @@ function toolLabel(call: ChatToolCall): string {
 
 export function ChatScreen() {
   const settings = useSettings();
-  const updateSettings = useUpdateSettings();
 
   /*
    * The conversation itself lives in `state/chat`, not here.
@@ -306,17 +305,19 @@ export function ChatScreen() {
   const toggleAutonomous = async () => {
     const chatSettings = settings.data?.chat;
     if (!chatSettings) return;
-    const enabled = !chatSettings.autonomous.enabled;
 
-    await updateSettings.mutateAsync({
-      chat: {
-        ...chatSettings,
-        autonomous: { ...chatSettings.autonomous, enabled },
-        ...(enabled && !chatSettings.review.enabled
-          ? { review: { ...chatSettings.review, enabled: true } }
-          : {}),
-      },
-    });
+    /*
+     * One write, to the conversation, not two.
+     *
+     * This used to patch the setting from here while the loop kept the answer
+     * it had taken when the run started — so flipping the switch part way
+     * through left the strip announcing a run that carries on by itself and a
+     * loop that stopped at the next proposal and waited. The server owns both
+     * now: it writes the setting, turns the review on with it if it was off,
+     * and takes up whatever proposal is already on the table.
+     */
+    await store().setAutonomous(!chatSettings.autonomous.enabled);
+    await settings.refetch();
   };
 
   const startNew = async () => {
@@ -566,7 +567,7 @@ export function ChatScreen() {
         raises. Stop halts this run; the mode itself stays on for the next thing
         you say, which is what the ∞ button and Settings are for.
       */}
-      {autonomous?.enabled && (
+      {autonomous?.enabled && !wandering && (
         <div
           data-testid="autonomous-strip"
           className="mx-3 mb-1 flex items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-xs text-muted"

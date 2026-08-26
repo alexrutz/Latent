@@ -93,6 +93,8 @@ interface ChatStore {
   askForPrompt: (options?: { fresh?: boolean; instant?: boolean }) => Promise<void>;
   startWander: () => Promise<void>;
   stopWander: () => Promise<void>;
+  /** The ∞ switch. Writes the setting and engages on whatever is waiting. */
+  setAutonomous: (on: boolean) => Promise<void>;
   stop: () => Promise<void>;
   resolveTool: (body: {
     decision: 'accepted' | 'rejected';
@@ -407,6 +409,17 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const chat = get().chat;
       if (!chat) return;
       await api.setWandering(chat.id, false).catch(() => undefined);
+    },
+
+    setAutonomous: async (on: boolean) => {
+      const chat = get().chat;
+      if (!chat) return;
+      set({ error: null });
+      try {
+        await api.setAutonomous(chat.id, on);
+      } catch (cause) {
+        set({ error: cause instanceof Error ? cause.message : 'Could not change that' });
+      }
     },
 
     stop: async () => {

@@ -68,6 +68,15 @@ export type ChatIntent =
   /** The ✦ button: ask for a prompt. `instant` queues it without a dialog. */
   | { type: 'prompt'; fresh?: boolean; instant?: boolean }
   | { type: 'wander'; on: boolean }
+  /**
+   * The ∞ button: carry on by itself.
+   *
+   * An intent rather than a settings patch, because it has to do something to
+   * the run in front of it as well as to the setting — a conversation already
+   * parked on a proposal is exactly the case where "turn autonomy on" has to
+   * mean "and take this one".
+   */
+  | { type: 'autonomous'; on: boolean }
   | {
       type: 'decide';
       messageId: string;
@@ -153,9 +162,33 @@ class Runner {
     // Whatever is true right now, before any delta — so a client that has just
     // connected, just reconnected and one asleep for an hour take one path.
     subscriber.send({ type: 'sync', run: this.run, partial: this.partial });
+    /*
+     * The switch can also be flipped somewhere this conversation never hears
+     * about — Settings has the same toggle, and it patches the setting without
+     * any intent reaching here. A run parked on a proposal would then sit
+     * there, because being parked is precisely the state with no next
+     * transition to notice the change. Coming back to the conversation is the
+     * next chance to act on it, so it is taken.
+     */
+    void this.reconcile();
     return () => {
       this.subscribers.delete(subscriber);
     };
+  }
+
+  /**
+   * Take up a proposal that autonomy would already have taken.
+   *
+   * Deliberately narrow: it only ever *starts* something the settings say
+   * should have started, and only from a standstill. It never stops anything,
+   * so arriving with the switch off leaves a run exactly as it was.
+   */
+  private async reconcile(): Promise<void> {
+    if (this.closed || !this.autoEnabled()) return;
+    const run = this.run;
+    if (run.mode === 'wander' || run.phase !== 'awaiting' || !run.awaiting) return;
+    if (run.round >= this.ctx.store.getSettings().chat.autonomous.maxRounds) return;
+    await this.takeUpWaiting(run.awaiting);
   }
 
   private emit(event: ChatEvent): void {
@@ -174,10 +207,34 @@ class Runner {
     // Nothing is written after close: whatever the state was is what the next
     // process should resume from, not a half-transition made on the way out.
     if (this.closed) return this.run;
-    const run = { ...this.run, ...patch };
+    const merged = { ...this.run, ...patch };
+    /*
+     * `auto` versus `manual` is not this run's to remember.
+     *
+     * It used to be decided once, when the run started, and then carried for
+     * the rest of it — while the strip on the screen read the setting. Flip the
+     * switch at any moment other than just before speaking and the two said
+     * different things: the strip announced a run carrying on by itself, and
+     * the loop stopped at the next proposal and waited to be tapped. That is
+     * the whole of "sometimes it iterates and sometimes it does not".
+     *
+     * So it is derived here instead, on every transition, and `wander` is left
+     * alone because that one really is a kind of run rather than a preference.
+     */
+    const run: ChatRun =
+      merged.mode === 'wander' ? merged : { ...merged, mode: this.autoMode() };
     this.ctx.store.setChatRun(this.chatId, run);
     this.emit({ type: 'run', run });
     return run;
+  }
+
+  /** Whether runs carry on by themselves, as the setting says right now. */
+  private autoEnabled(): boolean {
+    return this.ctx.store.getSettings().chat.autonomous.enabled;
+  }
+
+  private autoMode(): ChatRun['mode'] {
+    return this.autoEnabled() ? 'auto' : 'manual';
   }
 
   /** A render has been drawn on somebody's screen. */
@@ -198,6 +255,8 @@ class Runner {
         return this.askForPrompt(intent);
       case 'wander':
         return this.setWandering(intent.on);
+      case 'autonomous':
+        return this.setAutonomous(intent.on);
       case 'decide':
         return this.decide(intent);
       case 'stop':
@@ -245,7 +304,8 @@ class Runner {
      * say, so a stopped loop is released by talking to it and a long session
      * does not slowly exhaust its budget on renders from an hour ago.
      */
-    this.setRun({ ...IDLE_RUN, mode: this.startingMode(), phase: 'thinking', want: 'reply' });
+    // `mode` is derived in `setRun`, so it always matches the setting.
+    this.setRun({ ...IDLE_RUN, phase: 'thinking', want: 'reply' });
     void this.advance();
     return {};
   }
@@ -273,7 +333,6 @@ class Runner {
     // The button is a fresh instruction, so it releases a halted run too.
     this.setRun({
       phase: 'thinking',
-      mode: this.startingMode(),
       round: 0,
       want: intent.fresh ? 'freshPrompt' : 'prompt',
       /*
@@ -297,16 +356,76 @@ class Runner {
   }
 
   /**
-   * Whether this run carries on by itself, which is a setting rather than an
-   * intent.
+   * Turning "carry on by itself" on or off, from the chat itself.
    *
-   * Read at the start of a run rather than checked at every decision: "carry on
-   * by itself" is permission given before the run, and a switch flipped
-   * half way through one should not retroactively change what the last three
-   * rounds were allowed to do.
+   * The setting is written here rather than patched separately, so there is one
+   * write and no window where the screen and the loop disagree about it.
+   *
+   * Then it engages, whatever step the loop is on. A live reading of the
+   * setting is enough everywhere else — every transition passes through
+   * `setRun` — but a run parked on a proposal has no next transition to be
+   * caught by: it is waiting for a tap that autonomy is supposed to make
+   * unnecessary. So the thing on the table is taken up here.
    */
-  private startingMode(): ChatRun['mode'] {
-    return this.ctx.store.getSettings().chat.autonomous.enabled ? 'auto' : 'manual';
+  private async setAutonomous(on: boolean): Promise<IntentResult> {
+    const settings = this.ctx.store.getSettings();
+    if (settings.chat.autonomous.enabled !== on) {
+      this.ctx.store.updateSettings({
+        chat: {
+          ...settings.chat,
+          autonomous: { ...settings.chat.autonomous, enabled: on },
+          /*
+           * The review is what ends a run, so turning this on with it off would
+           * be a switch that quietly does nothing.
+           */
+          ...(on && !settings.chat.review.enabled
+            ? { review: { ...settings.chat.review, enabled: true } }
+            : {}),
+        },
+      });
+    }
+
+    const run = this.run;
+    if (!on || run.mode === 'wander') {
+      // Normalises the mode; nothing else to do. A wandering run is not the
+      // thing this switch is about, and turning it off simply stops the next
+      // proposal being taken automatically.
+      this.setRun({});
+      return {};
+    }
+
+    /*
+     * A spent budget must not make the switch a no-op.
+     *
+     * Reaching `maxRounds` is what left this run waiting in the first place, so
+     * engaging with the count still at the cap would look exactly like the
+     * fault being fixed: the strip says it is carrying on, and it does not.
+     * Turning it on is fresh permission, so it gets a fresh count.
+     */
+    const stalled = run.phase === 'awaiting' || run.phase === 'idle';
+    this.setRun({ ...(stalled ? { round: 0, note: null } : {}) });
+
+    if (run.phase === 'awaiting' && run.awaiting) {
+      return this.takeUpWaiting(run.awaiting);
+    }
+    return {};
+  }
+
+  /**
+   * Accept the proposal a run is sitting on, as autonomy would have done.
+   *
+   * Only a prompt: a question needs an answer that nothing here has, and a
+   * block proposal changes a library rather than making a picture. Both are
+   * left where they are — see `stoppedBecause`, which is what tells you why.
+   */
+  private async takeUpWaiting(messageId: string): Promise<IntentResult> {
+    const chat = this.ctx.store.getChat(this.chatId);
+    const message = chat?.messages.find((candidate) => candidate.id === messageId);
+    const call = message?.toolCall;
+    if (!call || message?.toolResult) return {};
+    if (call.tool !== 'build_prompt' && call.tool !== 'revise_prompt') return {};
+
+    return this.decide({ type: 'decide', messageId, decision: 'accepted' });
   }
 
   private async setWandering(on: boolean): Promise<IntentResult> {
@@ -633,8 +752,17 @@ class Runner {
       (run.mode === 'wander' ||
         // Asked for by name: "generate now" is an instruction, not a preference.
         run.autoAccept ||
-        // Standing permission, until a render clears the threshold.
-        (run.mode === 'auto' && run.round < settings.autonomous.maxRounds));
+        /*
+         * Standing permission, until a render clears the threshold.
+         *
+         * Read from the setting rather than from the run, so a switch flipped
+         * while this very turn was being written still counts. The run's own
+         * `mode` is derived from the same setting and would usually agree — but
+         * "usually" is what made this unpredictable, and the decision is the
+         * one place it has to be exact.
+         */
+        // (a wandering run has already matched above)
+        (this.autoEnabled() && run.round < settings.autonomous.maxRounds));
 
     if (!automatic) {
       /*

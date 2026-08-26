@@ -1078,6 +1078,15 @@ lowering it makes it settle sooner.
 
 Off by default, because every round is a render nobody watched being started.
 
+**It engages wherever the loop happens to be.** Switching it on mid-conversation
+is not a preference for next time: if a proposal is sitting on the table waiting
+for you, that proposal is taken and the run carries on from there. Pressing it
+again on a run that stopped at the round limit is fresh permission and picks it
+back up. This used to be the mode's worst fault — whether it engaged depended on
+whether the switch happened to be on at the moment you last spoke, so it
+sometimes iterated and sometimes waited to be tapped, with a strip above the
+composer announcing a run that carried on by itself either way.
+
 While a run is going, a strip above the composer says which round it is on and
 stops it on a tap. It ends by itself in four ways:
 
