@@ -644,6 +644,89 @@ test.describe('gallery, favourites and the prompt builder', () => {
     expect(new Set(reports).size).toBe(reports.length);
   });
 
+  /**
+   * A tile is the shape of its picture, when its row agrees on a shape.
+   *
+   * The grid used to be squares, which crops a third off a 2:3 portrait — and
+   * a gallery of generated pictures is mostly not square, because the ratio was
+   * chosen on purpose when the picture was made. Rows are a twelfth of a column
+   * tall now, so any shape between 2:1 and 1:2 is drawable; the row decides,
+   * because a row with two heights in it leaves a hole under the shorter one.
+   *
+   * Measured in the browser rather than asserted on a style string: the height
+   * comes out of sub-row spans, a zero row gap and the tile's own padding, and
+   * the only thing worth checking is what all that arithmetic actually drew.
+   */
+  test('draws a row of portraits as portraits, not as squares', async ({ page }) => {
+    // The seeded workflow, told to make portraits. Through the stored values
+    // rather than a second workflow, so the picker is not part of this test.
+    await withApi(async (ctx) => {
+      const listed = (await (await ctx.get('/api/workflows')).json()) as { id: string }[];
+      await ctx.patch(`/api/workflows/${listed[0]!.id}`, {
+        data: { lastValues: { '5.width': 512, '5.height': 768 } },
+      });
+    });
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a portrait');
+    await page.getByRole('button', { name: '4', exact: true }).click();
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    await page.getByRole('button', { name: 'Grid layout' }).click();
+    await page.getByLabel('Columns').fill('2');
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    // The picture's own box: the tile minus its gutter padding, which is the
+    // thing whose shape this test is about.
+    const tiles = page.getByRole('img', { name: 'a portrait' });
+    await expect(tiles).toHaveCount(4, { timeout: 60_000 });
+
+    /*
+     * The shape is only known once the browser has loaded a picture and told
+     * the server how big it is, so the first paint is square and the tiles
+     * settle a moment later. Poll rather than race it.
+     */
+    await expect
+      .poll(
+        async () => {
+          const boxes = await tiles.evaluateAll((nodes) =>
+            nodes.map((node) => {
+              const box = node.getBoundingClientRect();
+              return { width: box.width, height: box.height, top: Math.round(box.top) };
+            }),
+          );
+          if (boxes.some((box) => box.width === 0)) return 0;
+          return boxes[0]!.height / boxes[0]!.width;
+        },
+        { timeout: 30_000 },
+      )
+      .toBeGreaterThan(1.3);
+
+    const boxes = await tiles.evaluateAll((nodes) =>
+      nodes.map((node) => {
+        const box = node.getBoundingClientRect();
+        return { width: box.width, height: box.height, top: Math.round(box.top) };
+      }),
+    );
+
+    // 512x768 is 1.5 tall for its width, within the half-unit the row grid
+    // rounds to.
+    for (const box of boxes) {
+      expect(box.height / box.width).toBeGreaterThan(1.4);
+      expect(box.height / box.width).toBeLessThan(1.6);
+    }
+
+    // And nothing is ragged: two columns, so the four tiles are two pairs, and
+    // each pair shares a top edge and a height.
+    expect(boxes[0]!.top).toBe(boxes[1]!.top);
+    expect(boxes[2]!.top).toBe(boxes[3]!.top);
+    expect(Math.round(boxes[0]!.height)).toBe(Math.round(boxes[1]!.height));
+    expect(boxes[2]!.top).toBeGreaterThan(boxes[0]!.top);
+
+    await page.screenshot({ path: 'test-results/93-portrait-tiles.png' });
+  });
+
   test('lets the grid width be changed and remembers it', async ({ page }) => {
     await generate(page, 'grid check');
     await open(page, '/gallery');

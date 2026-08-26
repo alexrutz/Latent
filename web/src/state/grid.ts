@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-import { DEFAULT_GRID_SETTINGS, type GenerationImage, type GridSettings, type TileSpan } from '@latent/shared';
+import { DEFAULT_GRID_SETTINGS, type GridSettings, type TileSpan } from '@latent/shared';
 
 import { TABLET_QUERY } from './layout';
 
@@ -58,47 +58,31 @@ export function useGridSettings(): [GridSettings, (patch: Partial<GridSettings>)
 }
 
 /**
- * How many grid cells a thumbnail should occupy.
+ * The shapes a picture can be pinned to by hand.
  *
- * The goal is to show as much of each picture as possible: a wide image gets a
- * wide tile, a tall one a tall tile, so nothing has to be cropped to a square.
- * A manual override always wins, and without known dimensions we fall back to
- * a single cell rather than guessing and making the layout jump later.
- */
-export function tileSpanFor(
-  image: Pick<GenerationImage, 'width' | 'height' | 'tileSpan'>,
-  settings: GridSettings,
-): TileSpan {
-  if (image.tileSpan) return image.tileSpan;
-  if (settings.uniformTiles) return { cols: 1, rows: 1 };
-  if (!image.width || !image.height) return { cols: 1, rows: 1 };
-
-  const ratio = image.width / image.height;
-
-  // Thresholds sit near the common aspect ratios: 16:9 is 1.78, 3:2 is 1.5,
-  // 4:3 is 1.33. Anything past 1.6 reads as "wide" and is worth two columns.
-  if (ratio >= 1.6 && settings.columns > 1) return { cols: 2, rows: 1 };
-  if (ratio <= 0.625) return { cols: 1, rows: 2 };
-  return { cols: 1, rows: 1 };
-}
-
-/**
- * CSS for one tile.
+ * `cols` is whole columns; `rows` is that many column-widths of height, and it
+ * may be fractional — which is the point. A tile used to be a whole number of
+ * square cells, so the only shapes it could take were 1:1, 2:1 and 1:2, and a
+ * 2:3 picture had nowhere to go but a square. The grid's rows are a twelfth of
+ * a column now (see `planTiles`), so any of these is drawable at one column
+ * wide, and the list can say what it means: a ratio rather than a cell count.
  *
- * The grid uses fixed-height rows so a `row-span` is meaningful; `aspect-ratio`
- * alone would not let a tall image actually occupy two rows.
+ * Old stored overrides are whole numbers and still mean exactly what they did.
+ *
+ * "Wide" and "Tall" at the end are the two that take more than one column —
+ * for a picture worth featuring rather than one worth showing straight.
  */
-export function tileStyle(span: TileSpan, columns: number): React.CSSProperties {
-  return {
-    gridColumn: `span ${Math.min(span.cols, columns)}`,
-    gridRow: `span ${span.rows}`,
-  };
-}
-
 export const TILE_OPTIONS: { label: string; span: TileSpan | null }[] = [
   { label: 'Auto', span: null },
-  { label: '1×1', span: { cols: 1, rows: 1 } },
-  { label: '2×1', span: { cols: 2, rows: 1 } },
-  { label: '1×2', span: { cols: 1, rows: 2 } },
-  { label: '2×2', span: { cols: 2, rows: 2 } },
+  { label: '2:1', span: { cols: 1, rows: 0.5 } },
+  { label: '16:9', span: { cols: 1, rows: 9 / 16 } },
+  { label: '3:2', span: { cols: 1, rows: 2 / 3 } },
+  { label: '4:3', span: { cols: 1, rows: 0.75 } },
+  { label: '1:1', span: { cols: 1, rows: 1 } },
+  { label: '3:4', span: { cols: 1, rows: 4 / 3 } },
+  { label: '2:3', span: { cols: 1, rows: 1.5 } },
+  { label: '9:16', span: { cols: 1, rows: 16 / 9 } },
+  { label: '1:2', span: { cols: 1, rows: 2 } },
+  { label: 'Wide', span: { cols: 2, rows: 1 } },
+  { label: 'Big', span: { cols: 2, rows: 2 } },
 ];

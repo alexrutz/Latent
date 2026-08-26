@@ -5,7 +5,8 @@ import type { Favorite, FavoriteSort, GenerationImage, GenerationRecord } from '
 
 import { useFavorites, useGeneration } from '../api/queries';
 import { Thumb, type ViewerEntry } from '../components/ImageViewer';
-import { ThumbGrid, useTileStyle } from '../components/ThumbGrid';
+import { shapeOf, ThumbGrid, useTileStyle } from '../components/ThumbGrid';
+import { useMeasuredVersion } from '../state/measured';
 import { Toggle } from '../components/ParamControl';
 import { cn, EmptyState, Spinner } from '../components/ui';
 import { ViewerWithActions } from '../components/ViewerWithActions';
@@ -34,6 +35,16 @@ export function FavoritesScreen() {
   const [viewing, setViewing] = useState<string | null>(null);
 
   const items = favorites.data ?? [];
+  // The grid works its rows out from the whole list at once, so it needs the
+  // shapes in the order they are shown. A favourite with no picture is a slot
+  // like any other.
+  const measured = useMeasuredVersion();
+  const shapes = useMemo(
+    () => items.map((favorite) => shapeOf(favorite.image)),
+    // `measured` is a signal rather than a value: it changes when a picture's
+    // size becomes known, which is when the rows need working out again.
+    [items, measured],
+  );
 
   /*
    * Every favourite, in the order they are listed, as viewer entries.
@@ -124,11 +135,16 @@ export function FavoritesScreen() {
       {header}
 
       {settings.favoriteThumbnails ? (
-        <ThumbGrid columns={settings.columns}>
-          {items.map((favorite) => (
+        <ThumbGrid
+          columns={settings.columns}
+          shapes={shapes}
+          uniform={settings.uniformTiles}
+        >
+          {items.map((favorite, at) => (
             <FavoriteTile
               key={favorite.id}
               favorite={favorite}
+              at={at}
               onOpen={() => setViewing(favorite.id)}
             />
           ))}
@@ -181,12 +197,17 @@ export function FavoritesScreen() {
   );
 }
 
-function FavoriteTile({ favorite, onOpen }: { favorite: Favorite; onOpen: () => void }) {
-  const [settings] = useGridSettings();
-  const style = useTileStyle(
-    favorite.image ?? { width: null, height: null, tileSpan: null },
-    settings,
-  );
+function FavoriteTile({
+  favorite,
+  at,
+  onOpen,
+}: {
+  favorite: Favorite;
+  /** Its place in the grid; the shape belongs to the row. See `planTiles`. */
+  at: number;
+  onOpen: () => void;
+}) {
+  const style = useTileStyle(at);
 
   return (
     <div className="relative min-w-0" style={style}>

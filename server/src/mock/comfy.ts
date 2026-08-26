@@ -280,7 +280,7 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
         send(clientId, 'executed', { prompt_id: promptId, node: nodeId, output });
       } else if (isOutput) {
         const batch = typeof findBatchSize(workflow) === 'number' ? findBatchSize(workflow) : 1;
-        const size = findOutputSize(workflow);
+        const { width, height } = findOutputShape(workflow);
         const images: ComfyImageRef[] = [];
         for (let i = 0; i < batch; i += 1) {
           /*
@@ -292,7 +292,7 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
           const filename = `Latent_${String(job.number).padStart(5, '0')}_${nodeId}_${i}.png`;
           files.set(
             `output//${filename}`,
-            renderPlaceholder(size, size, `${seed}#${i}`),
+            renderPlaceholder(width, height, `${seed}#${i}`),
           );
           images.push({ filename, subfolder: '', type: 'output' });
         }
@@ -393,14 +393,28 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
    * in a workflow should not hang the mock.
    */
   function findOutputSize(workflow: ApiWorkflow): number {
-    let largest = outputSize;
+    const { width, height } = findOutputShape(workflow);
+    return Math.max(width, height);
+  }
+
+  /**
+   * The shape of the picture, not just how big it is.
+   *
+   * Width and height are read separately so a workflow asking for 832x1216 gets
+   * a portrait. It used to take the larger of the two for both, which made
+   * every mock render square — fine until something downstream cared what shape
+   * a picture was, and the gallery's tile layout cares a great deal.
+   */
+  function findOutputShape(workflow: ApiWorkflow): { width: number; height: number } {
+    let width = outputSize;
+    let height = outputSize;
     for (const node of Object.values(workflow)) {
-      for (const key of ['width', 'height'] as const) {
-        const value = node.inputs?.[key];
-        if (typeof value === 'number' && value > largest) largest = Math.min(value, 4096);
-      }
+      const w = node.inputs?.width;
+      const h = node.inputs?.height;
+      if (typeof w === 'number' && w > width) width = Math.min(w, 4096);
+      if (typeof h === 'number' && h > height) height = Math.min(h, 4096);
     }
-    return largest;
+    return { width, height };
   }
 
   async function drain(): Promise<void> {

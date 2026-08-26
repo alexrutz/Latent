@@ -107,9 +107,10 @@ down the side, and the render on screen beside the form that made it. See
   those separately, and generate more like it in one tap. Opening one gives the
   gallery's own viewer — the same rating, keep, save, reuse and details actions,
   and a swipe through the rest of the run it came from.
-- **A grid that fits the pictures.** Adjustable column count; each tile takes its
-  shape from the image's aspect ratio so nothing is cropped square, with a
-  per-image override. Only thumbnails are ever downloaded.
+- **A grid that fits the pictures.** Adjustable column count; a tile is the
+  shape of its picture — 2:3, 4:3, 16:9 and anything between 2:1 and 1:2 — so
+  nothing is cropped to a square, with a per-image override. Only thumbnails are
+  ever downloaded.
 - **Import an existing output folder.** Point Latent at a ComfyUI output
   directory and walk it a folder at a time — a day, a project, a model — with
   image counts on each. Import a picture, a selection, or a whole folder tree in
@@ -1774,6 +1775,31 @@ one of them gone. Folded days leave the viewer's swipe list too, or putting a
 day away would be a lie about what you are browsing. Which days are folded is
 kept on the device: that is a fact about this screen and this phone, not about
 the pictures.
+
+**A tile is the shape of its picture.** A grid of squares crops a third off a
+2:3 portrait, and a gallery of generated pictures is mostly not square — the
+ratio was chosen on purpose when the picture was made. So the rows are a twelfth
+of a column tall rather than a whole cell, which is what lets a tile be 2:3 or
+4:3 rather than only 1:1, 2:1 or 1:2.
+
+The shape is decided a **row at a time**, and that is the part that makes it
+work. A row with two tile heights in it leaves a hole under the shorter one —
+which is the reason galleries square everything off in the first place. So a row
+of pictures that agree on a shape is drawn at that shape, flush on both edges,
+and a row that disagrees is squared. Nearly agreeing counts: 3:2 and 4:3 are the
+same sort of picture and share a shape between them, a portrait and a landscape
+are not and do not. Either way every tile in a row is the same height by
+construction, so nothing is ever ragged.
+
+Holding a tile offers the shapes by name — 2:1, 16:9, 3:2, 4:3, 1:1, 3:4, 2:3,
+9:16, 1:2, plus **Wide** and **Big** for a picture worth featuring. A shape
+chosen by hand is used exactly, and sets its row's height so the row stays
+flush. **Uniform tiles** in the grid-layout sheet turns the whole thing off and
+squares everything, which is what it always did.
+
+The sizes come from the pictures themselves, and the browser learns them by
+loading one. That measurement is kept locally as well as reported, so the run
+you just made is the right shape immediately rather than after the next refresh.
 
 **Sorting.** The ⇅ button holds the order — **newest**, **oldest**, or **best
 rated** — and the workflow filter, rather than three more chips across a row

@@ -27,6 +27,7 @@ import type {
 } from '@latent/shared';
 
 import { useLiveStore } from '../state/live';
+import { noteMeasured } from '../state/measured';
 import { api } from './client';
 
 export const queryKeys = {
@@ -466,6 +467,12 @@ const reportedSizes = new Set<string>();
  * never surface as an error over a picture that loaded perfectly.
  */
 export function reportImageDimensions(image: ComfyImageRef, width: number, height: number): void {
+  // Kept here first, whatever the server makes of it: the grid lays a tile out
+  // at the shape of its picture, and waiting for a refetch to learn a size this
+  // browser has already measured means the pictures you just made are square
+  // for a while. See `state/measured`.
+  noteMeasured(image, width, height);
+
   const key = `${image.type}/${image.subfolder}/${image.filename}`;
   if (reportedSizes.has(key)) return;
   reportedSizes.add(key);

@@ -20,7 +20,7 @@ import {
   ParamOverlayLine,
   ParamOverlayPicker,
 } from '../components/ParamOverlay';
-import { ThumbGrid, useTileStyle } from '../components/ThumbGrid';
+import { shapeOf, ThumbGrid, useTileStyle } from '../components/ThumbGrid';
 import { Toggle } from '../components/ParamControl';
 import { BlurButton } from '../components/BlurButton';
 import {
@@ -34,6 +34,7 @@ import {
 import { ViewerWithActions } from '../components/ViewerWithActions';
 import { maxColumns, TILE_OPTIONS, useGridSettings } from '../state/grid';
 import { useGalleryTargetStore } from '../state/galleryTarget';
+import { useMeasuredVersion } from '../state/measured';
 
 /** A stable identity for one picture, unique across runs. */
 function identify(entry: ViewerEntry | undefined): string | null {
@@ -638,26 +639,14 @@ export function GalleryScreen() {
             )}
 
             {!shut && (
-              <ThumbGrid columns={settings.columns}>
-                {section.items.map((record) =>
-                  record.images.length > 0 ? (
-                    record.images.map((image, imageIndex) => (
-                      <GalleryTile
-                        key={`${record.id}-${image.filename}`}
-                        ref={record.id === firstResultId && imageIndex === 0 ? firstResult : undefined}
-                        record={record}
-                        image={image}
-                        index={imageIndex}
-                        settings={settings}
-                        onOpen={openTile}
-                        onHold={holdTile}
-                      />
-                    ))
-                  ) : (
-                    <PlaceholderCard key={record.id} record={record} />
-                  ),
-                )}
-              </ThumbGrid>
+              <SectionGrid
+                items={section.items}
+                settings={settings}
+                firstResultId={firstResultId}
+                firstResult={firstResult}
+                onOpen={openTile}
+                onHold={holdTile}
+              />
             )}
           </div>
         );
@@ -733,8 +722,84 @@ export function GalleryScreen() {
   );
 }
 
+/** One slot in the grid: a picture, or a run that has not made one yet. */
+type SectionEntry =
+  | { kind: 'image'; record: GenerationRecord; image: GenerationImage; index: number }
+  | { kind: 'placeholder'; record: GenerationRecord };
+
 /**
- * One thumbnail, shaped by its aspect ratio and badged with its rating.
+ * One day's pictures.
+ *
+ * A component rather than a loop body because the layout has to be worked out
+ * for the whole day at once: a tile's shape belongs to its row, and a row is
+ * only knowable from the flat order of everything in the grid — which is not
+ * the shape the data arrives in, where pictures are nested inside their runs.
+ */
+function SectionGrid({
+  items,
+  settings,
+  firstResultId,
+  firstResult,
+  onOpen,
+  onHold,
+}: {
+  items: GenerationRecord[];
+  settings: GridSettings;
+  firstResultId: string | null;
+  firstResult: React.RefObject<HTMLDivElement | null>;
+  onOpen: (record: GenerationRecord, image: GenerationImage, index: number) => void;
+  onHold: (record: GenerationRecord, image: GenerationImage) => void;
+}) {
+  const entries = useMemo<SectionEntry[]>(
+    () =>
+      items.flatMap((record): SectionEntry[] =>
+        record.images.length > 0
+          ? record.images.map((image, index) => ({ kind: 'image', record, image, index }))
+          : [{ kind: 'placeholder', record }],
+      ),
+    [items],
+  );
+
+  /*
+   * Re-planned when a picture is measured, not only when the list changes: the
+   * shapes of the pictures just made are learned by the browser a moment after
+   * they appear, and a layout that ignored that would leave them square.
+   */
+  const measured = useMeasuredVersion();
+  const shapes = useMemo(
+    () => entries.map((entry) => (entry.kind === 'image' ? shapeOf(entry.image) : {})),
+    // `measured` is a signal rather than a value: it changes when a picture's
+    // size becomes known, which is when the rows need working out again.
+    [entries, measured],
+  );
+
+  return (
+    <ThumbGrid columns={settings.columns} shapes={shapes} uniform={settings.uniformTiles}>
+      {entries.map((entry, at) =>
+        entry.kind === 'image' ? (
+          <GalleryTile
+            key={`${entry.record.id}-${entry.image.filename}`}
+            ref={
+              entry.record.id === firstResultId && entry.index === 0 ? firstResult : undefined
+            }
+            record={entry.record}
+            image={entry.image}
+            index={entry.index}
+            at={at}
+            settings={settings}
+            onOpen={onOpen}
+            onHold={onHold}
+          />
+        ) : (
+          <PlaceholderCard key={entry.record.id} record={entry.record} at={at} />
+        ),
+      )}
+    </ThumbGrid>
+  );
+}
+
+/**
+ * One thumbnail, shaped by its row and badged with its rating.
  *
  * Memoised, and it matters: a gallery is hundreds of these, and without it every
  * one re-rendered whenever anything on the screen changed.
@@ -746,12 +811,20 @@ const GalleryTile = memo(
       record: GenerationRecord;
       image: GenerationImage;
       index: number;
+      /**
+       * Where this tile sits in the grid, counting placeholders.
+       *
+       * Not the same as `index`, which is the picture's place within its own
+       * run. The shape of a tile belongs to its row rather than to its picture,
+       * so the layout is looked up by position — see `planTiles`.
+       */
+      at: number;
       settings: GridSettings;
       onOpen: (record: GenerationRecord, image: GenerationImage, index: number) => void;
       onHold: (record: GenerationRecord, image: GenerationImage) => void;
     }
-  >(function GalleryTile({ record, image, index, settings, onOpen, onHold }, ref) {
-    const style = useTileStyle(image, settings);
+  >(function GalleryTile({ record, image, index, at, settings, onOpen, onHold }, ref) {
+    const style = useTileStyle(at);
     const overlay = useMemo(
       () => overlayValues(record, settings.gridParams),
       [record, settings.gridParams],
@@ -826,30 +899,34 @@ const GalleryTile = memo(
  * image. Clearing a queue of eight used to leave eight tombstones at the top of
  * the gallery for pictures that were never made.
  */
-function PlaceholderCard({ record }: { record: GenerationRecord }) {
+function PlaceholderCard({ record, at }: { record: GenerationRecord; at: number }) {
   const failed = record.status === 'failed';
+  // A slot in the grid like any other, so the rows after it stay in step. Its
+  // height comes from the row rather than from an aspect ratio of its own.
+  const style = useTileStyle(at);
 
   return (
-    <div
-      className={cn(
-        'grid aspect-square place-items-center rounded-xl border p-3 text-center',
-        failed ? 'border-danger/30 bg-danger/5' : 'border-line bg-surface',
-      )}
-      title={record.error ?? undefined}
-    >
-      {failed ? (
-        <div className="space-y-1">
-          <p className="text-xs font-medium text-danger">Failed</p>
-          <p className="line-clamp-3 text-[10px] text-muted">{record.error}</p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          <Spinner className="mx-auto size-5 text-muted" />
-          <p className="text-[10px] text-muted">
-            {record.status === 'running' ? 'Rendering' : 'Queued'}
-          </p>
-        </div>
-      )}
+    <div style={style} title={record.error ?? undefined}>
+      <div
+        className={cn(
+          'grid size-full place-items-center rounded-xl border p-3 text-center',
+          failed ? 'border-danger/30 bg-danger/5' : 'border-line bg-surface',
+        )}
+      >
+        {failed ? (
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-danger">Failed</p>
+            <p className="line-clamp-3 text-[10px] text-muted">{record.error}</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <Spinner className="mx-auto size-5 text-muted" />
+            <p className="text-[10px] text-muted">
+              {record.status === 'running' ? 'Rendering' : 'Queued'}
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
