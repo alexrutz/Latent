@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Tuple
 
 from .. import backend, reasoning
 from ..images import images_to_content
+from ..scale import DEFAULT_RANGES, INTEGER, SCALED, scaled_values
 from .common import (CATEGORY, CATEGORY_ADVANCED, active_image,
                      generation_inputs, image_inputs, is_changed_for_seed,
                      thinking_input, wants_image)
@@ -241,8 +242,73 @@ def _enable(label: str) -> Any:
     })
 
 
+#: How far each end of an intensity range may be pushed, per parameter.
+_RANGE_CAPS: Dict[str, float] = {"temperature": 5.0, "top_p": 1.0, "top_k": 1000.0}
+
+
+def _range(name: str, end: str, value: float) -> Any:
+    """One end of one parameter's intensity range, as a widget."""
+    integer = name in INTEGER
+    spec: Dict[str, Any] = {
+        "default": int(value) if integer else float(value),
+        "min": 0,
+        "max": _RANGE_CAPS[name],
+        "tooltip": f"What intensity {'0' if end == 'min' else '1'} means for "
+                   f"{name}. Putting the larger number in 'min' is allowed and "
+                   "runs this parameter against the slider, which is how you "
+                   "say 'this one goes the other way'.",
+    }
+    if not integer:
+        spec["step"] = 0.01
+    return ("INT" if integer else "FLOAT", spec)
+
+
+def _intensity_inputs() -> Dict[str, Any]:
+    """The slider, its switch, and what its two ends mean.
+
+    Appended after the individual settings rather than put in front of them.
+    ComfyUI stores widget values as a positional list, so a widget inserted
+    above an existing one shifts every value after it in an already-saved
+    workflow — a repeat penalty silently becoming a mirostat tau. The web
+    extension greys and hides these into the right shape on the node itself.
+    """
+    inputs: Dict[str, Any] = {
+        "use_intensity": ("BOOLEAN", {
+            "default": False,
+            "label_on": "one slider",
+            "label_off": "separate values",
+            "tooltip": "Drive temperature, top_p and top_k from the single "
+                       "'intensity' slider instead of setting each one. While "
+                       "on, the slider decides all three and their own "
+                       "switches are turned on for you.",
+        }),
+        "intensity": ("FLOAT", {
+            "default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01,
+            "display": "slider",
+            "tooltip": "0 is the low end of every range below, 1 the high end, "
+                       "and the map between them is linear. Typing a value into "
+                       "temperature, top_p or top_k moves this to match it.",
+        }),
+    }
+    for name in SCALED:
+        low, high = DEFAULT_RANGES[name]
+        inputs[f"{name}_min"] = _range(name, "min", low)
+        inputs[f"{name}_max"] = _range(name, "max", high)
+    return inputs
+
+
 class LlamaCppSampling:
-    """Advanced sampler settings, each switched on individually."""
+    """Advanced sampler settings, each switched on individually.
+
+    Two ways to reach the same three numbers. Temperature, top_p and top_k are
+    the ones that move together in practice — they all say how much room the
+    sampler has — so beside the individual fields there is one `intensity`
+    slider that sets all three across ranges you define. Neither is the real
+    control and the other a shadow of it: moving the slider writes the fields,
+    and typing a field moves the slider to where that value sits. See
+    ``comfyllama/scale.py`` for the arithmetic, which the web extension runs
+    too so the node always shows what it is about to send.
+    """
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -276,6 +342,22 @@ class LlamaCppSampling:
                     "default": "", "multiline": True,
                     "tooltip": "One stop sequence per line. Escapes such as \\n work.",
                 }),
+                # Appended, not slotted in beside top_k where they read best:
+                # ComfyUI's widget values are positional, so anything inserted
+                # above an existing widget shifts every value after it in a
+                # workflow that has already been saved.
+                "use_temperature": _enable("temperature"),
+                "temperature": ("FLOAT", {
+                    "default": 0.7, "min": 0.0, "max": 5.0, "step": 0.01,
+                    "tooltip": "Overrides the temperature on the generation "
+                               "node. 0 makes sampling greedy.",
+                }),
+                "use_top_p": _enable("top_p"),
+                "top_p": ("FLOAT", {
+                    "default": 0.95, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Overrides top_p on the generation node.",
+                }),
+                **_intensity_inputs(),
             },
         }
 
@@ -284,13 +366,45 @@ class LlamaCppSampling:
     FUNCTION = "build"
     CATEGORY = CATEGORY_ADVANCED
     DESCRIPTION = ("Advanced sampler settings for the generation nodes. Each "
-                   "setting is only sent while its switch is on.")
+                   "setting is only sent while its switch is on, or all three "
+                   "of temperature, top_p and top_k from one intensity slider.")
+
+    @staticmethod
+    def ranges(values: Dict[str, Any]) -> Dict[str, Tuple[float, float]]:
+        """The six range widgets, as the pairs `scale.py` works in."""
+        pairs = {}
+        for name in SCALED:
+            low, high = DEFAULT_RANGES[name]
+            pairs[name] = (
+                float(values.get(f"{name}_min", low)),
+                float(values.get(f"{name}_max", high)),
+            )
+        return pairs
 
     def build(self, use_top_k, top_k, use_min_p, min_p, use_typical_p, typical_p,
               use_repeat_penalty, repeat_penalty, use_presence_penalty, presence_penalty,
               use_frequency_penalty, frequency_penalty, use_mirostat, mirostat_mode,
-              mirostat_tau, mirostat_eta, use_stop_sequences, stop_sequences):
+              mirostat_tau, mirostat_eta, use_stop_sequences, stop_sequences,
+              use_temperature=False, temperature=0.7, use_top_p=False, top_p=0.95,
+              use_intensity=False, intensity=0.5, **bounds):
         sampling: Dict[str, Any] = {}
+
+        # The slider decides all three, or none of them.
+        #
+        # Computed here rather than trusted from the fields, because the fields
+        # are only kept in step by the web extension — and a workflow queued
+        # from a phone, an API-format submission or a headless run has no
+        # extension. Doing the arithmetic on both sides means the slider means
+        # the same thing wherever it happened to be moved.
+        if use_intensity:
+            sampling.update(scaled_values(intensity, self.ranges(bounds)))
+            sampling["top_k"] = int(sampling["top_k"])
+            use_temperature = use_top_p = use_top_k = False
+
+        if use_temperature:
+            sampling["temperature"] = float(temperature)
+        if use_top_p:
+            sampling["top_p"] = float(top_p)
         if use_top_k:
             sampling["top_k"] = int(top_k)
         if use_min_p:

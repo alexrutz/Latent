@@ -100,6 +100,52 @@ repetition penalty and nothing else — it will not quietly pin `top_k` or
 not connecting the node at all. `mirostat_tau` and `mirostat_eta` are
 meaningless without the mode, so those three share one switch.
 
+`temperature` and `top_p` are on this node as well, on switches of their own.
+They override the generation node's when switched on, which is what lets one
+slider reach all three of them.
+
+### One slider for temperature, top_p and top_k
+
+Those three say roughly the same thing in three different units — how much room
+the sampler has — and they are almost always moved together and in the same
+direction. Doing that by hand is three edits and remembering which way each one
+points, which is why in practice they get left where they are.
+
+Turn on **`use_intensity`** and one `intensity` slider sets all three. Each has
+a range you define: `temperature_min`/`max`, `top_p_min`/`max`, `top_k_min`/
+`max`. Intensity 0 is the low end of every range, 1 the high end, and the map
+between them is linear, so 0.5 is the middle of each. The defaults run from a
+model that will not surprise you to one that will:
+
+| | 0 | 1 |
+| --- | --- | --- |
+| `temperature` | 0.1 | 1.4 |
+| `top_p` | 0.5 | 1.0 |
+| `top_k` | 10 | 100 |
+
+Putting the larger number in `min` is allowed, and runs that parameter against
+the slider — the way to say "this one goes the other way" without doing the
+arithmetic yourself.
+
+**Both halves are the same control.** Move the slider and the three fields
+update to what is about to be sent. Type a value into one of the three and the
+slider snaps to where that value sits in its range, and the other two follow it
+there — typing a temperature is a statement about intensity. While the slider is
+on it decides all three, so their individual switches are turned on for you and
+greyed out; the value fields stay editable, because typing in one is the other
+way of moving the slider.
+
+The arithmetic lives in `comfyllama/scale.py` and is repeated in the web
+extension so the node always shows what it is about to send. The node computes
+it again when it runs, which means the slider means the same thing in a front
+end that submits an API-format workflow and never loads the extension —
+[Latent](https://github.com/alexrutz/Latent) among them.
+
+Like `use_image`, the slider and its six bounds are appended after the existing
+widgets rather than slotted in where they read best: ComfyUI stores widget
+values positionally, so anything inserted above an existing widget shifts every
+value after it in a workflow that has already been saved.
+
 ## Prompt presets in one node
 
 **Chat with Prompt Presets** holds up to six system prompts and switches

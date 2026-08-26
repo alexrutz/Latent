@@ -346,6 +346,50 @@ export const withPresetChat: ApiWorkflow = {
     },
     _meta: { title: 'Chat with Prompt Presets' },
   },
+  /*
+   * Advanced sampling, wired into the preset chat above.
+   *
+   * Exported with the intensity slider off, which is how the node comes out of
+   * ComfyUI untouched: the three values are set one at a time, and the slider
+   * and its six range bounds are inert. `idleSamplingControl` is what decides
+   * which of the two halves the form shows.
+   */
+  '23': {
+    class_type: 'LlamaCppSampling',
+    inputs: {
+      use_top_k: false,
+      top_k: 40,
+      use_min_p: false,
+      min_p: 0.05,
+      use_typical_p: false,
+      typical_p: 1,
+      use_repeat_penalty: false,
+      repeat_penalty: 1.1,
+      use_presence_penalty: false,
+      presence_penalty: 0,
+      use_frequency_penalty: false,
+      frequency_penalty: 0,
+      use_mirostat: false,
+      mirostat_mode: 2,
+      mirostat_tau: 5,
+      mirostat_eta: 0.1,
+      use_stop_sequences: false,
+      stop_sequences: '',
+      use_temperature: false,
+      temperature: 0.7,
+      use_top_p: false,
+      top_p: 0.95,
+      use_intensity: false,
+      intensity: 0.5,
+      temperature_min: 0.1,
+      temperature_max: 1.4,
+      top_p_min: 0.5,
+      top_p_max: 1,
+      top_k_min: 10,
+      top_k_max: 100,
+    },
+    _meta: { title: 'Sampler Settings' },
+  },
 };
 
 /**

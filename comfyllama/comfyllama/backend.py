@@ -300,6 +300,10 @@ def build_chat_handler(handler_name: str, clip_model_path: str):
 # unless it was explicitly enabled, so a parameter left off keeps whatever
 # default the model, llama-cpp-python or the llama-server command line sets.
 SAMPLING_KEYS = (
+    # Also on the generation node, and overridden from here when switched on:
+    # they are two of the three the intensity slider moves, and a slider that
+    # could not reach them would be a slider for top_k with company.
+    "temperature", "top_p",
     "top_k", "min_p", "typical_p", "repeat_penalty", "presence_penalty",
     "frequency_penalty", "mirostat_mode", "mirostat_tau", "mirostat_eta",
 )

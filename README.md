@@ -2032,6 +2032,19 @@ switch itself only appears once something is actually connected to it — but
 never disappears while it is off, because it is the thing that turns the picture
 back on.
 
+**Sampler Settings** reaches temperature, top_p and top_k two ways: three fields
+with a switch each, or one `intensity` slider that sets all three across ranges
+you give it. In ComfyUI a web extension keeps the two halves in step live — move
+the slider and the fields follow, type a temperature and the slider snaps to it.
+There is no extension here, and a two-way binding in a form that submits values
+rather than editing a graph would be a second copy of the arithmetic to keep
+honest. So Latent shows whichever half is deciding, which the node itself is
+quite clear about: with the slider on it computes all three and the fields
+cannot affect the result, so they go; with it off they are the whole story and
+the slider and its six bounds are inert, so those go. The switch between them is
+never hidden. The slider still works from a phone — the node does the same
+arithmetic when it runs, so it does not depend on the extension being loaded.
+
 The node definitions and the fixture Latent's tests build forms from are checked
 against each other by `shared/src/fixtures/comfyllama.test.ts`, which asks the
 vendored Python what it actually declares. Two copies of a definition drift, and

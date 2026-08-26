@@ -273,6 +273,57 @@ export const objectInfoFixture: ObjectInfo = {
       },
     },
   },
+  /**
+   * Advanced sampling, and the one node with two ways to reach the same values.
+   *
+   * Temperature, top_p and top_k are settable one at a time, each on its own
+   * switch, or all three at once from the `intensity` slider across the six
+   * range bounds below it. Latent shows whichever half is deciding — see
+   * `idleSamplingControl` — which is only testable against a node that declares
+   * both halves.
+   *
+   * Copied in the node's own order, which is not the order it reads in: the
+   * newer widgets are appended because ComfyUI stores widget values
+   * positionally.
+   */
+  LlamaCppSampling: {
+    display_name: 'Sampler Settings (llama.cpp)',
+    output: ['LLAMA_SAMPLING'],
+    input: {
+      required: {
+        use_top_k: ['BOOLEAN', { default: false }],
+        top_k: ['INT', { default: 40, min: 0, max: 1000 }],
+        use_min_p: ['BOOLEAN', { default: false }],
+        min_p: ['FLOAT', { default: 0.05, min: 0.0, max: 1.0, step: 0.01 }],
+        use_typical_p: ['BOOLEAN', { default: false }],
+        typical_p: ['FLOAT', { default: 1.0, min: 0.0, max: 1.0, step: 0.01 }],
+        use_repeat_penalty: ['BOOLEAN', { default: false }],
+        repeat_penalty: ['FLOAT', { default: 1.1, min: 0.0, max: 2.0, step: 0.01 }],
+        use_presence_penalty: ['BOOLEAN', { default: false }],
+        presence_penalty: ['FLOAT', { default: 0.0, min: -2.0, max: 2.0, step: 0.01 }],
+        use_frequency_penalty: ['BOOLEAN', { default: false }],
+        frequency_penalty: ['FLOAT', { default: 0.0, min: -2.0, max: 2.0, step: 0.01 }],
+        use_mirostat: ['BOOLEAN', { default: false }],
+        mirostat_mode: ['INT', { default: 2, min: 0, max: 2 }],
+        mirostat_tau: ['FLOAT', { default: 5.0, min: 0.0, max: 20.0, step: 0.1 }],
+        mirostat_eta: ['FLOAT', { default: 0.1, min: 0.0, max: 1.0, step: 0.01 }],
+        use_stop_sequences: ['BOOLEAN', { default: false }],
+        stop_sequences: ['STRING', { default: '', multiline: true }],
+        use_temperature: ['BOOLEAN', { default: false }],
+        temperature: ['FLOAT', { default: 0.7, min: 0.0, max: 5.0, step: 0.01 }],
+        use_top_p: ['BOOLEAN', { default: false }],
+        top_p: ['FLOAT', { default: 0.95, min: 0.0, max: 1.0, step: 0.01 }],
+        use_intensity: ['BOOLEAN', { default: false }],
+        intensity: ['FLOAT', { default: 0.5, min: 0.0, max: 1.0, step: 0.01 }],
+        temperature_min: ['FLOAT', { default: 0.1, min: 0, max: 5.0, step: 0.01 }],
+        temperature_max: ['FLOAT', { default: 1.4, min: 0, max: 5.0, step: 0.01 }],
+        top_p_min: ['FLOAT', { default: 0.5, min: 0, max: 1.0, step: 0.01 }],
+        top_p_max: ['FLOAT', { default: 1.0, min: 0, max: 1.0, step: 0.01 }],
+        top_k_min: ['INT', { default: 10, min: 0, max: 1000 }],
+        top_k_max: ['INT', { default: 100, min: 0, max: 1000 }],
+      },
+    },
+  },
   LlamaServerChat: {
     display_name: 'Chat (llama-server)',
     output: ['STRING', 'STRING', 'LLAMA_MESSAGES'],

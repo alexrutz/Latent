@@ -46,10 +46,124 @@ app.registerExtension({
 	},
 });
 
+// --- One slider across temperature, top_p and top_k -------------------------
+// The arithmetic is `comfyllama/scale.py`, reproduced here so the fields on the
+// node always show what the node is about to send. The node computes it again
+// when it runs, which is what makes the slider mean the same thing in a front
+// end that never loads this file.
+const SCALED = ["temperature", "top_p", "top_k"];
+const INTEGER_SCALED = new Set(["top_k"]);
+const DEFAULT_RANGES = {
+	temperature: [0.1, 1.4],
+	top_p: [0.5, 1.0],
+	top_k: [10, 100],
+};
+const INTENSITY_BOUNDS = SCALED.flatMap((name) => [`${name}_min`, `${name}_max`]);
+
+const clamp01 = (position) => {
+	const value = Number(position);
+	return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
+};
+
+function boundsOf(node, name) {
+	const [low, high] = DEFAULT_RANGES[name];
+	const min = Number(readWidget(node, `${name}_min`, low));
+	const max = Number(readWidget(node, `${name}_max`, high));
+	return [Number.isFinite(min) ? min : low, Number.isFinite(max) ? max : high];
+}
+
+function scaledValue(node, name, position) {
+	const [low, high] = boundsOf(node, name);
+	const value = low + clamp01(position) * (high - low);
+	// `top_k` is a count of tokens; the rest are rounded because they are shown
+	// in a widget, and 0.7499999999999999 is not a temperature anyone typed.
+	return INTEGER_SCALED.has(name) ? Math.round(value) : Math.round(value * 1e4) / 1e4;
+}
+
+function positionFor(node, name, value) {
+	const [low, high] = boundsOf(node, name);
+	// A range with no width has no answer; a slider that cannot move reads as
+	// being at its start.
+	return high === low ? 0 : clamp01((Number(value) - low) / (high - low));
+}
+
+/*
+ * Writing to widgets triggers the very callbacks that write to widgets, so the
+ * two halves would otherwise chase each other around. One flag, held for the
+ * length of one synchronisation.
+ */
+let syncing = false;
+
+function setWidget(node, name, value) {
+	const widget = widgetByName(node, name);
+	if (!widget || widget.value === value) {
+		return;
+	}
+	widget.value = value;
+	// Some widget types keep their own DOM element in step this way.
+	widget.callback?.(value, app.canvas, node);
+}
+
+/** Push the slider out into the three fields it stands for. */
+function applyIntensity(node) {
+	// Nothing while the slider is not the thing deciding — otherwise loading a
+	// workflow whose three values were set by hand would overwrite all of them
+	// with whatever position the slider happened to be left at.
+	if (syncing || readWidget(node, "use_intensity", false) !== true) {
+		return;
+	}
+	syncing = true;
+	try {
+		const position = readWidget(node, "intensity", 0.5);
+		for (const name of SCALED) {
+			setWidget(node, name, scaledValue(node, name, position));
+			// The slider is meaningless if the values it sets are not sent, so
+			// turning it on turns their own switches on with it.
+			setWidget(node, `use_${name}`, true);
+		}
+	} finally {
+		syncing = false;
+	}
+	applySamplingSwitches(node);
+}
+
+/**
+ * Pull the slider back to wherever a value that was typed sits in its range,
+ * and bring the other two along with it.
+ *
+ * This is the half that makes the two one control rather than two. Typing a
+ * temperature is a statement about intensity, and the other two parameters
+ * following it there is the whole point of them moving together.
+ */
+function intensityFromField(node, name) {
+	if (syncing || readWidget(node, "use_intensity", false) !== true) {
+		return;
+	}
+	syncing = true;
+	try {
+		// Snapped to the slider's own step first, and the other two computed
+		// from where the slider actually lands. Reading them off the unrounded
+		// position would leave three values the slider cannot reproduce, and
+		// the next nudge of it would jump.
+		const position = Math.round(positionFor(node, name, readWidget(node, name, 0)) * 100) / 100;
+		setWidget(node, "intensity", position);
+		for (const other of SCALED) {
+			if (other !== name) {
+				setWidget(node, other, scaledValue(node, other, position));
+			}
+		}
+	} finally {
+		syncing = false;
+	}
+	node.setDirtyCanvas?.(true, false);
+}
+
 // Each sampler setting has a switch in front of it; the value widgets it
 // controls are greyed out while the switch is off, because they are then left
 // out of the request entirely.
 const SAMPLING_SWITCHES = {
+	use_temperature: ["temperature"],
+	use_top_p: ["top_p"],
 	use_top_k: ["top_k"],
 	use_min_p: ["min_p"],
 	use_typical_p: ["typical_p"],
@@ -58,6 +172,7 @@ const SAMPLING_SWITCHES = {
 	use_frequency_penalty: ["frequency_penalty"],
 	use_mirostat: ["mirostat_mode", "mirostat_tau", "mirostat_eta"],
 	use_stop_sequences: ["stop_sequences"],
+	use_intensity: ["intensity", ...INTENSITY_BOUNDS],
 };
 
 function applySamplingSwitches(node) {
@@ -77,6 +192,26 @@ function applySamplingSwitches(node) {
 			}
 		}
 	}
+
+	/*
+	 * While the slider is driving, the three switches it forces on are not
+	 * decisions any more. The value fields themselves stay live — typing into
+	 * one is the other way of moving the slider — but their switches are
+	 * greyed, because a switch that flips itself back on is worse than one
+	 * that says plainly it is not yours to flip.
+	 */
+	const driven = node.widgets?.find((w) => w.name === "use_intensity")?.value === true;
+	for (const name of SCALED) {
+		const widget = node.widgets?.find((w) => w.name === `use_${name}`);
+		if (!widget) {
+			continue;
+		}
+		widget.disabled = driven;
+		if (widget.inputEl) {
+			widget.inputEl.style.opacity = driven ? "0.4" : "";
+		}
+	}
+
 	node.setDirtyCanvas?.(true, false);
 }
 
@@ -468,27 +603,53 @@ app.registerExtension({
 			return;
 		}
 
+		/** Run `after` once the widget's own callback has been let through. */
+		const watch = (node, name, after) => {
+			const widget = widgetByName(node, name);
+			if (!widget) {
+				return;
+			}
+			const original = widget.callback;
+			widget.callback = (...args) => {
+				const result = original?.apply(widget, args);
+				after(node);
+				return result;
+			};
+		};
+
 		const onNodeCreated = nodeType.prototype.onNodeCreated;
 		nodeType.prototype.onNodeCreated = function () {
 			onNodeCreated?.apply(this, arguments);
+
 			for (const switchName of Object.keys(SAMPLING_SWITCHES)) {
-				const toggle = this.widgets?.find((w) => w.name === switchName);
-				if (!toggle) {
-					continue;
-				}
-				const original = toggle.callback;
-				toggle.callback = (...args) => {
-					const result = original?.apply(toggle, args);
-					applySamplingSwitches(this);
-					return result;
-				};
+				watch(this, switchName, applySamplingSwitches);
 			}
+
+			// The slider, and the ranges that decide what its ends mean: both
+			// change what the three fields below should read.
+			watch(this, "intensity", applyIntensity);
+			for (const bound of INTENSITY_BOUNDS) {
+				watch(this, bound, applyIntensity);
+			}
+			// Turning it on has to fill the fields in straight away, or they
+			// sit there showing the last thing typed while the node sends
+			// something else.
+			watch(this, "use_intensity", applyIntensity);
+
+			// And the other direction.
+			for (const name of SCALED) {
+				watch(this, name, (node) => intensityFromField(node, name));
+			}
+
 			applySamplingSwitches(this);
 		};
 
 		const onConfigure = nodeType.prototype.onConfigure;
 		nodeType.prototype.onConfigure = function () {
 			onConfigure?.apply(this, arguments);
+			// A saved workflow carries both halves; the slider is the one that
+			// decided, so the fields are brought back into line with it.
+			applyIntensity(this);
 			applySamplingSwitches(this);
 		};
 	},

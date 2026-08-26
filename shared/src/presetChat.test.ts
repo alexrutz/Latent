@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { objectInfoFixture } from './fixtures/objectInfo.js';
-import { withPresetChat, sd15Txt2Img } from './fixtures/workflows.js';
+import { withLlamaServer, withPresetChat, sd15Txt2Img } from './fixtures/workflows.js';
 import { applyParams, buildParamSchema } from './paramSchema.js';
 import {
   applyPresetActive,
@@ -290,5 +290,96 @@ describe('the image controls every chat node now carries', () => {
 
   it('keeps the switch itself, because it is what turns the picture back on', () => {
     expect(field('22.use_image', wiredTo(false))?.hidden).toBe(false);
+  });
+});
+
+/**
+ * Two ways to the same three numbers, and a form that shows one of them.
+ *
+ * The Sampler Settings node sets temperature, top_p and top_k either one at a
+ * time or all at once from an `intensity` slider. In ComfyUI a web extension
+ * keeps the halves in step live; there is none here, and the node is quite
+ * clear about which half is deciding, so the form follows that rather than
+ * offering both and letting one of them do nothing.
+ */
+describe('the sampler node’s two ways of setting the same values', () => {
+  /** The node with the slider on or off, everything else as exported. */
+  const withSlider = (on: boolean) =>
+    buildParamSchema(
+      {
+        ...withPresetChat,
+        '23': {
+          ...withPresetChat['23']!,
+          inputs: { ...withPresetChat['23']!.inputs, use_intensity: on },
+        },
+      },
+      objectInfoFixture,
+    );
+
+  it('hides the slider and its ranges while the values are set one by one', () => {
+    const off = withSlider(false);
+    expect(field('23.intensity', off)?.hidden).toBe(true);
+    expect(field('23.temperature_min', off)?.hidden).toBe(true);
+    expect(field('23.top_k_max', off)?.hidden).toBe(true);
+    // And the three values are the whole story, so they stay.
+    expect(field('23.temperature', off)?.hidden).toBe(false);
+    expect(field('23.top_k', off)?.hidden).toBe(false);
+  });
+
+  it('hides the three values while the slider is deciding them', () => {
+    const on = withSlider(true);
+    expect(field('23.temperature', on)?.hidden).toBe(true);
+    expect(field('23.top_p', on)?.hidden).toBe(true);
+    expect(field('23.top_k', on)?.hidden).toBe(true);
+    // Their switches with them: the node forces those on, so they are not
+    // choices anybody is making.
+    expect(field('23.use_temperature', on)?.hidden).toBe(true);
+    expect(field('23.use_top_k', on)?.hidden).toBe(true);
+  });
+
+  it('shows the slider and its ranges instead', () => {
+    const on = withSlider(true);
+    expect(field('23.intensity', on)?.hidden).toBe(false);
+    expect(field('23.temperature_min', on)?.hidden).toBe(false);
+    expect(field('23.temperature_max', on)?.hidden).toBe(false);
+    expect(field('23.top_p_min', on)?.hidden).toBe(false);
+    expect(field('23.top_k_max', on)?.hidden).toBe(false);
+  });
+
+  it('never hides the switch that moves between the two', () => {
+    expect(field('23.use_intensity', withSlider(true))?.hidden).toBe(false);
+    expect(field('23.use_intensity', withSlider(false))?.hidden).toBe(false);
+  });
+
+  it('leaves every other sampler setting alone either way', () => {
+    for (const on of [true, false]) {
+      const schema = withSlider(on);
+      expect(field('23.repeat_penalty', schema)?.hidden).toBe(false);
+      expect(field('23.use_mirostat', schema)?.hidden).toBe(false);
+      expect(field('23.stop_sequences', schema)?.hidden).toBe(false);
+    }
+  });
+
+  /*
+   * The rule is about this node, not about the names. `temperature` and
+   * `top_p` are on every generation node too, where nothing hides them.
+   */
+  it('does not reach into the chat nodes that share those input names', () => {
+    const chat = buildParamSchema(
+      {
+        ...withLlamaServer,
+        '21': {
+          ...withLlamaServer['21']!,
+          // A generation node has its own temperature and top_p, and its own
+          // `intensity` would mean nothing — there is no slider on it.
+          inputs: { ...withLlamaServer['21']!.inputs, temperature: 0.7, top_p: 0.95 },
+        },
+      },
+      objectInfoFixture,
+    );
+
+    const shared = chat.fields.filter((entry) => ['temperature', 'top_p'].includes(entry.inputName));
+    expect(shared).toHaveLength(2);
+    for (const entry of shared) expect(entry.hidden).not.toBe(true);
   });
 });

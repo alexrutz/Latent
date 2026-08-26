@@ -686,6 +686,49 @@ function idleImageControl(node: { inputs?: Record<string, unknown> }, inputName:
   return !wired || node.inputs?.[IMAGE_SWITCH_INPUT] === false;
 }
 
+/** comfyllama's advanced sampler node, the only one with an intensity slider. */
+const SAMPLING_CLASS = 'LlamaCppSampling';
+
+/** The three the slider moves, and the switch each one is sent on. */
+const SCALED_INPUTS = ['temperature', 'top_p', 'top_k'];
+
+/** What the two ends of the slider mean, per parameter. */
+const INTENSITY_BOUNDS = new Set(
+  SCALED_INPUTS.flatMap((name) => [`${name}_min`, `${name}_max`]),
+);
+
+/**
+ * The half of the sampler node that is not currently deciding anything.
+ *
+ * comfyllama's Sampler Settings node reaches temperature, top_p and top_k two
+ * ways: three fields with a switch each, or one `intensity` slider that sets
+ * all three across ranges you give it. In ComfyUI a web extension keeps the two
+ * in step live — move the slider and the fields follow, type a temperature and
+ * the slider snaps to it. There is no extension here, and reimplementing a
+ * two-way binding in a form that submits values rather than editing a graph
+ * would be a second copy of the arithmetic to keep honest.
+ *
+ * So the form shows whichever half is deciding, which the node itself is quite
+ * clear about: with the slider on, it computes all three and the fields cannot
+ * affect the result; with it off, they are the whole story and the slider and
+ * its six bounds are inert.
+ *
+ * The switch is never hidden — it is what moves between the two.
+ */
+function idleSamplingControl(
+  node: { class_type?: string; inputs?: Record<string, unknown> },
+  inputName: string,
+): boolean {
+  if (node.class_type !== SAMPLING_CLASS) return false;
+  const driven = node.inputs?.use_intensity === true;
+
+  if (inputName === 'intensity' || INTENSITY_BOUNDS.has(inputName)) return !driven;
+  if (SCALED_INPUTS.includes(inputName)) return driven;
+  // Their own switches are forced on by the slider, so they are not choices.
+  if (SCALED_INPUTS.some((name) => inputName === `use_${name}`)) return driven;
+  return false;
+}
+
 /**
  * Turn an API-format workflow into a mobile form definition.
  *
@@ -766,7 +809,10 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
         group,
         // `control_after_generate` is ComfyUI's own seed-randomiser widget; our
         // seed control replaces it, so hide it rather than showing a duplicate.
-        hidden: inputName === 'control_after_generate' || idleImageControl(node, inputName),
+        hidden:
+          inputName === 'control_after_generate' ||
+          idleImageControl(node, inputName) ||
+          idleSamplingControl(node, inputName),
         order: group === 'main' ? mainIndex : fields.length,
         unknownNodeType,
       });
