@@ -11,6 +11,7 @@ import {
   buildParamSummary,
   composeRandomPrompt,
   drawRandomParams,
+  findEditOrigins,
   pickRandomBlocks,
 } from '@latent/shared';
 import type {
@@ -220,6 +221,13 @@ async function runBatch(
         values: submitted,
         seeds,
         params: buildParamSummary(schema, submitted),
+        /*
+         * Which picture this edit started from, settled here rather than in the
+         * gallery. The answer comes from a node's title, and by the time
+         * anybody opens the result the workflow may have been re-titled or
+         * deleted — the same reason `params` is recorded at submit time.
+         */
+        origins: findEditOrigins(schema, submitted),
       });
       generationIds.push(result.generationId);
       promptIds.push(result.promptId);

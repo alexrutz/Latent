@@ -6,6 +6,7 @@ import {
   mediaKindOf,
   playsInAudioElement,
   playsInVideoElement,
+  referenceOrigin,
   regionFraction,
   viewBox,
   viewerScaleOf,
@@ -20,6 +21,7 @@ import { imageUrl, thumbnailUrl, viewUrl } from '../api/client';
 import { reportPoster } from '../lib/poster';
 import { useBlur } from '../state/blur';
 import { useGridSettings } from '../state/grid';
+import { CompareWipe } from './CompareWipe';
 import { cn } from './ui';
 
 /** One image in the viewer's flat list, with the run it came from. */
@@ -82,6 +84,16 @@ function useViewSources(
   fitted: string | undefined;
   detail: string | null;
   onFittedLoad: (element: HTMLImageElement) => void;
+  /**
+   * How anything else laid over this picture should be fetched.
+   *
+   * The before/after comparison draws a second picture in exactly the same box,
+   * and it has to be asked for the same way or the two are different sizes of
+   * the same thing stacked on each other. Handed out rather than recomputed
+   * there, so one place decides.
+   */
+  box: { width: number; height: number };
+  native: boolean;
 } {
   const [grid] = useGridSettings();
   /**
@@ -176,7 +188,7 @@ function useViewSources(
     transform.offsetY,
   ]);
 
-  return { fitted, detail, onFittedLoad };
+  return { fitted, detail, onFittedLoad, box, native };
 }
 
 export function ImageViewer({
@@ -193,11 +205,30 @@ export function ImageViewer({
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
-  const { fitted, detail, onFittedLoad } = useViewSources(image, {
+  const { fitted, detail, onFittedLoad, box, native } = useViewSources(image, {
     scale,
     offsetX: offset.x,
     offsetY: offset.y,
   });
+  const [grid] = useGridSettings();
+
+  /*
+   * The picture this one was edited from, when the workflow said which that
+   * was. Fetched the same way and into the same box as the picture over it, so
+   * the two line up pixel for pixel and a seam dragged between them is a
+   * comparison rather than two differently-scaled copies.
+   *
+   * Fetched as soon as the result is opened rather than when a handle is first
+   * touched: the handles have to know whether there is anything behind them
+   * before they are dragged, and a torn-down ComfyUI takes its input directory
+   * with it. One extra copy, only for a labelled edit, and only at screen size.
+   */
+  const origin = referenceOrigin(record?.origins ?? []);
+  const originSrc = useMemo(() => {
+    if (!origin) return null;
+    const ref = { filename: origin.filename, subfolder: origin.subfolder, type: 'input' };
+    return native ? imageUrl(ref) : viewUrl(ref, box);
+  }, [origin?.filename, origin?.subfolder, native, box]);
   /*
    * The blur is reachable from here as well as from the grid. Full screen is
    * exactly where somebody sitting down next to you sees the most, and going
@@ -540,6 +571,25 @@ export function ImageViewer({
             alt=""
             draggable={false}
             className="pointer-events-none absolute inset-0 size-full object-cover select-none"
+          />
+        )}
+
+        {/*
+          Before and after, in one frame.
+
+          Over the detail layer as well as the base one, because the crop
+          fetched for a zoom is still the *edited* picture — it would otherwise
+          be painted back over the half that is supposed to be showing the
+          original. Only for stills: there is no before-and-after to drag
+          through a clip, and the video element has already taken the gestures.
+        */}
+        {origin && originSrc && !plays && !sounds && (
+          <CompareWipe
+            origin={origin}
+            src={originSrc}
+            transform={{ scale, offsetX: offset.x, offsetY: offset.y }}
+            verticalEdge={grid.compareVerticalEdge}
+            horizontalEdge={grid.compareHorizontalEdge}
           />
         )}
       </div>

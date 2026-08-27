@@ -14,7 +14,13 @@ import {
   isVideoOutputClass,
 } from '@latent/shared';
 import type { ApiWorkflow, ComfyImageRef, HistoryEntry } from '@latent/shared';
-import { CHECKPOINTS, LORAS, objectInfoFixture, UPSCALE_MODELS } from '@latent/shared/fixtures';
+import {
+  CHECKPOINTS,
+  INPUT_IMAGES,
+  LORAS,
+  objectInfoFixture,
+  UPSCALE_MODELS,
+} from '@latent/shared/fixtures';
 
 import { renderPlaceholderClip, renderPlaceholderWebm } from './gif.js';
 import { renderPlaceholder } from './png.js';
@@ -94,6 +100,21 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
   const history = new Map<string, HistoryEntry>();
   /** Images this mock has "produced" or had uploaded, keyed by `type/subfolder/filename`. */
   const files = new Map<string, Buffer>();
+
+  /*
+   * The pictures `/object_info` says are already in the input directory.
+   *
+   * A real ComfyUI lists what is on its disk, so every name a `LoadImage`
+   * offers can be fetched. This mock listed them and had none of them, which
+   * looks like nothing at all until something asks for one — the before/after
+   * comparison fetches the picture an edit was made from, and against an empty
+   * input directory it correctly concluded there was nothing to compare.
+   */
+  for (const [index, name] of INPUT_IMAGES.entries()) {
+    // Portrait, and each a different size, so anything that lines two of them
+    // up is doing it by the picture rather than by luck.
+    files.set(`input//${name}`, renderPlaceholder(384, 512, `input#${index}`));
+  }
 
   let running: QueuedPrompt | null = null;
   let interrupted = false;

@@ -14,6 +14,7 @@ import type {
   ComfyImageRef,
   ComfyStatusMessage,
   ComfyWsMessage,
+  EditOrigin,
   JobStats,
   LiveState,
   MediaKind,
@@ -495,6 +496,8 @@ export class Orchestrator {
     seeds: Record<string, number>;
     /** Readable summary of the submitted values, for the queue listing. */
     params?: ParamSummaryItem[];
+    /** The pictures that went in, when the workflow named which was which. */
+    origins?: EditOrigin[];
     /** `study` keeps the run out of the gallery. See `Store.insertGeneration`. */
     source?: 'comfy' | 'study';
   }): Promise<{ generationId: string; promptId: string }> {
@@ -527,6 +530,7 @@ export class Orchestrator {
       values: input.values,
       seeds: input.seeds,
       params,
+      origins: input.origins ?? [],
       source: input.source ?? 'comfy',
     });
 

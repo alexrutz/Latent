@@ -5,6 +5,7 @@ import type { FieldOverrides, ParamSchema, ParamValues } from './paramTypes.js';
 // wire types reuse it rather than restating three levels in two places.
 import type { StudyRating } from './studyStats.js';
 import type { MediaKind } from './media.js';
+import type { EditOrigin } from './editOrigin.js';
 
 /* ------------------------------------------------------------------ */
 /* Workflows                                                           */
@@ -173,6 +174,15 @@ export interface GenerationRecord {
    * ComfyUI's own UI.
    */
   params: ParamSummaryItem[];
+  /**
+   * The pictures this run was given, when it said which was which.
+   *
+   * Recorded at submit time for the same reason `params` is: which input is the
+   * origin comes from a node's title, and the workflow can be re-titled or
+   * deleted long before anybody opens the result. Empty for everything that is
+   * not a labelled edit — see `findEditOrigins`.
+   */
+  origins: EditOrigin[];
   /** A short human summary (the positive prompt) for gallery cards. */
   title: string;
   images: GenerationImage[];
@@ -865,6 +875,22 @@ export interface GridSettings {
   viewerScale: number;
 
   /**
+   * Which side of the screen the two compare handles rest against.
+   *
+   * A picture made by an edit workflow can be wiped away to show the one it was
+   * made from — see `findEditOrigins` — and the handles that do the wiping sit
+   * parked on an edge until they are dragged. Which edge is a question about
+   * the hand holding the phone, not about the picture: a right thumb reaches
+   * the right edge and a left one does not, and a handle parked where your
+   * thumb already rests is one you can use without looking.
+   *
+   * Two of them, one per axis, because an edit changes different things in
+   * different places and a single seam can only be dragged one way.
+   */
+  compareVerticalEdge: 'left' | 'right';
+  compareHorizontalEdge: 'top' | 'bottom';
+
+  /**
    * The old switch, kept only so an existing setting is not silently dropped.
    *
    * @deprecated Read `viewerScale`. Written by no version; still read once,
@@ -910,6 +936,10 @@ export const DEFAULT_GRID_SETTINGS: GridSettings = {
   viewerParams: [],
   overlayLabels: true,
   viewerScale: 1,
+  // Left and top: where a wipe starts in every comparison anybody has ever
+  // seen, because it is where reading starts. Moved for the hand, not for taste.
+  compareVerticalEdge: 'left',
+  compareHorizontalEdge: 'top',
 };
 
 /**

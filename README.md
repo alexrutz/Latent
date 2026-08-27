@@ -1926,6 +1926,34 @@ zooms back out instead, because closing on a stray tap while inspecting detail
 would be maddening. Double tap still toggles zoom; the single tap waits out the
 double-tap window before acting.
 
+**Before and after, in one frame.** A picture made by an edit workflow opens
+with two handles parked against the edges of the screen — one across, one down.
+Drag either one and the picture the edit was made from appears behind the seam:
+everything on one side is before, everything on the other is after, and moving
+the seam sweeps the difference under your thumb. Tap a handle for all of it,
+tap again to put it back. Two of them, one per axis, because an edit does not
+change a picture evenly — a new coat is somewhere in the middle, a replaced sky
+is along the top, and only one of those can be dragged through by a vertical
+seam.
+
+Which edge each handle rests on is under **Grid layout → Before/after handles**.
+It is a question about the hand holding the phone rather than about the picture:
+a right thumb reaches the right edge and a left one does not.
+
+The handles appear only when the workflow said which of its inputs was the
+original, and it says so in a node's title: `Input Image [Reference]` is the
+picture being edited, and `Input Image [Context]` is the other kind — a pose to
+follow, a style to borrow. From the graph the two are indistinguishable, both
+`LoadImage` nodes feeding the same sampler, so guessing would put a pose
+reference under a portrait and label it "before". An untagged workflow simply
+gets no handles.
+
+Which input was the origin is settled when the job is queued and stored with the
+run, for the same reason the parameter summary is: the workflow can be re-titled
+or deleted long before you open the result. The picture itself is not copied —
+it stays in ComfyUI's input directory — so when that instance is torn down the
+handles go quietly rather than dragging a blank across the screen.
+
 **Values on the pictures.** The ⓘ button in the gallery header chooses what is
 drawn over each *thumbnail*; the one in the viewer's action row chooses what is
 drawn over the *full-size* picture. Two selections, because a thumbnail fits two

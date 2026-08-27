@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { expect, request as apiRequest, test, type Page } from '@playwright/test';
 
 import {
+  editWithReference,
   img2img,
   ltxVideoGguf,
   minimaxMusic,
@@ -153,6 +154,21 @@ async function openModule(page: Page, label: 'Blocks' | 'Random' | 'Monitor' | '
  */
 async function resetState() {
   await withApi(async (ctx) => {
+    /*
+     * The queue, first of all.
+     *
+     * It is state a test can observe — the Queue screen lists it — and it was
+     * the one collection this did not wipe, which is how a batch queued by one
+     * test turned up among another's cards and failed it on a value it never
+     * asked for. Two describes had grown their own copy of these two lines for
+     * exactly that reason; this is where they belong.
+     *
+     * Before the gallery is emptied, not after: a job that finishes during the
+     * reset would otherwise write its row in behind us.
+     */
+    await ctx.delete('/api/queue');
+    await ctx.post('/api/queue/interrupt');
+
     const workflows = (await (await ctx.get('/api/workflows')).json()) as { id: string }[];
     for (const workflow of workflows) await ctx.delete(`/api/workflows/${workflow.id}`);
 
@@ -5978,6 +5994,169 @@ test.describe('the twenty-seventh wave', () => {
     await expect(
       page.getByText('The model server’s own, from the flags it was started with.'),
     ).toBeVisible();
+  });
+});
+
+/**
+ * Before and after, in one frame.
+ *
+ * An edit workflow's result only means anything next to the picture it was made
+ * from, and two thumbnails side by side is the wrong way to show that — the eye
+ * cannot hold one still enough to subtract the other. A seam dragged across a
+ * single frame can: everything on one side is before and everything on the
+ * other is after.
+ *
+ * Which of a graph's inputs *is* the origin is not something the graph says, so
+ * the node's title does: `Input Image [Reference]`. This drives that end to
+ * end — through a real submit, so the origin is resolved and recorded the way
+ * it is in use rather than poked into the database.
+ */
+test.describe('comparing an edit with what it was made from', () => {
+  test.beforeEach(async () => {
+    await resetState();
+  });
+
+  test('wipes the edited picture away to show the original underneath', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'edit', graph: editWithReference } }),
+    );
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a red coat');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await expect
+      .poll(
+        async () => {
+          const gallery = await withApi(async (ctx) =>
+            (await (await ctx.get('/api/gallery')).json()) as {
+              items: { images: unknown[] }[];
+            },
+          );
+          return gallery.items.reduce((total, item) => total + item.images.length, 0);
+        },
+        { timeout: 40_000 },
+      )
+      .toBeGreaterThanOrEqual(1);
+
+    await open(page, '/gallery');
+    await page.locator('img[alt*="a red coat"]').first().click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+
+    // Both handles are there, both parked, revealing nothing.
+    const across = page.getByTestId('compare-handle-vertical');
+    const down = page.getByTestId('compare-handle-horizontal');
+    await expect(across).toBeVisible();
+    await expect(down).toBeVisible();
+    await expect(across).toHaveAttribute('aria-valuenow', '0');
+    await expect(down).toHaveAttribute('aria-valuenow', '0');
+    await page.screenshot({ path: 'test-results/95-compare-parked.png' });
+
+    /*
+     * Parked is still a target you can hit, and not one sitting on top of a
+     * button that does something else. Centring the tab on the seam put half of
+     * it off the screen and the other half over the viewer's own controls.
+     */
+    const viewportAtRest = page.viewportSize()!;
+    for (const handle of [across, down]) {
+      const box = (await handle.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewportAtRest.width);
+      expect(box.y + box.height).toBeLessThanOrEqual(viewportAtRest.height);
+    }
+    // Clear of the close button, which is where a top-parked tab used to land.
+    const close = (await page.getByRole('button', { name: 'Close' }).boundingBox())!;
+    const downBox = (await down.boundingBox())!;
+    expect(downBox.y).toBeGreaterThan(close.y + close.height);
+
+    /*
+     * Dragged across the screen. The assertion is on the seam's position
+     * rather than on pixels: what a wipe reveals is a clip, and reading a clip
+     * back out of the compositor is not something a browser will tell you.
+     */
+    const viewport = page.viewportSize()!;
+    const start = (await across.boundingBox())!;
+    await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(viewport.width * 0.6, start.y + start.height / 2, { steps: 8 });
+    await page.mouse.up();
+
+    await expect
+      .poll(async () => Number(await across.getAttribute('aria-valuenow')))
+      .toBeGreaterThan(40);
+    // And the other one has not moved with it: two seams, two answers.
+    await expect(down).toHaveAttribute('aria-valuenow', '0');
+    await page.screenshot({ path: 'test-results/96-compare-wipe.png' });
+
+    // A tap on the parked one shows all of the original at once, and puts it
+    // back — which is the thing wanted most often and should not need a drag.
+    await down.click();
+    await expect(down).toHaveAttribute('aria-valuenow', '100');
+    await down.click();
+    await expect(down).toHaveAttribute('aria-valuenow', '0');
+    // The viewer is still open: a tap on a handle is not a tap on the picture.
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+  });
+
+  /**
+   * The handles are for edits, and only for edits.
+   *
+   * A workflow that draws from nothing has no before, and one whose image
+   * inputs are untitled has not said which of its pictures is the origin —
+   * guessing there would put a pose reference under a portrait and label it
+   * "before".
+   */
+  test('leaves an ordinary render alone', async ({ page }) => {
+    await seedWorkflow();
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('no before to show');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    const thumb = page.locator('img[alt*="no before to show"]').first();
+    await expect(thumb).toBeVisible({ timeout: 40_000 });
+    await thumb.click();
+
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+    await expect(page.getByTestId('compare-handle-vertical')).toHaveCount(0);
+    await expect(page.getByTestId('compare-handle-horizontal')).toHaveCount(0);
+  });
+
+  /**
+   * Which edge a handle rests on is a question about the hand holding the
+   * phone, so it is a setting — and one whose whole point is that the handle
+   * moves when it changes.
+   */
+  test('parks the handles on the edges the settings name', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'edit', graph: editWithReference } }),
+    );
+
+    await open(page, '/gallery');
+    await page.getByRole('button', { name: 'Grid layout' }).click();
+    await page.getByRole('radiogroup', { name: 'Across' }).getByRole('radio', { name: 'right' }).click();
+    await page.getByRole('radiogroup', { name: 'Down' }).getByRole('radio', { name: 'bottom' }).click();
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('parked the other way');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    const thumb = page.locator('img[alt*="parked the other way"]').first();
+    await expect(thumb).toBeVisible({ timeout: 40_000 });
+    await thumb.click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+
+    const viewport = page.viewportSize()!;
+    const across = (await page.getByTestId('compare-handle-vertical').boundingBox())!;
+    const down = (await page.getByTestId('compare-handle-horizontal').boundingBox())!;
+
+    // Against the far edges, not the near ones.
+    expect(across.x).toBeGreaterThan(viewport.width / 2);
+    expect(down.y).toBeGreaterThan(viewport.height / 2);
   });
 });
 

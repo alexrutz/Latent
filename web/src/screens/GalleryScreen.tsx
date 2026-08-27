@@ -161,6 +161,51 @@ function FilterSheet({
   );
 }
 
+/**
+ * One of two edges, named by the edge rather than by a direction.
+ *
+ * "Left" and "Right" are where the thing rests, which is what you are choosing;
+ * a label like "wipe rightwards" describes the gesture instead, and the gesture
+ * is the same either way round.
+ */
+function EdgeChoice<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: readonly T[];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="space-y-1">
+      <p className="text-xs text-muted">{label}</p>
+      <div role="radiogroup" aria-label={label} className="flex gap-1">
+        {options.map((option) => {
+          const active = value === option;
+          return (
+            <button
+              key={option}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => onChange(option)}
+              className={cn(
+                'min-w-16 rounded-lg px-2.5 py-1.5 text-xs capitalize',
+                active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+              )}
+            >
+              {option}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const FILTERS = [
   { label: 'All', minRating: 0 },
   { label: 'Rated', minRating: 1 },
@@ -565,6 +610,39 @@ export function GalleryScreen() {
             wait and most of the memory while the next render is going.{' '}
             <strong className="text-body">The file</strong> fetches it whole, for when you want to
             inspect the pixels rather than look at the picture.
+          </p>
+        </div>
+
+        {/*
+          Where the before/after handles sit.
+
+          A question about the hand holding the phone, not about the picture: a
+          right thumb reaches the right edge and a left one does not, and a
+          handle parked where your thumb already rests is one you can use
+          without looking away from what you are comparing.
+        */}
+        <div className="space-y-1.5">
+          <p className="text-sm">Before/after handles</p>
+          <div className="flex flex-wrap gap-4">
+            <EdgeChoice
+              label="Across"
+              value={settings.compareVerticalEdge}
+              options={['left', 'right'] as const}
+              onChange={(compareVerticalEdge) => updateSettings({ compareVerticalEdge })}
+            />
+            <EdgeChoice
+              label="Down"
+              value={settings.compareHorizontalEdge}
+              options={['top', 'bottom'] as const}
+              onChange={(compareHorizontalEdge) => updateSettings({ compareHorizontalEdge })}
+            />
+          </div>
+          <p className="text-xs text-muted">
+            A picture made by an edit workflow opens with two handles parked on these edges. Drag
+            one across the screen and the picture it was made from shows behind the seam; tap it
+            for all of it, and tap again to put it back. They only appear when the workflow said
+            which input was the original — a <strong className="text-body">Reference</strong> tag
+            on the node that loads it.
           </p>
         </div>
       </div>

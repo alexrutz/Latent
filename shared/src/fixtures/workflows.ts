@@ -537,10 +537,59 @@ export const qwenSpeech: ApiWorkflow = {
   },
 };
 
+/**
+ * An edit workflow that says which of its two pictures is the origin.
+ *
+ * Both are `LoadImage` nodes feeding the same sampler, and from the graph alone
+ * there is no telling them apart — which is exactly why the titles carry a tag.
+ * `[Reference]` is the picture being edited, the one a result is worth
+ * comparing against; `[Context]` is the other kind, here a pose to follow.
+ */
+export const editWithReference: ApiWorkflow = {
+  // Named out of `INPUT_IMAGES`, so this graph asks for a picture that is
+  // actually in the input directory `/object_info` describes — which is what
+  // lets the comparison have something to fetch.
+  '1': {
+    class_type: 'LoadImage',
+    inputs: { image: 'example.png' },
+    _meta: { title: 'Input Image [Reference]' },
+  },
+  '2': {
+    class_type: 'LoadImage',
+    inputs: { image: 'poses/standing.png' },
+    _meta: { title: 'Input Image [Context]' },
+  },
+  '3': {
+    class_type: 'CheckpointLoaderSimple',
+    inputs: { ckpt_name: 'v1-5-pruned-emaonly.safetensors' },
+  },
+  '4': { class_type: 'VAEEncode', inputs: { pixels: ['1', 0], vae: ['3', 2] } },
+  '5': { class_type: 'CLIPTextEncode', inputs: { text: 'give him a red coat', clip: ['3', 1] } },
+  '6': { class_type: 'CLIPTextEncode', inputs: { text: 'blurry', clip: ['3', 1] } },
+  '7': {
+    class_type: 'KSampler',
+    inputs: {
+      seed: 7,
+      steps: 24,
+      cfg: 6,
+      sampler_name: 'dpmpp_2m',
+      scheduler: 'karras',
+      denoise: 0.6,
+      model: ['3', 0],
+      positive: ['5', 0],
+      negative: ['6', 0],
+      latent_image: ['4', 0],
+    },
+  },
+  '8': { class_type: 'VAEDecode', inputs: { samples: ['7', 0], vae: ['3', 2] } },
+  '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'edit', images: ['8', 0] } },
+};
+
 export const workflowFixtures = {
   sd15Txt2Img,
   sdxlBaseRefiner,
   img2img,
+  editWithReference,
   upscale,
   combinedConditioning,
   unknownCustomNodes,

@@ -266,6 +266,10 @@ function standInRecord(favorite: Favorite, image: GenerationImage): GenerationRe
     values: favorite.values,
     seeds: {},
     params: [],
+    // A favourite snapshots the values, not what the run was made from, so
+    // there is nothing here to compare an edit against. The real record is
+    // fetched on top of this one and brings its origins with it.
+    origins: [],
     title: favorite.title,
     texts: [],
     images: [image],

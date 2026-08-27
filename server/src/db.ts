@@ -14,6 +14,7 @@ import type {
   ConnectionInput,
   ConnectionKind,
   ConnectionSummary,
+  EditOrigin,
   FieldOverrides,
   GenerationRecord,
   GenerationStatus,
@@ -536,6 +537,22 @@ CREATE TABLE chat_runs (
 );
 `);
 
+/**
+ * v15: what an edit was made from.
+ *
+ * An edit workflow's result is only readable next to the picture it started
+ * from, and that picture is a filename in ComfyUI's input directory that
+ * nothing here was holding on to. Which of a graph's inputs *is* the origin
+ * comes from a node's title — see `findEditOrigins` — so it is resolved once,
+ * at submit time, and written down. Deriving it later would mean asking a
+ * workflow that has since been re-titled, or deleted.
+ *
+ * Empty for everything that is not a labelled edit, which is nearly everything.
+ */
+MIGRATIONS.push(`
+ALTER TABLE generations ADD COLUMN origins_json TEXT NOT NULL DEFAULT '[]';
+`);
+
 interface ChatRunRow {
   chat_id: string;
   phase: string;
@@ -662,6 +679,7 @@ interface GenerationRow {
   seeds_json: string;
   params_json: string;
   texts_json: string;
+  origins_json: string;
   title: string;
   created_at: number;
   completed_at: number | null;
@@ -1435,6 +1453,8 @@ export class Store {
     values: ParamValues;
     seeds: Record<string, number>;
     params?: ParamSummaryItem[];
+    /** The input pictures, when the workflow said which was which. */
+    origins?: EditOrigin[];
     /**
      * Where the run came from.
      *
@@ -1448,8 +1468,8 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO generations
-           (id, prompt_id, workflow_id, workflow_name, status, error, values_json, seeds_json, params_json, title, created_at, completed_at, source)
-         VALUES (?, ?, ?, ?, 'queued', NULL, ?, ?, ?, ?, ?, NULL, ?)`,
+           (id, prompt_id, workflow_id, workflow_name, status, error, values_json, seeds_json, params_json, origins_json, title, created_at, completed_at, source)
+         VALUES (?, ?, ?, ?, 'queued', NULL, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       )
       .run(
         record.id,
@@ -1459,6 +1479,7 @@ export class Store {
         JSON.stringify(record.values),
         JSON.stringify(record.seeds),
         JSON.stringify(record.params ?? []),
+        JSON.stringify(record.origins ?? []),
         record.title,
         Date.now(),
         record.source ?? 'comfy',
@@ -1732,6 +1753,7 @@ export class Store {
       values: parseJson<ParamValues>(row.values_json, {}),
       seeds: parseJson<Record<string, number>>(row.seeds_json, {}),
       params: parseJson<ParamSummaryItem[]>(row.params_json, []),
+      origins: parseJson<EditOrigin[]>(row.origins_json, []),
       title: row.title,
       images: images.map(toGenerationImage),
       texts: parseJson<TextOutput[]>(row.texts_json, []),
