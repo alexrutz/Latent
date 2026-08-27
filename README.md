@@ -908,15 +908,26 @@ an `active` dropdown — but what the slots are called, and how many of them
 exist, are decided by the node's own values rather than by its definition. In
 ComfyUI a small web extension rewrites the dropdown; Latent never loads
 extensions, so it does the same reshaping from the values it already has. The
-picker offers `passthrough` and the slot names as they have been typed, the
-slots above `slot_count` are left off the form rather than shown as twelve dead
-text boxes, and each system prompt is headed by its own slot's name — which
-means a [saved system prompt](#system-prompts-out-of-the-workflows) called
-*Rewrite* fills the slot
-called *Rewrite*, through the same name matching every other text field uses. A
+picker offers the slot names as they have been typed, the slots above
+`slot_count` are left off the form rather than shown as twelve dead text boxes,
+and each system prompt is headed by its own slot's name — which means a
+[saved system prompt](#system-prompts-out-of-the-workflows) called *Rewrite*
+fills the slot called *Rewrite*, through the same name matching every other
+text field uses. A
 picker left on a slot that has since been renamed or put out of reach is settled
 back to `passthrough` on the way to the graph, because the alternative is a node
 that raises an error after the job has been queued.
+
+**Running a preset, or not.** The node has a `use_model` switch: on, it runs the
+preset the picker names; off, the prompt goes straight through and nothing on
+the LLM side of the graph runs at all. Latent follows it — with the model off
+there is no preset to pick, so the picker goes, and the switch that brings it
+back never does.
+
+That switch replaced a `passthrough` entry sitting at the top of the picker,
+among six system prompts it was not one of. A workflow exported before the
+switch existed has no other way to say it, so for *that* one the entry is still
+offered; a workflow that carries the switch gets a picker holding presets only.
 
 Each slot's `model_N` box is hidden and shown with the rest of its slot, but it
 is deliberately *not* headed by the slot's name: it is a text field like the

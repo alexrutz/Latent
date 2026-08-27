@@ -71,6 +71,24 @@ def resolve_slot(active: str, names: List[str], slot_count: int) -> Optional[int
     )
 
 
+def chosen_slot(use_model: bool, active: str, names: List[str],
+                slot_count: int) -> Optional[int]:
+    """Which preset runs, or ``None`` for passthrough.
+
+    Two ways to say the same thing, and both are honoured. The switch is the
+    one to use — picking "passthrough" out of a dropdown of system prompts was
+    the clunky way to turn the model off, and that dropdown is a preset picker
+    now. Its own passthrough stays because a workflow saved before the switch
+    existed has no other way to say it.
+
+    One place, because `check_lazy_status` and `generate` disagreeing about
+    this would mean a passthrough that still ran the branch feeding it.
+    """
+    if not use_model:
+        return None
+    return resolve_slot(active, names, slot_count)
+
+
 def join_prompt(prompt: str, extra: Optional[str], separator: str) -> str:
     """Append a slot's extra prompt to the incoming one."""
     parts = [part for part in ((prompt or "").strip(), (extra or "").strip()) if part]
@@ -122,9 +140,11 @@ class LlamaServerPresetChat:
                                       "dynamicPrompts": True}),
                 "active": ([PASSTHROUGH] + DEFAULT_NAMES, {
                     "default": PASSTHROUGH,
-                    "tooltip": "Which system prompt to run. 'passthrough' "
-                               "returns the prompt unchanged without calling "
-                               "the model.",
+                    "tooltip": "Which system prompt to run. Use the "
+                               "'use_model' switch to turn the model off "
+                               "instead; 'passthrough' is still here so a "
+                               "workflow saved before that switch existed "
+                               "keeps meaning what it meant.",
                 }),
                 "slot_count": ("INT", {
                     "default": 3, "min": 1, "max": MAX_SLOTS,
@@ -152,6 +172,24 @@ class LlamaServerPresetChat:
                 # Lazy like the rest: neither passthrough nor a switched-off
                 # image may run the branch that produces one.
                 **image_inputs(),
+                # The switch, appended last.
+                #
+                # On by default so a workflow saved before it existed behaves
+                # exactly as it did — passthrough then still comes from the
+                # dropdown, as it always has. And appended rather than put up
+                # beside `active` where it reads best, because ComfyUI stores
+                # widget values positionally: inserted higher it would shift
+                # every value after it in an already-saved workflow.
+                "use_model": ("BOOLEAN", {
+                    "default": True,
+                    "label_on": "run the preset",
+                    "label_off": "passthrough",
+                    "tooltip": "Off hands the prompt straight to the output "
+                               "without contacting the model. Nothing upstream "
+                               "of this node on the LLM side runs at all — not "
+                               "the connection, not the extra prompt, not the "
+                               "image.",
+                }),
             },
         }
 
@@ -172,10 +210,10 @@ class LlamaServerPresetChat:
     def IS_CHANGED(cls, seed=0, **kwargs):
         return is_changed_for_seed(seed)
 
-    def check_lazy_status(self, active="", slot_count=MAX_SLOTS, **kwargs):
+    def check_lazy_status(self, active="", slot_count=MAX_SLOTS, use_model=True, **kwargs):
         """Only pull in the connection and the active slot's extra prompt."""
         try:
-            index = resolve_slot(active, slot_names(kwargs), slot_count)
+            index = chosen_slot(use_model, active, slot_names(kwargs), slot_count)
         except ValueError:
             # Let generate() raise the readable error instead of failing here.
             return []
@@ -198,9 +236,9 @@ class LlamaServerPresetChat:
     def generate(self, server, prompt, active, slot_count, thinking, max_tokens,
                  temperature, top_p, seed, extra_separator="\\n\\n", sampling=None,
                  grammar=None, use_image=True, image=None, image_max_size=1024,
-                 image_quality=90, **slots):
+                 image_quality=90, use_model=True, **slots):
         names = slot_names(slots)
-        index = resolve_slot(active, names, slot_count)
+        index = chosen_slot(use_model, active, names, slot_count)
 
         if index is None:
             # Bypass: hand the prompt straight to the output.
@@ -209,7 +247,7 @@ class LlamaServerPresetChat:
         if server is None:
             raise ValueError(
                 "No llama-server connection. Connect the 'Connect to "
-                "llama-server' node, or set active to 'passthrough'."
+                "llama-server' node, or switch 'use_model' off."
             )
 
         system = str(slots.get(f"system_{index}") or "")

@@ -35,7 +35,7 @@ rebuilding the graph.
 | --- | --- |
 | **Connect to llama-server** | URL, timeout, default model and authentication (bearer token or user/password). Probes the endpoint so a wrong URL fails immediately, while tolerating router front ends. |
 | **Chat (llama-server)** | System prompt, user prompt, a thinking switch and an optional image, via `/v1/chat/completions`. Returns `text`, `thinking` and the updated history. |
-| **Chat with Prompt Presets (llama-server)** | Several system prompts in one node, each with its own model, switchable, with a passthrough that skips the model. Takes an image too. |
+| **Chat with Prompt Presets (llama-server)** | Several system prompts in one node, each with its own model, plus a switch between running one and passing the prompt straight through. Takes an image too. |
 | **Vision Chat (llama-server)** | The same as Chat, with the image required rather than optional. |
 | **Text Completion (llama-server)** | Raw completion via the native `/completion` endpoint, with prompt-cache reuse. |
 | **Token Count (llama-server)** | Counts tokens via `/tokenize`. |
@@ -155,9 +155,18 @@ between them with the `active` dropdown:
 - Each preset has a **name** — which is what the `active` dropdown lists — and
   its **system prompt**. Rename them to whatever the presets do
   ("Enhance", "Translate", "Negative prompt").
-- **`passthrough`** hands the prompt straight to the output. The model is not
-  contacted at all: the server input is lazy, so in passthrough mode nothing on
-  the LLM side of the graph runs.
+- **`use_model`** is the switch between running a preset and handing the prompt
+  straight to the output. Off, the model is not contacted at all: the server
+  input is lazy, so nothing on the LLM side of the graph runs — not the
+  connection, not the active preset's extra prompt, not the image. The `active`
+  dropdown greys out, since there is nothing to pick.
+
+  This used to be a `passthrough` entry at the top of that dropdown, which meant
+  turning the model off was a matter of opening a list of six system prompts and
+  choosing the one item in it that is not one. The dropdown holds presets only
+  now. It still *understands* a stored `passthrough` — that is how a workflow
+  saved before the switch existed keeps meaning what it meant, and it opens with
+  the switch off.
 - Each preset has its own **`model_N`** field, so different presets can run on
   different models when llama-server is in router mode. Empty falls back to the
   connect node.
@@ -168,7 +177,8 @@ between them with the `active` dropdown:
   the nodes feeding an inactive one never execute. The node labels them
   `extra_N (inactive)` so it is clear which one is live.
 - Outputs are `text`, `thinking` and `active` (the preset that ran, or
-  `passthrough`), so the rest of the graph can tell what happened.
+  `passthrough` when the switch is off), so the rest of the graph can tell what
+  happened.
 
 Every per-slot field is an **optional** input. Hidden widgets do not survive
 ComfyUI's *export (API)*, so a required one would make an exported workflow

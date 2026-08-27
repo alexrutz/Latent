@@ -62,10 +62,12 @@ describe('applyPresetChat', () => {
     expect(applyPresetChat(plain, {})).toBe(plain);
   });
 
-  it('offers the slot names in the picker, passthrough first', () => {
+  it('offers the slot names in the picker, and nothing else', () => {
+    // `passthrough` is not a system prompt, and picking it out of a list of
+    // six that are was the clunky way to turn the model off. The `use_model`
+    // switch says it instead.
     const shaped = applyPresetChat(schema, {});
     expect(field(`${NODE}.active`, shaped)?.options).toEqual([
-      'passthrough',
       'Rewrite',
       'Caption',
       'Preset 3',
@@ -111,7 +113,7 @@ describe('applyPresetChat', () => {
     const shaped = applyPresetChat(schema, { [`${NODE}.slot_count`]: 5 });
     expect(field(`${NODE}.system_5`, shaped)?.hidden).toBeFalsy();
     expect(field(`${NODE}.system_6`, shaped)?.hidden).toBe(true);
-    expect(field(`${NODE}.active`, shaped)?.options).toHaveLength(6);
+    expect(field(`${NODE}.active`, shaped)?.options).toHaveLength(5);
   });
 
   it('labels each system prompt with its slot name', () => {
@@ -130,6 +132,60 @@ describe('applyPresetChat', () => {
       ),
     };
     expect(field(`${NODE}.system_1`, applyPresetChat(renamed, {}))?.label).toBe('House style');
+  });
+
+  /**
+   * The switch that replaced choosing "passthrough" from a list of prompts.
+   *
+   * Latent has no ComfyUI extension, so what it can do is show whichever
+   * control is deciding: with the model off there is no preset to pick, and
+   * with it on the picker holds presets and only presets.
+   */
+  describe('the run-or-pass-through switch', () => {
+    const withSwitch = (on: boolean) => applyPresetChat(schema, { [`${NODE}.use_model`]: on });
+
+    it('hides the picker while the model is off', () => {
+      expect(field(`${NODE}.active`, withSwitch(false))?.hidden).toBe(true);
+    });
+
+    it('shows it again when the model is back on', () => {
+      expect(field(`${NODE}.active`, withSwitch(true))?.hidden).toBeFalsy();
+    });
+
+    it('never hides the switch itself', () => {
+      for (const on of [true, false]) {
+        expect(field(`${NODE}.use_model`, withSwitch(on))?.hidden).toBeFalsy();
+      }
+    });
+
+    it('reads a stored passthrough as the model being off', () => {
+      // A workflow saved before the switch existed says it in the dropdown.
+      // Reading only the switch would leave a picker showing a value that is
+      // no longer one of its own options.
+      const older = applyPresetChat(schema, { [`${NODE}.active`]: 'passthrough' });
+      expect(field(`${NODE}.active`, older)?.hidden).toBe(true);
+    });
+
+    it('keeps passthrough in the picker for a workflow that has no switch', () => {
+      // Without the switch there is no other way to say it, so the entry stays
+      // exactly as long as it is needed.
+      const unswitched = {
+        ...withPresetChat,
+        '22': {
+          ...withPresetChat['22']!,
+          inputs: Object.fromEntries(
+            Object.entries(withPresetChat['22']!.inputs).filter(([key]) => key !== 'use_model'),
+          ),
+        },
+      };
+      const shaped = applyPresetChat(buildParamSchema(unswitched, objectInfoFixture), {});
+      expect(shaped.fields.find((entry) => entry.id === `${NODE}.active`)?.options).toEqual([
+        'passthrough',
+        'Rewrite',
+        'Caption',
+        'Preset 3',
+      ]);
+    });
   });
 
   it('lets a saved system prompt reach the slot named after it', () => {

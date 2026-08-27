@@ -405,8 +405,17 @@ export const objectInfoFixture: ObjectInfo = {
         image: ['IMAGE'],
         image_max_size: ['INT', { default: 1024, min: 0, max: 4096, step: 64 }],
         image_quality: ['INT', { default: 90, min: 30, max: 100 }],
-        /* The switch that ignores a connected image; last, as the node has it. */
+        /* The switch that ignores a connected image; in the node's own order. */
         use_image: ['BOOLEAN', { default: true }],
+        /*
+         * Run the chosen preset, or hand the prompt straight through.
+         *
+         * The switch that replaced picking `passthrough` out of a dropdown of
+         * system prompts. Latent hides the picker while it is off — see
+         * `applyPresetChat` — which is only testable against a node that
+         * declares it.
+         */
+        use_model: ['BOOLEAN', { default: true }],
       },
     },
   },

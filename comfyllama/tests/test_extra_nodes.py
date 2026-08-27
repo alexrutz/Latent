@@ -379,7 +379,78 @@ class TestPresetChatNode(ServerTestCase):
     def test_a_missing_connection_is_reported_clearly(self):
         with self.assertRaises(ValueError) as ctx:
             self.NODE().generate(server=None, **self.widgets(active="Preset 1"))
-        self.assertIn("passthrough", str(ctx.exception))
+        # It names the way out, which is the switch now rather than a value
+        # buried in a dropdown of system prompts.
+        self.assertIn("use_model", str(ctx.exception))
+
+
+class TestPresetModelSwitch(ServerTestCase):
+    """Turning the model off without going into the dropdown for it.
+
+    Picking "passthrough" out of a list of system prompts was the clunky way
+    to say "don't run this" — it is not a system prompt, and it sat among six
+    that are. The switch says it directly; the dropdown keeps its passthrough
+    only so a workflow saved before the switch existed still means what it
+    meant.
+    """
+
+    NODE = LlamaServerPresetChat
+
+    # The same widget values the node's other tests use; the switch is the only
+    # thing under test here.
+    widgets = TestPresetChatNode.widgets
+
+    def test_it_is_on_by_default_so_saved_workflows_do_not_change(self):
+        optional = LlamaServerPresetChat.INPUT_TYPES()["optional"]
+        self.assertIs(optional["use_model"][1]["default"], True)
+        # Appended, or every widget value after it would shift by one in an
+        # already-saved workflow.
+        self.assertEqual(list(optional)[-1], "use_model")
+
+    def test_off_passes_the_prompt_through_whatever_is_selected(self):
+        text, thinking, active = self.NODE().generate(
+            server=None,
+            **self.widgets(prompt="unchanged", active="Preset 1", use_model=False),
+        )
+        self.assertEqual((text, thinking, active), ("unchanged", "", "passthrough"))
+        self.assertEqual(self.stub.state["requests"], [])
+
+    def test_on_runs_the_preset_that_is_selected(self):
+        text, _, active = self.NODE().generate(
+            server=self.connect(), **self.widgets(active="Preset 2", use_model=True))
+        self.assertEqual(text, "Hello world")
+        self.assertEqual(active, "Preset 2")
+        sent = self.requests_to("/v1/chat/completions")[0]["payload"]
+        self.assertEqual(sent["messages"][0]["content"], "system 2")
+
+    def test_the_dropdown_can_still_say_it(self):
+        """A workflow saved before the switch existed keeps working."""
+        self.assertEqual(
+            self.NODE().generate(
+                server=None,
+                **self.widgets(prompt="unchanged", active="passthrough", use_model=True),
+            ),
+            ("unchanged", "", "passthrough"),
+        )
+
+    def test_off_runs_nothing_upstream_either(self):
+        """The lazy inputs have to agree, or the branch runs and is discarded."""
+        slots = {f"name_{index}": f"Preset {index}" for index in range(1, MAX_SLOTS + 1)}
+        self.assertEqual(
+            self.NODE().check_lazy_status(
+                active="Preset 1", slot_count=3, use_model=False,
+                server=None, extra_1=None, image=None, **slots),
+            [],
+        )
+
+    def test_on_asks_for_them_as_before(self):
+        slots = {f"name_{index}": f"Preset {index}" for index in range(1, MAX_SLOTS + 1)}
+        self.assertEqual(
+            self.NODE().check_lazy_status(
+                active="Preset 1", slot_count=3, use_model=True,
+                server=None, extra_1=None, **slots),
+            ["server", "extra_1"],
+        )
 
 
 class TestPresetLazyEvaluation(unittest.TestCase):

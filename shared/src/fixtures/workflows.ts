@@ -343,6 +343,9 @@ export const withPresetChat: ApiWorkflow = {
       image_max_size: 1024,
       image_quality: 90,
       use_image: true,
+      // Exported with the model on and a preset chosen, which is the ordinary
+      // state; `active` says which one and the switch says whether to run it.
+      use_model: true,
     },
     _meta: { title: 'Chat with Prompt Presets' },
   },

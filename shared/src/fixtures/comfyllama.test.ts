@@ -93,10 +93,13 @@ describe.skipIf(real === null)('the fixture matches the vendored comfyllama node
     expect(chatNodes.length).toBeGreaterThan(0);
     for (const name of chatNodes) {
       const optional = Object.keys(real?.[name]?.input?.optional ?? {});
-      expect({ node: name, last: optional[optional.length - 1] }).toEqual({
+      // After the encoding controls it governs, not in front of them — and not
+      // necessarily last overall, since anything added since is appended after
+      // it for the same positional reason.
+      expect({
         node: name,
-        last: 'use_image',
-      });
+        after: optional.indexOf('use_image') > optional.indexOf('image_quality'),
+      }).toEqual({ node: name, after: true });
     }
   });
 });

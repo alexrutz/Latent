@@ -99,7 +99,32 @@ export function applyPresetChat(schema: ParamSchema, values: ParamValues): Param
   const perNode = new Map(
     nodeIds.map((nodeId) => [
       nodeId,
-      { names: slotNames(schema, values, nodeId), count: slotCountOf(schema, values, nodeId) },
+      {
+        names: slotNames(schema, values, nodeId),
+        count: slotCountOf(schema, values, nodeId),
+        /*
+         * Whether this node carries the run-or-pass-through switch, and where
+         * it stands.
+         *
+         * The switch replaced choosing `passthrough` out of a list of system
+         * prompts, which is not one. A workflow exported before it existed has
+         * no switch, and for that one the dropdown's own passthrough is still
+         * the only way to say it — so the entry stays exactly as long as it is
+         * needed and no longer.
+         */
+        switched: schema.fields.some((field) => field.id === `${nodeId}.use_model`),
+        /*
+         * Two ways to say "do not run the model", and either one settles it.
+         * A workflow saved before the switch existed arrives with the switch
+         * on and `passthrough` in the dropdown; reading only the switch would
+         * show a picker whose value is not one of its own options.
+         */
+        running:
+          valueOf(schema, values, nodeId, 'use_model') !== 'false' &&
+          !PASSTHROUGH_ALIASES.has(
+            valueOf(schema, values, nodeId, 'active').trim().toLowerCase(),
+          ),
+      },
     ]),
   );
 
@@ -109,7 +134,15 @@ export function applyPresetChat(schema: ParamSchema, values: ParamValues): Param
     if (!node) return field;
 
     if (field.inputName === 'active') {
-      return { ...field, options: [PRESET_PASSTHROUGH, ...node.names], numericOptions: false };
+      return {
+        ...field,
+        options: node.switched ? [...node.names] : [PRESET_PASSTHROUGH, ...node.names],
+        numericOptions: false,
+        // Nothing to pick while the model is switched off. Hidden rather than
+        // greyed here because a form field cannot be greyed and still read as
+        // a control; the switch above it is what brings it back.
+        ...(node.switched && !node.running ? { hidden: true } : {}),
+      };
     }
 
     const slot = /^(name|system|model)_(\d+)$/.exec(field.inputName);

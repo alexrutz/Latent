@@ -389,14 +389,41 @@ function applyPresetState(node) {
 	const slotCount = Math.max(1, Math.min(Number(slotCountWidget.value) || 1, MAX_PRESET_SLOTS));
 	const names = presetNames(node, slotCount);
 
-	// Keep the dropdown in sync with the slot names.
-	const options = [PASSTHROUGH, ...names];
-	activeWidget.options = { ...(activeWidget.options ?? {}), values: options };
-	if (!options.includes(activeWidget.value)) {
-		activeWidget.value = PASSTHROUGH;
+	/*
+	 * The dropdown is a preset picker and nothing else.
+	 *
+	 * `passthrough` used to sit at the top of it, so turning the model off
+	 * meant opening a list of six system prompts and choosing the entry that
+	 * is not one. The `use_model` switch says it directly, so the list holds
+	 * only things that are actually system prompts. The node still understands
+	 * a stored `passthrough` — that is how a workflow saved before the switch
+	 * existed keeps working — and it lands here as the switch being off.
+	 */
+	const useModel = widgetByName(node, "use_model");
+	const options = useModel ? [...names] : [PASSTHROUGH, ...names];
+
+	if (useModel && String(activeWidget.value).toLowerCase() === PASSTHROUGH) {
+		useModel.value = false;
+		activeWidget.value = names[0] ?? PASSTHROUGH;
 	}
 
-	const activeIndex = names.indexOf(activeWidget.value) + 1; // 0 = passthrough
+	activeWidget.options = { ...(activeWidget.options ?? {}), values: options };
+	if (!options.includes(activeWidget.value)) {
+		activeWidget.value = options[0] ?? PASSTHROUGH;
+	}
+
+	/*
+	 * Greyed rather than hidden while the model is off: it still says which
+	 * preset would run, and a control that vanishes when you switch something
+	 * off is a control you have to switch back on to find again.
+	 */
+	const running = !useModel || useModel.value !== false;
+	activeWidget.disabled = !running;
+	if (activeWidget.inputEl) {
+		activeWidget.inputEl.style.opacity = running ? "" : "0.4";
+	}
+
+	const activeIndex = running ? names.indexOf(activeWidget.value) + 1 : 0;
 
 	for (let index = 1; index <= MAX_PRESET_SLOTS; index++) {
 		const inUse = index <= slotCount;
@@ -557,7 +584,7 @@ app.registerExtension({
 			return;
 		}
 
-		const watched = ["slot_count", "active"];
+		const watched = ["slot_count", "active", "use_model"];
 		for (let index = 1; index <= MAX_PRESET_SLOTS; index++) {
 			watched.push(`name_${index}`);
 		}

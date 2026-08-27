@@ -5633,12 +5633,48 @@ test.describe('the twenty-fifth wave', () => {
     await expect(page.getByText('Name 5', { exact: true })).toHaveCount(0);
     await page.screenshot({ path: 'test-results/76-preset-chat-slots.png' });
 
-    // And the picker offers those same names rather than the declared ones.
+    // And the picker offers those same names rather than the declared ones —
+    // presets only, since turning the model off is the switch's job now and not
+    // a disguised entry in the list of presets.
     await page.getByRole('button', { name: /^Active/ }).click();
-    await expect(page.getByRole('button', { name: 'passthrough', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'passthrough', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Rewrite', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Preset 3', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Preset 4', exact: true })).toHaveCount(0);
+  });
+
+  /**
+   * The switch that used to be an entry in the picker.
+   *
+   * Handing the prompt straight through was picked from the same dropdown as
+   * the presets, which put "do not run the model at all" in a list of ways to
+   * run it and took two taps to find. It is its own control now, and while it
+   * is off the picker has nothing left to choose, so it goes away.
+   */
+  test('turns the preset model off with a switch, not a dropdown entry', async ({ page }) => {
+    await withApi(async (ctx) => {
+      await ctx.post('/api/workflows', {
+        data: { name: 'Preset chat', graph: withPresetChat },
+      });
+    });
+
+    await open(page, '/');
+    await page.getByRole('button', { name: 'Advanced' }).click();
+
+    const useModel = page.getByRole('button', { name: /^Use model/ });
+    await expect(useModel).toBeVisible();
+    await expect(useModel).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('button', { name: /^Active/ })).toBeVisible();
+
+    await useModel.click();
+    await expect(useModel).toHaveAttribute('aria-pressed', 'false');
+    // Nothing to pick between when the model is not being asked.
+    await expect(page.getByRole('button', { name: /^Active/ })).toHaveCount(0);
+    await page.screenshot({ path: 'test-results/86-preset-passthrough-switch.png' });
+
+    // And back, without having to remember which preset it was on.
+    await useModel.click();
+    await expect(page.getByRole('button', { name: /^Active/ })).toBeVisible();
   });
 });
 

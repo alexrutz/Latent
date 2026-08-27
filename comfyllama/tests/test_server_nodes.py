@@ -888,9 +888,14 @@ class TestImageSwitch(unittest.TestCase):
             with self.subTest(node=node.__name__):
                 self.assertIn("use_image", optional)
                 self.assertIs(optional["use_image"][1]["default"], True)
-                # Appended after the encoding controls, so an already-saved
-                # workflow's positional widget values do not shift.
-                self.assertEqual(list(optional)[-1], "use_image")
+                # After the encoding controls it governs, rather than in front
+                # of them: ComfyUI stores widget values positionally, so a
+                # widget inserted above an existing one shifts every value
+                # after it in an already-saved workflow. Not necessarily last
+                # overall — anything added since is appended after it, for the
+                # same reason.
+                names = list(optional)
+                self.assertGreater(names.index("use_image"), names.index("image_quality"))
                 self.assertTrue(optional["image"][1].get("lazy"))
 
 
