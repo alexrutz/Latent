@@ -369,7 +369,7 @@ function AttributesLine({
             key={count}
             type="button"
             aria-pressed={index === at}
-            aria-label={`Notes in each picture: ${count}`}
+            aria-label={`Notes in each picture: ${attributeLabel(count)}`}
             onClick={() => onChange(count)}
             className="min-w-0 flex-1 py-2"
           >
@@ -386,15 +386,26 @@ function AttributesLine({
   );
 }
 
-const ATTRIBUTE_COUNTS = [1, 2, 3, 4, 5, 6];
+/**
+ * `0` first, and it is not "none".
+ *
+ * It is "no ceiling": take as many as the rules allow, which under the default
+ * cap of one per heading is one note from each — a picture made of your list
+ * rather than of whichever corner of it won the shuffle. Every other step is a
+ * fixed number that the caps can still cut short. See `wanderCount`.
+ */
+const ATTRIBUTE_COUNTS = [0, 1, 2, 3, 4, 5, 6];
 const ATTRIBUTE_HINTS = [
+  'one from each heading',
   'one thing at a time',
   'two, held together',
-  'three — the interesting one',
+  'three — a fixed handful',
   'four, and busier',
   'five, a collage',
   'six; they start to rhyme',
 ];
+const attributeLabel = (count: number) =>
+  count === 0 ? 'one from each heading' : String(count);
 
 function KeepInViewLine({
   value,
@@ -1614,7 +1625,7 @@ function ChatSection() {
   const autonomous = chat.autonomous ?? { enabled: false, maxRounds: 4 };
   const wander = chat.wander ?? {
     workflowId: '',
-    attributes: 3,
+    attributes: 0,
     draw: DEFAULT_WANDER_DRAW,
     sampling: 'chat' as const,
     ownSampling: defaultSampling(),

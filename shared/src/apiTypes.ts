@@ -1547,6 +1547,10 @@ export interface WanderRun {
    * unable to reach it — a cap of one per heading and three headings is three
    * notes however high this is set — and a round that quietly doubled up to
    * hit the number would be breaking the rule that was asked for.
+   *
+   * **`0` means no ceiling**: as many as the rules reach, which under the
+   * default cap of one per heading is one note from each. That is the default —
+   * see `wanderCount`, which is the one place the sentinel is resolved.
    */
   attributes: number;
   /** Which notes are eligible, and how they are picked. See `WanderDraw`. */
@@ -1639,9 +1643,19 @@ export interface WanderCategoryRule {
 
 export const DEFAULT_WANDER_DRAW: WanderDraw = {
   categories: {},
-  // No cap by default: the sheet offers "one from each heading" in a tap, and a
-  // cap arriving unasked-for would quietly change what an existing setup makes.
-  perCategory: 0,
+  /*
+   * One from each heading, which is the shape the mode wants.
+   *
+   * The headings are the things you curated — a *Format* heading, a *Films*
+   * heading, a *Mood* heading — so a picture built from one of each is a
+   * picture made of your list. A flat shuffle is not: it will happily take
+   * three films and no format, because one heading won the toss three times,
+   * and then every round is four ways of saying the same thing.
+   *
+   * With `attributes` at its own default of "no ceiling" (see `wanderCount`),
+   * this is literally one note per heading, every round.
+   */
+  perCategory: 1,
   loose: 'draw',
   pinned: 'draw',
   /*

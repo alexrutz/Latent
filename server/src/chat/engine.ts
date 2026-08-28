@@ -9,7 +9,7 @@ import type {
   ChatToolResult,
   ProposedBlock,
 } from '@latent/shared';
-import { DEFAULT_WANDER_DRAW, IDLE_RUN } from '@latent/shared';
+import { DEFAULT_WANDER_DRAW, IDLE_RUN, wanderCount } from '@latent/shared';
 
 import type { AppContext } from '../routes/context.js';
 import { drawTaste } from '../taste.js';
@@ -707,7 +707,7 @@ class Runner {
       const profile = this.ctx.taste.profileOrNull();
       const chat = this.ctx.store.getChat(this.chatId);
       const drawn = profile
-        ? drawTaste(profile, settings.attributes, {
+        ? drawTaste(profile, wanderCount(profile, rules, settings.attributes), {
             rules,
             exclude: recentWanderNotes(chat?.messages ?? [], rules.avoidRepeats),
           })

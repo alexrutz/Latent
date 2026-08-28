@@ -1280,7 +1280,7 @@ Three things are settable, under Settings → Chat → **Wandering**:
 
 | | |
 | --- | --- |
-| **Notes in each picture** | One to six, three by default. One is a variation on a theme; six is a collage where every picture contains everything and they all start to rhyme. A ceiling rather than a promise — see *what it draws from* below. |
+| **Notes in each picture** | **One from each heading** by default, then one to six. The first setting is not a number at all: it means *no ceiling* — take as many as the rules allow, which under the default cap of one per heading is one note from each. The fixed numbers are a ceiling rather than a promise — see *what it draws from* below. One is a variation on a theme; six is a collage where every picture contains everything and they all start to rhyme. |
 | **What it draws from** | Which notes are eligible and how they are spread. Its own sheet, because it is the setting this mode lives or dies by; see [Choosing what it draws from](#choosing-what-it-draws-from). |
 | **Rendered with** | Whatever the chat uses, or a workflow of its own — worth setting, because the graph you iterate with is often the slow one and a run that goes all evening wants the fast one. |
 | **Sampling for these** | The chat's, or its own. |
@@ -1369,11 +1369,18 @@ Wandering → **Set up…** is where you say.
 | **Always** | Guaranteed a place in every round, however few notes are being drawn. This is the one the mode needed most: the heading that decides what kind of picture this is at all should not be left to a coin toss. |
 | **Never** | Out of wandering — *without* being switched off for the chat, which is the difference between "not tonight" and "not any more". |
 
-**And each has a cap**, the **≤** beside it, on top of a general one. Setting the
-general cap to one means a round takes at most one thing from each heading,
-which is what stops it being four ways of saying the same thing because one
-heading happened to win the shuffle four times. A heading can override it in
-either direction.
+**And each has a cap**, the **≤** beside it, on top of a general one. The
+general cap is **one by default**, so a round takes at most one thing from each
+heading — which is what stops it being four ways of saying the same thing
+because one heading happened to win the shuffle four times. A heading can
+override it in either direction, and *No limit* puts the flat shuffle back.
+
+Together with **Notes in each picture** left at *one from each heading*, that
+default is the whole shape of the mode out of the box: your headings are the
+things you actually curated, so a picture built from one of each is a picture
+made of your list rather than of whichever corner of it came up. Notes filed
+under no heading count as one heading between them for this — the unsorted pile
+contributes one note, not all of them.
 
 **The caps are hard.** A round would rather come up short than break one: three
 notes wanted, a cap of one, and two headings in play means two notes, not two

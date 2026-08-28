@@ -827,8 +827,16 @@ describe('how far the notes reach', () => {
 /* ------------------------------------------------------------------ */
 
 describe('drawing a few notes for a wandering round', () => {
-  /** The flat shuffle the mode started as, and still the default. */
-  const flat = { rules: DEFAULT_WANDER_DRAW, random: () => 0 };
+  /*
+   * The flat shuffle the mode started as: everything eligible, nothing capped.
+   *
+   * Written out rather than taken from the defaults, which it used to be. The
+   * default is one from each heading now, and a fixture that quietly followed
+   * that would stop testing what these cases are about — the *count* limit,
+   * which only means anything when the caps are not the thing doing the
+   * limiting.
+   */
+  const flat = { rules: { ...DEFAULT_WANDER_DRAW, perCategory: 0 }, random: () => 0 };
   const texts = (drawn: { text: string }[]) => drawn.map((note) => note.text);
 
   /**

@@ -7049,9 +7049,25 @@ describe('what the user likes', () => {
         );
         entries.push(made.id);
       }
+      /*
+       * A ceiling of two, and the caps out of the way.
+       *
+       * These three notes are filed under nothing, and the loose pile is one
+       * heading as far as the caps are concerned — so under the default cap of
+       * one per heading a round would take one of them and this would be
+       * testing the cap rather than the count it is about.
+       */
       await api('/api/settings', {
         method: 'PATCH',
-        body: JSON.stringify({ chat: { wander: { attributes: 2, sampling: 'chat' } } }),
+        body: JSON.stringify({
+          chat: {
+            wander: {
+              attributes: 2,
+              sampling: 'chat',
+              draw: { ...DEFAULT_WANDER_DRAW, perCategory: 0 },
+            },
+          },
+        }),
       });
 
       const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
@@ -7103,10 +7119,87 @@ describe('what the user likes', () => {
       expect(ids).toHaveLength(2);
       for (const id of ids) expect(entries).toContain(id);
     } finally {
+      // Back to the shipped defaults, not to the numbers this test chose.
       await api('/api/settings', {
         method: 'PATCH',
-        body: JSON.stringify({ chat: { wander: { attributes: 3, sampling: 'chat' } } }),
+        body: JSON.stringify({
+          chat: { wander: { attributes: 0, sampling: 'chat', draw: { ...DEFAULT_WANDER_DRAW } } },
+        }),
       });
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
+   * What the mode does out of the box: one note from each heading.
+   *
+   * The headings are the thing you curated — a colour heading, a films heading,
+   * a mood heading — so a picture built from one of each is a picture made of
+   * your list. The default used to be a flat shuffle of a fixed three, which
+   * will happily take three films and no colour because one heading won the
+   * toss, and then every round is three ways of saying the same thing.
+   *
+   * Nothing is configured here on purpose. The settings are the shipped ones,
+   * and what is under test is that they are the ones that do this.
+   */
+  it('draws one note from each heading, with nothing configured', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+
+      const before = await json<TasteProfile>(taste('/api/taste'));
+      for (const entry of before.entries) {
+        await taste(`/api/taste/entries/${entry.id}`, { method: 'DELETE' });
+      }
+      for (const category of before.categories) {
+        await taste(`/api/taste/categories/${category.id}`, { method: 'DELETE' });
+      }
+
+      // Two headings with two notes each: a round that took both from one of
+      // them would be the old behaviour, and is what this rules out.
+      const headings: Record<string, string[]> = {
+        Colour: ['washed-out teal', 'sodium orange'],
+        Films: ['Portra 400', 'Ilford HP5'],
+      };
+      const byNote = new Map<string, string>();
+      for (const [name, texts] of Object.entries(headings)) {
+        const category = await json<{ id: string }>(
+          taste('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name }) }),
+        );
+        categories.push(category.id);
+        for (const text of texts) {
+          const made = await json<TasteEntry>(
+            taste('/api/taste/entries', {
+              method: 'POST',
+              body: JSON.stringify({ text, categoryId: category.id }),
+            }),
+          );
+          entries.push(made.id);
+          byNote.set(text, name);
+        }
+      }
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      llama.script({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a teal harbour on Portra', reason: 'Drawn from the notes.' },
+        },
+      });
+
+      await startWandering(chat.id);
+      const rounds = await wandered(chat.id, 1);
+      await stopWandering(chat.id);
+
+      const call = rounds[0]?.toolCall;
+      const notes = call?.tool === 'build_prompt' ? (call.wanderNotes ?? []) : [];
+
+      // One from each heading: two notes, and one of them from each.
+      expect(notes).toHaveLength(2);
+      expect(notes.map((text) => byNote.get(text)).sort()).toEqual(['Colour', 'Films']);
+    } finally {
       await llama.close();
     }
   }, 30_000);

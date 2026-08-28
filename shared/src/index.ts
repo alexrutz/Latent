@@ -13,6 +13,7 @@ export * from './studyStats.js';
 export * from './modelServer.js';
 export * from './presetChat.js';
 export * from './editOrigin.js';
+export * from './wanderDraw.js';
 export * from './viewBox.js';
 export * from './tileRows.js';
 export * from './media.js';

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
-import { DEFAULT_WANDER_DRAW } from '@latent/shared';
+import { DEFAULT_WANDER_DRAW, wanderReach } from '@latent/shared';
 import type { TasteProfile, WanderCategoryRule, WanderDraw } from '@latent/shared';
 
 import { api, setTasteTicket } from '../api/client';
@@ -395,27 +395,27 @@ function Reach({
   draw: WanderDraw;
   attributes: number;
 }) {
-  const active = new Map(profile.categories.map((entry) => [entry.id, entry]));
-  const cap = (id: string | null) => {
-    const rule = (id ? draw.categories[id] : undefined) ?? { role: 'draw' as const, max: 0 };
-    if (rule.role === 'off') return 0;
-    const own = rule.max || draw.perCategory;
-    return own > 0 ? own : Number.POSITIVE_INFINITY;
-  };
+  // The same arithmetic the draw itself uses; see `wanderReach`. It was
+  // written out again here once, and a cap changed on one side and not the
+  // other showed a number the round did not agree with.
+  const reach = wanderReach(profile, draw);
 
-  const available = new Map<string | null, number>();
-  for (const entry of profile.entries) {
-    if (!entry.active) continue;
-    const category = entry.categoryId ? active.get(entry.categoryId) : undefined;
-    if (entry.categoryId && (!category || !category.active)) continue;
-    if (entry.always && draw.pinned === 'off') continue;
-    const key = category?.id ?? null;
-    if (key === null && draw.loose === 'off') continue;
-    available.set(key, (available.get(key) ?? 0) + 1);
+  /*
+   * No ceiling: the rules *are* the answer, so there is nothing to fall short
+   * of and the line says what a round will actually be rather than warning
+   * about a number nobody set.
+   */
+  if (attributes === 0) {
+    return (
+      <p className="px-1 text-[11px] leading-relaxed text-muted">
+        {reach === 0
+          ? 'These rules leave nothing to draw, so a round will be whatever the model makes of an empty list. Bring a heading back in.'
+          : `A round takes as many as these rules allow — ${reach} ${
+              reach === 1 ? 'note' : 'notes'
+            }, one from each heading in play.`}
+      </p>
+    );
   }
-
-  let reach = 0;
-  for (const [key, count] of available) reach += Math.min(count, cap(key));
 
   const short = reach < attributes;
   return (

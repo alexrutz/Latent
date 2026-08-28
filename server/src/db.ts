@@ -1008,18 +1008,19 @@ const DEFAULT_SETTINGS: AppSettings = {
      */
     autonomous: { enabled: false, maxRounds: 4 },
     /*
-     * Wandering: off, three notes a picture, the chat's own sampling.
+     * Wandering: off, one note from each heading, the chat's own sampling.
      *
-     * Three because that is where the mode is actually interesting — one note
-     * is a variation on a theme and six is a collage where every picture
-     * contains everything and they all look alike.
+     * `0` is not "no notes" — it is "no ceiling", so a round takes as many as
+     * the rules allow, and the rules allow one per heading. The headings are
+     * the thing you curated; a picture made of one of each is a picture made of
+     * your list, where a flat shuffle of a fixed three is a picture made of
+     * whichever corner of it won the toss.
      */
     wander: {
       workflowId: '',
-      attributes: 3,
-      // Everything eligible and nothing capped, which is the flat shuffle this
-      // mode started as. The rules are there to be reached for; see the sheet
-      // under Settings → Chat → Wandering.
+      attributes: 0,
+      // One per heading, everything else eligible. See the sheet under
+      // Settings → Chat → Wandering to cap, pin or leave a heading out.
       draw: { ...DEFAULT_WANDER_DRAW },
       sampling: 'chat',
       /*
