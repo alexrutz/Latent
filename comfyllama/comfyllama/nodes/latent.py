@@ -7,7 +7,7 @@ node most workflows in this pack end up needing.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, NamedTuple, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from .common import CATEGORY_LATENT
 
@@ -62,6 +62,32 @@ LATENT_FORMATS: Dict[str, LatentSpec] = {
 }
 
 
+# What a connected picture is allowed to decide.
+#
+# Two different questions, and a workflow wants one or the other rather than
+# both. *Resolution* is "make it exactly this size again" — an upscale pass, a
+# second take at a frame you already have. *Aspect ratio* is "this shape, at my
+# budget" — the far commoner case, because the source is a phone photo at twelve
+# megapixels and the model wants one.
+FROM_IMAGE_OFF = "off"
+FROM_IMAGE_RATIO = "aspect ratio"
+FROM_IMAGE_RESOLUTION = "resolution"
+FROM_IMAGE_MODES = [FROM_IMAGE_OFF, FROM_IMAGE_RATIO, FROM_IMAGE_RESOLUTION]
+
+
+def image_size(image) -> Tuple[int, int]:
+    """The width and height of a ComfyUI IMAGE, as pixels.
+
+    The tensor is ``[batch, height, width, channels]`` — height before width,
+    which is the wrong way round from everything else in this file and is
+    exactly the sort of thing worth having in one named place.
+    """
+    shape = getattr(image, "shape", None)
+    if shape is None or len(shape) < 3:
+        raise ValueError("The connected image is not in ComfyUI's IMAGE format.")
+    return int(shape[2]), int(shape[1])
+
+
 def resolve_dimensions(aspect_ratio: str, megapixels: float, divisible_by: int = 8,
                        minimum_multiple: int = 1) -> Tuple[int, int]:
     """Pixel size closest to ``megapixels`` at the given ratio.
@@ -89,6 +115,43 @@ def resolve_dimensions(aspect_ratio: str, megapixels: float, divisible_by: int =
 
 def _round_to(value: float, multiple: int) -> int:
     return max(multiple, int(round(value / multiple)) * multiple)
+
+
+def plan_dimensions(aspect_ratio: str, megapixels: float, divisible_by: int,
+                    minimum_multiple: int, from_image: str = FROM_IMAGE_OFF,
+                    source: Optional[Tuple[int, int]] = None) -> Tuple[int, int]:
+    """The size this node will make, whatever decided it.
+
+    One place, because there are three ways in now and `generate` deciding for
+    itself is how a node ends up making a latent of one size and reporting
+    another out of its `width`/`height` outputs.
+
+    `source` is the connected picture's own pixel size, or `None` for no
+    picture. The widgets decide whenever nothing else does — which is both the
+    default and what a workflow saved before this existed keeps doing.
+    """
+    step = max(1, int(divisible_by), int(minimum_multiple))
+
+    if from_image == FROM_IMAGE_RESOLUTION and source is not None:
+        # Rounded, not taken raw: a latent cannot represent 1023 pixels, so an
+        # odd-sized source has to land on the grid like everything else.
+        width, height = source
+        return _round_to(width, step), _round_to(height, step)
+
+    if from_image == FROM_IMAGE_RATIO and source is not None:
+        width, height = source
+        if width <= 0 or height <= 0:
+            raise ValueError("The connected image has no size to take a ratio from.")
+        # The picture's own proportions rather than the nearest of the thirteen
+        # labels: a 3024x4032 photo is 3:4 and a 2778x1284 screenshot is not any
+        # of them, and snapping the second one to 2:1 would be a crop nobody
+        # asked for.
+        pixels = max(float(megapixels), 0.0) * PIXELS_PER_MEGAPIXEL
+        scale = math.sqrt(pixels / (width * height))
+        return _round_to(width * scale, step), _round_to(height * scale, step)
+
+    return resolve_dimensions(aspect_ratio, megapixels, divisible_by,
+                              minimum_multiple)
 
 
 class EmptyLatentByAspectRatio:
@@ -125,6 +188,28 @@ class EmptyLatentByAspectRatio:
                                "is the same shape but keeps both edges on a "
                                "16 pixel grid.",
                 }),
+                # Appended, not put up beside `aspect_ratio` where it reads
+                # best: ComfyUI stores widget values positionally, so anything
+                # inserted higher shifts every value after it in a workflow
+                # that has already been saved.
+                #
+                # Off by default, so a graph made before this existed goes on
+                # meaning exactly what it meant — including one that already had
+                # a picture wired somewhere near this node.
+                "from_image": (FROM_IMAGE_MODES, {
+                    "default": FROM_IMAGE_OFF,
+                    "tooltip": "Take the size from the connected picture. "
+                               "'aspect ratio' keeps your megapixel budget and "
+                               "only borrows the shape; 'resolution' makes the "
+                               "latent the picture's own size. Both round to "
+                               "the grid the format needs.",
+                }),
+                # Lazy: with `from_image` off, nothing upstream of this input
+                # runs at all — no loader, no decode, no resize.
+                "image": ("IMAGE", {
+                    "lazy": True,
+                    "tooltip": "Only read when 'from_image' asks for it.",
+                }),
             },
         }
 
@@ -134,13 +219,27 @@ class EmptyLatentByAspectRatio:
     CATEGORY = CATEGORY_LATENT
     DESCRIPTION = "Empty latent from an aspect ratio and a megapixel budget."
 
+    def check_lazy_status(self, from_image=FROM_IMAGE_OFF, **kwargs):
+        """Only pull the picture in when something is going to read it."""
+        return ["image"] if from_image != FROM_IMAGE_OFF else []
+
     def generate(self, aspect_ratio, megapixels, divisible_by, batch_size,
-                 latent_format=DEFAULT_FORMAT):
+                 latent_format=DEFAULT_FORMAT, from_image=FROM_IMAGE_OFF,
+                 image=None):
         import torch
 
+        if from_image != FROM_IMAGE_OFF and image is None:
+            raise ValueError(
+                f"'from_image' is set to '{from_image}' but no picture is "
+                f"connected. Connect one, or set 'from_image' to "
+                f"'{FROM_IMAGE_OFF}'."
+            )
+
         spec = LATENT_FORMATS.get(latent_format, LATENT_FORMATS[DEFAULT_FORMAT])
-        width, height = resolve_dimensions(aspect_ratio, megapixels, divisible_by,
-                                           spec.minimum_multiple)
+        width, height = plan_dimensions(
+            aspect_ratio, megapixels, divisible_by, spec.minimum_multiple,
+            from_image, image_size(image) if image is not None else None,
+        )
 
         device = None
         try:

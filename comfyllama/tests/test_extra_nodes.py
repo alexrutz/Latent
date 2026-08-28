@@ -16,8 +16,12 @@ from test_nodes import HAVE_IMAGING  # noqa: F401
 from test_server_nodes import ServerTestCase
 
 from comfyllama.backend import decode_escapes
-from comfyllama.nodes.latent import (LATENT_FORMATS, RATIO_LABELS,
-                                     EmptyLatentByAspectRatio, resolve_dimensions)
+from comfyllama.nodes.latent import (DEFAULT_FORMAT as DEFAULT_LATENT_FORMAT,
+                                     FROM_IMAGE_OFF, FROM_IMAGE_RATIO,
+                                     FROM_IMAGE_RESOLUTION, LATENT_FORMATS,
+                                     RATIO_LABELS, EmptyLatentByAspectRatio,
+                                     image_size, plan_dimensions,
+                                     resolve_dimensions)
 from comfyllama.nodes.presets import (MAX_SLOTS, LlamaServerPresetChat, join_prompt,
                                       resolve_slot, slot_names)
 
@@ -131,6 +135,120 @@ class TestEmptyLatentNode(unittest.TestCase):
     def test_the_real_tensor_is_zeroed(self):
         latent, _, _ = EmptyLatentByAspectRatio().generate("1:1", 1.0, 8, 1)
         self.assertEqual(float(latent["samples"].abs().sum()), 0.0)
+
+
+def fake_image(width, height):
+    """A stand-in for a ComfyUI IMAGE: [batch, height, width, channels]."""
+    return FakeTensor((1, height, width, 3), None)
+
+
+class TestSizeFromAnImage(unittest.TestCase):
+    """The two things a connected picture may decide, and neither by accident."""
+
+    def test_the_widgets_decide_when_nothing_else_does(self):
+        # Off, and off-with-a-picture-connected, are the same thing: a graph
+        # made before this existed goes on meaning what it meant.
+        plain = resolve_dimensions("2:3", 1.0, 8, 8)
+        self.assertEqual(
+            plan_dimensions("2:3", 1.0, 8, 8, FROM_IMAGE_OFF, None), plain)
+        self.assertEqual(
+            plan_dimensions("2:3", 1.0, 8, 8, FROM_IMAGE_OFF, (1234, 5678)), plain)
+        # And a mode that wants a picture with none connected falls back rather
+        # than dividing by nothing; `generate` is what refuses that outright.
+        self.assertEqual(
+            plan_dimensions("2:3", 1.0, 8, 8, FROM_IMAGE_RATIO, None), plain)
+
+    def test_resolution_is_the_picture_s_own_size(self):
+        self.assertEqual(
+            plan_dimensions("1:1", 1.0, 8, 8, FROM_IMAGE_RESOLUTION, (768, 1024)),
+            (768, 1024))
+        # The megapixel budget is not consulted at all — that is the difference
+        # between this mode and the other one.
+        self.assertEqual(
+            plan_dimensions("1:1", 4.0, 8, 8, FROM_IMAGE_RESOLUTION, (768, 1024)),
+            (768, 1024))
+
+    def test_an_odd_size_still_lands_on_the_grid(self):
+        # A latent cannot represent 1023 pixels, so a source that is not on the
+        # grid is rounded like everything else here.
+        self.assertEqual(
+            plan_dimensions("1:1", 1.0, 8, 8, FROM_IMAGE_RESOLUTION, (1023, 769)),
+            (1024, 768))
+        # And a format that wants a coarser grid than `divisible_by` wins.
+        self.assertEqual(
+            plan_dimensions("1:1", 1.0, 8, 16, FROM_IMAGE_RESOLUTION, (1004, 1004)),
+            (1008, 1008))
+
+    def test_the_ratio_keeps_the_shape_and_the_budget(self):
+        # A 12 MP phone photo, at one megapixel: the same 3:4 shape, the size
+        # the model actually wants.
+        width, height = plan_dimensions(
+            "1:1", 1.0, 8, 8, FROM_IMAGE_RATIO, (3024, 4032))
+        self.assertAlmostEqual(width / height, 3 / 4, places=2)
+        self.assertLess(width * height, 1.1 * 1024 * 1024)
+        self.assertGreater(width * height, 0.9 * 1024 * 1024)
+        # The `aspect_ratio` widget is not consulted: the picture is the shape.
+        self.assertEqual(
+            plan_dimensions("21:9", 1.0, 8, 8, FROM_IMAGE_RATIO, (3024, 4032)),
+            (width, height))
+
+    def test_a_ratio_no_label_covers_is_kept_rather_than_snapped(self):
+        """The reason it is the picture's own proportions and not the nearest label."""
+        # 2778x1284 is a phone screenshot and is none of the thirteen labels.
+        # Snapping it to 2:1 would be a crop nobody asked for.
+        width, height = plan_dimensions(
+            "1:1", 1.0, 8, 8, FROM_IMAGE_RATIO, (2778, 1284))
+        self.assertAlmostEqual(width / height, 2778 / 1284, places=1)
+        self.assertNotEqual(width / height, 2.0)
+
+    def test_a_picture_with_no_size_is_reported_rather_than_dividing_by_zero(self):
+        with self.assertRaises(ValueError):
+            plan_dimensions("1:1", 1.0, 8, 8, FROM_IMAGE_RATIO, (0, 512))
+
+    def test_the_image_is_read_height_before_width(self):
+        # The one thing about ComfyUI's IMAGE layout that is easy to get
+        # backwards, and getting it backwards makes a portrait source produce a
+        # landscape latent.
+        self.assertEqual(image_size(fake_image(768, 1024)), (768, 1024))
+
+    def test_a_shape_that_is_not_an_image_says_so(self):
+        with self.assertRaises(ValueError):
+            image_size(FakeTensor((4,), None))
+        with self.assertRaises(ValueError):
+            image_size(object())
+
+
+class TestSizeFromAnImageOnTheNode(unittest.TestCase):
+    def test_the_latent_is_built_at_the_picture_s_size(self):
+        with fake_torch():
+            latent, width, height = EmptyLatentByAspectRatio().generate(
+                "1:1", 1.0, 8, 1, DEFAULT_LATENT_FORMAT,
+                FROM_IMAGE_RESOLUTION, fake_image(768, 1024))
+        self.assertEqual((width, height), (768, 1024))
+        self.assertEqual(latent["samples"].shape, (1, 4, 1024 // 8, 768 // 8))
+
+    def test_asking_for_a_picture_that_is_not_there_is_reported_clearly(self):
+        with fake_torch():
+            with self.assertRaises(ValueError) as ctx:
+                EmptyLatentByAspectRatio().generate(
+                    "1:1", 1.0, 8, 1, DEFAULT_LATENT_FORMAT, FROM_IMAGE_RATIO, None)
+        # Names the way out, not just the fault.
+        self.assertIn("from_image", str(ctx.exception))
+        self.assertIn(FROM_IMAGE_OFF, str(ctx.exception))
+
+    def test_nothing_upstream_runs_while_it_is_off(self):
+        """The point of the lazy input: no loader, no decode, no resize."""
+        node = EmptyLatentByAspectRatio()
+        self.assertEqual(node.check_lazy_status(from_image=FROM_IMAGE_OFF), [])
+        self.assertEqual(node.check_lazy_status(from_image=FROM_IMAGE_RATIO), ["image"])
+        self.assertEqual(
+            node.check_lazy_status(from_image=FROM_IMAGE_RESOLUTION), ["image"])
+
+    def test_the_switch_is_appended_so_saved_workflows_do_not_shift(self):
+        """ComfyUI stores widget values positionally; see the node."""
+        optional = list(EmptyLatentByAspectRatio.INPUT_TYPES()["optional"])
+        self.assertLess(optional.index("latent_format"), optional.index("from_image"))
+        self.assertIn("image", optional)
 
 
 class TestKrea2Format(unittest.TestCase):

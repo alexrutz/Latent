@@ -559,6 +559,92 @@ function addImageControls(nodeType) {
 	};
 }
 
+// --- Empty Latent (Aspect Ratio + Megapixels) ------------------------------
+// The size can come from a connected picture instead of from the widgets, and
+// which widgets still decide anything depends on how.
+const FROM_IMAGE_OFF = "off";
+const FROM_IMAGE_RESOLUTION = "resolution";
+
+/**
+ * Grey what the picture has taken over, and say so on the input.
+ *
+ * Greyed rather than hidden, like the encoding controls beside a switched-off
+ * image: the value is still what the node would fall back to, and a widget that
+ * vanishes is one you have to switch something back on to find again.
+ *
+ * `megapixels` is the interesting case — it keeps deciding under *aspect
+ * ratio*, which is the whole difference between the two modes, and stops under
+ * *resolution*, where the picture's own size is the answer.
+ */
+function applyLatentSizeState(node) {
+	const mode = widgetByName(node, "from_image");
+	const from = mode ? String(mode.value ?? FROM_IMAGE_OFF) : FROM_IMAGE_OFF;
+	const fromImage = from !== FROM_IMAGE_OFF;
+
+	const grey = (name, deciding) => {
+		const widget = widgetByName(node, name);
+		if (!widget) {
+			return;
+		}
+		widget.disabled = !deciding;
+		if (widget.inputEl) {
+			widget.inputEl.style.opacity = deciding ? "" : "0.4";
+		}
+	};
+
+	grey("aspect_ratio", !fromImage);
+	grey("megapixels", from !== FROM_IMAGE_RESOLUTION);
+
+	// A mode that wants a picture with none wired is the one mistake worth
+	// catching before the graph is queued rather than after.
+	const slot = node.inputs?.findIndex((input) => input.name === "image");
+	if (slot !== undefined && slot >= 0) {
+		const connected = node.inputs[slot].link != null;
+		node.inputs[slot].label =
+			fromImage && !connected ? "image (needed)" : fromImage ? undefined : "image (off)";
+	}
+
+	node.setDirtyCanvas?.(true, false);
+}
+
+app.registerExtension({
+	name: "comfyllama.latentSize",
+	async beforeRegisterNodeDef(nodeType, nodeData) {
+		if (nodeData.name !== "EmptyLatentByAspectRatio") {
+			return;
+		}
+
+		const onNodeCreated = nodeType.prototype.onNodeCreated;
+		nodeType.prototype.onNodeCreated = function () {
+			onNodeCreated?.apply(this, arguments);
+			const widget = widgetByName(this, "from_image");
+			if (widget) {
+				const original = widget.callback;
+				widget.callback = (...args) => {
+					const result = original?.apply(widget, args);
+					applyLatentSizeState(this);
+					return result;
+				};
+			}
+			applyLatentSizeState(this);
+		};
+
+		const onConfigure = nodeType.prototype.onConfigure;
+		nodeType.prototype.onConfigure = function () {
+			onConfigure?.apply(this, arguments);
+			applyLatentSizeState(this);
+		};
+
+		// Wiring the picture up, or pulling it out, changes what the label
+		// above has to say.
+		const onConnectionsChange = nodeType.prototype.onConnectionsChange;
+		nodeType.prototype.onConnectionsChange = function () {
+			onConnectionsChange?.apply(this, arguments);
+			applyLatentSizeState(this);
+		};
+	},
+});
+
 app.registerExtension({
 	name: "comfyllama.imageInput",
 	async beforeRegisterNodeDef(nodeType, nodeData) {

@@ -87,9 +87,19 @@ describe.skipIf(real === null)('the fixture matches the vendored comfyllama node
    * while it is off, so the two ends have to agree it is there at all.
    */
   it('carries the image switch on every chat node that takes a picture', () => {
-    const chatNodes = Object.keys(real ?? {}).filter(
-      (name) => 'image' in (real?.[name]?.input?.optional ?? {}),
-    );
+    /*
+     * An optional picture *and* the controls for encoding it. Both, because
+     * either alone now names a node that has no switch and should not.
+     *
+     * The empty-latent node takes an optional picture too — to borrow a size
+     * from — and has no encoding to govern, so nothing to switch. The vision
+     * node has the encoding and no switch either, the other way round: its
+     * picture is required, because sending one is what the node is for.
+     */
+    const chatNodes = Object.keys(real ?? {}).filter((name) => {
+      const optional = real?.[name]?.input?.optional ?? {};
+      return 'image' in optional && 'image_quality' in optional;
+    });
     expect(chatNodes.length).toBeGreaterThan(0);
     for (const name of chatNodes) {
       const optional = Object.keys(real?.[name]?.input?.optional ?? {});

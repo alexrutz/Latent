@@ -47,7 +47,7 @@ These have nothing to do with llama.cpp and work on their own.
 
 | Node | What it does |
 | --- | --- |
-| **Empty Latent (Aspect Ratio + Megapixels)** | An empty latent sized by picking a ratio and a megapixel budget instead of typing width and height. Handles SD1.5/SDXL, SD3/Flux and Krea 2 latents. |
+| **Empty Latent (Aspect Ratio + Megapixels)** | An empty latent sized by picking a ratio and a megapixel budget instead of typing width and height, or by borrowing either from a connected picture. Handles SD1.5/SDXL, SD3/Flux and Krea 2 latents. |
 
 ## Install
 
@@ -211,6 +211,29 @@ raises the rounding to 16 px even when `divisible_by` is 8. A coarser
 `divisible_by` still wins. Krea 2 is documented as covering 1K to 2K, i.e.
 `megapixels` between 1.0 and 2.0; at 1.0 the presets come out as 1024x1024
 (1:1), 832x1248 (2:3) and 1360x768 (16:9).
+
+### Taking the size from a picture
+
+Connect an **`image`** and set **`from_image`**, and the size comes from that
+picture instead of from the widgets:
+
+| `from_image` | What the picture decides |
+| --- | --- |
+| `off` | Nothing. The widgets decide, as they always have. This is the default, and a connected picture is ignored. |
+| `aspect ratio` | The shape only. `megapixels` still decides how big — so a 3024x4032 phone photo at 1.0 MP gives 880x1176, the same proportions at the size the model wants. |
+| `resolution` | The size itself. The picture's own width and height, and `megapixels` is not consulted at all. |
+
+Both modes round to the same grid as everything else here, so an odd source —
+1023 px — lands on `divisible_by`, or on the coarser grid the latent format
+needs. The node's `width` and `height` outputs report what it actually made.
+
+The shape is the picture's **own** proportions, not the nearest of the thirteen
+labels. A 2778x1284 screenshot is none of them, and snapping it to `2:1` would
+be a crop nobody asked for.
+
+`image` is a **lazy** input: with `from_image` off, nothing upstream of it runs
+at all — no loader, no decode, no resize. Set a mode with nothing connected and
+the node says so rather than guessing.
 
 ## Images
 

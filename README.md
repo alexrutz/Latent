@@ -947,6 +947,19 @@ and expects a number back. `aspect_ratio` and `megapixels` are read as the size
 of the picture, so they sit with width and height on the form and on a gallery
 card.
 
+**And they go when a picture decides instead.** That node can take its size from
+a connected image rather than from its widgets — `from_image` set to *aspect
+ratio* borrows the shape and keeps your megapixel budget, *resolution* takes the
+picture's own size outright. Whichever it takes stops being something the form
+can decide, so the ratio goes in both modes and the megapixel budget goes only
+under *resolution*, where it is not consulted. The mode itself is never hidden:
+it is what brings the others back, and hiding the only control that undoes a
+state is how a form traps somebody in it.
+
+That is the third instance of the same rule — the image encoding controls, the
+sampler's two halves, and now this. A form that offers a setting which cannot
+affect the result is worse than one that offers nothing.
+
 **Thinking is on by default.** Reasoning models are what this is worth doing
 with, and a model that thinks before answering gives noticeably better prompts.
 It arrives folded up under a *Thinking* line you can open, because the answer is
@@ -2126,7 +2139,9 @@ side is that Latent already knows about three of them:
   hand and settles the choice on the way to the graph.
 - **`EmptyLatentByAspectRatio`** gives a ratio and a megapixel budget instead of
   a width and a height, and its `divisible_by` is a combo whose options are
-  numbers rather than strings.
+  numbers rather than strings. It also takes an optional picture to borrow a
+  shape or a size from — `from_image` says which — and the form drops whichever
+  control that has taken over.
 
 Every chat node also takes an optional picture, with a `use_image` switch in
 front of it. Latent's form follows that switch: the two encoding controls

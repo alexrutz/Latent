@@ -439,3 +439,70 @@ describe('the sampler node’s two ways of setting the same values', () => {
     for (const entry of shared) expect(entry.hidden).not.toBe(true);
   });
 });
+
+/**
+ * The empty latent, when a picture decides how big it is.
+ *
+ * The node makes its latent from a ratio and a megapixel budget, and it can
+ * take either from a connected picture instead: the shape only, keeping the
+ * budget, or the picture's exact size. Whichever it takes stops being something
+ * the form can decide — and a number you can still edit that changes nothing is
+ * worse than no number at all.
+ */
+describe('where the empty latent gets its size', () => {
+  /** Node `5` of the preset workflow, with the mode set and a picture wired. */
+  const sizedBy = (mode: string) =>
+    buildParamSchema(
+      {
+        ...withPresetChat,
+        '5': {
+          ...withPresetChat['5']!,
+          inputs: { ...withPresetChat['5']!.inputs, from_image: mode, image: ['1', 0] },
+        },
+      },
+      objectInfoFixture,
+    );
+
+  it('leaves both controls alone while nothing is taken from a picture', () => {
+    expect(field('5.aspect_ratio')?.hidden).toBeFalsy();
+    expect(field('5.megapixels')?.hidden).toBeFalsy();
+    // And explicitly off, with a picture wired, is the same thing.
+    const off = sizedBy('off');
+    expect(field('5.aspect_ratio', off)?.hidden).toBeFalsy();
+    expect(field('5.megapixels', off)?.hidden).toBeFalsy();
+  });
+
+  /*
+   * The difference between the two modes, in one assertion each. Borrowing a
+   * shape leaves you deciding how big it is; borrowing a size does not.
+   */
+  it('keeps the budget when only the shape is borrowed', () => {
+    const ratio = sizedBy('aspect ratio');
+    expect(field('5.aspect_ratio', ratio)?.hidden).toBe(true);
+    expect(field('5.megapixels', ratio)?.hidden).toBeFalsy();
+  });
+
+  it('drops both when the picture’s own size is the answer', () => {
+    const resolution = sizedBy('resolution');
+    expect(field('5.aspect_ratio', resolution)?.hidden).toBe(true);
+    expect(field('5.megapixels', resolution)?.hidden).toBe(true);
+  });
+
+  it('never hides the mode itself, which is what brings them back', () => {
+    for (const mode of ['off', 'aspect ratio', 'resolution']) {
+      expect(field('5.from_image', sizedBy(mode))?.hidden).toBeFalsy();
+    }
+  });
+
+  /** Nothing else in the graph has a ratio to lose to this rule. */
+  it('leaves other nodes’ controls alone', () => {
+    const resolution = sizedBy('resolution');
+    const elsewhere = resolution.fields.filter(
+      (entry) => entry.nodeId !== '5' && entry.inputName === 'megapixels',
+    );
+    for (const entry of elsewhere) expect(entry.hidden).not.toBe(true);
+    // The rest of node 5 is untouched: this rule is about size, not the node.
+    expect(field('5.batch_size', resolution)?.hidden).toBeFalsy();
+    expect(field('5.divisible_by', resolution)?.hidden).toBeFalsy();
+  });
+});

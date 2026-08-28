@@ -686,6 +686,37 @@ function idleImageControl(node: { inputs?: Record<string, unknown> }, inputName:
   return !wired || node.inputs?.[IMAGE_SWITCH_INPUT] === false;
 }
 
+/** comfyllama's empty-latent node, whose size can come from a picture. */
+const LATENT_SIZE_CLASS = 'EmptyLatentByAspectRatio';
+/** The mode that says where the size comes from. See `idleLatentSizeControl`. */
+const FROM_IMAGE_INPUT = 'from_image';
+
+/**
+ * A size control the picture has taken over.
+ *
+ * The node makes an empty latent from a ratio and a megapixel budget, and it
+ * can take either from a connected picture instead — the shape only, keeping
+ * your budget, or the picture's exact size. Whichever it takes stops being
+ * something the form can decide, and a number you can still edit that changes
+ * nothing is worse than no number at all.
+ *
+ * `megapixels` is the interesting one: it survives *aspect ratio*, which is the
+ * whole difference between the two modes, and goes under *resolution*, where
+ * the picture's own size is the answer. `from_image` itself is never hidden —
+ * it is what brings the others back, and hiding the control that undoes a state
+ * is how a form traps somebody in it.
+ */
+function idleLatentSizeControl(
+  node: { class_type?: string; inputs?: Record<string, unknown> },
+  inputName: string,
+): boolean {
+  if (node.class_type !== LATENT_SIZE_CLASS) return false;
+  const mode = node.inputs?.[FROM_IMAGE_INPUT];
+  if (typeof mode !== 'string' || mode === 'off') return false;
+  if (inputName === 'aspect_ratio') return true;
+  return inputName === 'megapixels' && mode === 'resolution';
+}
+
 /** comfyllama's advanced sampler node, the only one with an intensity slider. */
 const SAMPLING_CLASS = 'LlamaCppSampling';
 
@@ -812,7 +843,8 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
         hidden:
           inputName === 'control_after_generate' ||
           idleImageControl(node, inputName) ||
-          idleSamplingControl(node, inputName),
+          idleSamplingControl(node, inputName) ||
+          idleLatentSizeControl(node, inputName),
         order: group === 'main' ? mainIndex : fields.length,
         unknownNodeType,
       });

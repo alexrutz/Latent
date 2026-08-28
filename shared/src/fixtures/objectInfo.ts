@@ -565,6 +565,15 @@ export const objectInfoFixture: ObjectInfo = {
           ['SD1.5 / SDXL (4 channels)', 'SD3 / Flux (16 channels)', 'Krea 2 (16 channels)'],
           { default: 'SD1.5 / SDXL (4 channels)' },
         ],
+        /*
+         * The size can come from a connected picture instead of the widgets.
+         *
+         * Appended after `latent_format` rather than put beside `aspect_ratio`,
+         * for the same positional reason as every other switch in this pack —
+         * and the order is what the parity test against the real node checks.
+         */
+        from_image: [['off', 'aspect ratio', 'resolution'], { default: 'off' }],
+        image: ['IMAGE'],
       },
     },
   },
