@@ -1061,8 +1061,17 @@ describe('what a wandering round is told', () => {
     // Only these: a round that adds the whole profile back in is the same
     // picture every time.
     expect(text).toContain('only these');
-    // And not the last one again, since the previous rounds are right above it.
-    expect(text).toContain('different picture');
+  });
+
+  /*
+   * The round goes out with no transcript, so there is nothing to tell it to
+   * ignore — and a line asking a model to overlook what it can see was never
+   * the mechanism anyway. What keeps two rounds apart is the draw.
+   */
+  it('does not argue with a conversation it cannot see', () => {
+    const text = wanderInstruction(['low fog over water']);
+    expect(text).not.toContain('conversation');
+    expect(text).not.toContain('Repeating yourself');
   });
 
   /** An empty profile is a licence, not an error. */

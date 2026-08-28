@@ -110,10 +110,35 @@ export async function runTurn(
   };
   let thinking = '';
 
-  try {
-    const carried = await carriage(ctx, chat.messages, options.kind);
+  /*
+   * A wandering round is shown nothing it has already made.
+   *
+   * Every other kind of turn is part of a conversation and needs the one it is
+   * part of. A wandering round is not: it is a fresh draw from the notes, and
+   * the rounds before it are neither its subject nor its starting point. Sent
+   * the transcript anyway — which is what happened — each round wrote its
+   * prompt with every earlier prompt in front of it, and a model given twenty
+   * variations on a theme continues the theme. The mode drifts: round twenty is
+   * about round nineteen, which was about eighteen, and the notes it was
+   * actually drawn from are a footnote at the bottom of a page of its own work.
+   *
+   * The instruction used to fight this in prose — "make it a different picture
+   * from the ones already in this conversation" — which is asking a model to
+   * ignore the largest thing in its context. Removing the context is the same
+   * request, made in the only way that is not a suggestion.
+   *
+   * Nothing is forgotten by doing this. The round is still written into the
+   * conversation, so it is on screen and in the gallery like any other, and the
+   * *draw* still reads the transcript to avoid handing over notes it used a
+   * round ago (see `recentWanderNotes`). It is the model that starts fresh, not
+   * the server.
+   */
+  const history = options.kind.kind === 'wander' ? [] : chat.messages;
 
-    for await (const event of streamWithFallback(client, chat.messages, {
+  try {
+    const carried = await carriage(ctx, history, options.kind);
+
+    for await (const event of streamWithFallback(client, history, {
       signal: options.signal,
       ...carried,
     })) {

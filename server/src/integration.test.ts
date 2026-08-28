@@ -7112,6 +7112,114 @@ describe('what the user likes', () => {
   }, 30_000);
 
   /**
+   * Every round starts from nothing.
+   *
+   * The mode is a fresh draw from the notes, not a conversation, and it used to
+   * be sent the whole transcript anyway — so each round wrote its prompt with
+   * every earlier prompt in front of it. A model handed twenty variations on a
+   * theme continues the theme: round twenty is about round nineteen, and the
+   * notes it was supposedly drawn from are a footnote under a page of its own
+   * work. The instruction fought that in prose, which is asking a model to
+   * ignore the largest thing in its context.
+   *
+   * So the shape of the request is the thing under test, and it is the same
+   * shape on the fourth round as on the first: a system prompt and one turn.
+   */
+  it('shows a wandering round nothing it has already written', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+
+      const before = await json<TasteProfile>(taste('/api/taste'));
+      for (const entry of before.entries) {
+        await taste(`/api/taste/entries/${entry.id}`, { method: 'DELETE' });
+      }
+      for (const text of ['low fog over water', 'brutalist stairwells', 'washed-out teal']) {
+        const made = await json<TasteEntry>(
+          taste('/api/taste/entries', { method: 'POST', body: JSON.stringify({ text }) }),
+        );
+        entries.push(made.id);
+      }
+
+      /*
+       * Something to render with, or the run stops after one round with
+       * "nothing to generate with" — and one round proves nothing about what
+       * the second one is shown.
+       */
+      const workflows = await json<{ id: string }[]>(api('/api/workflows'));
+      if (workflows.length === 0) {
+        await api('/api/workflows', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'wandering', graph: sd15Txt2Img }),
+        });
+      }
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      // Distinct per round, so "the next one never saw it" can be asserted on
+      // the words themselves rather than on a message count alone.
+      const written = ['a flooded stairwell', 'a brass door in fog', 'a wet platform at night'];
+      for (const prompt of written) {
+        llama.script({
+          toolCall: {
+            name: 'build_prompt',
+            arguments: { prompt, reason: 'Drawn from the notes.' },
+          },
+        });
+      }
+
+      /*
+       * Waited on by request rather than by round.
+       *
+       * `wandered` counts stored messages carrying a wandering call, and an
+       * accepted round stores two of those — the proposal and the tool result
+       * that answers it — so asking it for three would settle after two rounds.
+       * What this test is about is what the model was sent, so that is what it
+       * waits for.
+       */
+      await startWandering(chat.id);
+      const deadline = Date.now() + 20_000;
+      while (llama.requests.length < 3 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      await stopWandering(chat.id);
+
+      const sent = llama.requests.slice(0, 3) as {
+        messages: { role: string; content: unknown }[];
+      }[];
+      expect(sent).toHaveLength(3);
+
+      for (const [index, request] of sent.entries()) {
+        /*
+         * Two messages, always: the system prompt and the round's own
+         * instruction. Growing by two a round is exactly the drift this fixes,
+         * so the count is asserted rather than merely "no earlier prompt in
+         * here" — a transcript that came back in some other shape would slip
+         * past the looser check.
+         */
+        expect({ round: index, roles: request.messages.map((message) => message.role) }).toEqual({
+          round: index,
+          roles: ['system', 'user'],
+        });
+      }
+
+      // And in particular, not a word of what the rounds before it wrote.
+      for (const [index, request] of sent.entries()) {
+        const text = JSON.stringify(request.messages);
+        for (const earlier of written.slice(0, index)) {
+          expect({ round: index, sawEarlier: text.includes(earlier) }).toEqual({
+            round: index,
+            sawEarlier: false,
+          });
+        }
+      }
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
    * The rules that make the mode usable on a list anyone has curated.
    *
    * A flat shuffle treats a heading of near-synonyms and a heading of settled

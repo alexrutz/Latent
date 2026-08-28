@@ -1313,6 +1313,28 @@ entirely. Having both at once was the mode asking for three things and being
 handed the whole profile underneath, which is how every round ended up
 containing everything.
 
+**Every round starts from nothing.** A wandering turn goes to the model with the
+system prompt and its own drawn notes, and no transcript at all — none of the
+prompts the run has already written. It used to be sent all of them, and that is
+a different mode than the one intended: a model handed twenty variations on a
+theme continues the theme, so round twenty was really about round nineteen, and
+the notes it was supposedly drawn from were a footnote under a page of its own
+work. The quality falls off and the pictures get wilder in a direction nobody
+chose. There was an instruction telling it not to do that, which is asking a
+model to overlook the largest thing in front of it.
+
+Nothing is forgotten by starting fresh. The round is written into the
+conversation like any other, so it is on screen, in the gallery, and behind ✦.
+And the **draw** still reads the run's history — it is the server that picks the
+notes, and it deliberately avoids the ones the last couple of rounds used. It is
+the model that starts each round with a clean slate, not Latent.
+
+Which is also where the variety now comes from: different notes each round, and
+the **sampling** below. Two rounds that draw the same notes at a cold
+temperature will land close together — that is the honest trade for rounds that
+do not drift, and it is what *Its own* sampling and **Before a note may come
+round again** are for.
+
 **And it says what each picture was drawn from.** The notes are never written
 above a picture as it arrives — being shown things is the point, and a caption
 listing your own taste back at you is not being shown anything — but ✦ in the

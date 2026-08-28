@@ -904,11 +904,18 @@ export const START_OVER_INSTRUCTION =
  * the first three and the same three next time — and the answer wanted is one
  * tool call and nothing else.
  *
- * Two instructions carry the mode. *Only these*, because a round that quietly
- * adds the user's whole profile back in is the same picture every time. And
- * *not what you have already made*, because the previous rounds are in the
- * history right above this and a model that cannot see a reason to move will
- * happily rewrite its last prompt.
+ * And deliberately not a continuation either. The turn goes out with no
+ * transcript at all — see `runTurn` — so there is nothing above this for the
+ * model to be influenced by and nothing to tell it to ignore. What used to be
+ * here was a line asking it not to repeat the rounds it could see, which is
+ * asking a model to overlook the largest thing in front of it; the rounds are
+ * simply not sent now.
+ *
+ * That leaves *only these* as the one thing the mode insists on, because a
+ * round that quietly adds the user's whole profile back in is the same picture
+ * every time. What keeps two rounds apart is the draw rather than the prose:
+ * different notes come out each time (see `drawTaste` and its `avoidRepeats`),
+ * and the mode can be given sampling of its own.
  */
 export function wanderInstruction(notes: string[]): string {
   if (notes.length === 0) {
@@ -929,9 +936,6 @@ export function wanderInstruction(notes: string[]): string {
       'picture that happens to contain three things is not the same as a picture *about* them. ' +
       'Anything not on that list is yours to choose, so choose boldly; nobody is waiting to ' +
       'approve it.',
-    '',
-    'Make it a different picture from the ones already in this conversation: a new subject, a ' +
-      'new setting, a new time of day. Repeating yourself is the one way to get this wrong.',
     '',
     'Call `build_prompt` with the finished prompt. Do not answer in words and do not ask ' +
       'anything first.',
