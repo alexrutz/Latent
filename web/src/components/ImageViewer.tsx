@@ -237,6 +237,33 @@ export function ImageViewer({
   const blurred = useBlur((state) => state.blurred);
   const toggleBlur = useBlur((state) => state.toggle);
 
+  /**
+   * Whether the viewer's own controls are on screen.
+   *
+   * Every one of them floats over the picture, and on some pictures that is
+   * exactly where the thing you are looking at is: a face behind the close
+   * button, a horizon under the action row. There is no arrangement that avoids
+   * it on every image, so the answer is to be able to take them all away.
+   *
+   * While they are gone a tap brings them back rather than closing the viewer.
+   * That is the one thing that keeps this from being a trap — the control that
+   * undoes the state has gone with everything else, so the gesture has to
+   * stand in for it, which is what every photo viewer does anyway.
+   */
+  const [controlsVisible, setControlsVisible] = useState(true);
+
+  /**
+   * The cross-fade between the picture and the one it was edited from.
+   *
+   * `0` is the result alone, `1` the original alone, and in between the two are
+   * laid over each other. Held here rather than inside the comparison because
+   * its control lives in the header with the blur: it changes how the whole
+   * screen looks, which is what that row is for.
+   */
+  const [blend, setBlend] = useState(0);
+  /** The origin's file has gone — see `originSrc`. Drops the comparison whole. */
+  const [originMissing, setOriginMissing] = useState(false);
+
   /*
    * A poster arriving is news to every grid on the other side of this overlay:
    * until they hear it, the video they are listing keeps showing the plate that
@@ -286,6 +313,20 @@ export function ImageViewer({
    */
   const entryKey = entry ? `${entry.record.id}/${entry.image.subfolder}/${entry.image.filename}` : '';
   useEffect(reset, [entryKey, reset]);
+
+  /*
+   * A new picture is a new comparison, so the fade goes back to the result and
+   * the question of whether there is an original to fade to is asked again.
+   *
+   * Not the controls, though: hiding them is a decision about how you want to
+   * look at things, and having it undone by every swipe would make it useless
+   * for the one case it exists for — going through a run of pictures where the
+   * buttons are in the way of all of them.
+   */
+  useEffect(() => {
+    setBlend(0);
+    setOriginMissing(false);
+  }, [entryKey]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -426,12 +467,18 @@ export function ImageViewer({
          * first, because closing on a stray tap while inspecting detail would be
          * infuriating.
          *
+         * And when the controls are hidden it brings them back instead, which
+         * is the only way back: the button that would undo that state went with
+         * them. Standing in for a missing control is what this gesture does in
+         * every photo viewer, so it is also the one people try first.
+         *
          * Deferred by the double-tap window: without the wait, the first tap of
          * a double tap would close the viewer before the second arrived.
          */
         window.clearTimeout(tapTimer.current);
         tapTimer.current = window.setTimeout(() => {
-          if (scale > 1) reset();
+          if (!controlsVisible) setControlsVisible(true);
+          else if (scale > 1) reset();
           else onClose();
         }, DOUBLE_TAP_MS);
       }
@@ -441,6 +488,18 @@ export function ImageViewer({
 
   const plays = playsInVideoElement(image.filename);
   const sounds = playsInAudioElement(image.filename);
+
+  /**
+   * Whether there is a before-and-after on this screen at all.
+   *
+   * One question asked once, because three things hang off it — the two wipe
+   * tabs, the fade slider, and whether the header shows a counter instead. They
+   * disagreeing about it is how you get a slider that steers nothing.
+   *
+   * Stills only: there is nothing to fade through a clip, and the video element
+   * has already taken the gestures.
+   */
+  const comparing = Boolean(origin && originSrc && !originMissing && !plays && !sounds);
 
   return (
     /*
@@ -583,13 +642,16 @@ export function ImageViewer({
           original. Only for stills: there is no before-and-after to drag
           through a clip, and the video element has already taken the gestures.
         */}
-        {origin && originSrc && !plays && !sounds && (
+        {comparing && (
           <CompareWipe
-            origin={origin}
-            src={originSrc}
+            origin={origin!}
+            src={originSrc!}
             transform={{ scale, offsetX: offset.x, offsetY: offset.y }}
             verticalEdge={grid.compareVerticalEdge}
             horizontalEdge={grid.compareHorizontalEdge}
+            blend={blend}
+            controlsVisible={controlsVisible}
+            onMissing={() => setOriginMissing(true)}
           />
         )}
       </div>
@@ -599,38 +661,63 @@ export function ImageViewer({
         the picture underneath still takes a tap to close, everywhere the close
         button is not.
       */}
-      <div className="safe-t pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-between bg-gradient-to-b from-black/60 to-transparent px-2 py-2">
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="pointer-events-auto grid size-11 place-items-center rounded-full text-2xl text-white/80 active:bg-white/10"
-        >
-          ✕
-        </button>
-        {entries.length > 1 && (
-          <span className="text-sm text-white/60 tabular-nums">
-            {index + 1} / {entries.length}
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={toggleBlur}
-          aria-label="Blur every image"
-          aria-pressed={blurred}
-          className={cn(
-            'pointer-events-auto grid size-11 place-items-center rounded-full text-xl active:bg-white/10',
-            blurred ? 'text-accent' : 'text-white/80',
-          )}
-        >
-          {/* The same glyph the gallery's blur wears: a circle half filled in
-              reads as "obscured" at a glance, where a dotted one reads as a
-              speck of dust on the screen. */}
-          ◍
-        </button>
-      </div>
+      {controlsVisible && (
+        <div className="safe-t pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center gap-1 bg-gradient-to-b from-black/60 to-transparent px-2 py-2">
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="pointer-events-auto grid size-11 shrink-0 place-items-center rounded-full text-2xl text-white/80 active:bg-white/10"
+          >
+            ✕
+          </button>
 
-      <div className="absolute inset-x-0 bottom-0 z-10">
+          {/*
+            The fade, where the counter would be.
+
+            The two compete for the same middle, and they are never both the
+            thing you want: while you are comparing one picture against the one
+            it was made from, which of forty you are on is not the question. It
+            comes back the moment the fade is not on offer.
+          */}
+          {comparing ? (
+            <BlendSlider value={blend} onChange={setBlend} title={origin!.nodeTitle} />
+          ) : (
+            <span className="flex-1 text-center text-sm text-white/60 tabular-nums">
+              {entries.length > 1 ? `${index + 1} / ${entries.length}` : ''}
+            </span>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setControlsVisible(false)}
+            aria-label="Hide the controls"
+            className="pointer-events-auto grid size-11 shrink-0 place-items-center rounded-full text-xl text-white/80 active:bg-white/10"
+          >
+            {/* An open frame: what is left when everything in front of the
+                picture has gone. */}
+            ⛶
+          </button>
+
+          <button
+            type="button"
+            onClick={toggleBlur}
+            aria-label="Blur every image"
+            aria-pressed={blurred}
+            className={cn(
+              'pointer-events-auto grid size-11 shrink-0 place-items-center rounded-full text-xl active:bg-white/10',
+              blurred ? 'text-accent' : 'text-white/80',
+            )}
+          >
+            {/* The same glyph the gallery's blur wears: a circle half filled in
+                reads as "obscured" at a glance, where a dotted one reads as a
+                speck of dust on the screen. */}
+            ◍
+          </button>
+        </div>
+      )}
+
+      <div className={cn('absolute inset-x-0 bottom-0 z-10', !controlsVisible && 'hidden')}>
         {/*
           Over the picture, not below it: this is a glance, and the footer is
           already carrying the actions. Hidden while zoomed, where it would just
@@ -683,6 +770,53 @@ export function ImageViewer({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * The fade between the picture and the one it was edited from.
+ *
+ * A range input rather than something hand-built. Dragging a value between two
+ * ends is what one is, and taking the platform's means arrow keys, a decent
+ * touch target and a screen reader that already knows what to say — none of
+ * which a div with pointer handlers gets for free.
+ *
+ * The two ends are named rather than numbered. "40%" is not a fact anybody
+ * wants about a comparison; which picture you are looking at is.
+ */
+function BlendSlider({
+  value,
+  onChange,
+  title,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+  title: string;
+}) {
+  return (
+    <label className="pointer-events-auto flex min-w-0 flex-1 items-center gap-2 px-1">
+      <span className="sr-only">Fade between the result and {title}</span>
+      <input
+        type="range"
+        data-testid="compare-blend"
+        min={0}
+        max={100}
+        step={1}
+        value={Math.round(value * 100)}
+        onChange={(event) => onChange(Number(event.target.value) / 100)}
+        // The layer underneath reads a drag as a swipe to the next picture and
+        // a tap as "close"; a finger on this is asking for neither.
+        onPointerDown={(event) => event.stopPropagation()}
+        onPointerMove={(event) => event.stopPropagation()}
+        onPointerUp={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+        aria-label={`Fade between the result and ${title}`}
+        aria-valuetext={
+          value === 0 ? 'the result' : value === 1 ? title : `${Math.round(value * 100)}% ${title}`
+        }
+        className="h-11 w-full min-w-0 touch-none accent-[var(--color-accent)]"
+      />
+    </label>
   );
 }
 

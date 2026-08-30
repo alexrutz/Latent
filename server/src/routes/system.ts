@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 
-import type { AppSettings, StatusResponse } from '@latent/shared';
+import { LATENT_API_VERSION } from '@latent/shared';
+import type { AppInfo, AppSettings, StatusResponse } from '@latent/shared';
 
 import { fetchOllamaModels, ollamaUrlFor } from '../ollama.js';
 import type { AppContext } from './context.js';
@@ -84,7 +85,7 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
     return { ok: true };
   });
 
-  app.post<{ Body: { password?: string } }>('/api/auth/login', async (request, reply) => {
+  app.post<{ Body: { password?: string; issueToken?: boolean } }>('/api/auth/login', async (request, reply) => {
     if (ctx.auth.setupRequired) {
       return reply.code(409).send({ error: 'This server has not been set up yet.' });
     }
@@ -111,7 +112,55 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
       ctx.stateFiles.unlock(request.body.password);
     }
     ctx.auth.setSession(reply);
-    return { ok: true };
+
+    /*
+     * The token, only when it is asked for.
+     *
+     * The cookie is `httpOnly` so that script on the page cannot read it, and
+     * handing the same secret back in the response body to everybody would
+     * throw that away — the browser would be one XSS from a credential it was
+     * specifically arranged not to be able to see. A native client has no page
+     * and no script and does have to hold it, so it says so.
+     */
+    return request.body?.issueToken === true
+      ? { ok: true as const, token: ctx.auth.issueToken() ?? '' }
+      : { ok: true as const };
+  });
+
+  /**
+   * What this server is, for a client that was not served by it.
+   *
+   * The web app is shipped by the same process it talks to, so it can assume
+   * the two agree. A native app is installed once and then meets whatever
+   * version happens to be running months later — it needs to ask, before it
+   * can sensibly do anything, and it needs somewhere to ask that will not
+   * itself change shape.
+   *
+   * Unauthenticated, and says nothing a stranger could use: the name of the
+   * software, the contract it speaks, and how to sign in. Everything about the
+   * machine is behind `/api/status`, which requires the password.
+   */
+  app.get('/api/app', async () => {
+    return {
+      app: 'latent',
+      api: { version: LATENT_API_VERSION },
+      auth: {
+        // Both work everywhere. A browser is served the cookie automatically;
+        // anything else asks for the token and sends it as a bearer.
+        schemes: ['cookie', 'bearer'],
+        login: '/api/auth/login',
+        setupRequired: ctx.auth.setupRequired,
+        /*
+         * There is no refresh and no expiry to track.
+         *
+         * The token is derived from the stored password hash, so it stays good
+         * until the password changes and then stops working everywhere at
+         * once. A client that gets a 401 signs in again; there is nothing else
+         * to implement.
+         */
+        tokenLifetime: 'until the password changes',
+      },
+    } satisfies AppInfo;
   });
 
   app.post('/api/auth/logout', async (_request, reply) => {

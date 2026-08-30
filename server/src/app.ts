@@ -47,6 +47,9 @@ import { attachTerminal } from './terminal.js';
 /** Routes reachable before logging in. */
 const PUBLIC_API_PATHS = new Set([
   '/api/status',
+  // What this server is and how to sign in. A client that has no credential
+  // yet has to be able to ask, and the answer says nothing about the machine.
+  '/api/app',
   '/api/auth/login',
   '/api/auth/logout',
   // The claim endpoint has to be reachable by definition; it refuses once a

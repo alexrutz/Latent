@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
 import type {
+  AppInfo,
   ChatMessage,
   ChatSettings,
   ChatEvent,
@@ -34,7 +35,7 @@ import type {
   WorkflowDetail,
   WorkflowScanResult,
 } from '@latent/shared';
-import { DEFAULT_WANDER_DRAW, defaultSampling } from '@latent/shared';
+import { DEFAULT_WANDER_DRAW, defaultSampling, LATENT_API_VERSION } from '@latent/shared';
 import {
   ltxVideoGguf,
   minimaxMusic,
@@ -845,6 +846,172 @@ describe('first-run setup', () => {
         setTimeout(() => reject(new Error('socket neither opened nor failed')), 5_000);
       });
       expect(failure.message).toContain('401');
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+});
+
+/**
+ * Signing in from something this server did not ship.
+ *
+ * The web app is served by the same process it talks to, so it can hold a
+ * cookie and assume the two agree about everything else. A native app is
+ * installed once and meets whatever is running months later, with no cookie jar
+ * worth keeping in sync — so it asks what it has reached, signs in for a token,
+ * and sends that token in the header the platform already has a place for.
+ */
+describe('a client this server did not ship', () => {
+  it('says what it is before anyone has a credential', async () => {
+    const server = await bootIsolated();
+    try {
+      const response = await server.call('/api/app');
+      expect(response.status).toBe(200);
+      const info = (await response.json()) as AppInfo;
+
+      expect(info.app).toBe('latent');
+      expect(info.api.version).toBe(LATENT_API_VERSION);
+      expect(info.auth.schemes).toContain('bearer');
+      expect(info.auth.login).toBe('/api/auth/login');
+      // An unclaimed server says so, which is what sends a client to setup.
+      expect(info.auth.setupRequired).toBe(true);
+
+      /*
+       * And nothing else. This is the one route a stranger can reach, so what
+       * it does *not* say is the point: nothing about the machine, the ComfyUI
+       * behind it, or what is on it.
+       */
+      const text = JSON.stringify(info);
+      expect(text).not.toContain('comfy');
+      expect(text).not.toContain(server.url);
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  it('hands over a token when asked, and takes it back as a bearer', async () => {
+    const server = await bootIsolated();
+    try {
+      await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+
+      /*
+       * Not by default. The cookie is `httpOnly` so a page cannot read it, and
+       * returning the same secret in the body to every caller would hand it
+       * back to exactly the script that was arranged not to see it.
+       */
+      const quiet = await json<{ ok: true; token?: string }>(
+        server.call('/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ password: 'correct horse' }),
+        }),
+      );
+      expect(quiet.ok).toBe(true);
+      expect(quiet.token).toBeUndefined();
+
+      const issued = await json<{ ok: true; token: string }>(
+        server.call('/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ password: 'correct horse', issueToken: true }),
+        }),
+      );
+      expect(typeof issued.token).toBe('string');
+      expect(issued.token.length).toBeGreaterThan(16);
+
+      const bearer = { authorization: `Bearer ${issued.token}` };
+      // With no cookie anywhere: this is a client that has never had one.
+      expect((await server.call('/api/workflows', { headers: bearer })).status).toBe(200);
+      expect((await server.call('/api/gallery', { headers: bearer })).status).toBe(200);
+      // And the status route agrees it is signed in, which is how a client
+      // decides whether to show its login screen.
+      const status = await json<StatusResponse>(server.call('/api/status', { headers: bearer }));
+      expect(status.authenticated).toBe(true);
+
+      // The scheme is matched without case, because clients differ.
+      expect(
+        (await server.call('/api/workflows', { headers: { authorization: `bearer ${issued.token}` } }))
+          .status,
+      ).toBe(200);
+
+      // A wrong one, a missing one and a malformed header are all just "no".
+      expect((await server.call('/api/workflows', { headers: { authorization: 'Bearer nope' } })).status).toBe(401);
+      expect((await server.call('/api/workflows', { headers: { authorization: 'Bearer' } })).status).toBe(401);
+      expect((await server.call('/api/workflows', { headers: { authorization: issued.token } })).status).toBe(401);
+      expect((await server.call('/api/workflows')).status).toBe(401);
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  /*
+   * The token is the password's, not a session's. There is no expiry to track
+   * and no refresh to implement — and changing the password ends it, which is
+   * the one revocation anybody needs on a server with one door.
+   */
+  it('stops working when the password changes', async () => {
+    const server = await bootIsolated();
+    try {
+      await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+      const { token } = await json<{ token: string }>(
+        server.call('/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ password: 'correct horse', issueToken: true }),
+        }),
+      );
+      const bearer = { authorization: `Bearer ${token}` };
+      expect((await server.call('/api/workflows', { headers: bearer })).status).toBe(200);
+
+      const changed = await server.call('/api/auth/password', {
+        method: 'POST',
+        headers: bearer,
+        body: JSON.stringify({ currentPassword: 'correct horse', newPassword: 'a different one' }),
+      });
+      expect(changed.status).toBe(200);
+
+      expect((await server.call('/api/workflows', { headers: bearer })).status).toBe(401);
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  /*
+   * The notes are the one thing a signed-in client still cannot reach: they
+   * want the password again, on top of any credential. A bearer token is a way
+   * in, not a level of access.
+   */
+  it('still cannot read the notes without the password again', async () => {
+    const server = await bootIsolated();
+    try {
+      await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+      const { token } = await json<{ token: string }>(
+        server.call('/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ password: 'correct horse', issueToken: true }),
+        }),
+      );
+      const bearer = { authorization: `Bearer ${token}` };
+
+      // 403, not 401: signed in, and still not allowed through that door.
+      expect((await server.call('/api/taste', { headers: bearer })).status).toBe(403);
+
+      // With the pass bought the same way the app buys one, it opens.
+      const opened = await json<{ ticket: string }>(
+        server.call('/api/taste/unlock', {
+          method: 'POST',
+          headers: bearer,
+          body: JSON.stringify({ password: 'correct horse' }),
+        }),
+      );
+      const withPass = { ...bearer, 'x-latent-taste': opened.ticket };
+      expect((await server.call('/api/taste', { headers: withPass })).status).toBe(200);
     } finally {
       await server.dispose();
     }

@@ -639,6 +639,48 @@ export interface ImportResult {
 }
 
 /* ------------------------------------------------------------------ */
+/* Talking to this server from something it did not ship               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The version of the HTTP contract this build speaks.
+ *
+ * Bumped when something a client depends on changes in a way that would break
+ * one written against the previous number — a route removed, a field that
+ * stops being sent, a meaning that changes under an unchanged name. Adding a
+ * route or a field is not a bump: a client that has never heard of it carries
+ * on working, which is the whole reason to distinguish the two.
+ *
+ * The web app never reads this. It is shipped by the same process it talks to,
+ * so the two cannot disagree. This exists for the clients that are not — a
+ * native app installed once and meeting whatever is running months later.
+ */
+export const LATENT_API_VERSION = 1;
+
+/**
+ * What `GET /api/app` answers: what this is, and how to get in.
+ *
+ * Deliberately small and deliberately unauthenticated. It is the one thing a
+ * client can ask before it has a credential, so it must be safe to hand to a
+ * stranger — the name of the software and the shape of the front door, and
+ * nothing whatever about the machine behind it.
+ */
+export interface AppInfo {
+  /** Always `latent`. Lets a client tell it has reached the right thing. */
+  app: 'latent';
+  api: { version: number };
+  auth: {
+    /** `cookie` for a browser, `bearer` for anything without a cookie jar. */
+    schemes: ('cookie' | 'bearer')[];
+    login: string;
+    /** No password has been chosen yet; the client must run setup first. */
+    setupRequired: boolean;
+    /** Prose, because there is no number: see the route. */
+    tokenLifetime: string;
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* Misc                                                                */
 /* ------------------------------------------------------------------ */
 

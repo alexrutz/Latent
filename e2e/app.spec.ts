@@ -6158,6 +6158,173 @@ test.describe('comparing an edit with what it was made from', () => {
     expect(across.x).toBeGreaterThan(viewport.width / 2);
     expect(down.y).toBeGreaterThan(viewport.height / 2);
   });
+
+  /**
+   * The tabs belong to the window, not to the picture.
+   *
+   * Inset from the edge they sit *on* the image and take a bite out of the one
+   * thing this screen exists to show. Flush against it they read as furniture
+   * on the frame, and on a phone the edge is where a thumb already rests.
+   */
+  test('puts the wipe tabs flush against the edge of the screen', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'edit', graph: editWithReference } }),
+    );
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('tabs on the edge');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    const thumb = page.locator('img[alt*="tabs on the edge"]').first();
+    await expect(thumb).toBeVisible({ timeout: 40_000 });
+    await thumb.click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+
+    const across = (await page.getByTestId('compare-handle-vertical').boundingBox())!;
+    // Parked left, and touching it — no gap for the picture to show through.
+    expect(across.x).toBe(0);
+    // Small: every pixel it takes is a pixel of the picture.
+    expect(across.width).toBeLessThan(44);
+    expect(across.height).toBeLessThan(44);
+  });
+
+  /**
+   * The third way to see the difference, and the only one that is not a seam.
+   *
+   * A seam answers "what changed *here*". Laying one picture over the other at
+   * half strength answers "did anything move at all" — a shift of a few pixels
+   * that no seam will find is obvious the moment the two are superimposed.
+   */
+  test('fades between the result and the original', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'edit', graph: editWithReference } }),
+    );
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('fade between them');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    const thumb = page.locator('img[alt*="fade between them"]').first();
+    await expect(thumb).toBeVisible({ timeout: 40_000 });
+    await thumb.click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+
+    // It starts on the result: opening a picture shows that picture.
+    const fade = page.getByTestId('compare-blend');
+    await expect(fade).toBeVisible();
+    await expect(fade).toHaveValue('0');
+    const layer = page.getByTestId('compare-origin-blend');
+    expect(await layer.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
+
+    // Half way, and the original is laid over the result at half strength.
+    await fade.fill('50');
+    await expect
+      .poll(async () => layer.evaluate((node) => Number(getComputedStyle(node).opacity)))
+      .toBeGreaterThan(0.4);
+    await page.screenshot({ path: 'test-results/97-compare-fade.png' });
+
+    // And all the way is the original alone.
+    await fade.fill('100');
+    await expect
+      .poll(async () => layer.evaluate((node) => Number(getComputedStyle(node).opacity)))
+      .toBe(1);
+
+    // The viewer is still open: dragging the slider is not a tap on the picture.
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+  });
+});
+
+/**
+ * Getting the controls out of the way of the picture.
+ *
+ * Every one of them floats over the image, and on some images that is exactly
+ * where the thing you are looking at is — a face behind the close button, a
+ * horizon under the action row. No arrangement avoids it on every picture, so
+ * the answer is to be able to take them all away.
+ */
+test.describe('the viewer with nothing in front of the picture', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+  });
+
+  test('hides every control, and a tap brings them back', async ({ page }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('nothing in the way');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    const thumb = page.locator('img[alt*="nothing in the way"]').first();
+    await expect(thumb).toBeVisible({ timeout: 40_000 });
+    await thumb.click();
+
+    const picture = page.getByTestId('viewer-image');
+    await expect(picture).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Close' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Hide the controls' }).click();
+
+    /*
+     * Everything, not just the header. The footer's actions cover as much of a
+     * picture as the header does, and "show me only the picture" has to mean
+     * only the picture or it is not worth having.
+     */
+    // Scoped to the viewer: the gallery is still mounted behind it and has a
+    // blur button of its own, which is not the one under test.
+    const viewer = page.locator('div.z-60');
+    await expect(viewer.getByRole('button', { name: 'Close' })).toHaveCount(0);
+    await expect(viewer.getByRole('button', { name: 'Hide the controls' })).toHaveCount(0);
+    await expect(viewer.getByRole('button', { name: 'Blur every image' })).toHaveCount(0);
+    await expect(viewer.getByRole('button', { name: 'Favourite' })).toBeHidden();
+    await expect(viewer.getByRole('button', { name: 'Delete' })).toBeHidden();
+    await expect(picture).toBeVisible();
+    await page.screenshot({ path: 'test-results/98-viewer-bare.png' });
+
+    /*
+     * And back with a tap — the only way back, since the button that would undo
+     * it went with everything else. Standing in for a missing control is what
+     * this gesture does in every photo viewer, so it is the one people try.
+     */
+    const viewport = page.viewportSize()!;
+    await page.mouse.click(viewport.width / 2, viewport.height / 2);
+    await expect(viewer.getByRole('button', { name: 'Close' })).toBeVisible();
+    // That tap must not have closed the viewer on the way past.
+    await expect(picture).toBeVisible();
+  });
+
+  /*
+   * Hiding them is a decision about how you want to look at things, not about
+   * one picture — and having it undone by every swipe would make it useless for
+   * the case it exists for: a run of pictures the buttons are in the way of.
+   */
+  test('stays hidden while you swipe through the run', async ({ page }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a run of them');
+    await page.getByRole('button', { name: '2', exact: true }).click();
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    const thumbs = page.locator('img[alt*="a run of them"]');
+    await expect(thumbs).toHaveCount(2, { timeout: 60_000 });
+    await thumbs.first().click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+
+    const viewer = page.locator('div.z-60');
+    await page.getByRole('button', { name: 'Hide the controls' }).click();
+    await expect(viewer.getByRole('button', { name: 'Close' })).toHaveCount(0);
+
+    const viewport = page.viewportSize()!;
+    const y = viewport.height / 2;
+    await page.mouse.move(viewport.width * 0.8, y);
+    await page.mouse.down();
+    await page.mouse.move(viewport.width * 0.1, y, { steps: 10 });
+    await page.mouse.up();
+
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+    await expect(viewer.getByRole('button', { name: 'Close' })).toHaveCount(0);
+  });
 });
 
 /**

@@ -117,11 +117,43 @@ export class Auth {
     return verifyPassword(candidate, record);
   }
 
+  /**
+   * The credential a native client holds, once it has signed in.
+   *
+   * The same secret the cookie carries, and deliberately so: there is one
+   * password guarding one GPU, and inventing a second class of credential with
+   * its own lifetime and its own revocation would be a second thing to get
+   * wrong. Changing the password invalidates every token exactly as it
+   * invalidates every cookie, because both are derived from the stored hash.
+   *
+   * `null` on an unclaimed server — there is nothing to hand out yet.
+   */
+  issueToken(): string | null {
+    return this.sessionToken();
+  }
+
+  /**
+   * Signed in, by cookie or by bearer token.
+   *
+   * A browser gets a cookie: `httpOnly`, so script on the page cannot read it,
+   * which is the whole point of it being a cookie. A native app has no page and
+   * no script, and asking it to keep a cookie jar in sync across app launches
+   * is friction for nothing — so it presents the same secret in the header the
+   * platform already has a place for.
+   *
+   * Both go through the same comparison against the same expected value, so
+   * this adds a way in rather than a level of access: a bearer token can do
+   * exactly what a cookie can, and no more. The notes still need the password
+   * again on top of either (see `TasteGate`).
+   */
   isAuthenticated(request: FastifyRequest): boolean {
     const expected = this.sessionToken();
     if (!expected) return false; // Unclaimed server: nobody is authenticated.
+
     const cookie = request.cookies[SESSION_COOKIE];
-    return typeof cookie === 'string' && constantTimeEquals(cookie, expected);
+    if (typeof cookie === 'string' && constantTimeEquals(cookie, expected)) return true;
+
+    return constantTimeEquals(bearerToken(request), expected);
   }
 
   setSession(reply: FastifyReply): void {
@@ -194,6 +226,23 @@ export function verifyPassword(candidate: string, record: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * The token out of an `Authorization` header, or `''` for anything else.
+ *
+ * `''` rather than `null` so the caller can compare it like any other
+ * candidate: a missing header and a wrong token take the same path, and there
+ * is no branch that could accidentally treat "no credential" as a match.
+ *
+ * The scheme is matched without case because that is what the specification
+ * says, and clients differ.
+ */
+function bearerToken(request: FastifyRequest): string {
+  const header = request.headers.authorization;
+  if (typeof header !== 'string') return '';
+  const match = /^bearer\s+(.+)$/i.exec(header.trim());
+  return match?.[1]?.trim() ?? '';
 }
 
 function constantTimeEquals(a: string, b: string): boolean {

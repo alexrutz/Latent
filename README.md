@@ -222,6 +222,72 @@ chooses the password, and that window closes permanently once they do.
 immediately, or set `LATENT_PASSWORD` and skip the window entirely — which is
 the right choice for anything unattended or reachable from outside your network.
 
+### Signing in from something else
+
+The web app is served by the same process it talks to, so it holds an
+`httpOnly` cookie and can assume the two agree about everything. Anything
+else — a native app, a script, a shortcut — has no cookie jar worth keeping in
+sync and no guarantee it is the same age as the server it reached. Two things
+exist for that case.
+
+**Ask what you have reached.** `GET /api/app` needs no credential and answers
+with the name of the software, the version of the HTTP contract this build
+speaks, and how to sign in:
+
+```json
+{
+  "app": "latent",
+  "api": { "version": 1 },
+  "auth": {
+    "schemes": ["cookie", "bearer"],
+    "login": "/api/auth/login",
+    "setupRequired": false,
+    "tokenLifetime": "until the password changes"
+  }
+}
+```
+
+It deliberately says nothing about the machine — no ComfyUI address, no device
+list, nothing about what is stored. That is all behind `/api/status`, which
+wants the password. This is the one route a stranger can reach, so what it does
+*not* say is the point.
+
+The version is bumped when something a client depends on changes in a way that
+would break one written against the previous number: a route removed, a field
+that stops being sent, a meaning that changes under an unchanged name. Adding a
+route or a field is not a bump — a client that has never heard of it carries on
+working, which is the whole reason to distinguish the two.
+
+**Ask for a token.** `POST /api/auth/login` with `issueToken: true` returns one
+alongside the cookie:
+
+```
+POST /api/auth/login
+{ "password": "…", "issueToken": true }
+
+→ { "ok": true, "token": "…" }
+```
+
+Send it as `Authorization: Bearer <token>` on every request after that,
+including the WebSocket handshake for live progress. It works on every route the
+cookie works on, and on no others.
+
+**Only when asked**, which is the reason for the flag. The cookie is `httpOnly`
+precisely so that script on the page cannot read it, and returning the same
+secret in the body to every caller would hand it straight back to the thing it
+was arranged to be hidden from. The web app never asks; a client that has to
+hold the credential itself says so.
+
+There is no refresh and no expiry to track. The token is derived from the stored
+password hash, so it stays good until the password changes and then stops
+working everywhere at once — cookies included. A client that gets a `401` signs
+in again, and that is the whole of the lifecycle.
+
+**It is a way in, not a level of access.** A bearer token can do exactly what a
+cookie can and nothing more. [What you like](#what-you-like) still wants the
+password a second time on top of either, because that screen is locked
+separately and being signed in was never enough for it.
+
 ## Connecting to vast.ai
 
 vast.ai puts ComfyUI behind a proxy that requires a token, and — if the instance
@@ -1968,17 +2034,49 @@ zooms back out instead, because closing on a stray tap while inspecting detail
 would be maddening. Double tap still toggles zoom; the single tap waits out the
 double-tap window before acting.
 
+**Nothing in front of the picture.** ⛶ in the header takes *every* control away
+— the close button, the counter, the action rows, the comparison tabs — and
+leaves the image alone on a black screen. Some pictures put the thing you are
+looking at exactly where a button is: a face behind the close, a horizon under
+the action row. No arrangement avoids that on every image, so the answer is to
+be able to clear the screen.
+
+A tap brings them back. That is the only way back, since the button that would
+undo it went with everything else — which is also why it is the right gesture:
+standing in for a missing control is what a tap does in every photo viewer, so
+it is the one people try first. Hiding them survives a swipe to the next
+picture, because it is a decision about how you want to look at things rather
+than about one image.
+
 **Before and after, in one frame.** A picture made by an edit workflow opens
-with two handles parked against the edges of the screen — one across, one down.
+with two tabs flush against the edges of the screen — one across, one down.
 Drag either one and the picture the edit was made from appears behind the seam:
 everything on one side is before, everything on the other is after, and moving
-the seam sweeps the difference under your thumb. Tap a handle for all of it,
+the seam sweeps the difference under your thumb. Tap a tab for all of it,
 tap again to put it back. Two of them, one per axis, because an edit does not
 change a picture evenly — a new coat is somewhere in the middle, a replaced sky
 is along the top, and only one of those can be dragged through by a vertical
 seam.
 
-Which edge each handle rests on is under **Grid layout → Before/after handles**.
+The tabs sit *on the edge of the window*, not on the image. Inset by even a few
+pixels they float over the picture and take a bite out of the one thing this
+screen exists to show; against the edge they read as furniture belonging to the
+frame, and on a phone the edge is where a thumb already rests. They are small
+for the same reason.
+
+**And a fade, for the change no seam will find.** The slider in the header runs
+from the result at one end to the original at the other, laying the two over
+each other in between. A seam answers "what changed *here*"; superimposing the
+two answers "did anything move at all" — a shift of a few pixels that no seam
+crosses is obvious the instant one picture is laid over the other. It takes the
+counter's place while it is on offer, because which of forty pictures you are on
+is not the question you are asking at that moment.
+
+All three are independent. The fade is painted over both wipe bands, so inside a
+band you still see the original whole and everywhere else you see as much of it
+as the slider asks for.
+
+Which edge each tab rests on is under **Grid layout → Before/after handles**.
 It is a question about the hand holding the phone rather than about the picture:
 a right thumb reaches the right edge and a left one does not.
 
