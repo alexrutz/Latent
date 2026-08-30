@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Only the keys Xcode cannot generate from build settings.
+
+  Everything ordinary — the name, the version, the orientations — comes from
+  GENERATE_INFOPLIST_FILE and the INFOPLIST_KEY_* settings in the project, and
+  Xcode merges this file over them. What is left here is the two things that
+  are dictionaries or that Xcode has no setting for.
+
+  It sits outside `Latent/` on purpose: that folder is a synchronized group, so
+  everything in it is compiled or copied automatically, and an Info.plist in
+  there would be both the target's Info.plist and a resource in the bundle.
+-->
+<plist version="1.0">
+<dict>
+  <!--
+    A home server on a LAN speaks plain HTTP.
+
+    Latent is normally reached at something like `http://192.168.1.20:8080`,
+    with no certificate and nothing to get one from. App Transport Security
+    refuses that by default and would fail every request before it left the
+    device, so it is turned off for local addresses only: `NSAllowsLocalNetworking`
+    covers private ranges and `.local`, and leaves the rest of the internet
+    under the normal rules. A server reached over HTTPS — through a tunnel, say
+    — is unaffected and still verified.
+  -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+
+  <!--
+    iOS asks before letting an app talk to anything on the local network, and
+    refuses silently without this string. It is shown in that prompt, so it says
+    what the connection is actually for.
+  -->
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Latent runs on your own machine. This lets the app reach it over your network.</string>
+</dict>
+</plist>

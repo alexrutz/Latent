@@ -2414,6 +2414,8 @@ Use `--project=iPad` to run just those.
 | `web/src/components/GenerateWorkbench.tsx` | The render, beside the form that made it |
 | `web/` | React + Vite PWA |
 | `e2e/` | Playwright tests |
+| `comfyllama/` | The ComfyUI custom nodes, vendored so the two can change together — see [its own README](comfyllama/README.md) |
+| `ios/` | A small native front end, talking to the same API over a bearer token — see [its own README](ios/README.md). Written here but never compiled |
 
 Schema changes go in `server/src/db.ts` as a new entry in `MIGRATIONS` — never by
 editing one that has shipped.
