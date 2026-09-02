@@ -13,10 +13,12 @@ import { Auth } from './auth.js';
 import { ThumbnailCache, ViewRenderer } from './images/thumbnails.js';
 import { Importer } from './importer.js';
 import { InputLibrary } from './inputLibrary.js';
-import { Taste, TasteGate } from './taste.js';
+import { PasswordGate } from './gate.js';
+import { Taste } from './taste.js';
+import { Updater } from './update.js';
 import { Vault } from './vault.js';
 import { plainConnection, type ConnectionConfig } from './comfy/connection.js';
-import { loadConfig, type Config } from './config.js';
+import { loadConfig, projectRoot, type Config } from './config.js';
 import { Store } from './db.js';
 import { Orchestrator } from './orchestrator.js';
 import { StateFiles } from './statefile.js';
@@ -35,6 +37,7 @@ import { registerInputImageRoutes } from './routes/inputImages.js';
 import { registerLayoutRoutes } from './routes/layouts.js';
 import { registerMediaRoutes } from './routes/media.js';
 import { registerStudyRoutes } from './routes/studies.js';
+import { registerUpdateRoutes } from './routes/update.js';
 import { registerPromptBlockRoutes } from './routes/promptBlocks.js';
 import { registerPresetRoutes } from './routes/presets.js';
 import { registerQueueRoutes } from './routes/queue.js';
@@ -132,7 +135,17 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   const archive = new Archive(config.archiveDir, store, vault);
   const importer = new Importer(store, archive);
   const taste = new Taste(store, vault);
-  const tasteGate = new TasteGate();
+  /*
+   * A book of passes each, rather than one shared between them.
+   *
+   * Closing the notes revokes every pass in that book, which is right for the
+   * notes and would be the wrong thing entirely for an update three minutes
+   * into `npm install` — it would lock the screen out of watching the thing it
+   * started.
+   */
+  const tasteGate = new PasswordGate();
+  const updateGate = new PasswordGate();
+  const updater = new Updater({ cwd: projectRoot, log: app.log });
   const inputs = new InputLibrary(store);
   const sweeper = new Sweeper(store, archive, app.log);
   /*
@@ -184,6 +197,8 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     vault,
     taste,
     tasteGate,
+    updater,
+    updateGate,
     importer,
     inputs,
     stateFiles,
@@ -251,6 +266,16 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   registerStudyRoutes(app, ctx);
 
   /**
+   * Installing a new version, when the routes are wanted at all.
+   *
+   * On by default, unlike the terminal: this runs `git` and `npm` against the
+   * remote the checkout already points at and cannot be aimed anywhere else
+   * from outside, and running it needs the password a second time regardless.
+   * `LATENT_UPDATE=0` removes it for anyone who would rather it did not exist.
+   */
+  if (config.updateEnabled) registerUpdateRoutes(app, ctx);
+
+  /**
    * The shell. Registered only when explicitly enabled — a route that does not
    * exist cannot be reached by a stolen session cookie.
    */
@@ -302,6 +327,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     chatEngine.close();
     vault.lock();
     tasteGate.revokeAll();
+    updateGate.revokeAll();
     store.close();
   });
 

@@ -5,6 +5,7 @@ import type { Auth } from '../auth.js';
 import type { Config } from '../config.js';
 import type { Endless } from '../endless.js';
 import type { Store } from '../db.js';
+import type { PasswordGate } from '../gate.js';
 import type { ThumbnailCache, ViewRenderer } from '../images/thumbnails.js';
 import type { Importer } from '../importer.js';
 import type { InputLibrary } from '../inputLibrary.js';
@@ -12,7 +13,8 @@ import type { Orchestrator } from '../orchestrator.js';
 import type { StateFiles } from '../statefile.js';
 import type { StudyRunner } from '../study.js';
 import type { Sweeper } from '../sweeper.js';
-import type { Taste, TasteGate } from '../taste.js';
+import type { Taste } from '../taste.js';
+import type { Updater } from '../update.js';
 import type { Vault } from '../vault.js';
 import type { WorkflowScanner } from '../workflowScan.js';
 
@@ -25,8 +27,17 @@ export interface AppContext {
   vault: Vault;
   /** Notes about what the user likes, readable while the vault is open. */
   taste: Taste;
-  /** Passes for the one screen that asks for the password a second time. */
-  tasteGate: TasteGate;
+  /** Passes for the notes screen, which asks for the password a second time. */
+  tasteGate: PasswordGate;
+  /**
+   * Installs a new version of Latent, and its own book of passes.
+   *
+   * Separate from `tasteGate` on purpose: closing the notes revokes every pass
+   * in that book, and an update that is minutes into `npm install` must not be
+   * locked out of its own progress by somebody tidying a different screen.
+   */
+  updater: Updater;
+  updateGate: PasswordGate;
   importer: Importer;
   /** The read-only folder of pictures to feed into workflows. */
   inputs: InputLibrary;

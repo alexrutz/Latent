@@ -51,6 +51,8 @@ import type {
   QueueState,
   RegionFraction,
   StatusResponse,
+  UpdateRun,
+  UpdateStatus,
   UploadImageResponse,
   WorkflowDetail,
   WorkflowPreset,
@@ -84,17 +86,42 @@ export function setArchiveLockedHandler(handler: (() => void) | null): void {
 }
 
 /**
- * The pass for the notes about what you like, while one is held.
+ * The passes for the screens that ask for the password a second time.
  *
  * In memory and nowhere else: not `localStorage`, not a cookie. The whole point
- * of asking for the password at that screen is that a reload, a new tab or a
- * phone picked up tomorrow has to ask again, and anything that survives those
- * would be the lock quietly unlocking itself.
+ * of asking again at those screens is that a reload, a new tab or a phone
+ * picked up tomorrow has to ask again, and anything that survives those would
+ * be the lock quietly unlocking itself.
+ *
+ * A table rather than a variable each, so that a pass can only ever be sent on
+ * the paths it was bought for — a pass for one screen is not a credential to
+ * spray across every request the app makes — and so adding a third gate is a
+ * row rather than another branch inside the header spread.
  */
-let tasteTicket: string | null = null;
+const GATES = {
+  taste: { prefix: '/api/taste', header: 'x-latent-taste' },
+  update: { prefix: '/api/update', header: 'x-latent-update' },
+} as const;
+
+type GateName = keyof typeof GATES;
+
+const tickets: Record<GateName, string | null> = { taste: null, update: null };
 
 export function setTasteTicket(ticket: string | null): void {
-  tasteTicket = ticket;
+  tickets.taste = ticket;
+}
+
+export function setUpdateTicket(ticket: string | null): void {
+  tickets.update = ticket;
+}
+
+function gateHeaders(path: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const [name, gate] of Object.entries(GATES) as [GateName, (typeof GATES)[GateName]][]) {
+    const ticket = tickets[name];
+    if (ticket && path.startsWith(gate.prefix)) headers[gate.header] = ticket;
+  }
+  return headers;
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -105,9 +132,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(init.body && !(init.body instanceof FormData)
         ? { 'content-type': 'application/json' }
         : {}),
-      // Only where it belongs: a pass for one screen is not a credential to
-      // spray across every request the app makes.
-      ...(tasteTicket && path.startsWith('/api/taste') ? { 'x-latent-taste': tasteTicket } : {}),
+      ...gateHeaders(path),
       ...(init.headers ?? {}),
     },
   });
@@ -440,6 +465,41 @@ export const api = {
     }),
 
   deleteTasteEntry: (id: string) => request<void>(`/api/taste/entries/${id}`, { method: 'DELETE' }),
+
+  /* ---------------------------------------------------------------- */
+  /* Updating Latent itself                                            */
+  /* ---------------------------------------------------------------- */
+
+  /** State plus whatever log lines happened after `since`. */
+  updateStatus: (since = 0) => request<UpdateStatus>(`/api/update?since=${since}`),
+
+  /** Ask the remote what it has. The only part that touches the network. */
+  checkForUpdate: () => request<UpdateStatus>('/api/update/check', { method: 'POST' }),
+
+  unlockUpdate: (password: string) =>
+    request<{ ticket: string; status: UpdateStatus }>('/api/update/unlock', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+
+  lockUpdate: () => request<void>('/api/update/lock', { method: 'POST' }),
+
+  /** Returns as soon as it has started; watch `updateStatus` for the rest. */
+  runUpdate: () =>
+    request<{ run: UpdateRun; status: UpdateStatus }>('/api/update/run', { method: 'POST' }),
+
+  /**
+   * Replace the running process.
+   *
+   * `force` overrules the guess about whether anything would start Latent
+   * again — the detection is a guess, and not being able to overrule it would
+   * be the more annoying of the two failures.
+   */
+  restartForUpdate: (force = false) =>
+    request<{ ok: true }>('/api/update/restart', {
+      method: 'POST',
+      body: JSON.stringify({ force }),
+    }),
 
   /* ---------------------------------------------------------------- */
   /* System prompts                                                    */

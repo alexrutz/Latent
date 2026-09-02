@@ -208,6 +208,7 @@ All optional, set as environment variables:
 | `LATENT_DATA_DIR` | `../latent-data` | SQLite database and the image archive |
 | `LATENT_STATE_DIR` | `..` | Where the portable settings files are written |
 | `LATENT_TERMINAL` | *unset* | Set to `1` to enable the built-in shell |
+| `LATENT_UPDATE` | `1` | Set to `0` to remove the in-app update button |
 | `LOG_LEVEL` | `info` | `trace`…`silent` |
 
 After the first run, connections are managed in the app — `COMFY_URL` only
@@ -2297,6 +2298,63 @@ Python:
 ```bash
 cd comfyllama && python3 -m unittest discover -s tests
 ```
+
+## Updating from inside Latent
+
+**Settings → Software** says which commit is running, checks the remote for
+newer ones, and installs them — from a phone, without an SSH session.
+
+Pressing *Install* asks for the password again (being signed in is not enough to
+replace the running code) and then runs four steps, streaming their output:
+
+```
+git fetch  <remote> <branch>
+git reset --hard <upstream>
+npm install --include=dev
+npm run build
+```
+
+Then it offers a restart, because none of it takes effect until the process is
+replaced.
+
+**It resets rather than re-cloning.** Deleting the project directory and cloning
+it again is the obvious design and is the one thing this deliberately does not
+do: the server's own working directory *is* that directory, so deleting it
+leaves the updater with nowhere to stand and no way to clone back into it — and
+a clone that fails halfway leaves a machine with no Latent on it at all, which
+is a poor thing to discover from a phone. A reset reaches the same commit,
+never removes the directory it is standing in, and can be undone.
+
+**A failed update goes back.** If the install or the build fails, the checkout is
+reset to the commit it started from and rebuilt, and the screen shows the
+command that failed so you can finish it by hand if you want to. Nothing offers
+a restart after a failure: the rollback leaves exactly the code that is already
+running.
+
+**Your data is never in the way.** The database, the image archive and the
+settings files all live *outside* the project directory by default
+(`LATENT_DATA_DIR`, `LATENT_STATE_DIR`) — decided long before there was a
+button, for this exact reason.
+
+It refuses, with a reason, when it cannot do the job safely:
+
+| Situation | What it says |
+| --- | --- |
+| Uncommitted changes in the tree | Refuses — a reset would destroy them; commit or stash first |
+| Not a git checkout (a Docker image, an unpacked tarball) | Refuses, and points at `docker compose pull` |
+| Detached HEAD, or a branch tracking no remote | Refuses — there is nowhere to update *towards* |
+| Local commits the remote does not have | Installs, but warns that the reset makes them unreachable |
+
+**The restart is checked, not assumed.** Latent cannot start itself, so before
+offering a restart it looks for something that would bring it back — pm2,
+systemd, or a container. On a machine where `npm start` was simply typed into a
+shell it says so plainly, and the button reads *Stop Latent anyway*.
+
+Unlike the terminal this is on by default. The terminal runs whatever you type;
+this runs `git` and `npm` against the remote the checkout already points at and
+cannot be aimed anywhere else from outside — anyone who could push to that
+remote already owned the machine the next time you updated by hand. Set
+`LATENT_UPDATE=0` to remove the routes anyway.
 
 ## The terminal
 

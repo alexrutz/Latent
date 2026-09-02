@@ -144,7 +144,7 @@ export class Auth {
    * Both go through the same comparison against the same expected value, so
    * this adds a way in rather than a level of access: a bearer token can do
    * exactly what a cookie can, and no more. The notes still need the password
-   * again on top of either (see `TasteGate`).
+   * again on top of either (see `PasswordGate`).
    */
   isAuthenticated(request: FastifyRequest): boolean {
     const expected = this.sessionToken();

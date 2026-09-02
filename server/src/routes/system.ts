@@ -23,6 +23,7 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
       authenticated,
       setupRequired,
       terminalEnabled: ctx.config.terminalEnabled,
+      updateEnabled: ctx.config.updateEnabled,
       archiveLocked: !ctx.vault.isUnlocked,
       activeConnectionId: null,
       activeConnectionName: null,

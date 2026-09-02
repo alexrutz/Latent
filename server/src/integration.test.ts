@@ -29,6 +29,7 @@ import type {
   StudyShotImage,
   StudyStats,
   SystemPrompt,
+  UpdateStatus,
   TasteCategory,
   TasteEntry,
   TasteProfile,
@@ -6900,7 +6901,7 @@ describe('what the user likes', () => {
   /**
    * The pass this screen's routes need, bought with the password.
    *
-   * Being signed in is deliberately not enough for these: see `TasteGate`. The
+   * Being signed in is deliberately not enough for these: see `PasswordGate`. The
    * tests buy one the same way the app does, which is also what proves the
    * routes are shut without it.
    */
@@ -7860,4 +7861,166 @@ describe('what the user likes', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+describe('updating Latent itself', () => {
+  /**
+   * The door, not the update.
+   *
+   * Nothing here ever calls `/api/update/run` with a valid pass — that would
+   * `git reset --hard` the working tree the tests are running from. What can be
+   * checked without doing that is everything that matters most anyway: who is
+   * let through, who is not, and that a refusal happens *before* anything is
+   * touched. The run itself is covered in `update.test.ts`, where git and npm
+   * are scripted rather than real.
+   */
+  const claim = async (server: Awaited<ReturnType<typeof bootIsolated>>) => {
+    const response = await server.call('/api/auth/setup', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'correct horse' }),
+    });
+    return response.headers.get('set-cookie')?.split(';')[0] ?? '';
+  };
+
+  it('tells a signed-in session what is installed without asking for the password again', async () => {
+    const server = await bootIsolated();
+    try {
+      const cookie = await claim(server);
+
+      // Signed in first, like everything else under /api.
+      expect((await server.call('/api/update')).status).toBe(401);
+
+      const status = await json<UpdateStatus>(server.call('/api/update', { cookie }));
+      // Reading is not the guarded part: the screen has to be able to draw
+      // before there is anything to ask a password for.
+      expect(status.checkout).toBeTruthy();
+      expect(status.supervisor.kind).toBeTruthy();
+      expect(status.cursor).toBe(0);
+      expect(status.run).toBeNull();
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  it('will not install or restart for a session that has only signed in', async () => {
+    const server = await bootIsolated();
+    try {
+      const cookie = await claim(server);
+
+      for (const path of ['/api/update/run', '/api/update/restart']) {
+        const barred = await server.call(path, { method: 'POST', cookie });
+        expect(barred.status).toBe(403);
+        // A marker rather than a 401, so the screen asks for the password
+        // instead of concluding the session died and throwing somebody back to
+        // a sign-in they do not need.
+        expect((await json<{ needsPassword?: boolean }>(barred)).needsPassword).toBe(true);
+      }
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  it('sells the pass for the right password and nothing else', async () => {
+    const server = await bootIsolated();
+    try {
+      const cookie = await claim(server);
+
+      const wrong = await server.call('/api/update/unlock', {
+        method: 'POST',
+        cookie,
+        body: JSON.stringify({ password: 'not it' }),
+      });
+      expect(wrong.status).toBe(401);
+
+      const opened = await json<{ ticket: string; status: UpdateStatus }>(
+        server.call('/api/update/unlock', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ password: 'correct horse' }),
+        }),
+      );
+      expect(opened.ticket).toBeTruthy();
+      expect(opened.status.checkout).toBeTruthy();
+
+      /*
+       * Past the door, and refused for a reason that is about the machine
+       * rather than about permission: nothing has been installed, so there is
+       * nothing a restart would pick up. This is also the guard that makes the
+       * test safe — it answers before anything is stopped.
+       */
+      const pointless = await server.call('/api/update/restart', {
+        method: 'POST',
+        cookie,
+        headers: { 'x-latent-update': opened.ticket },
+      });
+      expect(pointless.status).toBe(409);
+      expect((await json<{ error: string }>(pointless)).error).toContain('Nothing has been installed');
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  it('keeps the two books of passes apart', async () => {
+    const server = await bootIsolated();
+    try {
+      const cookie = await claim(server);
+
+      const forTaste = await json<{ ticket: string }>(
+        server.call('/api/taste/unlock', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ password: 'correct horse' }),
+        }),
+      );
+      const forUpdate = await json<{ ticket: string }>(
+        server.call('/api/update/unlock', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ password: 'correct horse' }),
+        }),
+      );
+
+      // A pass for the notes is not a pass to replace the running code.
+      const crossed = await server.call('/api/update/run', {
+        method: 'POST',
+        cookie,
+        headers: { 'x-latent-update': forTaste.ticket },
+      });
+      expect(crossed.status).toBe(403);
+
+      // And the reverse: closing the notes must not lock an update out of its
+      // own progress, which is what one shared book would have done.
+      await server.call('/api/taste/lock', {
+        method: 'POST',
+        cookie,
+        headers: { 'x-latent-taste': forTaste.ticket },
+      });
+      const stillGood = await server.call('/api/update/restart', {
+        method: 'POST',
+        cookie,
+        headers: { 'x-latent-update': forUpdate.ticket },
+      });
+      // 409 rather than 403: through the door, and refused on the merits.
+      expect(stillGood.status).toBe(409);
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  it('has no update routes at all when they are switched off', async () => {
+    const server = await bootIsolated({ updateEnabled: false });
+    try {
+      const cookie = await claim(server);
+
+      // A route that does not exist cannot be reached by a stolen cookie —
+      // the same reasoning the terminal is registered under.
+      expect((await server.call('/api/update', { cookie })).status).toBe(404);
+      expect((await server.call('/api/update/run', { method: 'POST', cookie })).status).toBe(404);
+
+      const status = await json<StatusResponse>(server.call('/api/status', { cookie }));
+      expect(status.updateEnabled).toBe(false);
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
 });

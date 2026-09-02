@@ -695,6 +695,12 @@ export interface StatusResponse {
   /** The terminal route only exists when the server was started with it enabled. */
   terminalEnabled: boolean;
   /**
+   * The update routes are registered. Not the same as "an update can be
+   * installed" — that needs a git checkout with an upstream, and
+   * `GET /api/update` is where the reason lives when there isn't one.
+   */
+  updateEnabled: boolean;
+  /**
    * The encrypted image archive is sealed. Happens after a server restart,
    * until somebody signs in — the key only ever lives in memory.
    */
@@ -707,6 +713,147 @@ export interface StatusResponse {
 export interface ArchiveStats {
   images: number;
   bytes: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* Updating the software                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The steps an update runs, in the order it runs them.
+ *
+ * Named rather than numbered because the interesting question during an update
+ * is never "how far along" but "which part is slow" — and it is nearly always
+ * `install`, which is the one that compiles better-sqlite3 from source when no
+ * prebuilt binary matches the machine.
+ */
+export type UpdateStepName = 'fetch' | 'reset' | 'install' | 'build' | 'rollback';
+
+export type UpdateStepStatus = 'waiting' | 'running' | 'done' | 'failed' | 'skipped';
+
+export type UpdatePhase = 'running' | 'succeeded' | 'failed';
+
+export interface UpdateStep {
+  name: UpdateStepName;
+  /**
+   * Exactly what was run.
+   *
+   * Shown, not just logged: when an update fails on a machine you are holding a
+   * phone to, the thing you want is the command to try by hand over SSH.
+   */
+  command: string;
+  status: UpdateStepStatus;
+  startedAt: number | null;
+  endedAt: number | null;
+  exitCode: number | null;
+}
+
+export interface UpdateLogLine {
+  /**
+   * Monotonic within one server process, and the cursor a client polls with.
+   *
+   * Polling rather than a socket, and a cursor rather than the whole log: the
+   * build wipes `web/dist` while it runs, so the page watching an update cannot
+   * reload and cannot fetch anything new from the bundle. It has to be able to
+   * lose its connection, come back, and still be told only what it missed.
+   */
+  seq: number;
+  /** Null for the runner's own remarks, which belong to no command. */
+  step: UpdateStepName | null;
+  stream: 'out' | 'err' | 'note';
+  text: string;
+}
+
+/** The install itself: what is checked out, and whether it can be moved. */
+export interface UpdateCheckout {
+  /** Whether an update can be installed from here at all. */
+  updatable: boolean;
+  /** Why not, in a sentence somebody can act on. Null when it can. */
+  reason: string | null;
+  branch: string | null;
+  /** The remote branch `branch` tracks, e.g. `origin/main`. */
+  upstream: string | null;
+  commit: string | null;
+  commitShort: string | null;
+  committedAt: number | null;
+  subject: string | null;
+  /**
+   * Uncommitted changes are in the way.
+   *
+   * Kept apart from `updatable` because it is the one blocker that is somebody's
+   * own work rather than a property of the install, and the screen says so
+   * differently: everything else is "this cannot be updated", this is "you have
+   * edits here that an update would destroy".
+   */
+  dirty: boolean;
+}
+
+/** What the upstream has that this checkout does not. */
+export interface UpdateAvailable {
+  /** When origin was last asked. Null means not since this process started. */
+  checkedAt: number | null;
+  behind: number;
+  /**
+   * Commits here that the upstream does not have.
+   *
+   * Not an error — a checkout somebody has committed to locally still updates
+   * fine — but it is a warning worth showing, because the reset that installs
+   * the update is what makes those commits unreachable.
+   */
+  ahead: number;
+  commit: string | null;
+  commitShort: string | null;
+  subject: string | null;
+}
+
+/** One attempt, from the commit it started at to wherever it ended up. */
+export interface UpdateRun {
+  id: string;
+  phase: UpdatePhase;
+  startedAt: number;
+  endedAt: number | null;
+  /** Where this started, and so where a rollback goes back to. */
+  from: string;
+  /** Where it ended. Equal to `from` again after a rollback. */
+  to: string | null;
+  steps: UpdateStep[];
+  error: string | null;
+  /**
+   * New code is on disk and the running process is still the old one.
+   *
+   * Separate from `phase`, because a *failed* run that rolled back also leaves
+   * a rebuilt tree — identical to what is running, so there is nothing to
+   * restart for — while a successful one has to be replaced to take effect.
+   */
+  restartRequired: boolean;
+}
+
+/**
+ * What would bring Latent back if this process exited.
+ *
+ * The update cannot take effect without replacing the running process, and
+ * nothing in Latent can start itself. So this is checked rather than assumed:
+ * offering a restart button on a machine where `npm start` was typed into a
+ * shell would make it a "stop Latent" button, with the phone that pressed it as
+ * the only way to find out.
+ */
+export interface UpdateSupervisor {
+  kind: 'docker' | 'systemd' | 'pm2' | 'unknown';
+  /** Whether exiting is expected to bring it back. */
+  restarts: boolean;
+  note: string;
+}
+
+export interface UpdateStatus {
+  checkout: UpdateCheckout;
+  available: UpdateAvailable;
+  /** The current or most recent attempt; null if none since the last restart. */
+  run: UpdateRun | null;
+  /** Everything after the `since` the client asked with. */
+  log: UpdateLogLine[];
+  /** The highest seq that exists. Poll with this as the next `since`. */
+  cursor: number;
+  supervisor: UpdateSupervisor;
 }
 
 export interface UploadImageResponse {

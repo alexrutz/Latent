@@ -1,5 +1,3 @@
-import { randomBytes } from 'node:crypto';
-
 import type {
   TasteCategory,
   TasteEntry,
@@ -200,74 +198,6 @@ export class Taste {
       position: row.position,
       createdAt: row.created_at,
     };
-  }
-}
-
-/**
- * A short-lived pass for reading the notes, bought with the app password.
- *
- * Signing in is not enough for this one screen. Everything else in the app is
- * pictures and settings, which a phone left on a table shows to whoever picks
- * it up and which is a risk people accept; this is a written description of
- * what somebody likes, and the whole reason it is encrypted at rest is that
- * nobody would think to look at it. Asking again at the door is the same
- * argument applied to the screen rather than to the disk.
- *
- * A ticket rather than a flag on the session: sessions here are stateless — an
- * HMAC of the password hash, with no server-side table to hang anything on —
- * and a client-side "did they type it" would be a lock a `curl` walks past.
- * Held in memory only, so a restart or a sign-out ends every one of them.
- */
-export class TasteGate {
-  private readonly tickets = new Map<string, number>();
-
-  constructor(
-    /** How long a pass lasts. Long enough to write a list, short enough to forget. */
-    private readonly lifetimeMs = 15 * 60 * 1000,
-  ) {}
-
-  /** Mint one. The caller has just proved it knows the password. */
-  issue(now = Date.now()): string {
-    this.sweep(now);
-    const ticket = randomBytes(24).toString('base64url');
-    this.tickets.set(ticket, now + this.lifetimeMs);
-    return ticket;
-  }
-
-  /**
-   * Whether this pass is still good — and if so, extend it.
-   *
-   * Sliding rather than fixed: the expiry is there so a pass does not outlive
-   * the sitting it was bought for, and being asked for the password again in
-   * the middle of writing a list is the kind of security that gets switched
-   * off.
-   */
-  check(ticket: unknown, now = Date.now()): boolean {
-    if (typeof ticket !== 'string' || ticket === '') return false;
-    const expires = this.tickets.get(ticket);
-    if (expires === undefined) return false;
-    if (expires <= now) {
-      this.tickets.delete(ticket);
-      return false;
-    }
-    this.tickets.set(ticket, now + this.lifetimeMs);
-    return true;
-  }
-
-  /** Hand one back, when the screen it was for is closed. */
-  revoke(ticket: unknown): void {
-    if (typeof ticket === 'string') this.tickets.delete(ticket);
-  }
-
-  /** Every pass at once: signing out, or locking the vault, ends all of them. */
-  revokeAll(): void {
-    this.tickets.clear();
-  }
-
-  private sweep(now: number): void {
-    for (const [ticket, expires] of this.tickets) {
-      if (expires <= now) this.tickets.delete(ticket);
-    }
   }
 }
 

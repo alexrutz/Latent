@@ -60,6 +60,7 @@ import { NumericInput } from '../components/NumericInput';
 import { SortableList, type DragHandleProps } from '../components/SortableList';
 import { FieldChip, Toggle, WorkflowScope } from '../components/ParamControl';
 import { UnlockArchiveDialog } from '../components/UnlockArchive';
+import { UpdateSection } from '../components/UpdateSoftware';
 import { WanderSetup } from '../components/WanderSetup';
 import { Button, Card, cn, ErrorNote, Row, Sheet, Spinner } from '../components/ui';
 import { useBlur } from '../state/blur';
@@ -774,6 +775,9 @@ export function SettingsScreen() {
 
       {/* Folder import ---------------------------------------------- */}
       <ImportSection />
+
+      {/* Software --------------------------------------------------- */}
+      {status.data?.updateEnabled && <UpdateSection />}
 
       {/* Maintenance ------------------------------------------------ */}
       {status.data?.terminalEnabled && (

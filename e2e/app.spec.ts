@@ -2328,6 +2328,48 @@ test.describe('the twelfth wave', () => {
     }
   });
 
+  /**
+   * Updating Latent from inside Latent.
+   *
+   * The e2e server runs from the checkout, so this section reads the real
+   * repository. Everything asserted here is true of any checkout — that it says
+   * which commit is running, and that it will not install anything without the
+   * password — because the alternative is a test that passes or fails depending
+   * on what the working tree happened to look like when it ran.
+   *
+   * Nothing here presses through to an actual install: that would `git reset
+   * --hard` the tree the suite is running from. `server/src/update.test.ts`
+   * covers the run itself, with git and npm scripted.
+   */
+  test('says which version is running, and asks for the password before replacing it', async ({
+    page,
+  }) => {
+    await open(page, '/settings');
+
+    // Scoped to its own section: half these words appear on the queue controls
+    // further up the same page.
+    const software = page
+      .locator('section')
+      .filter({ has: page.getByRole('heading', { name: 'Software' }) });
+    await expect(software).toBeVisible();
+
+    // A commit, short-form. Not which one — that changes with every commit —
+    // only that the screen says what is running rather than nothing.
+    await expect(software.getByText(/^[0-9a-f]{7,40}$/)).toBeVisible();
+    await expect(software.getByRole('button', { name: 'Check for updates' })).toBeEnabled();
+
+    // Either label, depending on whether the checkout happens to be behind.
+    await software.getByRole('button', { name: /Install (update|anyway)/ }).click();
+
+    // The door, before anything is offered to press.
+    const sheet = page.getByRole('dialog');
+    await expect(sheet.getByRole('button', { name: 'Install now' })).toHaveCount(0);
+    await sheet.getByLabel('Password').fill('not the password');
+    await sheet.getByRole('button', { name: 'Continue' }).click();
+    await expect(sheet.getByText('That is not the password.')).toBeVisible();
+    await expect(sheet.getByRole('button', { name: 'Install now' })).toHaveCount(0);
+  });
+
   /** Settings is a long page; it must not slide sideways out of the display. */
   test('does not pan sideways', async ({ page }) => {
     await open(page, '/settings');
