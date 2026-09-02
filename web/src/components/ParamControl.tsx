@@ -7,6 +7,7 @@ import { useOllamaModels } from '../api/queries';
 import { ImageEditor } from './ImageEditor';
 import { InputImagePicker } from './InputImagePicker';
 import { NumericInput } from './NumericInput';
+import { FolderImageField } from './FolderImagePicker';
 import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
 
 /**
@@ -42,7 +43,12 @@ const MAX_SAFE_SEED = Number.MAX_SAFE_INTEGER;
 /* ------------------------------------------------------------------ */
 
 /** Grows with its content so a long prompt never hides behind a scrollbar. */
-export function PromptField({ field, value, onChange, compact = false }: ControlProps & { compact?: boolean }) {
+export function PromptField({
+  field,
+  value,
+  onChange,
+  compact = false,
+}: ControlProps & { compact?: boolean }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const text = typeof value === 'string' ? value : String(value ?? '');
 
@@ -103,7 +109,9 @@ export function SeedField({
       </div>
       <button
         type="button"
-        onClick={() => onChange(Math.floor(Math.random() * Math.min(field.max ?? 2 ** 32, MAX_SAFE_SEED)))}
+        onClick={() =>
+          onChange(Math.floor(Math.random() * Math.min(field.max ?? 2 ** 32, MAX_SAFE_SEED)))
+        }
         aria-label="Roll a new seed"
         className="grid size-11 shrink-0 place-items-center rounded-xl bg-surface-2 text-lg active:bg-surface-3"
       >
@@ -307,7 +315,12 @@ export function formatValue(field: ParamField, value: WidgetValue): string {
   const text = String(value);
   // Model filenames are long and the meaningful part is the end.
   if (field.role === 'model' || field.role === 'lora' || field.role === 'vae') {
-    return text.replace(/\.(safetensors|ckpt|pth|gguf|pt)$/i, '').split(/[\\/]/).pop() ?? text;
+    return (
+      text
+        .replace(/\.(safetensors|ckpt|pth|gguf|pt)$/i, '')
+        .split(/[\\/]/)
+        .pop() ?? text
+    );
   }
   return text.length > 18 ? `${text.slice(0, 17)}…` : text;
 }
@@ -390,6 +403,10 @@ export function FieldEditor({ field, value, onChange }: ControlProps) {
       return <PromptField field={field} value={value} onChange={onChange} />;
     case 'image':
       return <ImageField field={field} value={value} onChange={onChange} />;
+    case 'folderImage':
+      return (
+        <FolderImageField value={typeof value === 'string' ? value : ''} onChange={onChange} />
+      );
     case 'text':
     default:
       return (
@@ -466,7 +483,9 @@ function NumberEditor({ field, value, onChange }: ControlProps) {
             onClick={() => setFullRange((current) => !current)}
             className="rounded-lg px-2 py-1 text-accent active:bg-surface-2"
           >
-            {fullRange ? 'Usual range' : `Full range (${trim(field.min ?? 0)}–${trim(field.max ?? 0)})`}
+            {fullRange
+              ? 'Usual range'
+              : `Full range (${trim(field.min ?? 0)}–${trim(field.max ?? 0)})`}
           </button>
         )}
       </div>

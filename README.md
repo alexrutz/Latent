@@ -2279,8 +2279,25 @@ tag but keeps its switch — the same rule as `use_image`, for the same reason.
 The rest never reach the form, because a saved workflow only carries the widgets
 it was saved with.
 
-**Load Image (Folder Browser)** is the one node here Latent has nothing to say
-about. It holds a path — `output/monday/render_0007.png` — and a ComfyUI web
+**Load Image (Folder Browser)** gets a picker of its own. Its `image` holds a
+path — `output/monday/render_0007.png` — and tapping the field opens a browser
+over the folders comfyllama is configured to serve, with subfolders, thumbnails,
+a search box and sorting by date, name or size.
+
+It is deliberately not the *Input image* control next to it, which looks similar
+and answers a different question. That one lists ComfyUI's **input** directory,
+where photos sent from the phone land, and it can upload. This one starts at
+**output**, because the commonest thing anybody wants is to feed a finished
+render back in, and nothing on the phone can end up in that folder — the picture
+already exists on the far machine and is chosen, not sent. So the workflow is
+*not* marked img2img-capable by it.
+
+Latent proxies the browse routes rather than scanning the output folder itself,
+which it could easily do — it already reads the input folder off disk. Which
+folders may be read is decided on the ComfyUI machine, by the environment it was
+started with, and the node refuses anything outside them. A second
+implementation here would be a second answer to that question, and the way it
+would fail is by offering a picture that then declines to load. It holds a path — `output/monday/render_0007.png` — and a ComfyUI web
 extension turns that field into a file browser over the folders the server
 allows: subfolders, thumbnails, search, sorting. In Latent it is a text field,
 because the browser is a dialog inside ComfyUI's graph editor and there is

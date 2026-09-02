@@ -176,11 +176,31 @@ function isTextEncodeClass(classType: string): boolean {
   return /CLIPTextEncode|TextEncode|PromptEncode/i.test(classType);
 }
 
+/** The stock classes whose `image` widget is a file picker over the input folder. */
+const IMAGE_UPLOAD_CLASSES = new Set(['loadimage', 'loadimagemask', 'imageonlycheckpointloader']);
+
+/**
+ * An `image` widget that means "a picture uploaded to ComfyUI's input folder".
+ *
+ * Matched exactly, not by prefix. `LoadImage` is a prefix of
+ * `LoadImageFromFolder`, whose `image` holds `output/monday/render.png` — a
+ * path into a folder, not a filename in the input directory. Classifying that
+ * as an upload gave it the ordinary picker, which then wrote a bare filename
+ * into it and the node refused the prompt.
+ *
+ * Anything else that really is an upload says so itself: ComfyUI marks those
+ * widgets `image_upload: true`, which is the check above and the reliable one.
+ */
 function isImageLoaderInput(classType: string, inputName: string, options: InputOptions): boolean {
   if (options.image_upload === true) return true;
-  return /^(LoadImage|LoadImageMask|ImageOnlyCheckpointLoader)/i.test(classType)
-    ? inputName === 'image'
-    : false;
+  return IMAGE_UPLOAD_CLASSES.has(classType.toLowerCase()) && inputName === 'image';
+}
+
+/** comfyllama's folder browser: an `image` holding `root/relative/path.png`. */
+const FOLDER_IMAGE_CLASS = 'LoadImageFromFolder';
+
+function isFolderImageInput(classType: string, inputName: string): boolean {
+  return classType === FOLDER_IMAGE_CLASS && inputName === 'image';
 }
 
 /**
@@ -394,6 +414,7 @@ function detectRole(
   if ((inputName === 'text' || inputName === 'prompt') && prompts.positive.has(nodeId)) {
     return 'prompt';
   }
+  if (isFolderImageInput(classType, inputName)) return 'folder_image';
   if (isImageLoaderInput(classType, inputName, options)) return 'image_input';
   if (SEED_INPUTS.has(inputName)) return 'seed';
   if (inputName === 'steps') return 'steps';
@@ -424,6 +445,7 @@ const MAIN_ROLE_ORDER: ParamRole[] = [
   'negative_prompt',
   'lora_text',
   'image_input',
+  'folder_image',
   'model',
   'lora',
   'width',
@@ -480,8 +502,13 @@ function typeControl(
     const opts = usable.map(String);
     // An image combo on LoadImage is really a file picker.
     if (role === 'image_input') return { control: 'image', options: opts };
+    if (role === 'folder_image') return { control: 'folderImage' };
     return { control: 'combo', options: opts, numericOptions };
   }
+
+  // Before the type switch: this one is a STRING and would otherwise become a
+  // plain text box, which is a path somebody has to type from memory.
+  if (role === 'folder_image') return { control: 'folderImage' };
 
   switch (type) {
     case 'INT':
@@ -507,6 +534,8 @@ function typeControl(
   }
 
   // Unknown node type (or a custom type): infer from the value we were given.
+  // `folder_image` is not checked again here — it was settled above the switch,
+  // before STRING could claim it as a text box.
   if (role === 'image_input') return { control: 'image' };
   if (typeof literal === 'boolean') return { control: 'boolean' };
   if (typeof literal === 'number') {
@@ -620,6 +649,7 @@ const ROLE_LABELS: Partial<Record<ParamRole, string>> = {
   prompt: 'Prompt',
   negative_prompt: 'Negative prompt',
   image_input: 'Input image',
+  folder_image: 'Picture from a folder',
   model: 'Model',
   lora: 'LoRA',
   lora_text: 'LoRAs',

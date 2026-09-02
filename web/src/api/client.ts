@@ -20,6 +20,8 @@ import type {
   ImportRequest,
   ImportResult,
   ImportScanResult,
+  BrowseListing,
+  BrowseRoot,
   InputScanResult,
   MonitorSnapshot,
   PromptBlock,
@@ -223,6 +225,17 @@ export function inputImageUrl(path: string, preview = false): string {
   return `/api/input-images/file?${params.toString()}`;
 }
 
+/** A thumbnail of a picture sitting in a browsable folder on the ComfyUI machine. */
+export function browseThumbUrl(reference: string): string {
+  const cut = reference.indexOf('/');
+  if (cut < 0) return '';
+  const params = new URLSearchParams({
+    root: reference.slice(0, cut),
+    path: reference.slice(cut + 1),
+  });
+  return `/api/browse/thumb?${params.toString()}`;
+}
+
 export const api = {
   status: () => request<StatusResponse>('/api/status'),
 
@@ -272,8 +285,7 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
-  deleteConnection: (id: string) =>
-    request<void>(`/api/connections/${id}`, { method: 'DELETE' }),
+  deleteConnection: (id: string) => request<void>(`/api/connections/${id}`, { method: 'DELETE' }),
 
   activateConnection: (id: string) =>
     request<ConnectionSummary[]>(`/api/connections/${id}/activate`, { method: 'POST' }),
@@ -376,15 +388,18 @@ export const api = {
   reportPoster: (image: ComfyImageRef, poster: string | null, durationMs?: number) =>
     request<void>('/api/images/poster', {
       method: 'PUT',
-      body: JSON.stringify({ image, ...(poster ? { poster } : {}), ...(durationMs ? { durationMs } : {}) }),
+      body: JSON.stringify({
+        image,
+        ...(poster ? { poster } : {}),
+        ...(durationMs ? { durationMs } : {}),
+      }),
     }),
 
   /* ---------------------------------------------------------------- */
   /* Favourites                                                        */
   /* ---------------------------------------------------------------- */
 
-  favorites: (sort: FavoriteSort = 'rating') =>
-    request<Favorite[]>(`/api/favorites?sort=${sort}`),
+  favorites: (sort: FavoriteSort = 'rating') => request<Favorite[]>(`/api/favorites?sort=${sort}`),
 
   addFavorite: (generationId: string, image: ComfyImageRef, note?: string) =>
     request<Favorite>('/api/favorites', {
@@ -567,6 +582,31 @@ export const api = {
 
   inputImages: () => request<InputScanResult>('/api/input-images'),
 
+  /* ---------------------------------------------------------------- */
+  /* Browsing folders on the ComfyUI machine                           */
+  /* ---------------------------------------------------------------- */
+
+  browseRoots: () => request<{ roots: BrowseRoot[] }>('/api/browse/roots'),
+
+  browseFolder: (params: {
+    root: string;
+    path?: string;
+    q?: string;
+    sort?: string;
+    order?: string;
+    recursive?: boolean;
+  }) => {
+    const query = new URLSearchParams({
+      root: params.root,
+      path: params.path ?? '',
+      q: params.q ?? '',
+      sort: params.sort ?? 'date',
+      order: params.order ?? 'desc',
+      recursive: params.recursive ? 'true' : '',
+    });
+    return request<BrowseListing>(`/api/browse/list?${query.toString()}`);
+  },
+
   /**
    * Copy a folder image into ComfyUI's input directory.
    *
@@ -637,15 +677,13 @@ export const api = {
 
   chats: () => request<ChatConversation[]>('/api/chat/conversations'),
 
-  createChat: () =>
-    request<ChatConversation>('/api/chat/conversations', { method: 'POST' }),
+  createChat: () => request<ChatConversation>('/api/chat/conversations', { method: 'POST' }),
 
   /** The transcript, and what the conversation is currently doing. */
   chat: (id: string) =>
     request<ChatConversationDetail & { run: ChatRun }>(`/api/chat/conversations/${id}`),
 
-  deleteChat: (id: string) =>
-    request<void>(`/api/chat/conversations/${id}`, { method: 'DELETE' }),
+  deleteChat: (id: string) => request<void>(`/api/chat/conversations/${id}`, { method: 'DELETE' }),
 
   /*
    * The intents.
@@ -802,7 +840,6 @@ export const api = {
       body: JSON.stringify(image),
     }),
 
-
   /* ---------------------------------------------------------------- */
   /* Parameter studies                                                 */
   /* ---------------------------------------------------------------- */
@@ -824,11 +861,9 @@ export const api = {
 
   studyPreview: (id: string) => request<StudyPreview>(`/api/studies/${id}/preview`),
 
-  startStudy: (id: string) =>
-    request<StudyDetail>(`/api/studies/${id}/start`, { method: 'POST' }),
+  startStudy: (id: string) => request<StudyDetail>(`/api/studies/${id}/start`, { method: 'POST' }),
 
-  pauseStudy: (id: string) =>
-    request<StudyDetail>(`/api/studies/${id}/pause`, { method: 'POST' }),
+  pauseStudy: (id: string) => request<StudyDetail>(`/api/studies/${id}/pause`, { method: 'POST' }),
 
   finishStudy: (id: string) =>
     request<StudyDetail>(`/api/studies/${id}/finish`, { method: 'POST' }),
@@ -857,7 +892,6 @@ export const api = {
   studyStats: (id: string) => request<StudyStats>(`/api/studies/${id}/stats`),
 
   settings: () => request<AppSettings>('/api/settings'),
-
 
   updateSettings: (patch: Partial<AppSettings>) =>
     request<AppSettings>('/api/settings', { method: 'PATCH', body: JSON.stringify(patch) }),

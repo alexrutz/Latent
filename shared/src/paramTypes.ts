@@ -9,6 +9,16 @@ export type ParamRole =
   | 'prompt'
   | 'negative_prompt'
   | 'image_input'
+  /**
+   * A picture named by where it sits, rather than one uploaded.
+   *
+   * comfyllama's folder browser holds `output/monday/render.png` — a reference
+   * into a folder on the ComfyUI machine. It is deliberately not `image_input`:
+   * that role means "a picture this device can supply", which drives the
+   * img2img capability and the camera-roll upload, and neither is true here.
+   * The picture already exists on the far end and is chosen, not sent.
+   */
+  | 'folder_image'
   | 'model'
   | 'lora'
   /** A free-text field holding `<lora:name:0.8>` tags, edited structurally. */
@@ -53,7 +63,16 @@ export type ParamRole =
   | 'other';
 
 /** Which UI control renders the field. */
-export type ControlKind = 'textarea' | 'text' | 'int' | 'float' | 'combo' | 'boolean' | 'image';
+export type ControlKind =
+  | 'textarea'
+  | 'text'
+  | 'int'
+  | 'float'
+  | 'combo'
+  | 'boolean'
+  | 'image'
+  /** A picture chosen out of a folder on the ComfyUI machine, held as a path. */
+  | 'folderImage';
 
 export type ParamGroup = 'main' | 'advanced';
 

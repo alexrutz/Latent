@@ -651,6 +651,26 @@ export const minimaxReferences: ApiWorkflow = {
   '7': { class_type: 'SaveImage', inputs: { filename_prefix: 'minimax', images: ['6', 0] } },
 };
 
+/**
+ * comfyllama's folder browser feeding an img2img graph.
+ *
+ * Its `image` holds `output/monday/render.png` — a path into a folder on the
+ * ComfyUI machine, not a filename in the input directory. The class name starts
+ * with `LoadImage`, which is what made Latent mistake it for an upload.
+ */
+export const loadImageFromFolder: ApiWorkflow = {
+  '1': {
+    class_type: 'LoadImageFromFolder',
+    inputs: { image: 'output/monday/render_0007.png' },
+  },
+  '2': {
+    class_type: 'CheckpointLoaderSimple',
+    inputs: { ckpt_name: 'v1-5-pruned-emaonly.safetensors' },
+  },
+  '3': { class_type: 'VAEEncode', inputs: { pixels: ['1', 0], vae: ['2', 2] } },
+  '4': { class_type: 'SaveImage', inputs: { filename_prefix: 'from-folder', images: ['1', 0] } },
+};
+
 export const workflowFixtures = {
   sd15Txt2Img,
   sdxlBaseRefiner,
@@ -667,6 +687,7 @@ export const workflowFixtures = {
   minimaxMusic,
   qwenSpeech,
   minimaxReferences,
+  loadImageFromFolder,
 };
 
 /**

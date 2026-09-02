@@ -65,6 +65,10 @@ or size, and an *Include subfolders* switch for when you know the filename but
 not where it ended up. It outputs `image`, `mask` and `name` — the filename
 without its extension, ready for a `filename_prefix`.
 
+In **Latent** the same browser appears wherever this node's `image` field is
+shown, reading through Latent's own `/api/browse/*` proxy so it can only ever
+offer what this node will agree to load.
+
 ### Which folders it may read
 
 By default: ComfyUI's own `output`, `input` and `temp` directories. To add more,

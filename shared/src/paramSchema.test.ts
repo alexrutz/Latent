@@ -14,6 +14,7 @@ import { objectInfoFixture } from './fixtures/objectInfo.js';
 import {
   combinedConditioning,
   img2img,
+  loadImageFromFolder,
   ltxVideoGguf,
   minimaxReferences,
   sd15Txt2Img,
@@ -716,5 +717,42 @@ describe('the MiniMax H3 reference slots', () => {
     expect(other.fields.every((f) => !f.hidden || f.inputName === 'control_after_generate')).toBe(
       true,
     );
+  });
+});
+
+describe('the folder browser is not an upload', () => {
+  /**
+   * The bug this pins.
+   *
+   * `isImageLoaderInput` tested the class name by *prefix*, and `LoadImage` is
+   * a prefix of `LoadImageFromFolder`. So the browser's `image` — which holds
+   * `output/monday/render.png` — was classified as an upload, given the
+   * ordinary picker, and written with a bare input-folder filename. ComfyUI
+   * then refused the prompt: "names a folder but no file".
+   */
+  const schema = build(loadImageFromFolder);
+  const image = byId(schema.fields, '1.image');
+
+  it('gives it its own role and control, not the upload one', () => {
+    expect(image?.role).toBe('folder_image');
+    expect(image?.control).toBe('folderImage');
+    expect(image?.label).toBe('Picture from a folder');
+  });
+
+  it('keeps the path it was given rather than a bare filename', () => {
+    expect(image?.defaultValue).toBe('output/monday/render_0007.png');
+  });
+
+  it('does not claim the workflow can take a photo from this device', () => {
+    // img2img means "this phone can supply the picture". It cannot: the file
+    // already exists on the ComfyUI machine and is chosen, not sent.
+    expect(schema.capabilities.img2img).toBe(false);
+    expect(findFieldByRole(schema, 'image_input')).toBeUndefined();
+  });
+
+  it('still recognises the stock loaders it was meant to catch', () => {
+    const stock = build(img2img);
+    expect(findFieldByRole(stock, 'image_input')?.id).toBe('1.image');
+    expect(stock.capabilities.img2img).toBe(true);
   });
 });

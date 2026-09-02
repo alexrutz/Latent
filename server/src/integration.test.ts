@@ -8024,3 +8024,45 @@ describe('updating Latent itself', () => {
     }
   }, 30_000);
 });
+
+describe('browsing folders on the ComfyUI machine', () => {
+  /**
+   * A proxy, and the interesting case is the ComfyUI that cannot answer.
+   *
+   * The mock ComfyUI these tests run against has no comfyllama in it, so it
+   * answers 404 to the browse routes — which is exactly the shape of a real
+   * ComfyUI without the custom nodes installed. That has to arrive as a
+   * sentence somebody can act on rather than an empty folder list, because an
+   * empty list looks like "no pictures" and sends people looking through their
+   * output directory for a fault that is not there.
+   */
+  it('says what to install when the far end has no browser', async () => {
+    const barred = await api('/api/browse/roots');
+    expect(barred.status).toBe(404);
+    expect((await json<{ error: string }>(barred)).error).toContain('comfyllama');
+  });
+
+  it('will not list a folder without being told which one', async () => {
+    const response = await api('/api/browse/list');
+    expect(response.status).toBe(400);
+  });
+
+  it('will not fetch a thumbnail without both halves of the reference', async () => {
+    // Root and path together are the reference; either alone names nothing.
+    expect((await api('/api/browse/thumb?root=output')).status).toBe(400);
+    expect((await api('/api/browse/thumb?path=a.png')).status).toBe(400);
+  });
+
+  it('needs a session, like everything else under /api', async () => {
+    const server = await bootIsolated();
+    try {
+      await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+      expect((await server.call('/api/browse/roots')).status).toBe(401);
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+});

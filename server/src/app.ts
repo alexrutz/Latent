@@ -26,6 +26,7 @@ import { Endless } from './endless.js';
 import { StudyRunner } from './study.js';
 import { Sweeper } from './sweeper.js';
 import { WorkflowScanner } from './workflowScan.js';
+import { registerBrowseRoutes } from './routes/browse.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerConnectionRoutes, toConfig } from './routes/connections.js';
 import type { AppContext } from './routes/context.js';
@@ -262,6 +263,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   registerSystemPromptRoutes(app, ctx);
   registerImportRoutes(app, ctx);
   registerInputImageRoutes(app, ctx);
+  registerBrowseRoutes(app, ctx);
   registerMediaRoutes(app, ctx);
   registerStudyRoutes(app, ctx);
 
@@ -280,9 +282,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
    * exist cannot be reached by a stolen session cookie.
    */
   if (config.terminalEnabled) {
-    app.log.warn(
-      'LATENT_TERMINAL is on: anyone who logs in gets a shell on this machine.',
-    );
+    app.log.warn('LATENT_TERMINAL is on: anyone who logs in gets a shell on this machine.');
     app.get('/api/terminal/ws', { websocket: true }, (socket, request) => {
       if (!auth.isAuthenticated(request)) {
         socket.close(4401, 'Authentication required');

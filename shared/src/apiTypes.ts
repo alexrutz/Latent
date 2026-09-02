@@ -384,11 +384,7 @@ export interface ConnectionInput {
 }
 
 export type ConnectionTestOutcome =
-  | 'ok'
-  | 'unreachable'
-  | 'unauthorized'
-  | 'self_signed'
-  | 'not_comfyui';
+  'ok' | 'unreachable' | 'unauthorized' | 'self_signed' | 'not_comfyui';
 
 export interface ConnectionTestResult {
   outcome: ConnectionTestOutcome;
@@ -714,6 +710,38 @@ export interface ArchiveStats {
   images: number;
   bytes: number;
 }
+
+/* ------------------------------------------------------------------ */
+/* Browsing folders on the ComfyUI machine                             */
+/* ------------------------------------------------------------------ */
+
+/** One folder comfyllama is willing to serve, by the key a request names it with. */
+export interface BrowseRoot {
+  key: string;
+  path: string;
+}
+
+export interface BrowseEntry {
+  name: string;
+  /** Relative to the root, with `/` separators. Half of a stored reference. */
+  path: string;
+  size: number;
+  /** Seconds, as Python's `st_mtime` gives them. */
+  mtime: number;
+}
+
+export interface BrowseListing {
+  root: string;
+  path: string;
+  folders: BrowseEntry[];
+  files: BrowseEntry[];
+  /** More matched than were returned; narrow the search rather than paging. */
+  truncated: boolean;
+  total: number;
+}
+
+export type BrowseSort = 'date' | 'name' | 'size';
+export type BrowseOrder = 'asc' | 'desc';
 
 /* ------------------------------------------------------------------ */
 /* Updating the software                                               */
@@ -1550,7 +1578,9 @@ export function defaultSampling(): ChatSampling {
  * only in the dialog: settings are stored as JSON and edited by hand often
  * enough that the sanitising has to live where the request is built.
  */
-export function samplingOverrides(sampling: Partial<ChatSampling> | undefined): Record<string, number> {
+export function samplingOverrides(
+  sampling: Partial<ChatSampling> | undefined,
+): Record<string, number> {
   const out: Record<string, number> = {};
   if (!sampling) return out;
 
@@ -2191,12 +2221,7 @@ export interface RevisePromptCall {
   score?: number;
 }
 
-export type ChatToolCall = (
-  | PromptBlocksCall
-  | BuildPromptCall
-  | AskUserCall
-  | RevisePromptCall
-) & {
+export type ChatToolCall = (PromptBlocksCall | BuildPromptCall | AskUserCall | RevisePromptCall) & {
   /** The id llama.cpp gave it, needed to answer the model. */
   callId: string;
 };
