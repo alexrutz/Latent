@@ -266,10 +266,18 @@ function UpdateSheet({ open, onClose }: { open: boolean; onClose: () => void }) 
                   dependencies and builds. Your gallery, ratings, archive and settings are stored
                   outside the project directory and are not touched.
                 </p>
+                {/*
+                  Stronger than "wait for the build to finish", because the
+                  truth is stronger. The server matches URLs to the files it
+                  found in web/dist when it started, so once the build has
+                  written new ones it serves this page but not the bundle this
+                  page asks for — a blank screen, until the restart. Leaving
+                  this tab alone is what keeps a way to press that button.
+                */}
                 <p className="text-xs text-warn">
-                  Leave this screen open while it runs. The build replaces the app's own files
-                  part-way through, so reloading the page mid-update will show an error until it
-                  finishes.
+                  Leave this screen open until it finishes. The build replaces the app's own files,
+                  and the running server still expects the old ones — so reloading before you
+                  restart gives a blank page. This tab keeps working throughout.
                 </p>
                 <Button
                   variant="primary"
@@ -404,7 +412,16 @@ function RestartCard({
 
   return (
     <Card className="space-y-3">
-      <p className="text-sm">Installed. Latent has to be restarted to run the new version.</p>
+      {/*
+        Not optional, and the wording says so. Until the restart the running
+        server is still matching URLs against the files that were in web/dist
+        when it started, so it no longer serves the bundle it is now telling
+        browsers to fetch — every page but this one is blank.
+      */}
+      <p className="text-sm">
+        Installed. Latent has to be restarted now: until then it serves a blank page to anything
+        that loads it fresh, including this app in a new tab.
+      </p>
       <p className={cn('text-xs', restarts ? 'text-muted' : 'text-warn')}>{note}</p>
       <Button
         variant={restarts ? 'primary' : 'secondary'}

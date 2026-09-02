@@ -2314,8 +2314,12 @@ npm install --include=dev
 npm run build
 ```
 
-Then it offers a restart, because none of it takes effect until the process is
-replaced.
+Then it offers a restart — and that restart is not optional. The server matches
+URLs against the files it found in `web/dist` when it started, so once the build
+has written new hashed bundles it still serves the page but not the script the
+page asks for. Anything loading Latent fresh gets a blank screen until the
+process is replaced. The tab that ran the update keeps working throughout, which
+is why the screen asks you to leave it open.
 
 **It resets rather than re-cloning.** Deleting the project directory and cloning
 it again is the obvious design and is the one thing this deliberately does not
