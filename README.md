@@ -2261,6 +2261,15 @@ the slider and its six bounds are inert, so those go. The switch between them is
 never hidden. The slider still works from a phone — the node does the same
 arithmetic when it runs, so it does not depend on the extension being loaded.
 
+**Load Image (Folder Browser)** is the one node here Latent has nothing to say
+about. It holds a path — `output/monday/render_0007.png` — and a ComfyUI web
+extension turns that field into a file browser over the folders the server
+allows: subfolders, thumbnails, search, sorting. In Latent it is a text field,
+because the browser is a dialog inside ComfyUI's graph editor and there is
+nothing to mirror. Which folders it may read is an environment variable
+(`COMFYLLAMA_IMAGE_ROOTS`) rather than a widget, so it is not a value that
+travels inside a shared workflow — `comfyllama/README.md` has the reasoning.
+
 The node definitions and the fixture Latent's tests build forms from are checked
 against each other by `shared/src/fixtures/comfyllama.test.ts`, which asks the
 vendored Python what it actually declares. Two copies of a definition drift, and

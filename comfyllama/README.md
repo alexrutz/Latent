@@ -48,6 +48,51 @@ These have nothing to do with llama.cpp and work on their own.
 | Node | What it does |
 | --- | --- |
 | **Empty Latent (Aspect Ratio + Megapixels)** | An empty latent sized by picking a ratio and a megapixel budget instead of typing width and height, or by borrowing either from a connected picture. Handles SD1.5/SDXL, SD3/Flux and Krea 2 latents. |
+| **Load Image (Folder Browser)** | An image input with a file browser behind it: subfolders, thumbnails, a search box and sorting, over the folders the server allows. See [Browsing folders](#browsing-folders). |
+
+## Browsing folders
+
+Stock `LoadImage` offers a combo of everything in ComfyUI's **input** directory.
+That stops being usable at a few thousand files, and it cannot see the **output**
+directory at all — so feeding a finished render back in means finding it in a
+file manager and copying it across first.
+
+**Load Image (Folder Browser)** replaces the combo with a `Browse…` button
+(double-clicking the node opens the same dialog). Inside: the folders the server
+allows, their subfolders, a thumbnail grid, a search box, sorting by date, name
+or size, and an *Include subfolders* switch for when you know the filename but
+not where it ended up. It outputs `image`, `mask` and `name` — the filename
+without its extension, ready for a `filename_prefix`.
+
+### Which folders it may read
+
+By default: ComfyUI's own `output`, `input` and `temp` directories. To add more,
+set `COMFYLLAMA_IMAGE_ROOTS` before starting ComfyUI — the same
+`PATH`-style separator your platform uses (`:` on Linux and macOS, `;` on
+Windows):
+
+```bash
+COMFYLLAMA_IMAGE_ROOTS=/mnt/photos:/mnt/renders/archive python main.py
+```
+
+Folders that do not exist are dropped rather than offered. Two folders with the
+same basename both appear, the second suffixed `(2)`, so neither shadows the
+other.
+
+**This deliberately is not a widget on the node.** The browser's routes serve
+whatever they are allowed to open to anyone who can reach the ComfyUI server. If
+the node's own text field decided, then "which folders may be read" would be a
+value inside a workflow — editable by anyone who can post a graph, and
+travelling inside every shared `.json`. An environment variable is part of how
+the server was *started*, which is the same place its bind address and its
+`--listen` flag live.
+
+Every path is resolved through one function that checks the named root, fully
+resolves the result, and then re-checks containment with `os.path.commonpath`
+rather than a string prefix. `..` cannot climb out, an absolute path cannot
+replace the root, a symlink pointing outside is refused, and `/renders-private`
+is not inside `/renders`. Recursive listings do not follow symlinks, so a link
+back up the tree cannot make the walk loop.
 
 ## Install
 

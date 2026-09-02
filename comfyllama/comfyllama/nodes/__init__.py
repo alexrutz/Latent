@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .browser import LoadImageFromFolder
 from .generation import (LlamaCppChat, LlamaCppComplete, LlamaCppGrammar,
                          LlamaCppSampling, LlamaCppVisionChat)
 from .latent import EmptyLatentByAspectRatio
@@ -34,6 +35,7 @@ NODE_CLASS_MAPPINGS = {
     "LlamaServerInfo": LlamaServerInfo,
     "LlamaServerPresetChat": LlamaServerPresetChat,
     "EmptyLatentByAspectRatio": EmptyLatentByAspectRatio,
+    "LoadImageFromFolder": LoadImageFromFolder,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -58,6 +60,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LlamaServerInfo": "Server Info (llama-server)",
     "LlamaServerPresetChat": "Chat with Prompt Presets (llama-server)",
     "EmptyLatentByAspectRatio": "Empty Latent (Aspect Ratio + Megapixels)",
+    "LoadImageFromFolder": "Load Image (Folder Browser)",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
