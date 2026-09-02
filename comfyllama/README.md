@@ -49,6 +49,7 @@ These have nothing to do with llama.cpp and work on their own.
 | --- | --- |
 | **Empty Latent (Aspect Ratio + Megapixels)** | An empty latent sized by picking a ratio and a megapixel budget instead of typing width and height, or by borrowing either from a connected picture. Handles SD1.5/SDXL, SD3/Flux and Krea 2 latents. |
 | **Load Image (Folder Browser)** | An image input with a file browser behind it: subfolders, thumbnails, a search box and sorting, over the folders the server allows. See [Browsing folders](#browsing-folders). |
+| **MiniMax H3 Reference to Video (Slots)** | The stock reference-to-video node with a fixed, switchable slot per reference instead of autogrow inputs — so it can be driven over the API — and tag names so the prompt need not hard-code reference numbers. See [MiniMax H3 references](#minimax-h3-references). |
 
 ## Browsing folders
 
@@ -93,6 +94,65 @@ rather than a string prefix. `..` cannot climb out, an absolute path cannot
 replace the root, a symlink pointing outside is refused, and `/renders-private`
 is not inside `/renders`. Recursive listings do not follow symlinks, so a link
 back up the tree cannot make the walk loop.
+
+## MiniMax H3 references
+
+`MiniMaxH3ReferenceToVideo` takes its references through **autogrow** inputs —
+slots that appear as you connect things. That is pleasant in the graph editor
+and unreachable from anywhere else: an autogrow group cannot be expressed in an
+API-format prompt. Sent nested it is accepted and **silently ignored**; sent
+flat it raises `TypeError: execute() got an unexpected keyword argument`. The
+upstream issue asking for it to work ([#15667](https://github.com/Comfy-Org/ComfyUI/issues/15667))
+was closed as not planned.
+
+Latent submits API-format prompts. So driving the stock node from a phone
+produces a video that ignores every reference and says nothing about it — the
+reporter of that issue proved it with four bit-identical runs, one of them with
+the reference nodes deleted entirely.
+
+This node is the same node with its references arriving through ordinary fixed
+inputs: nine picture slots, three video slots each with a soundtrack, three
+audio slots, every one with a switch. It does not reimplement any conditioning —
+it packs the switched-on slots into the dictionaries upstream's `execute` wants
+and calls it, so the sizing, the VAE encoding and the tokenizer presentation
+stay upstream where they are maintained.
+
+### Tags, and why the numbers are not yours to type
+
+H3 refers to references by ordinal, inside the prompt: `<Picture 1>`,
+`<Video 1>`, `<Audio 2>`. The ordinals come from presentation order, not from
+which slot something is plugged into. **Switch one reference off and every later
+number shifts.** A prompt reading "the woman in `<Picture 3>` wears the jacket
+from `<Picture 4>`" keeps running after you disable `<Picture 1>`; it just
+quietly describes two different pictures.
+
+So give the slot a tag and let the node do the arithmetic:
+
+| Slot | Tag | Prompt you write | What is sent |
+| --- | --- | --- | --- |
+| picture 1 | `woman` | `@woman walks past @jacket` | `<Picture 1> walks past <Picture 2>` |
+| picture 4 | `jacket` | | |
+
+Switch picture 1 off and the same prompt sends `<Picture 1>` for the jacket,
+because that is what it became. Tags are matched case-insensitively, a `@` typed
+into the tag field is ignored, and `<Picture 2>` written by hand is left alone.
+A `@tag` no switched-on slot answers to is refused before the queue rather than
+reaching the model as the literal text `@tag`.
+
+Two orderings are worth knowing, both reproduced from upstream exactly:
+
+- references are presented as **all pictures, then videos, then standalone
+  audio**, whatever order the slots are in;
+- a reference video's soundtrack takes an `<Audio j>` number **before** the
+  standalone audio slots. One video-with-sound plus one standalone clip makes
+  the soundtrack `<Audio 1>` and the standalone `<Audio 2>`. Reach a soundtrack
+  in the prompt as `@tag-audio`.
+
+### The switches are lazy
+
+A slot that is switched off is never evaluated — its picture is not loaded, its
+video is not decoded or resized. Switching a reference off makes the run
+shorter, not just the prompt shorter.
 
 ## Install
 

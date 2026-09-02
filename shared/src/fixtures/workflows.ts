@@ -82,7 +82,10 @@ export const sdxlBaseRefiner: ApiWorkflow = {
     inputs: { ckpt_name: 'sd_xl_refiner_1.0.safetensors' },
     _meta: { title: 'Refiner checkpoint' },
   },
-  '15': { class_type: 'CLIPTextEncode', inputs: { text: 'a photograph of an astronaut riding a horse', clip: ['12', 1] } },
+  '15': {
+    class_type: 'CLIPTextEncode',
+    inputs: { text: 'a photograph of an astronaut riding a horse', clip: ['12', 1] },
+  },
   '16': { class_type: 'CLIPTextEncode', inputs: { text: 'blurry, low quality', clip: ['12', 1] } },
   '11': {
     class_type: 'KSamplerAdvanced',
@@ -115,7 +118,10 @@ export const img2img: ApiWorkflow = {
     inputs: { ckpt_name: 'v1-5-pruned-emaonly.safetensors' },
   },
   '3': { class_type: 'VAEEncode', inputs: { pixels: ['1', 0], vae: ['2', 2] } },
-  '4': { class_type: 'CLIPTextEncode', inputs: { text: 'oil painting, thick brush strokes', clip: ['2', 1] } },
+  '4': {
+    class_type: 'CLIPTextEncode',
+    inputs: { text: 'oil painting, thick brush strokes', clip: ['2', 1] },
+  },
   '5': { class_type: 'CLIPTextEncode', inputs: { text: 'photo, realistic', clip: ['2', 1] } },
   '6': {
     class_type: 'KSampler',
@@ -149,10 +155,16 @@ export const upscale: ApiWorkflow = {
 
 /** Prompts routed through ConditioningCombine, so detection must walk backwards. */
 export const combinedConditioning: ApiWorkflow = {
-  '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'sd_xl_base_1.0.safetensors' } },
+  '1': {
+    class_type: 'CheckpointLoaderSimple',
+    inputs: { ckpt_name: 'sd_xl_base_1.0.safetensors' },
+  },
   '2': { class_type: 'CLIPTextEncode', inputs: { text: 'a castle', clip: ['1', 1] } },
   '3': { class_type: 'CLIPTextEncode', inputs: { text: 'at sunset', clip: ['1', 1] } },
-  '4': { class_type: 'ConditioningCombine', inputs: { conditioning_1: ['2', 0], conditioning_2: ['3', 0] } },
+  '4': {
+    class_type: 'ConditioningCombine',
+    inputs: { conditioning_1: ['2', 0], conditioning_2: ['3', 0] },
+  },
   '5': { class_type: 'CLIPTextEncode', inputs: { text: 'ugly', clip: ['1', 1] } },
   '6': { class_type: 'EmptyLatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
   '7': {
@@ -188,7 +200,10 @@ export const unknownCustomNodes: ApiWorkflow = {
     },
     _meta: { title: 'Secret Sampler' },
   },
-  '2': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'dreamshaperXL_v21.safetensors' } },
+  '2': {
+    class_type: 'CheckpointLoaderSimple',
+    inputs: { ckpt_name: 'dreamshaperXL_v21.safetensors' },
+  },
   '3': { class_type: 'SaveImage', inputs: { filename_prefix: 'custom', images: ['1', 0] } },
 };
 
@@ -585,6 +600,57 @@ export const editWithReference: ApiWorkflow = {
   '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'edit', images: ['8', 0] } },
 };
 
+/**
+ * MiniMax H3 reference-to-video, with three of its nine picture slots wired.
+ *
+ * Slot 1 holds a picture and is on, slot 2 holds one and is switched off, slot 3
+ * has nothing wired at all — the three states `idleReferenceSlot` has to tell
+ * apart. The video and audio slots are left empty, which is the ordinary case.
+ */
+export const minimaxReferences: ApiWorkflow = {
+  '1': { class_type: 'LoadImage', inputs: { image: 'woman.png' } },
+  '2': { class_type: 'LoadImage', inputs: { image: 'jacket.png' } },
+  '3': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'minimax-h3-Q4_K_M.gguf' } },
+  '4': {
+    class_type: 'MiniMaxH3ReferencesFlat',
+    inputs: {
+      clip: ['3', 1],
+      vae: ['3', 2],
+      audio_vae: ['3', 2],
+      prompt: '@woman walks past the camera',
+      width: 1344,
+      height: 768,
+      length: 124,
+      ref_image_size: 'match',
+      image_1: ['1', 0],
+      image_1_on: true,
+      image_1_tag: 'woman',
+      image_2: ['2', 0],
+      image_2_on: false,
+      image_2_tag: 'jacket',
+      image_3_on: true,
+      image_3_tag: '',
+    },
+  },
+  '5': {
+    class_type: 'KSampler',
+    inputs: {
+      seed: 7,
+      steps: 20,
+      cfg: 5,
+      sampler_name: 'euler',
+      scheduler: 'normal',
+      denoise: 1,
+      model: ['3', 0],
+      positive: ['4', 0],
+      negative: ['4', 0],
+      latent_image: ['4', 1],
+    },
+  },
+  '6': { class_type: 'VAEDecode', inputs: { samples: ['5', 0], vae: ['3', 2] } },
+  '7': { class_type: 'SaveImage', inputs: { filename_prefix: 'minimax', images: ['6', 0] } },
+};
+
 export const workflowFixtures = {
   sd15Txt2Img,
   sdxlBaseRefiner,
@@ -600,6 +666,7 @@ export const workflowFixtures = {
   videoCombine,
   minimaxMusic,
   qwenSpeech,
+  minimaxReferences,
 };
 
 /**

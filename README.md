@@ -2262,6 +2262,23 @@ the slider and its six bounds are inert, so those go. The switch between them is
 never hidden. The slider still works from a phone — the node does the same
 arithmetic when it runs, so it does not depend on the extension being loaded.
 
+**MiniMax H3 Reference to Video (Slots)** exists because the stock
+`MiniMaxH3ReferenceToVideo` cannot be driven from Latent at all. Its reference
+slots are *autogrow* inputs, which have no representation in an API-format
+prompt: sent nested they are accepted and silently ignored, sent flat they raise
+a `TypeError`, and the upstream issue was closed as not planned. Latent submits
+API format, so the stock node would produce a video that ignores every reference
+and report nothing wrong. The comfyllama node takes the same references through
+ordinary fixed inputs and calls upstream's own `execute`, so nothing about the
+conditioning is reimplemented — only how the references arrive.
+
+Its forty-eight optional inputs are a slot each, and `idleReferenceSlot` in
+`shared/src/paramSchema.ts` is what keeps that readable: a slot with nothing
+wired loses both its controls, and a wired slot that is switched off loses its
+tag but keeps its switch — the same rule as `use_image`, for the same reason.
+The rest never reach the form, because a saved workflow only carries the widgets
+it was saved with.
+
 **Load Image (Folder Browser)** is the one node here Latent has nothing to say
 about. It holds a path — `output/monday/render_0007.png` — and a ComfyUI web
 extension turns that field into a file browser over the folders the server

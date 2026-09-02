@@ -237,8 +237,7 @@ function findTextSources(
      * indistinguishable from the positive one: a video workflow offered two
      * boxes both labelled Prompt and no way to say what you did *not* want.
      */
-    const carriesBoth =
-      isNodeLink(node.inputs?.positive) && isNodeLink(node.inputs?.negative);
+    const carriesBoth = isNodeLink(node.inputs?.positive) && isNodeLink(node.inputs?.negative);
 
     for (const [name, value] of Object.entries(node.inputs ?? {})) {
       if (!isNodeLink(value)) continue;
@@ -300,7 +299,9 @@ function classifyPrompts(workflow: ApiWorkflow): PromptClassification {
       const empty = textNodes.filter(([, node]) =>
         Object.entries(node.inputs ?? {}).some(
           ([name, value]) =>
-            (name === 'text' || name === 'prompt') && typeof value === 'string' && value.trim() === '',
+            (name === 'text' || name === 'prompt') &&
+            typeof value === 'string' &&
+            value.trim() === '',
         ),
       );
       if (empty.length === 1) {
@@ -500,9 +501,7 @@ function typeControl(
     case 'BOOLEAN':
       return { control: 'boolean' };
     case 'STRING':
-      return options.multiline
-        ? { control: 'textarea', multiline: true }
-        : { control: 'text' };
+      return options.multiline ? { control: 'textarea', multiline: true } : { control: 'text' };
     default:
       break;
   }
@@ -511,7 +510,9 @@ function typeControl(
   if (role === 'image_input') return { control: 'image' };
   if (typeof literal === 'boolean') return { control: 'boolean' };
   if (typeof literal === 'number') {
-    return Number.isInteger(literal) ? { control: 'int', step: 1 } : { control: 'float', step: 0.1 };
+    return Number.isInteger(literal)
+      ? { control: 'int', step: 1 }
+      : { control: 'float', step: 0.1 };
   }
   if (role === 'prompt' || role === 'negative_prompt') {
     return { control: 'textarea', multiline: true };
@@ -596,7 +597,8 @@ function deriveSoftRange(
 
     // Nothing recognised: centre a workable window on the exported default, which
     // is by definition a value that made sense for this workflow.
-    const base = typeof defaultValue === 'number' && Number.isFinite(defaultValue) ? defaultValue : 1;
+    const base =
+      typeof defaultValue === 'number' && Number.isFinite(defaultValue) ? defaultValue : 1;
     const spread = Math.max(Math.abs(base) * 2, control === 'int' ? 10 : 1);
     softMin = base - spread;
     softMax = base + spread;
@@ -686,6 +688,44 @@ function idleImageControl(node: { inputs?: Record<string, unknown> }, inputName:
   return !wired || node.inputs?.[IMAGE_SWITCH_INPUT] === false;
 }
 
+/** comfyllama's MiniMax H3 reference node, with a slot per reference. */
+const REFERENCE_SLOTS_CLASS = 'MiniMaxH3ReferencesFlat';
+/** `image_3_on` / `video_1_tag` — the slot, and which of its two controls. */
+const REFERENCE_SLOT_INPUT = /^(image|video|audio)_(\d+)_(on|tag)$/;
+
+/**
+ * A slot control for a reference that is not there.
+ *
+ * The node offers nine picture slots, three video slots and three audio slots,
+ * each with a switch and a tag — forty-odd controls, of which a normal shot uses
+ * three. Exported wholesale that is a form nobody can read on a phone, so the
+ * same rule the chat nodes use applies here, per slot:
+ *
+ * - Nothing wired to the slot: both its controls go. A switch that turns off a
+ *   picture which was never coming, and a name for it, are equally moot.
+ * - Wired but switched off: the tag goes, because a name is only ever used to
+ *   write a number the prompt will not contain. The switch stays — it is what
+ *   brings the slot back, and hiding the only control that undoes a state is how
+ *   a form traps somebody in it.
+ *
+ * A video's soundtrack rides on its video's switch: it is wired to
+ * `video_2_audio` but is not a slot of its own, and giving it separate controls
+ * would only invite switching off a soundtrack whose video is already off.
+ */
+function idleReferenceSlot(
+  node: { class_type?: string; inputs?: Record<string, unknown> },
+  inputName: string,
+): boolean {
+  if (node.class_type !== REFERENCE_SLOTS_CLASS) return false;
+  const match = REFERENCE_SLOT_INPUT.exec(inputName);
+  if (!match) return false;
+
+  const [, kind, index, control] = match;
+  const wired = isNodeLink(node.inputs?.[`${kind}_${index}`]);
+  if (control === 'on') return !wired;
+  return !wired || node.inputs?.[`${kind}_${index}_on`] === false;
+}
+
 /** comfyllama's empty-latent node, whose size can come from a picture. */
 const LATENT_SIZE_CLASS = 'EmptyLatentByAspectRatio';
 /** The mode that says where the size comes from. See `idleLatentSizeControl`. */
@@ -724,9 +764,7 @@ const SAMPLING_CLASS = 'LlamaCppSampling';
 const SCALED_INPUTS = ['temperature', 'top_p', 'top_k'];
 
 /** What the two ends of the slider mean, per parameter. */
-const INTENSITY_BOUNDS = new Set(
-  SCALED_INPUTS.flatMap((name) => [`${name}_min`, `${name}_max`]),
-);
+const INTENSITY_BOUNDS = new Set(SCALED_INPUTS.flatMap((name) => [`${name}_min`, `${name}_max`]));
 
 /**
  * The half of the sampler node that is not currently deciding anything.
@@ -789,7 +827,10 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
     const unknownNodeType = def === undefined;
     if (unknownNodeType) missingNodeTypes.add(node.class_type);
 
-    if (def?.output_node === true || /^(SaveImage|PreviewImage|SaveAnimated)/i.test(node.class_type)) {
+    if (
+      def?.output_node === true ||
+      /^(SaveImage|PreviewImage|SaveAnimated)/i.test(node.class_type)
+    ) {
       outputNodeIds.push(nodeId);
     }
 
@@ -844,7 +885,8 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
           inputName === 'control_after_generate' ||
           idleImageControl(node, inputName) ||
           idleSamplingControl(node, inputName) ||
-          idleLatentSizeControl(node, inputName),
+          idleLatentSizeControl(node, inputName) ||
+          idleReferenceSlot(node, inputName),
         order: group === 'main' ? mainIndex : fields.length,
         unknownNodeType,
       });
