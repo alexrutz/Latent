@@ -179,6 +179,25 @@ node's reference sockets and leave the rest alone.
 It does not condition anything and it does not replace the stock node: it loads
 files and hands them over, which is the whole job.
 
+### Which node to wire it into
+
+Both, depending on where the workflow is going to be *run*, and the difference
+is not cosmetic:
+
+- **Running it in ComfyUI** — wire the picker into the stock
+  **MiniMax H3 Reference to Video**. Its autogrow sockets are pleasant in the
+  editor, and in the editor they work.
+- **Running it from Latent, or anything else driving the API** — wire the picker
+  into **MiniMax H3 Reference to Video (Slots)** instead. The stock node's
+  autogrow inputs cannot be expressed in an API-format prompt at all: sent
+  nested they are accepted and silently ignored, so you get a video that used
+  none of your references and no error saying so. See
+  [MiniMax H3 references](#minimax-h3-references) for the whole story.
+
+So the picker and the Slots node are two halves of the same path rather than two
+ways of doing one thing — one gets the material in, the other is what lets the
+graph be submitted from a phone.
+
 **An empty slot outputs nothing at all.** Literally `None`, which the stock node
 skips — so you can clear a slot without unwiring it, and without disturbing the
 references you already connected. That is also why there is an output per slot
@@ -194,6 +213,40 @@ Videos are resampled to `video_fps` (24, what H3 expects) and trimmed to
 `video_seconds`. Decoding is PyAV for both video and audio — the same library
 ComfyUI's own loaders use, rather than a second decoder with its own opinions
 about frame rates and sample formats.
+
+## Reporting the GPU's power draw
+
+One route, `GET /comfyllama/power`, and no node at all:
+
+```json
+{ "gpus": [{ "watts": 412.5, "limit": 450.0 }], "source": "nvml" }
+```
+
+It exists because utilisation does not answer the question people ask of it.
+"GPU at 100%" means the scheduler had work resident every sampling interval,
+which a kernel waiting on memory satisfies exactly as well as one doing
+arithmetic — so a bandwidth-bound run and a compute-bound one read the same, and
+the number that separates them is the power. A 450 W card pulling 160 W at "full
+utilisation" is waiting for VRAM; the same card pulling 430 W is working.
+Latent's monitor draws it against the limit for exactly that reason.
+
+**Read here rather than by whatever is asking**, because this is the process on
+the machine with the GPU in it. Latent is routinely somewhere else — a NAS at
+home talking to a rented box — and `nvidia-smi` run there would report the wrong
+card, or none, with no way to tell which had happened. Same reasoning as the
+folder browser: the far machine is the one that knows.
+
+Two ways of asking, in order of preference:
+
+- **NVML**, through `pynvml`, which torch's CUDA builds already depend on. A
+  library call against a handle we keep, so it costs microseconds.
+- **`nvidia-smi`**, as a subprocess, for an install where the bindings are
+  missing but the driver is not. Tens of milliseconds, which is why it is second
+  and why the answer is cached for a second either way.
+
+Anything else — Apple silicon, ROCm, a CPU-only box — reports nothing, and stops
+being asked after the first attempt. An absent reading is a fact the caller can
+state; a zero is a lie it would draw.
 
 ## Install
 

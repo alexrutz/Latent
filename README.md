@@ -557,6 +557,25 @@ rather than drawing a flat line at zero. Install the widely used **Crystools**
 extension on the ComfyUI box and Latent picks up its broadcasts over the socket
 it already holds — no extra configuration, and no polling of a second endpoint.
 
+**GPU power is what makes utilisation mean anything.** "GPU at 100%" says only
+that the scheduler had work resident every sampling interval, which a kernel
+stalled on memory satisfies exactly as well as one doing arithmetic — so a
+bandwidth-bound run and a compute-bound one read the same. The watts separate
+them: a 450 W card sitting at 160 W is waiting for VRAM, and the same card at
+430 W is working. The chart is drawn against the card's own power limit rather
+than against the peak in the window, so the headroom above the curve is on
+screen; auto-scaling it would draw an idling card as a full chart, which is the
+exact mistake the reading exists to correct.
+
+That figure comes from **comfyllama**, because it has to be read on the machine
+with the GPU in it. Latent is routinely somewhere else — a NAS at home talking
+to a rented box — and `nvidia-smi` run there would report the wrong card, or
+none, with no way to tell which had happened. comfyllama asks NVML through
+`pynvml` (which torch's CUDA builds already depend on), falls back to
+`nvidia-smi` where the bindings are missing but the driver is not, and reports
+nothing at all on anything else. An absent reading is a fact the chart can
+state; a zero is a lie it would draw.
+
 Readings are taken every two seconds while something is running and every twenty
 when the box is idle, and kept **in memory**: this is the recent past, the window
 in which you are still asking why something just happened, and writing a row

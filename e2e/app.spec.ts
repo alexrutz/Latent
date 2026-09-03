@@ -2222,6 +2222,15 @@ test.describe('the fixes wave ten asked for', () => {
 
     // What core ComfyUI does not report is said, not drawn as a flat zero.
     await expect(page.getByText(/Not reported/).first()).toBeVisible();
+
+    /*
+     * And the reading that makes utilisation mean anything: watts against the
+     * card's own limit. Utilisation alone cannot tell a kernel stalled on
+     * memory from one doing arithmetic — both sit at 100% — so the pair is
+     * what is worth charting, and it comes from the machine with the GPU.
+     */
+    await expect(page.getByTestId('monitor-charts').getByText('GPU power')).toBeVisible();
+    await expect(page.getByText(/\d+ W of 450 W/)).toBeVisible({ timeout: 30_000 });
   });
 });
 
@@ -3022,9 +3031,14 @@ test.describe('the sixteenth wave', () => {
     await openModule(page, 'Monitor');
     await expect(page.getByTestId('monitor-picker')).toBeVisible({ timeout: 30_000 });
 
-    // Turn everything off but VRAM.
-    for (const name of ['GPU', 'CPU', 'System RAM', 'Sampler', 'Queue']) {
-      await page.getByRole('button', { name: `Show ${name}` }).click();
+    /*
+     * Turn everything off but VRAM. Exact names: "GPU" is a prefix of "GPU
+     * power", so a substring match here turns one of them off twice and leaves
+     * the other on, and the count below is then wrong for a reason that has
+     * nothing to do with what is being tested.
+     */
+    for (const name of ['GPU', 'GPU power', 'CPU', 'System RAM', 'Sampler', 'Queue']) {
+      await page.getByRole('button', { name: `Show ${name}`, exact: true }).click();
     }
     await expect(page.getByTestId('monitor-charts').locator('svg')).toHaveCount(1);
 

@@ -229,10 +229,7 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
             max: steps,
           });
           if (previewsEnabled && step % 2 === 0) {
-            sendBinary(
-              clientId,
-              renderPlaceholder(PREVIEW_SIZE, PREVIEW_SIZE, seed, step / steps),
-            );
+            sendBinary(clientId, renderPlaceholder(PREVIEW_SIZE, PREVIEW_SIZE, seed, step / steps));
           }
         }
       } else {
@@ -311,10 +308,7 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
            * never repeats an output filename, and neither should the mock.
            */
           const filename = `Latent_${String(job.number).padStart(5, '0')}_${nodeId}_${i}.png`;
-          files.set(
-            `output//${filename}`,
-            renderPlaceholder(width, height, `${seed}#${i}`),
-          );
+          files.set(`output//${filename}`, renderPlaceholder(width, height, `${seed}#${i}`));
           images.push({ filename, subfolder: '', type: 'output' });
         }
         outputs[nodeId] = { images };
@@ -538,6 +532,19 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       };
     });
 
+    /*
+     * The power draw, as comfyllama would report it.
+     *
+     * Moves with the work like the VRAM above, and for the same reason: the
+     * whole point of the reading is that it changes within a run, and a
+     * constant would let a monitor that never actually samples still look
+     * right. The idle figure is a card with a model resident and nothing to do.
+     */
+    route('GET', '/comfyllama/power', async () => ({
+      gpus: [{ watts: running !== null ? 412.5 : 61.2, limit: 450 }],
+      source: 'nvml',
+    }));
+
     route('POST', '/prompt', async (request, reply) => {
       const body = request.body as {
         prompt?: ApiWorkflow;
@@ -553,7 +560,10 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       for (const [nodeId, node] of Object.entries(body.prompt)) {
         if (!node?.class_type) {
           return reply.code(400).send({
-            error: { type: 'invalid_prompt', message: 'Cannot execute because a node is missing a class_type.' },
+            error: {
+              type: 'invalid_prompt',
+              message: 'Cannot execute because a node is missing a class_type.',
+            },
             node_errors: {
               [nodeId]: { errors: [{ message: 'Missing class_type', details: '' }] },
             },
@@ -565,7 +575,10 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
             node_errors: {
               [nodeId]: {
                 errors: [
-                  { message: `Node type not found: ${node.class_type}`, details: 'Install the custom node.' },
+                  {
+                    message: `Node type not found: ${node.class_type}`,
+                    details: 'Install the custom node.',
+                  },
                 ],
               },
             },
@@ -648,7 +661,8 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
        */
       const contentType = contentTypeFor(query.filename);
       const rangeHeader = request.headers.range;
-      const range = typeof rangeHeader === 'string' ? /^bytes=(\d+)-(\d*)$/.exec(rangeHeader) : null;
+      const range =
+        typeof rangeHeader === 'string' ? /^bytes=(\d+)-(\d*)$/.exec(rangeHeader) : null;
       if (range) {
         const start = Math.min(Number(range[1]), Math.max(0, stored.length - 1));
         const end = Math.min(range[2] ? Number(range[2]) : stored.length - 1, stored.length - 1);
@@ -681,7 +695,11 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
     });
 
     route('POST', '/upload/image', async (request, reply) => {
-      const file = await (request as unknown as { file: () => Promise<{ filename: string; toBuffer(): Promise<Buffer> } | undefined> }).file();
+      const file = await (
+        request as unknown as {
+          file: () => Promise<{ filename: string; toBuffer(): Promise<Buffer> } | undefined>;
+        }
+      ).file();
       if (!file) return reply.code(400).send({ error: 'no image supplied' });
 
       const buffer = await file.toBuffer();

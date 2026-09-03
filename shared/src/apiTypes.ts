@@ -917,6 +917,17 @@ export interface ResourceSample {
   gpuPercent: number | null;
   cpuPercent: number | null;
   gpuTempC: number | null;
+  /**
+   * What the card is drawing, in watts, and what it is allowed to draw.
+   *
+   * The figure that makes utilisation mean something. "GPU at 100%" only says
+   * the scheduler had work resident every interval, which a kernel waiting on
+   * memory satisfies as well as one doing arithmetic — so a bandwidth-bound run
+   * and a compute-bound one read the same, and the power draw is what separates
+   * them. A 450 W card sitting at 160 W is waiting; at 430 W it is working.
+   */
+  gpuWatts: number | null;
+  gpuWattsLimit: number | null;
   /** Jobs waiting, so load can be read against demand. */
   queueRemaining: number;
   /** Sampler speed at that moment, when one was running. */
@@ -952,6 +963,8 @@ export interface MonitorSnapshot {
     ram: boolean;
     gpu: boolean;
     cpu: boolean;
+    /** Needs comfyllama on the ComfyUI machine, and an NVIDIA card in it. */
+    power: boolean;
   };
   deviceName: string | null;
   /** Where utilisation figures came from, when there are any. */

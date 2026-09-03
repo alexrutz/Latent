@@ -344,6 +344,18 @@ export class ComfyClient {
     return this.json('/comfyllama/browse/roots');
   }
 
+  /**
+   * What the GPU is drawing, from the machine that has it.
+   *
+   * Read over there rather than here: Latent is routinely on a different box
+   * from ComfyUI, and `nvidia-smi` run locally would report the wrong card or
+   * none. Needs comfyllama installed; the caller treats a failure as "no
+   * reading", which is also the honest answer on a machine with no NVIDIA GPU.
+   */
+  gpuPower(): Promise<{ gpus: { watts: number; limit: number | null }[]; source: string | null }> {
+    return this.json('/comfyllama/power');
+  }
+
   browseList(query: Record<string, string | number | undefined>): Promise<unknown> {
     return this.json('/comfyllama/browse/list', { query });
   }

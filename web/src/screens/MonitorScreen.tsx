@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import type { MonitorEvent, MonitorEventKind, MonitorSnapshot, ResourceSample } from '@latent/shared';
+import type {
+  MonitorEvent,
+  MonitorEventKind,
+  MonitorSnapshot,
+  ResourceSample,
+} from '@latent/shared';
 
 import { api } from '../api/client';
 import { cn, Spinner } from '../components/ui';
@@ -60,6 +65,38 @@ const TRACES = [
        report utilisation, and pretending otherwise would look like an idle GPU
        mid-render. */
     hint: 'Install a monitoring extension (Crystools) on the ComfyUI box for this.',
+  },
+  {
+    /*
+     * The figure that makes the one above it mean something.
+     *
+     * "GPU at 100%" says only that the scheduler had work resident every
+     * sampling interval, which a kernel stalled on memory satisfies exactly as
+     * well as one doing arithmetic. So a bandwidth-bound run and a compute-bound
+     * one read the same, and what separates them is the power: a 450 W card
+     * sitting at 160 W is waiting for VRAM, and the same card at 430 W is
+     * working. Drawn immediately under the utilisation curve, because the pair
+     * is the reading — either alone is the half that misleads.
+     *
+     * Scaled against the card's own limit rather than against the peak in the
+     * window, so the headroom above the curve is on screen. Auto-scaling this
+     * would draw an idling card as a full chart, which is the exact mistake the
+     * trace exists to correct.
+     */
+    key: 'power',
+    label: 'GPU power',
+    valueOf: (sample: ResourceSample) =>
+      sample.gpuWatts !== null && sample.gpuWattsLimit
+        ? (sample.gpuWatts / sample.gpuWattsLimit) * 100
+        : null,
+    format: (latest?: ResourceSample) =>
+      latest?.gpuWatts == null
+        ? '—'
+        : latest.gpuWattsLimit
+          ? `${Math.round(latest.gpuWatts)} W of ${Math.round(latest.gpuWattsLimit)} W`
+          : `${Math.round(latest.gpuWatts)} W`,
+    source: 'power' as const,
+    hint: 'Needs comfyllama on the ComfyUI box, and an NVIDIA card in it.',
   },
   {
     key: 'cpu',
@@ -151,10 +188,7 @@ export function MonitorScreen() {
     localStorage.setItem(SHOWN_KEY, JSON.stringify(shown));
   }, [shown]);
 
-  const shownTraces = useMemo(
-    () => TRACES.filter((trace) => shown.includes(trace.key)),
-    [shown],
-  );
+  const shownTraces = useMemo(() => TRACES.filter((trace) => shown.includes(trace.key)), [shown]);
 
   const now = Date.now();
   const from = Number.isFinite(range) ? now - range : (snapshot?.samples[0]?.at ?? now - 60_000);
@@ -225,9 +259,7 @@ export function MonitorScreen() {
               }
               className={cn(
                 'rounded-full border px-2.5 py-1 text-[11px]',
-                on
-                  ? 'border-accent bg-accent/15 text-accent'
-                  : 'border-line bg-surface text-muted',
+                on ? 'border-accent bg-accent/15 text-accent' : 'border-line bg-surface text-muted',
               )}
             >
               {trace.label}
@@ -266,16 +298,12 @@ export function MonitorScreen() {
           ))}
 
           {shownTraces.length === 0 && (
-            <p className="text-sm text-muted">
-              No readings chosen. Pick some above.
-            </p>
+            <p className="text-sm text-muted">No readings chosen. Pick some above.</p>
           )}
         </div>
       )}
 
-      <h2 className="mt-5 mb-2 text-xs font-medium tracking-wide text-muted uppercase">
-        Events
-      </h2>
+      <h2 className="mt-5 mb-2 text-xs font-medium tracking-wide text-muted uppercase">Events</h2>
       {events.length === 0 ? (
         <p className="text-xs text-muted">Nothing happened in this window.</p>
       ) : (
@@ -389,15 +417,15 @@ function Trace({
         <p className="pt-1 text-[11px] text-muted">Not reported. {missingHint}</p>
       ) : (
         <div className={cn('relative', labelEvents && 'pb-14')}>
-        <svg
-          viewBox="0 0 100 100"
-          preserveAspectRatio="none"
-          className="mt-1 h-12 w-full"
-          role="img"
-          aria-label={`${label} over time`}
-        >
-          {/* Event ticks first, so the trace draws over them. */}
-          {marked.map((event, index) => (
+          <svg
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+            className="mt-1 h-12 w-full"
+            role="img"
+            aria-label={`${label} over time`}
+          >
+            {/* Event ticks first, so the trace draws over them. */}
+            {marked.map((event, index) => (
               <line
                 key={`${event.at}-${index}`}
                 x1={x(event.at)}
@@ -411,28 +439,33 @@ function Trace({
               />
             ))}
 
-          {line.length > 1 && (
-            <>
-              <polygon
-                points={`${line[0]!.split(',')[0]},100 ${line.join(' ')} ${line[line.length - 1]!.split(',')[0]},100`}
-                className="fill-accent/20"
+            {line.length > 1 && (
+              <>
+                <polygon
+                  points={`${line[0]!.split(',')[0]},100 ${line.join(' ')} ${line[line.length - 1]!.split(',')[0]},100`}
+                  className="fill-accent/20"
+                />
+                <polyline
+                  points={line.join(' ')}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.5}
+                  className="text-accent"
+                  vectorEffect="non-scaling-stroke"
+                />
+              </>
+            )}
+            {line.length === 1 && (
+              <circle
+                cx={line[0]!.split(',')[0]}
+                cy={line[0]!.split(',')[1]}
+                r={1.5}
+                className="fill-accent"
               />
-              <polyline
-                points={line.join(' ')}
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={1.5}
-                className="text-accent"
-                vectorEffect="non-scaling-stroke"
-              />
-            </>
-          )}
-          {line.length === 1 && (
-            <circle cx={line[0]!.split(',')[0]} cy={line[0]!.split(',')[1]} r={1.5} className="fill-accent" />
-          )}
-        </svg>
+            )}
+          </svg>
 
-        {/*
+          {/*
           The events, standing on their own ticks.
 
           Turned a quarter clockwise so a name takes a few pixels of width
@@ -442,22 +475,22 @@ function Trace({
           anything inside it is stretched horizontally by whatever the aspect
           happens to be, and stretched type is unreadable type.
         */}
-        {labelEvents &&
-          marked.map((event, index) => (
-            <span
-              key={`${event.at}-${index}`}
-              className={cn(
-                'pointer-events-none absolute top-full origin-top-left rotate-90 text-[10px] whitespace-nowrap',
-                KIND_COLOUR[event.kind],
-              )}
-              style={{ left: `${x(event.at)}%` }}
-            >
-              <span aria-hidden className="mr-0.5">
-                {KIND_MARK[event.kind]}
+          {labelEvents &&
+            marked.map((event, index) => (
+              <span
+                key={`${event.at}-${index}`}
+                className={cn(
+                  'pointer-events-none absolute top-full origin-top-left rotate-90 text-[10px] whitespace-nowrap',
+                  KIND_COLOUR[event.kind],
+                )}
+                style={{ left: `${x(event.at)}%` }}
+              >
+                <span aria-hidden className="mr-0.5">
+                  {KIND_MARK[event.kind]}
+                </span>
+                {event.label}
               </span>
-              {event.label}
-            </span>
-          ))}
+            ))}
         </div>
       )}
     </div>
@@ -520,5 +553,9 @@ function gib(bytes: number): string {
 }
 
 function clock(at: number): string {
-  return new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return new Date(at).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 }

@@ -36,8 +36,18 @@ export class Monitor {
   private stopped = false;
 
   private deviceName: string | null = null;
-  private sources = { vram: false, ram: false, gpu: false, cpu: false };
+  private sources = { vram: false, ram: false, gpu: false, cpu: false, power: false };
   private utilisationSource: string | null = null;
+
+  /**
+   * Whether asking for the power draw is worth the round trip.
+   *
+   * The route only exists where comfyllama is installed, and only answers where
+   * there is an NVIDIA card behind it. Both are facts about the machine rather
+   * than about the moment, so one refusal is enough: without this, a ComfyUI
+   * without the extension would be asked, and 404, every two seconds forever.
+   */
+  private powerAvailable = true;
 
   /**
    * The most recent utilisation reading pushed by an extension.
@@ -58,7 +68,11 @@ export class Monitor {
 
   constructor(
     private readonly client: () => ComfyClient,
-    private readonly live: () => { busy: boolean; queueRemaining: number; stepsPerSecond: number | null },
+    private readonly live: () => {
+      busy: boolean;
+      queueRemaining: number;
+      stepsPerSecond: number | null;
+    },
   ) {}
 
   start(): void {
@@ -129,7 +143,9 @@ export class Monitor {
     this.pushed = null;
     this.deviceName = null;
     this.utilisationSource = null;
-    this.sources = { vram: false, ram: false, gpu: false, cpu: false };
+    this.sources = { vram: false, ram: false, gpu: false, cpu: false, power: false };
+    // A different ComfyUI may well have the extension this one lacked.
+    this.powerAvailable = true;
   }
 
   private schedule(delay: number): void {
@@ -168,21 +184,53 @@ export class Monitor {
     // drawn as if it were now would be worse than a gap.
     const pushed = this.pushed && Date.now() - this.pushed.at < 30_000 ? this.pushed : null;
 
+    const power = await this.readPower();
+
     this.samples.push({
       at: Date.now(),
       vramUsed: vramTotal !== null && vramFree !== null ? vramTotal - vramFree : null,
       vramTotal,
-      ramUsed: pushed?.ramUsed ?? (ramTotal !== null && ramFree !== null ? ramTotal - ramFree : null),
+      ramUsed:
+        pushed?.ramUsed ?? (ramTotal !== null && ramFree !== null ? ramTotal - ramFree : null),
       ramTotal: pushed?.ramTotal ?? ramTotal,
       gpuPercent: pushed?.gpuPercent ?? null,
       cpuPercent: pushed?.cpuPercent ?? null,
       gpuTempC: pushed?.gpuTempC ?? null,
+      gpuWatts: power?.watts ?? null,
+      gpuWattsLimit: power?.limit ?? null,
       queueRemaining: live.queueRemaining,
       stepsPerSecond: live.stepsPerSecond,
     });
 
     if (this.samples.length > MAX_SAMPLES) {
       this.samples.splice(0, this.samples.length - MAX_SAMPLES);
+    }
+  }
+
+  /**
+   * The power draw, or nothing, and never a thrown error.
+   *
+   * The first card only. A second GPU in the box is not what this figure is
+   * for — the question is whether the card doing the sampling is working or
+   * waiting — and the sample is one row of numbers, not a list.
+   */
+  private async readPower(): Promise<{ watts: number; limit: number | null } | null> {
+    if (!this.powerAvailable) return null;
+    try {
+      const reading = await this.client().gpuPower();
+      const first = reading.gpus?.[0];
+      if (!first) {
+        // Answered, with nothing to say: no NVIDIA card behind it. Asking again
+        // will not change that.
+        this.powerAvailable = false;
+        return null;
+      }
+      this.sources.power = true;
+      return { watts: first.watts, limit: first.limit ?? null };
+    } catch {
+      // No comfyllama over there, or too old to have the route.
+      this.powerAvailable = false;
+      return null;
     }
   }
 }
