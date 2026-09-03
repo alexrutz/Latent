@@ -6863,6 +6863,38 @@ test.describe('on a tablet', () => {
    * whose control is at the other. Measured rather than read off a class list,
    * because the complaint is about what is on the screen.
    */
+  /**
+   * Arranging the phone's form from a desktop, and seeing the phone.
+   *
+   * The editor is a list of rows with handles — good for changing things and
+   * useless for judging them. On a wide screen the phone goes beside it, drawn
+   * from the same `planFormRuns` the generate screen lays itself out with, so
+   * the two cannot disagree about the thing the preview exists to show.
+   */
+  test('@tablet shows the phone form beside the editor', async ({ page }) => {
+    await resetState();
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'Layout demo', graph: sd15Txt2Img } }),
+    );
+    await open(page, '/settings');
+
+    await page.getByRole('button', { name: /Edit form/ }).first().click();
+
+    const preview = page.getByLabel('Preview of the form on a phone');
+    await expect(preview).toBeVisible();
+
+    // The real fields, in the real arrangement — not a picture of a phone.
+    await expect(preview.getByText('Prompt', { exact: true })).toBeVisible();
+    await expect(preview.getByText('Steps', { exact: true })).toBeVisible();
+
+    // Narrower than the pane beside it: the point is the phone's rhythm.
+    const box = await preview.boundingBox();
+    const viewport = page.viewportSize()!;
+    expect(box!.width).toBeLessThan(viewport.width / 2);
+
+    await page.screenshot({ path: 'test-results/99-tablet-form-editor.png' });
+  });
+
   test('@tablet holds the settings to a readable column', async ({ page }) => {
     await open(page, '/settings');
     await expect(page.getByRole('heading', { name: 'ComfyUI', exact: true })).toBeVisible();

@@ -2279,6 +2279,18 @@ tag but keeps its switch — the same rule as `use_image`, for the same reason.
 The rest never reach the form, because a saved workflow only carries the widgets
 it was saved with.
 
+**Arranging the form from a desktop.** Latent is a web app, so open it on a PC
+and the form editor works there with a mouse — the drag handles use pointer
+events, which cover mouse and touch alike. On a wide window the editor puts a
+**phone-shaped preview beside it**, live as you drag: the order, which fields
+share a row, which take the whole width, and what sits behind *Advanced*.
+
+The preview and the real form share one function, `planFormRuns` in
+`shared/src/formRuns.ts`. That arrangement used to live inline in the generate
+screen; a preview with its own copy of it would drift, and a preview that is
+almost right is worse than none — the whole reason to look at one is to avoid
+picking the phone up.
+
 **Load Image (Folder Browser)** uses the *same* control as any other image
 input — the folded header, the square preview, the filename, **Replace** and a
 second button beside it — with one difference: that second button says **Browse

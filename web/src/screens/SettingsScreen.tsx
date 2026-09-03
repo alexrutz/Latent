@@ -5,6 +5,7 @@ import {
   DEFAULT_WANDER_DRAW,
   defaultSampling,
   fieldPoints,
+  isSizeable,
   fieldPointValues,
   SAMPLING_GROUPS,
   SAMPLING_PARAMS,
@@ -60,6 +61,7 @@ import { NumericInput } from '../components/NumericInput';
 import { SortableList, type DragHandleProps } from '../components/SortableList';
 import { FieldChip, Toggle, WorkflowScope } from '../components/ParamControl';
 import { UnlockArchiveDialog } from '../components/UnlockArchive';
+import { FormPreview } from '../components/FormPreview';
 import { UpdateSection } from '../components/UpdateSoftware';
 import { WanderSetup } from '../components/WanderSetup';
 import { Button, Card, cn, ErrorNote, Row, Sheet, Spinner } from '../components/ui';
@@ -103,7 +105,13 @@ const ASK_ONLY: ToolEagerness[] = ['always'];
  * visibly changes what comes back.
  */
 /** The scale reads as pictures, because that is what the number is. */
-const KEEP_IN_VIEW_LABELS = ['None', 'The last one', 'The last two', 'The last three', 'The last four'];
+const KEEP_IN_VIEW_LABELS = [
+  'None',
+  'The last one',
+  'The last two',
+  'The last three',
+  'The last four',
+];
 
 /** When it stops and asks instead of rewriting the prompt for you. */
 const ASK_OPTIONS: { value: ReviewAsk; label: string; hint: string }[] = [
@@ -346,22 +354,14 @@ function describeDraw(draw: WanderDraw): string {
  * a collage in which every picture contains everything and they all start to
  * look alike.
  */
-function AttributesLine({
-  value,
-  onChange,
-}: {
-  value: number;
-  onChange: (value: number) => void;
-}) {
+function AttributesLine({ value, onChange }: { value: number; onChange: (value: number) => void }) {
   const at = Math.max(0, Math.min(ATTRIBUTE_COUNTS.length - 1, ATTRIBUTE_COUNTS.indexOf(value)));
 
   return (
     <div className="space-y-1">
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-sm">Notes in each picture</span>
-        <span className="min-w-0 truncate text-[11px] text-muted">
-          {ATTRIBUTE_HINTS[at] ?? ''}
-        </span>
+        <span className="min-w-0 truncate text-[11px] text-muted">{ATTRIBUTE_HINTS[at] ?? ''}</span>
       </div>
 
       <div className="flex items-center gap-1">
@@ -405,16 +405,9 @@ const ATTRIBUTE_HINTS = [
   'five, a collage',
   'six; they start to rhyme',
 ];
-const attributeLabel = (count: number) =>
-  count === 0 ? 'one from each heading' : String(count);
+const attributeLabel = (count: number) => (count === 0 ? 'one from each heading' : String(count));
 
-function KeepInViewLine({
-  value,
-  onChange,
-}: {
-  value: number;
-  onChange: (value: number) => void;
-}) {
+function KeepInViewLine({ value, onChange }: { value: number; onChange: (value: number) => void }) {
   const at = Math.max(0, Math.min(KEEP_IN_VIEW_LABELS.length - 1, value));
 
   return (
@@ -508,10 +501,7 @@ export function SettingsScreen() {
    * Shown workflows stay first *within* their folder, and a folder holding one
    * gets pulled to the top, so the handful you actually use is never buried.
    */
-  const workflowFolders = useMemo(
-    () => groupWorkflows(workflows.data ?? []),
-    [workflows.data],
-  );
+  const workflowFolders = useMemo(() => groupWorkflows(workflows.data ?? []), [workflows.data]);
 
   return (
     <div className="readable safe-t space-y-6 px-4 pt-3 pb-6">
@@ -532,9 +522,7 @@ export function SettingsScreen() {
               )}
             />
           </Row>
-          {status.data?.comfyVersion && (
-            <Row label="Version" hint={status.data.comfyVersion} />
-          )}
+          {status.data?.comfyVersion && <Row label="Version" hint={status.data.comfyVersion} />}
           {device && (
             <Row
               label={device.name}
@@ -605,11 +593,7 @@ export function SettingsScreen() {
                 />
               ))
             ) : (
-              <WorkflowFolder
-                key={folder.name}
-                folder={folder}
-                onEdit={(id) => setEditing(id)}
-              />
+              <WorkflowFolder key={folder.name} folder={folder} onEdit={(id) => setEditing(id)} />
             ),
           )}
         </div>
@@ -652,9 +636,9 @@ export function SettingsScreen() {
         <Card className="space-y-3">
           <p className="text-xs text-muted">
             What <strong className="text-body">Generate</strong> does about work already queued.
-            Building a batch up to compare later wants the first; iterating on a prompt wants one
-            of the others, because eight renders of wording you have just changed your mind about
-            are eight renders of nothing.
+            Building a batch up to compare later wants the first; iterating on a prompt wants one of
+            the others, because eight renders of wording you have just changed your mind about are
+            eight renders of nothing.
           </p>
           <div className="space-y-1">
             {QUEUE_POLICIES.map((option) => {
@@ -759,7 +743,9 @@ export function SettingsScreen() {
                 setPruning(true);
                 try {
                   const { removed } = await api.pruneArchive();
-                  setPruneResult(`Removed ${removed} unrated ${removed === 1 ? 'copy' : 'copies'}.`);
+                  setPruneResult(
+                    `Removed ${removed} unrated ${removed === 1 ? 'copy' : 'copies'}.`,
+                  );
                   await archive.refetch();
                 } finally {
                   setPruning(false);
@@ -807,8 +793,8 @@ export function SettingsScreen() {
         {status.data?.archiveLocked && (
           <Card className="space-y-3">
             <p className="text-xs text-warn">
-              The image archive is locked, so importing and keeping images are unavailable. It
-              needs the same password you signed in with.
+              The image archive is locked, so importing and keeping images are unavailable. It needs
+              the same password you signed in with.
             </p>
             <Button variant="primary" onClick={() => setUnlocking(true)}>
               Unlock the archive
@@ -943,7 +929,9 @@ function WorkflowFolder({
         </span>
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{folder.name}</span>
         <span className="shrink-0 text-[11px] text-muted tabular-nums">
-          {folder.shown > 0 ? `${folder.shown}/${folder.workflows.length}` : folder.workflows.length}
+          {folder.shown > 0
+            ? `${folder.shown}/${folder.workflows.length}`
+            : folder.workflows.length}
         </span>
       </button>
 
@@ -958,13 +946,7 @@ function WorkflowFolder({
   );
 }
 
-function WorkflowRow({
-  workflow,
-  onEdit,
-}: {
-  workflow: WorkflowSummary;
-  onEdit: () => void;
-}) {
+function WorkflowRow({ workflow, onEdit }: { workflow: WorkflowSummary; onEdit: () => void }) {
   const remove = useDeleteWorkflow();
   const rescan = useRescanWorkflow();
   const update = useUpdateWorkflow();
@@ -999,39 +981,39 @@ function WorkflowRow({
 
       {/* A workflow nobody generates with needs no buttons taking up room. */}
       {workflow.visible && (
-      <div className="flex flex-wrap gap-2">
-        <Button variant="secondary" size="sm" onClick={onEdit}>
-          Edit form
-        </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          busy={rescan.isPending}
-          onClick={() => rescan.mutate(workflow.id)}
-          title="Re-read node definitions from ComfyUI, picking up newly installed models"
-        >
-          Refresh models
-        </Button>
-        {confirming ? (
-          <>
-            <Button
-              variant="danger"
-              size="sm"
-              busy={remove.isPending}
-              onClick={() => remove.mutate(workflow.id)}
-            >
-              Really delete
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
-              Cancel
-            </Button>
-          </>
-        ) : (
-          <Button variant="ghost" size="sm" onClick={() => setConfirming(true)}>
-            Delete
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" onClick={onEdit}>
+            Edit form
           </Button>
-        )}
-      </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            busy={rescan.isPending}
+            onClick={() => rescan.mutate(workflow.id)}
+            title="Re-read node definitions from ComfyUI, picking up newly installed models"
+          >
+            Refresh models
+          </Button>
+          {confirming ? (
+            <>
+              <Button
+                variant="danger"
+                size="sm"
+                busy={remove.isPending}
+                onClick={() => remove.mutate(workflow.id)}
+              >
+                Really delete
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <Button variant="ghost" size="sm" onClick={() => setConfirming(true)}>
+              Delete
+            </Button>
+          )}
+        </div>
       )}
     </Card>
   );
@@ -1117,46 +1099,65 @@ function FormEditorSheet({ workflowId, onClose }: { workflowId: string; onClose:
           <Spinner className="size-6 text-muted" />
         </div>
       ) : (
-        <div className="space-y-4">
-          <p className="text-xs text-muted">
-            Build the form: drag the handles to reorder, choose whether a field takes half a row or
-            all of it, and hide what you never touch. Hidden fields still use the value the workflow
-            was exported with.
-          </p>
+        /*
+         * Two columns where there is room for two.
+         *
+         * The editor is a list of rows with handles — good for changing things,
+         * useless for judging them. On a desktop there is space to put the
+         * phone beside it and answer "does this read well" without picking the
+         * phone up, which is the whole reason anybody opens this on a PC.
+         */
+        <div className="wide:grid wide:grid-cols-[minmax(0,1fr)_auto] wide:items-start wide:gap-6">
+          <div className="space-y-4">
+            <p className="text-xs text-muted">
+              Build the form: drag the handles to reorder, choose whether a field takes half a row
+              or all of it, and hide what you never touch. Hidden fields still use the value the
+              workflow was exported with.
+            </p>
 
-          <LayoutBar workflowId={workflowId} detail={detail} />
+            <LayoutBar workflowId={workflowId} detail={detail} />
 
-          {(['main', 'advanced'] as const).map((group) => {
-            const fields = detail.schema.fields.filter((field) => field.group === group);
-            if (fields.length === 0) return null;
-            return (
-              <div key={group} className="space-y-2">
-                <h3 className="text-xs font-medium tracking-wide text-muted uppercase">
-                  {group === 'main' ? 'On the main screen' : 'Under Advanced'}
-                </h3>
-                <SortableList
-                  items={fields}
-                  idOf={(field) => field.id}
-                  onReorder={reorder}
-                  className="space-y-2"
-                >
-                  {(field, handle, dragging) => (
-                    <FieldEditorRow
-                      field={field}
-                      handle={handle}
-                      dragging={dragging}
-                      onRename={(label) => patch(field.id, { label })}
-                      onToggleHidden={() => patch(field.id, { hidden: !field.hidden })}
-                      onMove={() =>
-                        patch(field.id, { group: field.group === 'main' ? 'advanced' : 'main' })
-                      }
-                      onPatch={(change) => patch(field.id, change)}
-                    />
-                  )}
-                </SortableList>
-              </div>
-            );
-          })}
+            {(['main', 'advanced'] as const).map((group) => {
+              const fields = detail.schema.fields.filter((field) => field.group === group);
+              if (fields.length === 0) return null;
+              return (
+                <div key={group} className="space-y-2">
+                  <h3 className="text-xs font-medium tracking-wide text-muted uppercase">
+                    {group === 'main' ? 'On the main screen' : 'Under Advanced'}
+                  </h3>
+                  <SortableList
+                    items={fields}
+                    idOf={(field) => field.id}
+                    onReorder={reorder}
+                    className="space-y-2"
+                  >
+                    {(field, handle, dragging) => (
+                      <FieldEditorRow
+                        field={field}
+                        handle={handle}
+                        dragging={dragging}
+                        onRename={(label) => patch(field.id, { label })}
+                        onToggleHidden={() => patch(field.id, { hidden: !field.hidden })}
+                        onMove={() =>
+                          patch(field.id, { group: field.group === 'main' ? 'advanced' : 'main' })
+                        }
+                        onPatch={(change) => patch(field.id, change)}
+                      />
+                    )}
+                  </SortableList>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Only where it fits: on a phone this would be a picture of the
+              screen you are already holding. */}
+          <div className="mt-6 hidden wide:sticky wide:top-0 wide:mt-0 wide:block">
+            <p className="mb-2 text-center text-xs tracking-wide text-muted uppercase">
+              On the phone
+            </p>
+            <FormPreview fields={detail.schema.fields} />
+          </div>
         </div>
       )}
     </Sheet>
@@ -1183,11 +1184,7 @@ function FieldEditorRow({
   const [label, setLabel] = useState(field.label);
 
   const numeric = field.control === 'int' || field.control === 'float';
-  // Fields that get their own dedicated control on the form are always a full
-  // row; offering them a width would be a switch that does nothing.
-  const sizeable =
-    !['textarea', 'text', 'image'].includes(field.control) &&
-    !['prompt', 'negative_prompt', 'image_input', 'seed', 'lora_text'].includes(field.role);
+  const sizeable = isSizeable(field);
   const points = usesPointLine(field);
   const line = fieldPoints(field);
   const preview = fieldPointValues(field);
@@ -1736,8 +1733,8 @@ function ChatSection() {
           <div className="min-w-0 flex-1">
             <p className="text-sm">Show its thinking</p>
             <p className="text-[11px] text-muted">
-              On by default: the tools ask it to make judgements, and one that has reasoned first
-              is better at them.
+              On by default: the tools ask it to make judgements, and one that has reasoned first is
+              better at them.
             </p>
           </div>
           <Toggle
@@ -1824,10 +1821,10 @@ function ChatSection() {
             ))}
           </div>
           <p className="text-[11px] text-muted">
-            Latent’s own describes the tools and how modern image models read a prompt — plain
-            prose rather than a pile of tags. Replacing it replaces all of that. Write your own
-            under <strong className="text-body">System prompts</strong> above. When each tool is
-            reached for is set below and applies either way.
+            Latent’s own describes the tools and how modern image models read a prompt — plain prose
+            rather than a pile of tags. Replacing it replaces all of that. Write your own under{' '}
+            <strong className="text-body">System prompts</strong> above. When each tool is reached
+            for is set below and applies either way.
           </p>
         </div>
 
@@ -1855,12 +1852,11 @@ function ChatSection() {
           <p className="text-sm">What you like</p>
           <p className="text-[11px] text-muted">
             Notes about concepts, aesthetics and things you keep coming back to, so “give me an
-            idea” has somewhere to start. They are encrypted with your password and read only by
-            the model — write them under the{' '}
-            <strong className="text-body">♥</strong> in the chat header. A note pinned there
-            ignores this scale and applies wherever it is relevant, even to a picture you have
-            already described; <strong className="text-body">Off</strong> silences everything,
-            pinned notes included.
+            idea” has somewhere to start. They are encrypted with your password and read only by the
+            model — write them under the <strong className="text-body">♥</strong> in the chat
+            header. A note pinned there ignores this scale and applies wherever it is relevant, even
+            to a picture you have already described; <strong className="text-body">Off</strong>{' '}
+            silences everything, pinned notes included.
           </p>
         </div>
 
@@ -1883,10 +1879,10 @@ function ChatSection() {
         <div>
           <p className="text-sm">Wandering</p>
           <p className="text-[11px] text-muted">
-            The <strong className="text-body">❋</strong> in the chat header starts it: picture
-            after picture, each one made from a few of your notes drawn at random, until you stop
-            it. Nothing is asked and nothing is judged — it is for the evening when you would
-            rather be shown things than decide any.
+            The <strong className="text-body">❋</strong> in the chat header starts it: picture after
+            picture, each one made from a few of your notes drawn at random, until you stop it.
+            Nothing is asked and nothing is judged — it is for the evening when you would rather be
+            shown things than decide any.
           </p>
         </div>
 
@@ -1951,8 +1947,8 @@ function ChatSection() {
             ))}
           </div>
           <p className="text-[11px] text-muted">
-            Worth setting: the workflow you iterate with is often the slow one, and a run that
-            goes all evening wants the fast one.
+            Worth setting: the workflow you iterate with is often the slow one, and a run that goes
+            all evening wants the fast one.
           </p>
         </div>
 
@@ -2014,9 +2010,9 @@ function ChatSection() {
           <p className="text-sm">When it reaches for a tool</p>
           <p className="text-[11px] text-muted">
             Separately per tool, because they are not the same interruption. A question mid-
-            conversation is cheap; a finished prompt while you are still deciding what you want
-            ends the conversation this module is for. <strong className="text-body">Off</strong> is
-            the only one that is a guarantee — the tool is not offered at all.
+            conversation is cheap; a finished prompt while you are still deciding what you want ends
+            the conversation this module is for. <strong className="text-body">Off</strong> is the
+            only one that is a guarantee — the tool is not offered at all.
           </p>
         </div>
 
@@ -2062,11 +2058,7 @@ function ChatSection() {
                     <span
                       className={cn(
                         'block h-2 rounded-[3px]',
-                        index === at
-                          ? 'bg-accent'
-                          : index < at
-                            ? 'bg-accent/30'
-                            : 'bg-surface-3',
+                        index === at ? 'bg-accent' : index < at ? 'bg-accent/30' : 'bg-surface-3',
                       )}
                     />
                   </button>
@@ -2087,9 +2079,9 @@ function ChatSection() {
             <div className="min-w-0 flex-1">
               <p className="text-sm">Let it see the pictures</p>
               <p className="text-[11px] text-muted">
-                On by default. What a prompt produced goes back to the model — most worth
-                running are multimodal — so it can say how much of the prompt came through and
-                knows what you mean by “make the sky darker”. Off for a text-only server.
+                On by default. What a prompt produced goes back to the model — most worth running
+                are multimodal — so it can say how much of the prompt came through and knows what
+                you mean by “make the sky darker”. Off for a text-only server.
               </p>
             </div>
             <Toggle
@@ -2258,18 +2250,16 @@ function ChatSection() {
           <div>
             <p className="text-sm">Mark what changed</p>
             <p className="text-[11px] text-muted">
-              Against the conversation’s previous prompt. Two paragraphs of near-identical prose
-              are hard to compare by eye, which is how you regenerate something you meant to
-              change and do not notice.
+              Against the conversation’s previous prompt. Two paragraphs of near-identical prose are
+              hard to compare by eye, which is how you regenerate something you meant to change and
+              do not notice.
             </p>
           </div>
           <div className="flex items-center justify-between gap-3">
             <span className="min-w-0 flex-1 text-sm">In the prompt dialog</span>
             <Toggle
               checked={chat.showDiff?.inDialog ?? true}
-              onChange={(inDialog) =>
-                patch({ showDiff: { ...chat.showDiff, inDialog } })
-              }
+              onChange={(inDialog) => patch({ showDiff: { ...chat.showDiff, inDialog } })}
               label="Mark changes in the prompt dialog"
             />
           </div>
@@ -2277,9 +2267,7 @@ function ChatSection() {
             <span className="min-w-0 flex-1 text-sm">Under the picture</span>
             <Toggle
               checked={chat.showDiff?.underPicture ?? true}
-              onChange={(underPicture) =>
-                patch({ showDiff: { ...chat.showDiff, underPicture } })
-              }
+              onChange={(underPicture) => patch({ showDiff: { ...chat.showDiff, underPicture } })}
               label="Mark changes under the picture"
             />
           </div>
@@ -2349,9 +2337,9 @@ function SamplingSheet({
       <div className="space-y-4">
         <p className="text-xs text-muted">
           Each of these is off until you turn it on, and off means the model server’s own — the
-          flags it was started with, chosen for the model behind it. An untouched setting here
-          sends nothing at all, which is almost always the better answer. Turn one on when you
-          have a specific complaint about the replies.
+          flags it was started with, chosen for the model behind it. An untouched setting here sends
+          nothing at all, which is almost always the better answer. Turn one on when you have a
+          specific complaint about the replies.
         </p>
 
         {anyOn && (
@@ -2461,8 +2449,7 @@ function ChatGenerationSettingsEditor({
 
   // Prompts are excluded: the whole point is that the model writes those.
   const fields = (detail.data?.schema.fields ?? []).filter(
-    (field) =>
-      !field.hidden && field.role !== 'prompt' && field.role !== 'negative_prompt',
+    (field) => !field.hidden && field.role !== 'prompt' && field.role !== 'negative_prompt',
   );
 
   return (
@@ -2556,7 +2543,8 @@ function ComfyFolderSection() {
    */
   const storedPrefix = settings.data?.workflowPrefix;
   useEffect(() => {
-    if (storedPrefix !== undefined) setPrefix((current) => (current === '' ? storedPrefix : current));
+    if (storedPrefix !== undefined)
+      setPrefix((current) => (current === '' ? storedPrefix : current));
   }, [storedPrefix]);
 
   return (
@@ -2742,8 +2730,8 @@ function ImportSection() {
       </h2>
       <Card className="space-y-3">
         <p className="text-xs text-muted">
-          ComfyUI’s <code>output</code> directory, found from the folder above. If ComfyUI runs on
-          a remote instance its outputs are not on this filesystem, so point the folder above at a
+          ComfyUI’s <code>output</code> directory, found from the folder above. If ComfyUI runs on a
+          remote instance its outputs are not on this filesystem, so point the folder above at a
           local copy, a network mount, or something synced.
         </p>
 
@@ -2816,16 +2804,15 @@ function ImportSection() {
                       <span className="block text-[11px] text-muted">
                         {folder.images} image{folder.images === 1 ? '' : 's'}
                         {folder.imported > 0 && `, ${folder.imported} in library`}
-                        {folder.folders > 0 && ` · ${folder.folders} folder${folder.folders === 1 ? '' : 's'}`}
+                        {folder.folders > 0 &&
+                          ` · ${folder.folders} folder${folder.folders === 1 ? '' : 's'}`}
                       </span>
                     </button>
                     <Button
                       variant="ghost"
                       size="sm"
                       busy={importFiles.isPending}
-                      onClick={() =>
-                        void run({ folder: folder.path, recursive }, folder.name)
-                      }
+                      onClick={() => void run({ folder: folder.path, recursive }, folder.name)}
                     >
                       Import
                     </Button>
@@ -2945,13 +2932,7 @@ function ImportSection() {
  * exposed both make sense. Without this, setting up the second destroyed the
  * first.
  */
-function LayoutBar({
-  workflowId,
-  detail,
-}: {
-  workflowId: string;
-  detail: WorkflowDetail;
-}) {
+function LayoutBar({ workflowId, detail }: { workflowId: string; detail: WorkflowDetail }) {
   const save = useSaveLayout(workflowId);
   const activate = useActivateLayout(workflowId);
   const remove = useDeleteLayout(workflowId);
@@ -3079,9 +3060,7 @@ function PasswordSheet({ onClose }: { onClose: () => void }) {
           className="w-full rounded-xl border border-line bg-surface px-4 py-3 focus:border-accent focus:outline-none"
         />
         <ErrorNote>{error}</ErrorNote>
-        <p className="text-xs text-muted">
-          Every other signed-in device will be logged out.
-        </p>
+        <p className="text-xs text-muted">Every other signed-in device will be logged out.</p>
         <Button
           variant="primary"
           size="lg"
