@@ -140,10 +140,21 @@ function openBrowser(node, widgetName, kind) {
 	recursive.appendChild(recursiveBox);
 	recursive.appendChild(element("span", null, "Include subfolders"));
 
+	/*
+	 * Emptying the slot, where somebody already is.
+	 *
+	 * A picture, once chosen, had no way back out: the widget holds a path and
+	 * every path is a picture. Its own button on the node would be a second
+	 * widget per slot — fifteen of them on the reference picker — and this is
+	 * where you already are when you want the picture gone or different.
+	 */
+	const clear = element("button", "comfyllama-browse-clear", "Clear");
+	clear.title = "Leave this slot empty";
+
 	const close = element("button", "comfyllama-browse-close", "✕");
 	close.title = "Close";
 
-	header.append(rootPicker, search, sortPicker, recursive, close);
+	header.append(rootPicker, search, sortPicker, recursive, clear, close);
 
 	const crumbs = element("div", "comfyllama-browse-crumbs");
 	const body = element("div", "comfyllama-browse-body");
@@ -174,6 +185,12 @@ function openBrowser(node, widgetName, kind) {
 		}
 	};
 	document.addEventListener("keydown", onKey);
+	clear.addEventListener("click", () => {
+		widget.value = "";
+		widget.callback?.(widget.value);
+		app.graph.setDirtyCanvas(true, true);
+		dismiss();
+	});
 	close.addEventListener("click", dismiss);
 	// A click on the backdrop, but not one that started inside the dialog.
 	overlay.addEventListener("mousedown", (event) => {
@@ -408,6 +425,15 @@ function installStyles() {
 .comfyllama-browse-recursive {
 	display: flex; align-items: center; gap: 5px; white-space: nowrap;
 }
+.comfyllama-browse-clear {
+	background: var(--comfy-input-bg, #222);
+	border: 1px solid var(--border-color, #444);
+	border-radius: 4px;
+	color: var(--input-text, #ddd);
+	cursor: pointer;
+	padding: 4px 10px;
+}
+
 .comfyllama-browse-close {
 	background: none; border: none; color: inherit;
 	font-size: 17px; cursor: pointer; padding: 4px 8px;

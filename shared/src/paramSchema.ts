@@ -9,6 +9,7 @@ import type {
   WidgetValue,
 } from './comfyTypes.js';
 import { hasLoraTags } from './loraTags.js';
+import { imageOffField, isImageOffField, switchableImageNodes } from './imageOff.js';
 import { producesAudio, producesVideo } from './media.js';
 import type {
   ControlKind,
@@ -923,6 +924,25 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
     }
   }
 
+  /*
+   * A switch beside every picture the workflow loads.
+   *
+   * Invented here rather than read off a node, because no node has one: a
+   * loader's filename is a string and every string is a filename, so there is
+   * no value meaning "not this time". The switch is what a form can offer
+   * instead of dragging the link off in the editor. It sits immediately after
+   * the picture it governs — half an order step is enough, the renumbering
+   * below turns it back into an integer.
+   */
+  for (const nodeId of switchableImageNodes({ version: 1, fields } as ParamSchema, workflow)) {
+    const picture = fields.find(
+      (field) => field.nodeId === nodeId && !isImageOffField(field) && !field.hidden,
+    );
+    if (!picture) continue;
+    const switchField = imageOffField(nodeId, picture.nodeTitle, picture.order + 0.5);
+    fields.push({ ...switchField, classType: picture.classType, group: picture.group });
+  }
+
   // Renumber so main fields follow MAIN_ROLE_ORDER and advanced keeps graph order.
   const main = fields.filter((f) => f.group === 'main').sort((a, b) => a.order - b.order);
   const advanced = fields.filter((f) => f.group === 'advanced').sort((a, b) => a.order - b.order);
@@ -1092,6 +1112,9 @@ export function applyParams(
   const seeds: Record<string, number> = {};
 
   for (const field of schema.fields) {
+    // Latent's own switch, not one of the node's inputs — writing it would put
+    // a `__image` key into the prompt that ComfyUI would rightly reject.
+    if (isImageOffField(field)) continue;
     const node = next[field.nodeId];
     if (!node?.inputs) continue;
     // Never overwrite an input that is wired from another node.

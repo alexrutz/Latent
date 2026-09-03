@@ -3,7 +3,9 @@ import type { FastifyBaseLogger } from 'fastify';
 import {
   applyModelServer,
   applyOverrides,
+  applyImageOff,
   applyParams,
+  imageOffNodes,
   applyPresetActive,
   applyPresetChat,
   buildParamSummary,
@@ -191,10 +193,7 @@ export class StudyRunner {
     try {
       // Reshaped against the study's own base, which is where its preset-chat
       // slots were named — the same schema the setup screen was filled against.
-      const schema = applyOverrides(
-        applyPresetChat(detail.schema, study.base),
-        detail.overrides,
-      );
+      const schema = applyOverrides(applyPresetChat(detail.schema, study.base), detail.overrides);
 
       for (const shot of shots) {
         /*
@@ -228,7 +227,18 @@ export class StudyRunner {
         const result = await this.orchestrator.submit({
           // A study runs the same graph hundreds of times; a llama-server node
           // in it wants the same address the rest of the app is using.
-          graph: applyModelServer(workflow, this.modelServer()),
+          /*
+           * A picture the form switched off stays off for every shot.
+           *
+           * Without the node definitions here, so a study that unplugs a
+           * required input is refused by ComfyUI rather than by us — a study
+           * is set up once and run hundreds of times, and the first shot
+           * failing says the same thing.
+           */
+          graph: applyImageOff(
+            applyModelServer(workflow, this.modelServer()),
+            imageOffNodes(schema, values),
+          ).workflow,
           workflowId: detail.id,
           workflowName: detail.name,
           title,

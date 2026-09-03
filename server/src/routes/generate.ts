@@ -4,7 +4,9 @@ import {
   appendAlwaysBlocks,
   applyModelServer,
   applyOverrides,
+  applyImageOff,
   applyParams,
+  imageOffNodes,
   applyPresetActive,
   applyPresetChat,
   applySystemPrompts,
@@ -18,6 +20,7 @@ import type {
   GenerateRequest,
   GenerateResponse,
   ModelServerTarget,
+  ObjectInfo,
   ParamValues,
 } from '@latent/shared';
 
@@ -48,7 +51,6 @@ export async function queueBatch(
   if (!detail) return { notFound: true };
   return runBatch(ctx, detail, body);
 }
-
 
 /** The batch itself, once the workflow has been found. */
 async function runBatch(
@@ -171,6 +173,17 @@ async function runBatch(
       }
     : null;
 
+  /*
+   * The node definitions, for deciding whether a picture may be unplugged.
+   *
+   * Fetched once for the whole batch and cached upstream. A ComfyUI that cannot
+   * be reached gives nothing rather than failing the request: without the
+   * definitions the switch still unplugs, and a workflow that turns out to need
+   * the picture is refused by ComfyUI instead of by us — a worse message, but
+   * only in the case where nothing was going to run anyway.
+   */
+  const objectInfo = await ctx.orchestrator.objectInfo().catch(() => ({}) as ObjectInfo);
+
   for (let i = 0; i < batchCount; i += 1) {
     let itemValues = applySystemPrompts(
       schema,
@@ -208,13 +221,27 @@ async function runBatch(
      */
     const graph = applyModelServer(workflow, modelServer);
 
+    /*
+     * Pictures the form switched off never reach ComfyUI.
+     *
+     * After the values are applied, because that is when the switches are
+     * known, and before submitting, because the point is that the link is not
+     * in the graph that goes over the wire.
+     */
+    const withoutPictures = applyImageOff(graph, imageOffNodes(schema, itemValues), objectInfo);
+    if (withoutPictures.error) {
+      // The same shape as a submit failure: whatever was already queued stays
+      // queued, and the message says why the rest stopped.
+      return { generationIds, promptIds, error: withoutPictures.error };
+    }
+
     // Built per item, not once: each item in a batch gets its own seed, and
     // the seed is often the only thing distinguishing two queued jobs.
     const submitted = { ...itemValues, ...seeds };
 
     try {
       const result = await ctx.orchestrator.submit({
-        graph,
+        graph: withoutPictures.workflow,
         workflowId: detail.id,
         workflowName: detail.name,
         title,

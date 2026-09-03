@@ -1194,7 +1194,9 @@ test.describe('the phone ergonomics pass', () => {
     await expect(page.getByTestId('editor-output-size')).toHaveText(/400×400/);
     await page.screenshot({ path: 'test-results/16-image-editor.png' });
 
-    await page.getByRole('button', { name: 'Use' }).click();
+    // Exact: the image field above now carries a "Use this picture" switch, and
+    // a loose match reaches both.
+    await page.getByRole('button', { name: 'Use', exact: true }).click();
 
     // The edited file lands in ComfyUI's input directory under its own name.
     await expect(page.getByText(/holiday_edited\.png/)).toBeVisible({ timeout: 20_000 });
@@ -6923,5 +6925,44 @@ test.describe('on a tablet', () => {
     // And it can go further than a phone's five, which is where a phone runs
     // out of picture rather than out of room.
     await expect(slider).toHaveAttribute('max', '8');
+  });
+});
+
+test.describe('running without the picture', () => {
+  /**
+   * A graph is a fixed set of links.
+   *
+   * Once a loader is wired in, every run through the workflow sends a picture —
+   * there is no value you can type that means "not this time", because the
+   * filename is a string and every string is a filename. In the editor you drag
+   * the link off; from a phone there was nothing to do at all.
+   */
+  test('switches a reference image off and leaves it out of the graph', async ({ page }) => {
+    await resetState();
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'With a picture', graph: img2img } }),
+    );
+    await open(page, '/');
+
+    const workflowPicker = page.getByRole('button', { name: /With a picture/ });
+    if (await workflowPicker.isVisible().catch(() => false)) await workflowPicker.click();
+
+    // The switch sits beside the picture it governs, on by default: a workflow
+    // with an image wired in was built to use it.
+    const toggle = page.getByRole('button', { name: /Use this picture/ });
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await page.screenshot({ path: 'test-results/99-picture-off.png' });
+
+    // And it survives leaving the screen, because it is an ordinary form value.
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    await page.getByRole('link', { name: 'Generate' }).click();
+    await expect(page.getByRole('button', { name: /Use this picture/ })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
   });
 });

@@ -2291,6 +2291,33 @@ screen; a preview with its own copy of it would drift, and a preview that is
 almost right is worse than none — the whole reason to look at one is to avoid
 picking the phone up.
 
+### Running without the picture
+
+A graph is a fixed set of links, so once an image loader is wired into a
+workflow every run through it sends a picture — there is no value you can type
+that means "not this time", because the loader's filename is a string and every
+string is a filename. In the editor you would drag the link off; from a phone
+there was nothing to do at all, so a reference image, once chosen, was
+permanent.
+
+Every picture a workflow loads now gets a **Use this picture** switch beside it.
+Switched off, the *link* is removed on the way to ComfyUI: the node that would
+have read the picture sees an input that is simply not there, which is exactly
+what it would see if nothing had ever been connected, and the loader — now
+feeding nothing — is unreachable, so ComfyUI never runs it.
+
+The link is removed rather than the node deleted. A deleted node leaves every
+link that pointed at it dangling, and ComfyUI answers that with a validation
+error about a node id nobody recognises.
+
+If the picture is *required* where it lands — `VAEEncode.pixels`, say — the
+switch is refused with a sentence naming the node that needs it, rather than
+letting ComfyUI answer with an error about an input and not about the switch
+that caused it. The switch is a normal form field, so it can be renamed,
+rearranged or hidden in the form editor like any other, and it is saved in
+presets and drafts. Absent means on: a preset from before this existed keeps
+sending the picture it was built around.
+
 **Load Image (Folder Browser)** uses the *same* control as any other image
 input — the folded header, the square preview, the filename, **Replace** and a
 second button beside it — with one difference: that second button says **Browse
