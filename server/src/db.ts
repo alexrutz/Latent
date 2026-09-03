@@ -1084,6 +1084,7 @@ const DEFAULT_SETTINGS: AppSettings = {
    */
   workflowPrefix: 'API_',
   browseFavorites: [],
+  fieldArrangement: [],
 };
 
 export class Store {

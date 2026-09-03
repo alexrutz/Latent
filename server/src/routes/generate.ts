@@ -3,7 +3,6 @@ import type { FastifyInstance } from 'fastify';
 import {
   appendAlwaysBlocks,
   applyModelServer,
-  applyOverrides,
   applyImageOff,
   applyParams,
   imageOffNodes,
@@ -26,6 +25,7 @@ import type {
 
 import { ComfyError } from '../comfy/client.js';
 import { deriveTitle, type AppContext } from './context.js';
+import { resolveSchema } from '../formSchema.js';
 
 const MAX_BATCH_COUNT = 32;
 
@@ -66,7 +66,7 @@ async function runBatch(
    * named "Rewrite" on screen would land nowhere here. The overrides go on top,
    * so a label typed in the form editor still wins over the slot's name.
    */
-  const schema = applyOverrides(applyPresetChat(detail.schema, values), detail.overrides);
+  const schema = resolveSchema(ctx.store, applyPresetChat(detail.schema, values), detail.overrides);
   const batchCount = Math.min(Math.max(Math.floor(body.batchCount ?? 1) || 1, 1), MAX_BATCH_COUNT);
 
   // Remember what the user last typed so the form reopens where they left it.

@@ -6,6 +6,7 @@ import type { FieldOverrides, ParamSchema, ParamValues } from './paramTypes.js';
 import type { StudyRating } from './studyStats.js';
 import type { MediaKind } from './media.js';
 import type { EditOrigin } from './editOrigin.js';
+import type { FieldArrangement } from './fieldArrangement.js';
 
 /* ------------------------------------------------------------------ */
 /* Workflows                                                           */
@@ -1026,6 +1027,15 @@ export interface AppSettings {
    * here.
    */
   browseFavorites: BrowseFavorite[];
+  /**
+   * One form arrangement applied to every workflow. See `fieldArrangement.ts`.
+   *
+   * Keyed by what a field is called rather than by which workflow it is in, so
+   * an opinion about `duration` is an opinion about every workflow that has
+   * one — including the ones imported next week. Per-workflow overrides still
+   * win, so nothing arranged here can quietly undo hand-tuned work.
+   */
+  fieldArrangement: FieldArrangement;
 }
 
 /** One starred entry in the folder browser: `root/relative/path`, plus what it is. */

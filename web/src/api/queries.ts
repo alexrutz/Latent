@@ -33,6 +33,7 @@ import { api } from './client';
 export const queryKeys = {
   status: ['status'] as const,
   workflows: ['workflows'] as const,
+  poolFields: ['workflow-fields'] as const,
   workflow: (id: string) => ['workflow', id] as const,
   gallery: (workflowId?: string | null) => ['gallery', workflowId ?? 'all'] as const,
   settings: ['settings'] as const,
@@ -86,7 +87,19 @@ export function useUpdateSettings() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (patch: Partial<AppSettings>) => api.updateSettings(patch),
-    onSuccess: (settings) => client.setQueryData(queryKeys.settings, settings),
+    onSuccess: (settings, patch) => {
+      client.setQueryData(queryKeys.settings, settings);
+      /*
+       * The general arrangement is not only a setting — it is a layer of every
+       * workflow's form, resolved on the server. Change it and every schema
+       * already in the cache is describing a form that no longer exists, which
+       * showed up as the editor reopening on the arrangement before last.
+       */
+      if ('fieldArrangement' in patch) {
+        void client.invalidateQueries({ queryKey: ['workflow'] });
+        void client.invalidateQueries({ queryKey: queryKeys.workflows });
+      }
+    },
   });
 }
 
@@ -306,8 +319,9 @@ export const useCreateConnection = () => useConnectionMutation(api.createConnect
 export const useActivateConnection = () => useConnectionMutation(api.activateConnection);
 export const useDeleteConnection = () => useConnectionMutation(api.deleteConnection);
 export const useUpdateConnection = () =>
-  useConnectionMutation(({ id, patch }: { id: string; patch: Parameters<typeof api.updateConnection>[1] }) =>
-    api.updateConnection(id, patch),
+  useConnectionMutation(
+    ({ id, patch }: { id: string; patch: Parameters<typeof api.updateConnection>[1] }) =>
+      api.updateConnection(id, patch),
   );
 
 /* ------------------------------------------------------------------ */
@@ -538,13 +552,22 @@ function useFavoriteMutation<TArgs>(fn: (args: TArgs) => Promise<unknown>) {
 }
 
 export const useAddFavorite = () =>
-  useFavoriteMutation(({ generationId, image, note }: { generationId: string; image: ComfyImageRef; note?: string }) =>
-    api.addFavorite(generationId, image, note),
+  useFavoriteMutation(
+    ({
+      generationId,
+      image,
+      note,
+    }: {
+      generationId: string;
+      image: ComfyImageRef;
+      note?: string;
+    }) => api.addFavorite(generationId, image, note),
   );
 
 export const useUpdateFavorite = () =>
-  useFavoriteMutation(({ id, patch }: { id: string; patch: { rating?: number; note?: string | null } }) =>
-    api.updateFavorite(id, patch),
+  useFavoriteMutation(
+    ({ id, patch }: { id: string; patch: { rating?: number; note?: string | null } }) =>
+      api.updateFavorite(id, patch),
   );
 
 export const useDeleteFavorite = () => useFavoriteMutation((id: string) => api.deleteFavorite(id));
@@ -765,7 +788,10 @@ export function useLayouts(workflowId: string | null) {
  * Any layout change rewrites the workflow's live overrides, so the form itself
  * has to be refetched — not just the list of layouts.
  */
-function useLayoutMutation<TArgs>(workflowId: string | null, fn: (args: TArgs) => Promise<unknown>) {
+function useLayoutMutation<TArgs>(
+  workflowId: string | null,
+  fn: (args: TArgs) => Promise<unknown>,
+) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: fn,
@@ -777,8 +803,10 @@ function useLayoutMutation<TArgs>(workflowId: string | null, fn: (args: TArgs) =
 }
 
 export const useSaveLayout = (workflowId: string | null) =>
-  useLayoutMutation(workflowId, ({ name, overrides }: { name: string; overrides?: FieldOverrides }) =>
-    api.saveLayout(workflowId as string, name, overrides),
+  useLayoutMutation(
+    workflowId,
+    ({ name, overrides }: { name: string; overrides?: FieldOverrides }) =>
+      api.saveLayout(workflowId as string, name, overrides),
   );
 
 export const useActivateLayout = (workflowId: string | null) =>
@@ -927,4 +955,3 @@ export function useKeepStudyShot(studyId: string) {
     },
   });
 }
-

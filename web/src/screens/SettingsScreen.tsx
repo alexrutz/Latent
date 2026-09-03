@@ -6,6 +6,8 @@ import {
   DEFAULT_WANDER_DRAW,
   defaultSampling,
   fieldPoints,
+  clearOwnOrder,
+  hasOwnOrder,
   isSizeable,
   fieldPointValues,
   SAMPLING_GROUPS,
@@ -63,6 +65,7 @@ import { SortableList, type DragHandleProps } from '../components/SortableList';
 import { FieldChip, Toggle, WorkflowScope } from '../components/ParamControl';
 import { UnlockArchiveDialog } from '../components/UnlockArchive';
 import { FormPreview } from '../components/FormPreview';
+import { ArrangementButton } from '../components/FieldArrangement';
 import { UpdateSection } from '../components/UpdateSoftware';
 import { WanderSetup } from '../components/WanderSetup';
 import { Button, Card, cn, ErrorNote, Row, Sheet, Spinner } from '../components/ui';
@@ -633,18 +636,24 @@ export function SettingsScreen() {
           <>
             {/* Workflows -------------------------------------------------- */}
             <section className="space-y-2">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
                   Workflows
                 </h2>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  busy={importWorkflow.isPending}
-                  onClick={() => fileRef.current?.click()}
-                >
-                  Import
-                </Button>
+                <div className="flex shrink-0 gap-2">
+                  {/* An opinion about a field is usually an opinion about every
+                      workflow that has one, so the general arrangement sits
+                      beside the list rather than inside any one form. */}
+                  <ArrangementButton />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    busy={importWorkflow.isPending}
+                    onClick={() => fileRef.current?.click()}
+                  >
+                    Import
+                  </Button>
+                </div>
               </div>
 
               <input
@@ -883,9 +892,7 @@ export function SettingsScreen() {
                   Maintenance
                 </h2>
                 <Card className="space-y-3">
-                  <p className="text-xs text-muted">
-                    A shell on the machine running Latent.
-                  </p>
+                  <p className="text-xs text-muted">A shell on the machine running Latent.</p>
                   <Button variant="secondary" onClick={() => setTerminalOpen(true)}>
                     Open terminal
                   </Button>
@@ -1180,10 +1187,13 @@ function WorkflowPicker({
 function FormEditorSheet({ workflowId, onClose }: { workflowId: string; onClose: () => void }) {
   const workflow = useWorkflow(workflowId);
   const update = useUpdateWorkflow();
+  const settings = useSettings();
   const [draft, setDraft] = useState<FieldOverrides | null>(null);
 
   const detail = workflow.data;
   const overrides = draft ?? detail?.overrides ?? {};
+  /** Whether there is a general arrangement for this workflow to be ignoring. */
+  const arranged = (settings.data?.fieldArrangement?.length ?? 0) > 0;
 
   const write = (next: FieldOverrides) => {
     setDraft(next);
@@ -1209,7 +1219,16 @@ function FormEditorSheet({ workflowId, onClose }: { workflowId: string; onClose:
   };
 
   return (
-    <Sheet open onClose={onClose} title={detail?.name ?? 'Form'} full>
+    /*
+     * Wide, because this one has somewhere to put the width.
+     *
+     * Every other sheet is capped at a reading width and should be — a column
+     * of controls a foot across is worse, not better. This is the exception:
+     * it is a list of fields *and* a picture of the phone, side by side, and on
+     * a desktop monitor both of them were being squeezed into 672px with the
+     * rest of the screen dark.
+     */
+    <Sheet open onClose={onClose} title={detail?.name ?? 'Form'} full wide>
       {!detail ? (
         <div className="grid place-items-center py-12">
           <Spinner className="size-6 text-muted" />
@@ -1230,6 +1249,25 @@ function FormEditorSheet({ workflowId, onClose }: { workflowId: string; onClose:
               or all of it, and hide what you never touch. Hidden fields still use the value the
               workflow was exported with.
             </p>
+
+            {/*
+              Said out loud, because the precedence is invisible otherwise.
+              Dragging anything here writes a position for every field in the
+              group, and those beat the general arrangement — which is the right
+              way round, and baffling if you arranged the fields generally and
+              found this one workflow ignoring it.
+            */}
+            {arranged && hasOwnOrder(overrides) && (
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-surface-2 px-3 py-2">
+                <p className="min-w-0 text-[11px] text-muted">
+                  This workflow has an order of its own, so the general arrangement does not set the
+                  order here.
+                </p>
+                <Button variant="ghost" size="sm" onClick={() => write(clearOwnOrder(overrides))}>
+                  Use the general one
+                </Button>
+              </div>
+            )}
 
             <LayoutBar workflowId={workflowId} detail={detail} />
 

@@ -109,12 +109,7 @@ export function Spinner({ className }: { className?: string }) {
   return (
     <svg className={cn('animate-spin', className)} viewBox="0 0 24 24" fill="none" aria-hidden>
       <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
-      <path
-        d="M21 12a9 9 0 0 0-9-9"
-        stroke="currentColor"
-        strokeWidth="3"
-        strokeLinecap="round"
-      />
+      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
     </svg>
   );
 }
@@ -130,6 +125,17 @@ interface SheetProps {
   children: ReactNode;
   /** Fill the screen instead of hugging its content. */
   full?: boolean;
+  /**
+   * Let it grow past the reading width on a big screen.
+   *
+   * The cap on the others is deliberate — a dialog is a column of controls, and
+   * a column two feet wide is unreadable however much monitor there is. The
+   * exception is a sheet whose content is genuinely side-by-side: the form
+   * editor is a list of fields *and* a preview of the phone, and squeezing both
+   * into 672px on a desktop wastes the screen and cramps the pair of them. Only
+   * for content that has somewhere to put the width.
+   */
+  wide?: boolean;
   /**
    * Label for the header's dismiss button.
    *
@@ -162,6 +168,7 @@ export function Sheet({
   title,
   children,
   full = false,
+  wide = false,
   closeLabel = 'Done',
 }: SheetProps) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -232,7 +239,8 @@ export function Sheet({
            * all four sides of a tablet is not a dialog any more.
            */
           'tablet:w-full tablet:rounded-[var(--radius-sheet)] tablet:border',
-          full ? 'tablet:h-[85svh] tablet:max-w-2xl' : 'tablet:max-h-[80svh] tablet:max-w-lg',
+          full ? 'tablet:h-[85svh]' : 'tablet:max-h-[80svh] tablet:max-w-lg',
+          full && (wide ? 'tablet:max-w-[min(96vw,80rem)]' : 'tablet:max-w-2xl'),
         )}
       >
         {/*

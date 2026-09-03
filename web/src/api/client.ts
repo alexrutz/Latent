@@ -60,6 +60,7 @@ import type {
   WorkflowPreset,
   WorkflowScanResult,
   WorkflowSummary,
+  PoolField,
 } from '@latent/shared';
 import { regionKey } from '@latent/shared';
 
@@ -632,6 +633,9 @@ export const api = {
     request<ImportResult>('/api/import', { method: 'POST', body: JSON.stringify(body) }),
 
   listWorkflows: () => request<WorkflowSummary[]>('/api/workflows'),
+
+  /** Every distinct field across the workflows in use, for the arrangement. */
+  poolFields: () => request<PoolField[]>('/api/workflows/fields'),
 
   getWorkflow: (id: string) => request<WorkflowDetail>(`/api/workflows/${id}`),
 

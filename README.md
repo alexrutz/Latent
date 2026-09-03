@@ -422,6 +422,52 @@ Everything that stays a chip is laid out in **two even columns**, so a sampler
 block reads as a list you can scan down instead of a wrapped heap of
 differently-sized bubbles.
 
+### One arrangement for every workflow
+
+The form editor arranges *a* workflow, which is the right tool for the one that
+needs something unusual and the wrong one for everything else. The same handful
+of fields turn up in every workflow anybody writes — steps, cfg, the sampler,
+the size, a duration — and an opinion about them is an opinion about all of
+them. "Duration matters, keep it under Advanced and half a row wide" is one
+sentence, and it used to have to be repeated per workflow and repeated again for
+every workflow imported afterwards.
+
+**Settings → Workflows → Arrange all** is that sentence, once. Two areas side by
+side where there is room:
+
+- **The pool** — every distinct field across the workflows you have switched on,
+  most widespread first, because the ones worth an opinion are the ones that
+  keep turning up. It says how many workflows have each, so `duration · in 4
+  workflows` is a fact rather than a guess.
+- **The arrangement** — what you have placed, in the order it will take, each
+  with where it goes, how wide it is and whether it is shown at all.
+
+It is keyed by the field's **input name** — `steps`, `duration`, `cfg` — which
+is what the same field is called wherever it appears, whatever node it hangs off
+and whatever id that node was given. Two different nodes that both take a
+`duration` are, for this purpose, the same field: that is the assumption the
+feature is, and the reason it is useful.
+
+**Nothing here is a requirement.** A workflow without the field ignores the
+entry for it. A workflow with its own setting keeps it — the arrangement is
+applied *underneath* the per-workflow overrides, so nothing arranged generally
+can quietly undo work done by hand. Every attribute has a third state,
+**Leave it**, which is not the same as either answer: without it, arranging one
+attribute of a field would take over the other two from every workflow that had
+settled them itself.
+
+**Gaps close.** An arrangement written against every workflow will always be
+missing pieces in any one of them, and what must not happen is a hole where the
+absent field would have been. Half-width fields are laid out by merging
+*adjacent* ones into a row, so a workflow missing the second half of a pair has
+the next half-width field move up into the space.
+
+The order is the one exception to "the workflow wins" being invisible. Dragging
+anything in the per-workflow editor writes a position for every field in that
+group, and those beat the arrangement — so a workflow you have dragged in
+ignores the general order. The editor says so when it happens, with the one
+button that hands it back.
+
 ## Where your data lives
 
 **Everything is outside the project directory**, which is the one you delete

@@ -2,7 +2,6 @@ import type { FastifyBaseLogger } from 'fastify';
 
 import {
   applyModelServer,
-  applyOverrides,
   applyImageOff,
   applyParams,
   imageOffNodes,
@@ -15,6 +14,7 @@ import type { ModelServerTarget, ParamValues } from '@latent/shared';
 import type { Store } from './db.js';
 import type { Orchestrator } from './orchestrator.js';
 import { deriveTitle } from './routes/context.js';
+import { resolveSchema } from './formSchema.js';
 
 /**
  * Running a parameter study's first phase.
@@ -193,7 +193,11 @@ export class StudyRunner {
     try {
       // Reshaped against the study's own base, which is where its preset-chat
       // slots were named — the same schema the setup screen was filled against.
-      const schema = applyOverrides(applyPresetChat(detail.schema, study.base), detail.overrides);
+      const schema = resolveSchema(
+        this.store,
+        applyPresetChat(detail.schema, study.base),
+        detail.overrides,
+      );
 
       for (const shot of shots) {
         /*

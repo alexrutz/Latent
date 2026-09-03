@@ -34,7 +34,9 @@ const BASE_URL = process.env.LATENT_E2E_URL ?? 'http://127.0.0.1:6173';
 const WORKFLOW_NAME = 'sd15 txt2img';
 const PASSWORD = 'e2e-password';
 
-async function withApi<T>(fn: (ctx: Awaited<ReturnType<typeof apiRequest.newContext>>) => Promise<T>) {
+async function withApi<T>(
+  fn: (ctx: Awaited<ReturnType<typeof apiRequest.newContext>>) => Promise<T>,
+) {
   const ctx = await apiRequest.newContext({ baseURL: BASE_URL });
   try {
     // Every API route needs a session now.
@@ -211,6 +213,13 @@ async function resetState() {
     for (const prompt of prompts) await ctx.delete(`/api/system-prompts/${prompt.id}`);
 
     /*
+     * And for the same reason, the general arrangement: it reaches into every
+     * workflow's form by field name, so one left behind would move a later
+     * test's fields out from under it.
+     */
+    await ctx.patch('/api/settings', { data: { fieldArrangement: [] } });
+
+    /*
      * Model servers are connections now. The ComfyUI one is left alone — it is
      * what the whole suite runs against — but a stale llama entry would point
      * the chat at a port from a previous test.
@@ -256,7 +265,9 @@ async function resetState() {
     });
 
     // Endless generation is server-side and survives a reload, let alone a test.
-    await ctx.put('/api/generate/endless', { data: { workflowId: '', values: {}, enabled: false } });
+    await ctx.put('/api/generate/endless', {
+      data: { workflowId: '', values: {}, enabled: false },
+    });
   });
 
   /*
@@ -900,7 +911,12 @@ test.describe('gallery, favourites and the prompt builder', () => {
     await expect(counter).toBeVisible();
 
     const stage = page.locator('div.touch-none').first();
-    const box = (await stage.boundingBox()) as { x: number; y: number; width: number; height: number };
+    const box = (await stage.boundingBox()) as {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
     const midY = box.y + box.height / 2;
     const base = { pointerId: 1, bubbles: true, isPrimary: true };
     const from = box.x + box.width * 0.8;
@@ -965,6 +981,66 @@ test.describe('the phone ergonomics pass', () => {
       ctx.post('/api/prompt-blocks', { data: { name, text, group: 'Lighting' } }),
     );
   }
+
+  /**
+   * One arrangement, applied to every workflow that has the field.
+   *
+   * The per-workflow editor answers "how should this form read"; this answers
+   * "where does `steps` go, in everything" — a question that previously had to
+   * be answered once per workflow, and again for every workflow imported after.
+   *
+   * The two halves worth proving are that an opinion reaches a workflow that
+   * was never opened, and that "no opinion" is a state you can get back to.
+   */
+  test('arranges a field once, for every workflow that has it', async ({ page }) => {
+    await open(page, '/settings?in=workflows');
+    await page.getByRole('button', { name: /^Arrange all/ }).click();
+
+    const sheet = page.getByRole('dialog', { name: 'General arrangement' });
+    await expect(sheet).toBeVisible();
+
+    // The pool is every field across the workflows in use, and says where each
+    // one turns up — which is what makes it worth an opinion.
+    const steps = sheet.getByRole('button', { name: 'Arrange Steps' });
+    await expect(steps).toContainText('in 1 workflow');
+    await steps.click();
+
+    // Placed, and now carrying an opinion: under Advanced, a whole row wide.
+    const row = sheet.locator('[data-arranged="steps"]');
+    await expect(row).toBeVisible();
+    await row.getByRole('button', { name: 'Steps Advanced' }).click();
+    await row.getByRole('button', { name: 'Steps Full row' }).click();
+    await page.screenshot({ path: 'test-results/58-arrangement.png' });
+
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    /*
+     * The workflow's own form editor was never opened, and Steps has moved.
+     * Read there rather than on the Generate screen because this is where the
+     * two groups are named, so "it went to Advanced" is a visible fact rather
+     * than an inference from something no longer being on screen.
+     */
+    await page.getByRole('button', { name: 'Edit form' }).click();
+    const editor = page.getByRole('dialog');
+    const advanced = editor.locator('div').filter({ hasText: /^Under Advanced/ });
+    await expect(advanced.locator('[data-field="3.steps"]')).toHaveCount(1);
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    // And "leave it to the workflow" is somewhere you can get back to.
+    await page.getByRole('button', { name: /^Arrange all/ }).click();
+    await sheet
+      .locator('[data-arranged="steps"]')
+      .getByRole('button', { name: 'Steps Where: leave it to the workflow' })
+      .click();
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    await page.getByRole('button', { name: 'Edit form' }).click();
+    const main = page
+      .getByRole('dialog')
+      .locator('div')
+      .filter({ hasText: /^On the main screen/ });
+    await expect(main.locator('[data-field="3.steps"]')).toHaveCount(1);
+  });
 
   /**
    * A block belongs in a prompt once or not at all, so the chip is a switch.
@@ -1173,7 +1249,9 @@ test.describe('the phone ergonomics pass', () => {
   test('crops a photo before it is uploaded', async ({ page }) => {
     // Only the img2img workflow, so it is the one the screen opens on.
     await resetState();
-    await withApi((ctx) => ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } }));
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } }),
+    );
 
     await open(page, '/');
     // The fixture already names an input image, so the button says "Replace".
@@ -1305,7 +1383,7 @@ test.describe('knowing what is happening', () => {
    * Queueing eight variations of one prompt is normal, and then the queue has to
    * let you find the one you regret.
    */
-  test('shows each queued job\'s settings so the right one can be removed', async ({ page }) => {
+  test("shows each queued job's settings so the right one can be removed", async ({ page }) => {
     await open(page, '/');
 
     // Slow enough that the queue does not drain while the test is reading it.
@@ -1389,9 +1467,7 @@ test.describe('knowing what is happening', () => {
   test('is not zoomable', async ({ page }) => {
     await open(page, '/');
 
-    const viewport = await page
-      .locator('meta[name="viewport"]')
-      .getAttribute('content');
+    const viewport = await page.locator('meta[name="viewport"]').getAttribute('content');
     expect(viewport).toContain('user-scalable=no');
     expect(viewport).toContain('maximum-scale=1');
 
@@ -1600,7 +1676,9 @@ test.describe('picking inputs and straightening them', () => {
    */
   test('straightens by a free angle and crops the empty corners away', async ({ page }) => {
     await seedWorkflow();
-    await withApi((ctx) => ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } }));
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } }),
+    );
 
     await open(page, '/');
     await page.getByRole('button', { name: /Choose photo|Replace/ }).click();
@@ -1696,7 +1774,12 @@ test.describe('living in the gallery', () => {
      * across runs, not Chromium's gesture recognition.
      */
     const swipe = async (direction: -1 | 1) => {
-      const box = (await stage.boundingBox()) as { x: number; y: number; width: number; height: number };
+      const box = (await stage.boundingBox()) as {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      };
       const midY = box.y + box.height / 2;
       const from = box.x + box.width * (direction < 0 ? 0.8 : 0.2);
       const to = from + direction * box.width * 0.6;
@@ -1764,8 +1847,8 @@ test.describe('living in the gallery', () => {
     await page.getByRole('button', { name: 'Favourited' }).click();
     await expect(page.getByRole('button', { name: 'Favourite', exact: true })).toBeVisible();
 
-    const favourites = await withApi(async (ctx) =>
-      (await (await ctx.get('/api/favorites')).json()) as unknown[],
+    const favourites = await withApi(
+      async (ctx) => (await (await ctx.get('/api/favorites')).json()) as unknown[],
     );
     expect(favourites).toHaveLength(0);
   });
@@ -1842,9 +1925,13 @@ test.describe('varying the parameters too', () => {
     await seedWorkflow();
   });
 
-  test('sweeps a value across a batch and saves the setup with the prompt one', async ({ page }) => {
+  test('sweeps a value across a batch and saves the setup with the prompt one', async ({
+    page,
+  }) => {
     await withApi((ctx) =>
-      ctx.post('/api/prompt-blocks', { data: { name: 'Moody', category: 'Mood', text: 'heavy clouds' } }),
+      ctx.post('/api/prompt-blocks', {
+        data: { name: 'Moody', category: 'Mood', text: 'heavy clouds' },
+      }),
     );
 
     await open(page, '/');
@@ -1883,7 +1970,8 @@ test.describe('varying the parameters too', () => {
 
     const steps = await cards.locator('li', { hasText: 'Steps' }).allInnerTexts();
     expect(steps.length).toBeGreaterThan(2);
-    for (const text of steps) expect(['Steps20', 'Steps30', 'Steps40']).toContain(text.replace(/\s/g, ''));
+    for (const text of steps)
+      expect(['Steps20', 'Steps30', 'Steps40']).toContain(text.replace(/\s/g, ''));
 
     await withApi((ctx) => ctx.delete('/api/queue'));
     await withApi((ctx) => ctx.post('/api/queue/interrupt'));
@@ -1966,9 +2054,7 @@ test.describe('the fixes wave ten asked for', () => {
     const scroller = page.locator('main');
     // A page that cannot scroll would pass the assertions below without
     // proving anything.
-    expect(
-      await scroller.evaluate((el) => el.scrollHeight - el.clientHeight),
-    ).toBeGreaterThan(50);
+    expect(await scroller.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(50);
 
     await scroller.evaluate((element) => element.scrollTo({ top: 400 }));
     await expect.poll(async () => scroller.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
@@ -2044,7 +2130,9 @@ test.describe('the fixes wave ten asked for', () => {
     const moved = before[2] as string;
     const above = before[1] as string;
 
-    const handle = page.locator(`[data-field="${moved}"]`).getByRole('button', { name: /^Reorder/ });
+    const handle = page
+      .locator(`[data-field="${moved}"]`)
+      .getByRole('button', { name: /^Reorder/ });
     const destination = page.locator(`[data-field="${above}"]`);
     await handle.scrollIntoViewIfNeeded();
 
@@ -2062,8 +2150,7 @@ test.describe('the fixes wave ten asked for', () => {
      * depends on how tall the rows happen to be, which is not a thing this
      * test is about.
      */
-    const delta =
-      toRow!.y + toRow!.height / 2 - (fromRow!.y + fromRow!.height / 2);
+    const delta = toRow!.y + toRow!.height / 2 - (fromRow!.y + fromRow!.height / 2);
     const x = grip!.x + grip!.width / 2;
     const y = grip!.y + grip!.height / 2;
 
@@ -2776,7 +2863,9 @@ test.describe('the fifteenth wave', () => {
     const moved = before[0] as string;
     const target = before[1] as string;
 
-    const handle = page.locator(`[data-field="${moved}"]`).getByRole('button', { name: /^Reorder/ });
+    const handle = page
+      .locator(`[data-field="${moved}"]`)
+      .getByRole('button', { name: /^Reorder/ });
     await handle.scrollIntoViewIfNeeded();
     const grip = await handle.boundingBox();
     const fromRow = await page.locator(`[data-field="${moved}"]`).boundingBox();
@@ -3015,7 +3104,6 @@ const useLlama = async (url = LLAMA): Promise<string> => {
 };
 
 test.describe('the chat module', () => {
-
   /** How many requests the model server has been sent so far. */
   const requestCount = async (): Promise<number> => {
     const context = await apiRequest.newContext({ baseURL: LLAMA });
@@ -3320,9 +3408,9 @@ test.describe('the chat module', () => {
     await script({ content: 'Fair enough.' });
     await rewrite.getByRole('button', { name: 'Reject' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 30_000 });
-    await expect(page.getByRole('button', { name: /a working harbour at dawn.*Again/ })).toBeVisible(
-      { timeout: 30_000 },
-    );
+    await expect(
+      page.getByRole('button', { name: /a working harbour at dawn.*Again/ }),
+    ).toBeVisible({ timeout: 30_000 });
 
     /*
      * And the picture is still there for the next thing said about it.
@@ -3483,9 +3571,7 @@ test.describe('the chat module', () => {
     // what keeps the next turn from arriving in a conversation still waiting.
     const decided = await withApi(async (ctx) => {
       const chats = (await (await ctx.get('/api/chat/conversations')).json()) as { id: string }[];
-      const detail = (await (
-        await ctx.get(`/api/chat/conversations/${chats[0]?.id}`)
-      ).json()) as {
+      const detail = (await (await ctx.get(`/api/chat/conversations/${chats[0]?.id}`)).json()) as {
         messages: { toolCall?: { tool: string }; toolResult?: { decision: string } }[];
       };
       return detail.messages.find((message) => message.toolCall?.tool === 'revise_prompt')
@@ -3834,7 +3920,10 @@ test.describe('the chat module', () => {
      * over the whole conversation, so a swipe is the picture before it rather
      * than the end of a batch of one.
      */
-    await page.getByRole('button', { name: /^Open picture/ }).last().click();
+    await page
+      .getByRole('button', { name: /^Open picture/ })
+      .last()
+      .click();
     await expect(page.getByTestId('viewer-image')).toBeVisible();
     await expect(page.getByText(/^\d+ \/ 2$/)).toBeVisible();
     await page.screenshot({ path: 'test-results/97-wander-viewer.png' });
@@ -3844,7 +3933,10 @@ test.describe('the chat module', () => {
      * What made it is the corner button: in a wandering round the prompt is
      * never written above the picture, so this is the only way to it.
      */
-    await page.getByRole('button', { name: /What made picture/ }).first().click();
+    await page
+      .getByRole('button', { name: /What made picture/ })
+      .first()
+      .click();
     const dialog = page.getByRole('dialog');
     await expect(dialog.getByRole('textbox', { name: 'The prompt' })).toHaveValue(
       /wandering picture/,
@@ -4215,7 +4307,10 @@ test.describe('the chat module', () => {
       },
       { question: 'How close?', options: ['a wide shot with room around it', 'tight on the face'] },
       { question: 'What time of year?', options: ['deep winter, everything bare', 'high summer'] },
-      { question: 'On film or digital?', options: ['grainy 400-speed colour film', 'clean digital'] },
+      {
+        question: 'On film or digital?',
+        options: ['grainy 400-speed colour film', 'clean digital'],
+      },
     ];
 
     await script({
@@ -4699,8 +4794,9 @@ test.describe('the chat module', () => {
     await dialog.getByRole('button', { name: 'Keep 2' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
-    const blocks = await withApi(async (ctx) =>
-      (await (await ctx.get('/api/prompt-blocks')).json()) as { name: string; text: string }[],
+    const blocks = await withApi(
+      async (ctx) =>
+        (await (await ctx.get('/api/prompt-blocks')).json()) as { name: string; text: string }[],
     );
     expect(blocks.map((block) => block.name).sort()).toEqual(['Golden hour', 'Overcast']);
     expect(blocks.find((block) => block.name === 'Overcast')?.text).toBe('flat grey daylight');
@@ -4749,8 +4845,8 @@ test.describe('the chat module', () => {
     await dialog.getByRole('button', { name: 'Keep 1' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
-    const blocks = await withApi(async (ctx) =>
-      (await (await ctx.get('/api/prompt-blocks')).json()) as { name: string }[],
+    const blocks = await withApi(
+      async (ctx) => (await (await ctx.get('/api/prompt-blocks')).json()) as { name: string }[],
     );
     expect(blocks.some((block) => block.name === 'Vague mood')).toBe(false);
   });
@@ -4799,8 +4895,8 @@ test.describe('the chat module', () => {
     await dialog.getByRole('button', { name: 'Keep 1' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
-    const blocks = await withApi(async (ctx) =>
-      (await (await ctx.get('/api/prompt-blocks')).json()) as { name: string }[],
+    const blocks = await withApi(
+      async (ctx) => (await (await ctx.get('/api/prompt-blocks')).json()) as { name: string }[],
     );
     expect(blocks.some((block) => block.name === 'Dawn haze')).toBe(true);
   });
@@ -4868,7 +4964,9 @@ test.describe('the chat module', () => {
       { inputs: Record<string, unknown> }
     >;
     slow['3']!.inputs.steps = 60;
-    await withApi((ctx) => ctx.post('/api/workflows', { data: { name: WORKFLOW_NAME, graph: slow } }));
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: WORKFLOW_NAME, graph: slow } }),
+    );
 
     await withApi((ctx) =>
       ctx.patch('/api/settings', { data: { chat: { promptButton: 'dialog' } } }),
@@ -5063,10 +5161,7 @@ test.describe('the eighteenth wave', () => {
 
     await page.reload();
     await signIn(page);
-    await expect(page.getByTestId('image-fold').first()).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
+    await expect(page.getByTestId('image-fold').first()).toHaveAttribute('aria-expanded', 'false');
     await page.screenshot({ path: 'test-results/64-folded-input.png' });
   });
 });
@@ -5171,11 +5266,7 @@ test.describe('the twenty-third wave', () => {
       await expect(blur).toBeVisible();
 
       const box = (await blur.boundingBox())!;
-      const others = await page
-        .locator('header, .safe-t')
-        .first()
-        .getByRole('button')
-        .all();
+      const others = await page.locator('header, .safe-t').first().getByRole('button').all();
 
       for (const other of others) {
         const at = await other.boundingBox();
@@ -5286,10 +5377,7 @@ test.describe('the twenty-third wave', () => {
     await makePicture(page, 'the newer one', 2);
 
     await open(page, '/gallery');
-    await expect(page.getByTestId('day-divider').nth(0)).toHaveAttribute(
-      'aria-label',
-      /^Today/,
-    );
+    await expect(page.getByTestId('day-divider').nth(0)).toHaveAttribute('aria-label', /^Today/);
 
     await page.getByRole('button', { name: 'Sort and filter' }).click();
     await page.getByRole('button', { name: /Oldest first/ }).click();
@@ -5314,9 +5402,7 @@ test.describe('the twenty-third wave', () => {
     await expect(page.locator('img[alt*="one"]').first()).toBeVisible();
     await page.screenshot({ path: 'test-results/66-gallery-sorted.png' });
   });
-
 });
-
 
 /**
  * Wave 24: the parameter study module.
@@ -5383,7 +5469,13 @@ test.describe('parameter studies', () => {
      */
     const zones = ['rate-3', 'rate-1', 'rate-2', 'rate-3'];
     for (const zone of zones) {
-      if (await page.getByText('Everything is rated').isVisible().catch(() => false)) break;
+      if (
+        await page
+          .getByText('Everything is rated')
+          .isVisible()
+          .catch(() => false)
+      )
+        break;
       await page.getByTestId(zone).click();
       await page.waitForTimeout(500);
     }
@@ -5572,9 +5664,10 @@ test.describe('the twenty-fifth wave', () => {
 
     // The kind is pre-chosen from the button that opened it, and the rest of
     // the form is the one ComfyUI uses.
-    await expect(
-      sheet.getByRole('button', { name: 'Model server', exact: true }),
-    ).toHaveAttribute('aria-pressed', 'true');
+    await expect(sheet.getByRole('button', { name: 'Model server', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     await sheet.getByPlaceholder('Rented GPU').fill('Downstairs box');
     await sheet.getByPlaceholder('http://127.0.0.1:8080').fill('http://127.0.0.1:8189');
     await sheet.getByRole('button', { name: 'None', exact: true }).click();
@@ -5582,12 +5675,13 @@ test.describe('the twenty-fifth wave', () => {
     await expect(sheet).toHaveCount(0);
 
     // Added, in use, and it has not stood ComfyUI down.
-    const stored = await withApi(async (ctx) =>
-      (await (await ctx.get('/api/connections')).json()) as {
-        kind: string;
-        name: string;
-        isActive: boolean;
-      }[],
+    const stored = await withApi(
+      async (ctx) =>
+        (await (await ctx.get('/api/connections')).json()) as {
+          kind: string;
+          name: string;
+          isActive: boolean;
+        }[],
     );
     expect(stored.find((entry) => entry.name === 'Downstairs box')?.isActive).toBe(true);
     expect(stored.some((entry) => entry.kind === 'comfy' && entry.isActive)).toBe(true);
@@ -5602,9 +5696,7 @@ test.describe('the twenty-fifth wave', () => {
     // The negative prompt node, titled after the prompt we are about to write.
     const graph = JSON.parse(JSON.stringify(sd15Txt2Img)) as Record<string, unknown>;
     (graph['7'] as { _meta?: unknown })._meta = { title: 'House rules' };
-    await withApi((ctx) =>
-      ctx.post('/api/workflows', { data: { name: 'Named field', graph } }),
-    );
+    await withApi((ctx) => ctx.post('/api/workflows', { data: { name: 'Named field', graph } }));
 
     await open(page, '/settings?in=chat');
     const prompts = page.locator('section', {
@@ -5682,12 +5774,8 @@ test.describe('the twenty-fifth wave', () => {
 
       await expect(page.getByText('A harbour at dawn, then.')).toBeVisible();
       // The paragraph in the transcript, not the heading the title also became.
-      await expect(
-        page.getByRole('paragraph').filter({ hasText: 'something calm' }),
-      ).toBeVisible();
-      await expect(page.getByPlaceholder('Say something…')).toHaveValue(
-        'and maybe a lighthouse',
-      );
+      await expect(page.getByRole('paragraph').filter({ hasText: 'something calm' })).toBeVisible();
+      await expect(page.getByPlaceholder('Say something…')).toHaveValue('and maybe a lighthouse');
       await page.screenshot({ path: 'test-results/74-chat-return.png' });
     } finally {
       await llama.dispose();
@@ -5922,7 +6010,9 @@ test.describe('the twenty-sixth wave', () => {
     requested.length = 0;
     await page.locator('main img').first().click();
     await expect(page.getByTestId('viewer-image')).toBeVisible();
-    await expect.poll(() => requested.filter((url) => url.includes('fit=')).length).toBeGreaterThan(0);
+    await expect
+      .poll(() => requested.filter((url) => url.includes('fit=')).length)
+      .toBeGreaterThan(0);
     const halved = new URL(requested.find((url) => url.includes('fit='))!).searchParams.get('fit')!;
     expect(halved).toBe(
       `${Math.round((viewport.width * ratio) / 2)}x${Math.round((viewport.height * ratio) / 2)}`,
@@ -5938,7 +6028,9 @@ test.describe('the twenty-sixth wave', () => {
     await page.locator('main img').first().click();
     await expect(page.getByTestId('viewer-image')).toBeVisible();
     await expect
-      .poll(() => requested.filter((url) => !url.includes('fit=') && !url.includes('preview=')).length)
+      .poll(
+        () => requested.filter((url) => !url.includes('fit=') && !url.includes('preview=')).length,
+      )
       .toBeGreaterThan(0);
   });
 
@@ -6083,14 +6175,14 @@ test.describe('the twenty-seventh wave', () => {
     await page.screenshot({ path: 'test-results/82-sampling.png' });
 
     await page.getByRole('button', { name: 'Done' }).click();
-    await expect(
-      page.getByText('1 parameter overriding the server’s own.'),
-    ).toBeVisible();
+    await expect(page.getByText('1 parameter overriding the server’s own.')).toBeVisible();
 
     // It survives a reload, which is the only proof it reached the server.
     await open(page, '/settings?in=chat');
     await page.getByRole('button', { name: 'Adjust…' }).click();
-    await expect(page.getByRole('textbox', { name: 'Temperature', exact: true })).toHaveValue('0.35');
+    await expect(page.getByRole('textbox', { name: 'Temperature', exact: true })).toHaveValue(
+      '0.35',
+    );
 
     // And one button hands the whole lot back.
     await page.getByRole('button', { name: 'Hand all of it back to the server' }).click();
@@ -6133,10 +6225,11 @@ test.describe('comparing an edit with what it was made from', () => {
     await expect
       .poll(
         async () => {
-          const gallery = await withApi(async (ctx) =>
-            (await (await ctx.get('/api/gallery')).json()) as {
-              items: { images: unknown[] }[];
-            },
+          const gallery = await withApi(
+            async (ctx) =>
+              (await (await ctx.get('/api/gallery')).json()) as {
+                items: { images: unknown[] }[];
+              },
           );
           return gallery.items.reduce((total, item) => total + item.images.length, 0);
         },
@@ -6241,8 +6334,14 @@ test.describe('comparing an edit with what it was made from', () => {
 
     await open(page, '/gallery');
     await page.getByRole('button', { name: 'Grid layout' }).click();
-    await page.getByRole('radiogroup', { name: 'Across' }).getByRole('radio', { name: 'right' }).click();
-    await page.getByRole('radiogroup', { name: 'Down' }).getByRole('radio', { name: 'bottom' }).click();
+    await page
+      .getByRole('radiogroup', { name: 'Across' })
+      .getByRole('radio', { name: 'right' })
+      .click();
+    await page
+      .getByRole('radiogroup', { name: 'Down' })
+      .getByRole('radio', { name: 'bottom' })
+      .click();
     await page.getByRole('button', { name: 'Done' }).click();
 
     await open(page, '/');
@@ -6588,7 +6687,9 @@ test.describe('generating video', () => {
   }
 
   test('marks a video workflow in the picker and plays what it produced', async ({ page }) => {
-    await withApi((ctx) => ctx.post('/api/workflows', { data: { name: 'LTXV', graph: ltxVideoGguf } }));
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'LTXV', graph: ltxVideoGguf } }),
+    );
 
     await open(page, '/');
     await page.getByRole('button', { name: 'Workflow' }).click();
@@ -6941,7 +7042,10 @@ test.describe('on a tablet', () => {
     );
     await open(page, '/settings?in=workflows');
 
-    await page.getByRole('button', { name: /Edit form/ }).first().click();
+    await page
+      .getByRole('button', { name: /Edit form/ })
+      .first()
+      .click();
 
     const preview = page.getByLabel('Preview of the form on a phone');
     await expect(preview).toBeVisible();
