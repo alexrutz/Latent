@@ -32,9 +32,19 @@ export const DEDICATED_ROLES = new Set<ParamRole>([
   'lora_text',
 ]);
 
-/** Whether a field is drawn as a chip, half a row wide, in the shared grid. */
+/**
+ * Whether a field is drawn as a chip, half a row wide, in the shared grid.
+ *
+ * A point line normally takes a whole row — the reason to switch a number to
+ * one is that its values are on screen, and that needs the width. But the
+ * width switch is *offered* for numeric fields, so an explicit half has to
+ * mean something: a switch that cannot change the outcome is worse than an
+ * absent one. Asked for half, a point line gets half.
+ */
 export function isChip(field: ParamField): boolean {
-  return !DEDICATED_ROLES.has(field.role) && !usesPointLine(field);
+  if (DEDICATED_ROLES.has(field.role)) return false;
+  if (usesPointLine(field)) return field.width === 'half';
+  return true;
 }
 
 export interface FormRun {

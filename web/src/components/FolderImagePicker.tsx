@@ -45,11 +45,14 @@ export function FolderImagePicker({
   open,
   onClose,
   onPicked,
+  kind = 'image',
 }: {
   open: boolean;
   onClose: () => void;
   /** The chosen reference, as `root/relative/path.png`. */
   onPicked: (reference: string) => void;
+  /** What this slot can use. A video slot has no business listing pictures. */
+  kind?: 'image' | 'video' | 'audio';
 }) {
   const [root, setRoot] = useState(remembered.root);
   const [path, setPath] = useState(remembered.path);
@@ -82,7 +85,7 @@ export function FolderImagePicker({
   const chosen = SORTS.find((entry) => entry.key === sortKey) ?? SORTS[0]!;
 
   const listing = useQuery({
-    queryKey: ['browse', root, path, query, chosen.key, recursive],
+    queryKey: ['browse', kind, root, path, query, chosen.key, recursive],
     queryFn: () =>
       api.browseFolder({
         root,
@@ -93,6 +96,7 @@ export function FolderImagePicker({
         // Searching implies looking underneath: you know the name, not where it
         // ended up, which is the whole reason you are typing.
         recursive: recursive || query !== '',
+        kind,
       }),
     enabled: open && root !== '',
     retry: false,
@@ -229,28 +233,41 @@ export function FolderImagePicker({
                 {query ? 'Nothing here matches that.' : 'No pictures in this folder.'}
               </p>
             ) : (
-              <div className="grid grid-cols-3 gap-1.5">
-                {data.files.map((file) => (
-                  <button
-                    key={file.path}
-                    type="button"
-                    onClick={() => pick(file)}
-                    title={file.path}
-                    className="aspect-square overflow-hidden rounded-lg border border-line bg-surface-2 active:border-accent"
-                  >
-                    <img
-                      src={browseThumbUrl(`${root}/${file.path}`)}
-                      alt={file.name}
-                      loading="lazy"
-                      className="size-full object-cover"
-                      onError={(event) => {
-                        // A picture Pillow cannot open is a broken file, not a
-                        // broken browser: leave the cell blank and carry on.
-                        event.currentTarget.style.visibility = 'hidden';
-                      }}
-                    />
-                  </button>
-                ))}
+              <div className={cn('gap-1.5', kind === 'image' ? 'grid grid-cols-3' : 'space-y-1')}>
+                {data.files.map((file) =>
+                  kind === 'image' ? (
+                    <button
+                      key={file.path}
+                      type="button"
+                      onClick={() => pick(file)}
+                      title={file.path}
+                      className="aspect-square overflow-hidden rounded-lg border border-line bg-surface-2 active:border-accent"
+                    >
+                      <img
+                        src={browseThumbUrl(`${root}/${file.path}`)}
+                        alt={file.name}
+                        loading="lazy"
+                        className="size-full object-cover"
+                        onError={(event) => {
+                          // A picture Pillow cannot open is a broken file, not a
+                          // broken browser: leave the cell blank and carry on.
+                          event.currentTarget.style.visibility = 'hidden';
+                        }}
+                      />
+                    </button>
+                  ) : (
+                    /* Nothing to show for a clip or a sound, so say what it is. */
+                    <button
+                      key={file.path}
+                      type="button"
+                      onClick={() => pick(file)}
+                      className="flex w-full items-center gap-2 rounded-xl border border-line px-3 py-2 text-left text-sm active:bg-surface-2"
+                    >
+                      <span aria-hidden>{kind === 'video' ? '🎞' : '🔊'}</span>
+                      <span className="min-w-0 flex-1 truncate">{file.name}</span>
+                    </button>
+                  ),
+                )}
               </div>
             )}
 

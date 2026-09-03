@@ -595,6 +595,8 @@ export const api = {
     sort?: string;
     order?: string;
     recursive?: boolean;
+    /** Pictures, clips or sound: a slot only ever shows what it can use. */
+    kind?: string;
   }) => {
     const query = new URLSearchParams({
       root: params.root,
@@ -603,6 +605,7 @@ export const api = {
       sort: params.sort ?? 'date',
       order: params.order ?? 'desc',
       recursive: params.recursive ? 'true' : '',
+      kind: params.kind ?? 'image',
     });
     return request<BrowseListing>(`/api/browse/list?${query.toString()}`);
   },

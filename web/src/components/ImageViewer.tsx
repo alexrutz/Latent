@@ -168,27 +168,67 @@ function useViewSources(
     setDetail(null);
     if (!image || !rendered || native) return;
 
-    const region = visibleRegion(rendered, {
-      width: window.innerWidth,
-      height: window.innerHeight,
-    }, transform);
+    const region = visibleRegion(
+      rendered,
+      {
+        width: window.innerWidth,
+        height: window.innerHeight,
+      },
+      transform,
+    );
     if (!worthRendering(region, rendered, box)) return;
 
     const timer = window.setTimeout(() => {
       setDetail(viewUrl(image, box, regionFraction(region, rendered)));
     }, DETAIL_SETTLE_MS);
     return () => window.clearTimeout(timer);
-  }, [
-    image,
-    rendered,
-    native,
-    box,
-    transform.scale,
-    transform.offsetX,
-    transform.offsetY,
-  ]);
+  }, [image, rendered, native, box, transform.scale, transform.offsetX, transform.offsetY]);
 
   return { fitted, detail, onFittedLoad, box, native };
+}
+
+/**
+ * How fast the clip runs, in steps.
+ *
+ * A video model renders a fixed number of frames and the container is written
+ * at whatever rate the workflow chose, so a clip meant to be five seconds long
+ * often plays at half speed — the frames are all there, the header is simply
+ * wrong. Retiming the file would mean re-encoding it; this changes how it is
+ * played, which is the same result for looking at it.
+ *
+ * Stepped rather than a slider: the useful answers are ratios of the rate it
+ * was written at — twice as fast, half again — and a continuous control makes
+ * you hunt for 2.0 rather than tap it.
+ */
+const SPEEDS = [0.5, 1, 1.5, 2, 3, 4];
+
+function SpeedDial({ value, onChange }: { value: number; onChange: (next: number) => void }) {
+  return (
+    <div
+      className="absolute bottom-16 left-1/2 flex -translate-x-1/2 gap-1 rounded-full bg-black/60 px-1.5 py-1 backdrop-blur"
+      // The video underneath owns pointer events for its own controls; these
+      // are on top of it and must not reach the swipe handler either.
+      onPointerDown={(event) => event.stopPropagation()}
+      onPointerMove={(event) => event.stopPropagation()}
+      onPointerUp={(event) => event.stopPropagation()}
+    >
+      {SPEEDS.map((speed) => (
+        <button
+          key={speed}
+          type="button"
+          onClick={() => onChange(speed)}
+          aria-pressed={speed === value}
+          aria-label={`Play at ${speed}×`}
+          className={cn(
+            'min-w-9 rounded-full px-2 py-1 text-xs tabular-nums',
+            speed === value ? 'bg-white text-black' : 'text-white/80 active:bg-white/20',
+          )}
+        >
+          {speed}×
+        </button>
+      ))}
+    </div>
+  );
 }
 
 export function ImageViewer({
@@ -252,6 +292,25 @@ export function ImageViewer({
    */
   const [controlsVisible, setControlsVisible] = useState(true);
 
+  /*
+   * How fast the clip plays, and a handle on the element playing it.
+   *
+   * `playbackRate` is a property of the element, not an attribute, so React
+   * cannot set it declaratively — it has to be written after the element
+   * exists, and written again whenever the source changes, because loading a
+   * new clip resets it to 1.
+   *
+   * Kept per viewer rather than per clip: it is a decision about the frame rate
+   * the model rendered at, which is a property of the workflow, so the next
+   * clip out of the same one wants the same speed.
+   */
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [speed, setSpeed] = useState(1);
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.playbackRate = speed;
+  }, [speed, index]);
+
   /**
    * The cross-fade between the picture and the one it was edited from.
    *
@@ -311,7 +370,9 @@ export function ImageViewer({
    * zoom you had just set up, seconds after you set it up, for no visible
    * reason. Keyed on the entry's own identity, that cannot happen.
    */
-  const entryKey = entry ? `${entry.record.id}/${entry.image.subfolder}/${entry.image.filename}` : '';
+  const entryKey = entry
+    ? `${entry.record.id}/${entry.image.subfolder}/${entry.image.filename}`
+    : '';
   useEffect(reset, [entryKey, reset]);
 
   /*
@@ -569,8 +630,9 @@ export function ImageViewer({
             keeps a swipe moving to the next output and a tap closing the
             viewer.
           */
-          <div className="flex size-full items-center justify-center">
+          <div className="relative flex size-full items-center justify-center">
             <video
+              ref={videoRef}
               data-testid="viewer-video"
               src={imageUrl(image)}
               controls
@@ -589,6 +651,7 @@ export function ImageViewer({
               onPointerUp={(event) => event.stopPropagation()}
               className="max-h-full max-w-full"
             />
+            {controlsVisible && <SpeedDial value={speed} onChange={setSpeed} />}
           </div>
         ) : (
           <img

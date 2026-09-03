@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
+import { browseKindOf } from '@latent/shared';
 import type { InputImage, ParamField, WidgetValue } from '@latent/shared';
 
 import { api, browseThumbUrl, imageUrl, inputImageUrl } from '../api/client';
@@ -282,7 +283,12 @@ export function ImageField({ field, value, onChange }: ControlProps) {
       </div>
 
       {browsesFolders ? (
-        <FolderImagePicker open={picking} onClose={() => setPicking(false)} onPicked={onChange} />
+        <FolderImagePicker
+          open={picking}
+          onClose={() => setPicking(false)}
+          onPicked={onChange}
+          kind={browseKindOf(field)}
+        />
       ) : (
         <InputImagePicker
           open={picking}

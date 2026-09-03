@@ -197,11 +197,32 @@ function isImageLoaderInput(classType: string, inputName: string, options: Input
   return IMAGE_UPLOAD_CLASSES.has(classType.toLowerCase()) && inputName === 'image';
 }
 
-/** comfyllama's folder browser: an `image` holding `root/relative/path.png`. */
+/**
+ * comfyllama's fields that hold `root/relative/path.ext` rather than a value.
+ *
+ * `LoadImageFromFolder` has one; the reference picker has fifteen, of three
+ * different kinds. Without this they are STRING inputs like any other and
+ * Latent draws them as text boxes — a path somebody would have to type from
+ * memory, which is no way to choose a picture.
+ */
 const FOLDER_IMAGE_CLASS = 'LoadImageFromFolder';
+const REFERENCE_PICKER_CLASS = 'MiniMaxH3ReferencePicker';
+
+/** Which kind of file a browsed slot takes, from the name of the slot. */
+export function browseKindOf(field: {
+  classType: string;
+  inputName: string;
+}): 'image' | 'video' | 'audio' {
+  if (field.classType !== REFERENCE_PICKER_CLASS) return 'image';
+  if (field.inputName.startsWith('video_')) return 'video';
+  if (field.inputName.startsWith('audio_')) return 'audio';
+  return 'image';
+}
 
 function isFolderImageInput(classType: string, inputName: string): boolean {
-  return classType === FOLDER_IMAGE_CLASS && inputName === 'image';
+  if (classType === FOLDER_IMAGE_CLASS) return inputName === 'image';
+  if (classType !== REFERENCE_PICKER_CLASS) return false;
+  return /^(picture|video|audio)_\d+$/.test(inputName);
 }
 
 /**

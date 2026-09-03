@@ -8,6 +8,7 @@ import {
   isLlamaServerField,
   matchSystemPrompt,
   planFormRuns,
+  usesPointLine,
 } from '@latent/shared';
 import type {
   ConnectionSummary,
@@ -620,12 +621,26 @@ function GenerateForm({
                   key={field.id}
                   className={cn('min-w-0', field.width === 'full' && 'col-span-full')}
                 >
-                  <FieldChip
-                    field={field}
-                    value={values[field.id] ?? field.defaultValue}
-                    onChange={(value) => setValue(field.id, value)}
-                    block
-                  />
+                  {/*
+                    A point line that was explicitly set to half width sits in
+                    this grid, and has to stay a point line: swapping it for a
+                    chip here would answer "make it narrower" by silently
+                    replacing the control.
+                  */}
+                  {usesPointLine(field) ? (
+                    <PointLine
+                      field={field}
+                      value={values[field.id] ?? field.defaultValue}
+                      onChange={(value) => setValue(field.id, value)}
+                    />
+                  ) : (
+                    <FieldChip
+                      field={field}
+                      value={values[field.id] ?? field.defaultValue}
+                      onChange={(value) => setValue(field.id, value)}
+                      block
+                    />
+                  )}
                 </div>
               ))}
             </div>

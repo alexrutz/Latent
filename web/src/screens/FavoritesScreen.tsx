@@ -28,7 +28,14 @@ const SORTS: { label: string; value: FavoriteSort }[] = [
  */
 export function FavoritesScreen() {
   const navigate = useNavigate();
-  const [sort, setSort] = useState<FavoriteSort>('rating');
+  /*
+   * Newest first.
+   *
+   * By rating was the old default and it is the wrong question on arrival: a
+   * favourite is already something you liked, so the interesting one is the one
+   * you liked most recently, not the one you rated highest months ago.
+   */
+  const [sort, setSort] = useState<FavoriteSort>('newest');
   const favorites = useFavorites(sort);
   const [settings, updateSettings] = useGridSettings();
   /** Which favourite is open in the viewer, by its id. */
@@ -62,7 +69,10 @@ export function FavoritesScreen() {
         .filter((favorite): favorite is Favorite & { image: GenerationImage } =>
           Boolean(favorite.image),
         )
-        .map((favorite) => ({ record: standInRecord(favorite, favorite.image), image: favorite.image })),
+        .map((favorite) => ({
+          record: standInRecord(favorite, favorite.image),
+          image: favorite.image,
+        })),
     [items],
   );
 
@@ -135,11 +145,7 @@ export function FavoritesScreen() {
       {header}
 
       {settings.favoriteThumbnails ? (
-        <ThumbGrid
-          columns={settings.columns}
-          shapes={shapes}
-          uniform={settings.uniformTiles}
-        >
+        <ThumbGrid columns={settings.columns} shapes={shapes} uniform={settings.uniformTiles}>
           {items.map((favorite, at) => (
             <FavoriteTile
               key={favorite.id}
