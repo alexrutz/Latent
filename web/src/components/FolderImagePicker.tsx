@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { BrowseEntry, BrowseListing } from '@latent/shared';
 
 import { api, browseThumbUrl } from '../api/client';
-import { Button, ErrorNote, Sheet, Spinner, cn } from './ui';
+import { ErrorNote, Sheet, Spinner, cn } from './ui';
 
 /**
  * Choosing a picture out of a folder on the ComfyUI machine.
@@ -263,53 +263,5 @@ export function FolderImagePicker({
         )}
       </div>
     </Sheet>
-  );
-}
-
-/**
- * The field itself: what is chosen, and a button to change it.
- *
- * Deliberately not the upload control's twin. There is no "Choose photo" here,
- * because nothing on this phone can end up in that folder — the picture already
- * exists on the ComfyUI machine and this names one of them.
- */
-export function FolderImageField({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (next: string) => void;
-}) {
-  const [picking, setPicking] = useState(false);
-  const reference = typeof value === 'string' ? value : '';
-  const name = reference.split('/').pop() ?? '';
-
-  return (
-    <div className="flex items-center gap-3">
-      <div className="size-20 shrink-0 overflow-hidden rounded-xl border border-line bg-surface-2">
-        {reference ? (
-          <img
-            src={browseThumbUrl(reference)}
-            alt=""
-            className="size-full object-cover"
-            onError={(event) => {
-              event.currentTarget.style.visibility = 'hidden';
-            }}
-          />
-        ) : (
-          <div className="grid size-full place-items-center text-2xl opacity-30">🗂</div>
-        )}
-      </div>
-
-      <div className="min-w-0 flex-1 space-y-2">
-        <p className="truncate text-sm">{name || 'No picture chosen'}</p>
-        {reference && <p className="truncate text-xs text-muted">{reference}</p>}
-        <Button variant="secondary" size="sm" onClick={() => setPicking(true)}>
-          {reference ? 'Change' : 'Browse folders'}
-        </Button>
-      </div>
-
-      <FolderImagePicker open={picking} onClose={() => setPicking(false)} onPicked={onChange} />
-    </div>
   );
 }

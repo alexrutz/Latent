@@ -2279,18 +2279,24 @@ tag but keeps its switch — the same rule as `use_image`, for the same reason.
 The rest never reach the form, because a saved workflow only carries the widgets
 it was saved with.
 
-**Load Image (Folder Browser)** gets a picker of its own. Its `image` holds a
-path — `output/monday/render_0007.png` — and tapping the field opens a browser
-over the folders comfyllama is configured to serve, with subfolders, thumbnails,
-a search box and sorting by date, name or size.
+**Load Image (Folder Browser)** uses the *same* control as any other image
+input — the folded header, the square preview, the filename, **Replace** and a
+second button beside it — with one difference: that second button says **Browse
+folders** and opens comfyllama's browser instead of the input-folder list. Same
+field, different folder behind it; two components alike in all but one dialog is
+how the two of them drift apart.
 
-It is deliberately not the *Input image* control next to it, which looks similar
-and answers a different question. That one lists ComfyUI's **input** directory,
-where photos sent from the phone land, and it can upload. This one starts at
-**output**, because the commonest thing anybody wants is to feed a finished
-render back in, and nothing on the phone can end up in that folder — the picture
-already exists on the far machine and is chosen, not sent. So the workflow is
-*not* marked img2img-capable by it.
+The folder it opens is the point. The stock list is ComfyUI's **input**
+directory, where photos sent from the phone land. This one starts at **output**,
+because the commonest thing anybody wants is to feed a finished render back in,
+and it carries a path — `output/monday/render_0007.png` — shown under the
+filename, because the same name exists under several roots.
+
+*Replace* still uploads from the camera roll, editor and all. The upload lands
+in ComfyUI's input directory, which the browser also serves, so it is stored as
+`input/<name>` — one kind of value in the field rather than two that look alike
+and resolve differently. The workflow is *not* marked img2img-capable by this
+field, though: the picture it names lives on the far machine.
 
 Latent proxies the browse routes rather than scanning the output folder itself,
 which it could easily do — it already reads the input folder off disk. Which

@@ -2,12 +2,12 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 
 import type { InputImage, ParamField, WidgetValue } from '@latent/shared';
 
-import { api, imageUrl, inputImageUrl } from '../api/client';
+import { api, browseThumbUrl, imageUrl, inputImageUrl } from '../api/client';
 import { useOllamaModels } from '../api/queries';
 import { ImageEditor } from './ImageEditor';
 import { InputImagePicker } from './InputImagePicker';
 import { NumericInput } from './NumericInput';
-import { FolderImageField } from './FolderImagePicker';
+import { FolderImagePicker } from './FolderImagePicker';
 import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
 
 /**
@@ -148,7 +148,25 @@ export function ImageField({ field, value, onChange }: ControlProps) {
   /** Held back for editing rather than uploaded straight away. */
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [picking, setPicking] = useState(false);
-  const filename = typeof value === 'string' ? value : '';
+  const stored = typeof value === 'string' ? value : '';
+
+  /*
+   * The same field, with a different folder behind the second button.
+   *
+   * comfyllama's browser holds `output/monday/render.png` and can reach the
+   * output folder; the stock input holds a filename in ComfyUI's input
+   * directory. Everything else — the fold, the preview, replacing the picture
+   * from the camera roll — is identical, and two components alike in all but
+   * one dialog is how the two of them drift apart.
+   */
+  const browsesFolders = field.control === 'folderImage';
+  /** Only the last segment is a name when the value is a path. */
+  const filename = browsesFolders ? (stored.split('/').pop() ?? '') : stored;
+  const preview = !stored
+    ? ''
+    : browsesFolders
+      ? browseThumbUrl(stored)
+      : imageUrl({ filename: stored, subfolder: '', type: 'input' });
   const [open, setOpen] = useState(() => localStorage.getItem(foldKey(field.id)) !== 'closed');
 
   useEffect(() => {
@@ -181,7 +199,11 @@ export function ImageField({ field, value, onChange }: ControlProps) {
     try {
       const result = await api.upload(file);
       // ComfyUI addresses uploads in subfolders as "sub/name".
-      onChange(result.subfolder ? `${result.subfolder}/${result.name}` : result.name);
+      const uploaded = result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
+      // An upload lands in ComfyUI's input directory, which the folder browser
+      // also serves — so naming it that way keeps one kind of value in the
+      // field, rather than two that look alike and resolve differently.
+      onChange(browsesFolders ? `input/${uploaded}` : uploaded);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Upload failed');
     } finally {
@@ -222,9 +244,9 @@ export function ImageField({ field, value, onChange }: ControlProps) {
 
       <div className={cn('flex items-center gap-3', !open && 'hidden')}>
         <div className="size-20 shrink-0 overflow-hidden rounded-xl border border-line bg-surface-2">
-          {filename ? (
+          {preview ? (
             <img
-              src={imageUrl({ filename, subfolder: '', type: 'input' })}
+              src={preview}
               alt=""
               className="size-full object-cover"
               // A stale filename (input dir cleared) shouldn't show a broken icon.
@@ -239,6 +261,8 @@ export function ImageField({ field, value, onChange }: ControlProps) {
 
         <div className="min-w-0 flex-1 space-y-2">
           <p className="truncate text-sm text-muted">{filename || 'No image selected'}</p>
+          {/* Which folder it came from: the same name exists under several. */}
+          {browsesFolders && stored && <p className="truncate text-[11px] text-muted">{stored}</p>}
           <div className="flex flex-wrap gap-2">
             <Button
               variant="secondary"
@@ -251,18 +275,22 @@ export function ImageField({ field, value, onChange }: ControlProps) {
             {/* The folder on the Latent machine, for reference shots and masks
                 that were never on the phone to begin with. */}
             <Button variant="ghost" size="sm" onClick={() => setPicking(true)}>
-              From folder
+              {browsesFolders ? 'Browse folders' : 'From folder'}
             </Button>
           </div>
         </div>
       </div>
 
-      <InputImagePicker
-        open={picking}
-        onClose={() => setPicking(false)}
-        onPicked={onChange}
-        onEdit={(image) => void editFromFolder(image)}
-      />
+      {browsesFolders ? (
+        <FolderImagePicker open={picking} onClose={() => setPicking(false)} onPicked={onChange} />
+      ) : (
+        <InputImagePicker
+          open={picking}
+          onClose={() => setPicking(false)}
+          onPicked={onChange}
+          onEdit={(image) => void editFromFolder(image)}
+        />
+      )}
 
       {/*
         No `capture` attribute: it forces the camera and hides the photo
@@ -404,9 +432,8 @@ export function FieldEditor({ field, value, onChange }: ControlProps) {
     case 'image':
       return <ImageField field={field} value={value} onChange={onChange} />;
     case 'folderImage':
-      return (
-        <FolderImageField value={typeof value === 'string' ? value : ''} onChange={onChange} />
-      );
+      // The same field; only the folder behind its second button differs.
+      return <ImageField field={field} value={value} onChange={onChange} />;
     case 'text':
     default:
       return (
