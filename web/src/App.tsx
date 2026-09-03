@@ -21,7 +21,7 @@ import { SettingsScreen } from './screens/SettingsScreen';
 import { SetupScreen } from './screens/SetupScreen';
 import { VariationScreen } from './screens/VariationScreen';
 import { useTablet } from './state/layout';
-import { registerScrollContainer } from './state/scroll';
+import { registerScrollContainer, useDocumentScrollAnchor } from './state/scroll';
 import { useLiveSocket } from './state/useLiveSocket';
 
 export function App() {
@@ -35,7 +35,12 @@ export function App() {
    * screen where every pixel of height is text you are reading.
    */
   const onChat = pathname.startsWith('/chat');
-  const authenticated = status.data ? !status.data.authRequired || status.data.authenticated : false;
+  const authenticated = status.data
+    ? !status.data.authRequired || status.data.authenticated
+    : false;
+
+  // The keyboard shifts the page up and does not always shift it back.
+  useDocumentScrollAnchor();
 
   // Only hold a socket open once we're allowed to use the API.
   useLiveSocket(authenticated);

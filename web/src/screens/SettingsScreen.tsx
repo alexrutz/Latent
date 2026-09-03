@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import {
   CHAT_IMAGE_SIZES,
@@ -191,6 +192,62 @@ const AUTO_DELETE_OPTIONS: { label: string; hours: number | null }[] = [
   { label: '1 week', hours: 168 },
   { label: '1 month', hours: 720 },
 ];
+
+/**
+ * Settings, in five pages rather than one.
+ *
+ * Everything here used to be a single column: twelve sections, each with a
+ * paragraph explaining itself, stacked in the order they happened to be
+ * written. Reaching the sign-out button meant a dozen flicks past the workflow
+ * list, and finding a setting you had seen once meant scrolling the whole thing
+ * twice — the second time more slowly.
+ *
+ * The grouping is by *what you came to change*, which is not the same as what
+ * the code is organised by. Where the pictures go and how long they are kept is
+ * one errand; which boxes Latent talks to is another; the chat's opinions are a
+ * third. Each page is now a screen or two, which is short enough that you can
+ * see what is on it without scrolling to find out.
+ */
+const GROUPS = [
+  { id: 'servers', label: 'Servers' },
+  { id: 'workflows', label: 'Workflows' },
+  { id: 'chat', label: 'Chat' },
+  { id: 'pictures', label: 'Pictures' },
+  { id: 'system', label: 'System' },
+] as const;
+
+type SettingsGroup = (typeof GROUPS)[number]['id'];
+
+/**
+ * The page is in the URL, not in a `useState`.
+ *
+ * It costs nothing and buys three things: the back button steps between pages
+ * the way it does everywhere else, "the update button is under System" can be
+ * sent as a link, and anything that wants to open Settings *at* something —
+ * a test, a shortcut from elsewhere in the app — can just say so.
+ */
+function useSettingsGroup(): [SettingsGroup, (group: SettingsGroup) => void] {
+  const [params, setParams] = useSearchParams();
+  const asked = params.get('in');
+  const group = GROUPS.some((entry) => entry.id === asked)
+    ? (asked as SettingsGroup)
+    : GROUPS[0].id;
+  return [
+    group,
+    (next) => {
+      // Replace, so a run along the five tabs does not bury the screen you came
+      // from under five back presses.
+      setParams(
+        (current) => {
+          const updated = new URLSearchParams(current);
+          updated.set('in', next);
+          return updated;
+        },
+        { replace: true },
+      );
+    },
+  ];
+}
 
 function describeHours(hours: number): string {
   if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'}`;
@@ -450,6 +507,7 @@ function KeepInViewLine({ value, onChange }: { value: number; onChange: (value: 
 }
 
 export function SettingsScreen() {
+  const [group, setGroup] = useSettingsGroup();
   const status = useStatus();
   const workflows = useWorkflows();
   const settings = useSettings();
@@ -504,321 +562,379 @@ export function SettingsScreen() {
   const workflowFolders = useMemo(() => groupWorkflows(workflows.data ?? []), [workflows.data]);
 
   return (
-    <div className="readable safe-t space-y-6 px-4 pt-3 pb-6">
-      <h1 className="text-xl font-semibold">Settings</h1>
-
-      {/* Connection ------------------------------------------------- */}
-      <section className="space-y-2">
-        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">ComfyUI</h2>
-        <Card className="divide-y divide-line py-0">
-          <Row
-            label={status.data?.comfyOnline ? 'Connected' : 'Not reachable'}
-            hint={status.data?.activeConnectionName ?? status.data?.comfyUrl ?? undefined}
-          >
-            <span
+    <div className="readable safe-t px-4 pt-3 pb-6">
+      {/*
+        The title and the five tabs stay put while the page under them scrolls,
+        so moving between them never involves scrolling back up first.
+      */}
+      <div className="sticky top-0 z-10 -mx-4 bg-ink/95 px-4 pb-2 backdrop-blur">
+        <h1 className="text-xl font-semibold">Settings</h1>
+        {/*
+          Wrapping, not scrolling sideways. Five of these very nearly fit a
+          phone's width and on the narrowest ones do not, and a tab that has to
+          be scrolled into view is a tab nobody knows is there — the whole point
+          of the row is that the five pages are visible at once.
+        */}
+        <div role="group" aria-label="Settings pages" className="mt-2 flex flex-wrap gap-1">
+          {GROUPS.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              aria-pressed={group === entry.id}
+              onClick={() => setGroup(entry.id)}
               className={cn(
-                'size-2.5 rounded-full',
-                status.data?.comfyOnline ? 'bg-success' : 'bg-danger',
+                'rounded-lg px-2.5 py-1.5 text-xs',
+                group === entry.id ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
               )}
-            />
-          </Row>
-          {status.data?.comfyVersion && <Row label="Version" hint={status.data.comfyVersion} />}
-          {device && (
-            <Row
-              label={device.name}
-              hint={`${formatBytes(device.vramFree)} free of ${formatBytes(device.vramTotal)} VRAM`}
-            />
-          )}
-        </Card>
-      </section>
-
-      <ConnectionsScreen />
-
-      <ComfyFolderSection />
-
-      {/* Workflows -------------------------------------------------- */}
-      <section className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Workflows</h2>
-          <Button
-            variant="secondary"
-            size="sm"
-            busy={importWorkflow.isPending}
-            onClick={() => fileRef.current?.click()}
-          >
-            Import
-          </Button>
+            >
+              {entry.label}
+            </button>
+          ))}
         </div>
+      </div>
 
-        <input
-          ref={fileRef}
-          type="file"
-          accept="application/json,.json"
-          className="hidden"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) void onFile(file);
-            event.target.value = '';
-          }}
-        />
-
-        <ErrorNote>{importError}</ErrorNote>
-
-        {workflows.data?.length === 0 && (
-          <Card>
-            <p className="text-sm text-muted">
-              No workflows yet. Set the ComfyUI folder above and tap{' '}
-              <strong className="text-body">Read workflows</strong> to pull in everything already
-              saved there — or import a single file with the button above.
-            </p>
-          </Card>
-        )}
-
-        {(workflows.data?.length ?? 0) > 0 && (
-          <p className="text-xs text-muted">
-            The switch decides whether a workflow appears in the generate picker.{' '}
-            {workflows.data?.filter((workflow) => workflow.visible).length} of{' '}
-            {workflows.data?.length} shown.
-          </p>
-        )}
-
-        <div className="space-y-2" data-testid="workflow-list">
-          {workflowFolders.map((folder) =>
-            folder.name === '' ? (
-              folder.workflows.map((workflow) => (
-                <WorkflowRow
-                  key={workflow.id}
-                  workflow={workflow}
-                  onEdit={() => setEditing(workflow.id)}
-                />
-              ))
-            ) : (
-              <WorkflowFolder key={folder.name} folder={folder} onEdit={(id) => setEditing(id)} />
-            ),
-          )}
-        </div>
-      </section>
-
-      {/* Shortcut targets ------------------------------------------- */}
-      {(workflows.data?.length ?? 0) > 0 && (
-        <section className="space-y-2">
-          <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
-            Gallery shortcuts
-          </h2>
-          <Card className="space-y-3">
-            <p className="text-xs text-muted">
-              Which workflow the gallery’s buttons should open. Only workflows with an image input
-              can receive a picture.
-            </p>
-            <WorkflowPicker
-              label="img2img"
-              workflows={workflows.data ?? []}
-              value={settings.data?.img2imgWorkflowId ?? null}
-              onChange={(id) => updateSettings.mutate({ img2imgWorkflowId: id })}
-            />
-            <WorkflowPicker
-              label="Upscale"
-              workflows={workflows.data ?? []}
-              value={settings.data?.upscaleWorkflowId ?? null}
-              onChange={(id) => updateSettings.mutate({ upscaleWorkflowId: id })}
-            />
-          </Card>
-        </section>
-      )}
-
-      <SystemPromptsSection />
-
-      <ChatSection />
-
-      {/* Generating -------------------------------------------------- */}
-      <section className="space-y-2">
-        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Generating</h2>
-        <Card className="space-y-3">
-          <p className="text-xs text-muted">
-            What <strong className="text-body">Generate</strong> does about work already queued.
-            Building a batch up to compare later wants the first; iterating on a prompt wants one of
-            the others, because eight renders of wording you have just changed your mind about are
-            eight renders of nothing.
-          </p>
-          <div className="space-y-1">
-            {QUEUE_POLICIES.map((option) => {
-              const active = (settings.data?.queuePolicy ?? 'append') === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() => updateSettings.mutate({ queuePolicy: option.value })}
-                  className={cn(
-                    'flex w-full flex-col items-start gap-0.5 rounded-lg px-3 py-2 text-left',
-                    active ? 'bg-accent/15 text-accent' : 'bg-surface-2 active:bg-surface-3',
-                  )}
+      <div className="space-y-6 pt-3">
+        {group === 'servers' && (
+          <>
+            {/* Connection ------------------------------------------------- */}
+            <section className="space-y-2">
+              <h2 className="text-xs font-medium tracking-wide text-muted uppercase">ComfyUI</h2>
+              <Card className="divide-y divide-line py-0">
+                <Row
+                  label={status.data?.comfyOnline ? 'Connected' : 'Not reachable'}
+                  hint={status.data?.activeConnectionName ?? status.data?.comfyUrl ?? undefined}
                 >
-                  <span className="text-sm">{option.label}</span>
-                  <span className="text-[11px] text-muted">{option.hint}</span>
-                </button>
-              );
-            })}
-          </div>
-          <p className="text-[11px] text-muted">
-            Endless generation ignores this: there, Generate queues nothing at all — it hands over
-            the settings for the next run.
-          </p>
-        </Card>
-      </section>
+                  <span
+                    className={cn(
+                      'size-2.5 rounded-full',
+                      status.data?.comfyOnline ? 'bg-success' : 'bg-danger',
+                    )}
+                  />
+                </Row>
+                {status.data?.comfyVersion && (
+                  <Row label="Version" hint={status.data.comfyVersion} />
+                )}
+                {device && (
+                  <Row
+                    label={device.name}
+                    hint={`${formatBytes(device.vramFree)} free of ${formatBytes(device.vramTotal)} VRAM`}
+                  />
+                )}
+              </Card>
+            </section>
 
-      {/* Display ---------------------------------------------------- */}
-      <section className="space-y-2">
-        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Display</h2>
-        <Card>
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-sm">Blur every image</p>
-              <p className="text-xs text-muted">
-                Thumbnails, previews and the viewer, everywhere in the app. Kept on this device.
-              </p>
-            </div>
-            <Toggle checked={blurred} onChange={setBlurred} label="Blur every image" />
-          </div>
-        </Card>
-      </section>
+            <ConnectionsScreen />
 
-      {/* Archive ---------------------------------------------------- */}
-      <section className="space-y-2">
-        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Saved images</h2>
-        <Card className="space-y-3">
-          <p className="text-xs text-muted">
-            Rating an image copies it onto this device, so it stays available after the ComfyUI
-            instance that produced it is gone. Keeping one does the same without the stars.
-          </p>
+            <ComfyFolderSection />
+          </>
+        )}
 
-          {/*
+        {group === 'workflows' && (
+          <>
+            {/* Workflows -------------------------------------------------- */}
+            <section className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
+                  Workflows
+                </h2>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  busy={importWorkflow.isPending}
+                  onClick={() => fileRef.current?.click()}
+                >
+                  Import
+                </Button>
+              </div>
+
+              <input
+                ref={fileRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void onFile(file);
+                  event.target.value = '';
+                }}
+              />
+
+              <ErrorNote>{importError}</ErrorNote>
+
+              {workflows.data?.length === 0 && (
+                <Card>
+                  <p className="text-sm text-muted">
+                    No workflows yet. Set the ComfyUI folder above and tap{' '}
+                    <strong className="text-body">Read workflows</strong> to pull in everything
+                    already saved there — or import a single file with the button above.
+                  </p>
+                </Card>
+              )}
+
+              {(workflows.data?.length ?? 0) > 0 && (
+                <p className="text-xs text-muted">
+                  {workflows.data?.filter((workflow) => workflow.visible).length} of{' '}
+                  {workflows.data?.length} shown in the generate picker.
+                </p>
+              )}
+
+              <div className="space-y-2" data-testid="workflow-list">
+                {workflowFolders.map((folder) =>
+                  folder.name === '' ? (
+                    folder.workflows.map((workflow) => (
+                      <WorkflowRow
+                        key={workflow.id}
+                        workflow={workflow}
+                        onEdit={() => setEditing(workflow.id)}
+                      />
+                    ))
+                  ) : (
+                    <WorkflowFolder
+                      key={folder.name}
+                      folder={folder}
+                      onEdit={(id) => setEditing(id)}
+                    />
+                  ),
+                )}
+              </div>
+            </section>
+
+            {/* Shortcut targets ------------------------------------------- */}
+            {(workflows.data?.length ?? 0) > 0 && (
+              <section className="space-y-2">
+                <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
+                  Gallery shortcuts
+                </h2>
+                <Card className="space-y-3">
+                  <p className="text-xs text-muted">
+                    Which workflow the gallery’s buttons open. Only one with an image input can
+                    receive a picture.
+                  </p>
+                  <WorkflowPicker
+                    label="img2img"
+                    workflows={workflows.data ?? []}
+                    value={settings.data?.img2imgWorkflowId ?? null}
+                    onChange={(id) => updateSettings.mutate({ img2imgWorkflowId: id })}
+                  />
+                  <WorkflowPicker
+                    label="Upscale"
+                    workflows={workflows.data ?? []}
+                    value={settings.data?.upscaleWorkflowId ?? null}
+                    onChange={(id) => updateSettings.mutate({ upscaleWorkflowId: id })}
+                  />
+                </Card>
+              </section>
+            )}
+          </>
+        )}
+
+        {group === 'chat' && (
+          <>
+            <SystemPromptsSection />
+
+            <ChatSection />
+          </>
+        )}
+
+        {group === 'pictures' && (
+          <>
+            {/* Generating -------------------------------------------------- */}
+            <section className="space-y-2">
+              <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Generating</h2>
+              <Card className="space-y-3">
+                <p className="text-xs text-muted">
+                  What <strong className="text-body">Generate</strong> does about work already
+                  queued.
+                </p>
+                <div className="space-y-1">
+                  {QUEUE_POLICIES.map((option) => {
+                    const active = (settings.data?.queuePolicy ?? 'append') === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => updateSettings.mutate({ queuePolicy: option.value })}
+                        className={cn(
+                          'flex w-full flex-col items-start gap-0.5 rounded-lg px-3 py-2 text-left',
+                          active ? 'bg-accent/15 text-accent' : 'bg-surface-2 active:bg-surface-3',
+                        )}
+                      >
+                        <span className="text-sm">{option.label}</span>
+                        <span className="text-[11px] text-muted">{option.hint}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] text-muted">
+                  Endless generation ignores this — it queues nothing at all.
+                </p>
+              </Card>
+            </section>
+
+            {/* Display ---------------------------------------------------- */}
+            <section className="space-y-2">
+              <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Display</h2>
+              <Card>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm">Blur every image</p>
+                    <p className="text-xs text-muted">
+                      Everywhere in the app. Kept on this device.
+                    </p>
+                  </div>
+                  <Toggle checked={blurred} onChange={setBlurred} label="Blur every image" />
+                </div>
+              </Card>
+            </section>
+
+            {/* Archive ---------------------------------------------------- */}
+            <section className="space-y-2">
+              <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
+                Saved images
+              </h2>
+              <Card className="space-y-3">
+                <p className="text-xs text-muted">
+                  Rating or keeping an image copies it here, so it outlives the ComfyUI instance
+                  that made it.
+                </p>
+
+                {/*
             The counterweight to how cheap generating is: without a cleanup the
             gallery becomes thousands of near-misses you scrolled past once,
             which makes the good ones harder to find rather than easier.
           */}
-          <div className="space-y-1.5">
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="text-sm">Delete unkept runs after</span>
-              <span className="text-xs text-muted">
-                {settings.data?.autoDeleteHours
-                  ? describeHours(settings.data.autoDeleteHours)
-                  : 'never'}
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {AUTO_DELETE_OPTIONS.map((option) => {
-                const active = (settings.data?.autoDeleteHours ?? null) === option.hours;
-                return (
-                  <button
-                    key={option.label}
-                    type="button"
-                    aria-pressed={active}
-                    onClick={() => updateSettings.mutate({ autoDeleteHours: option.hours })}
-                    className={cn(
-                      'rounded-lg px-2.5 py-1.5 text-xs',
-                      active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
-                    )}
+                <div className="space-y-1.5">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-sm">Delete unkept runs after</span>
+                    <span className="text-xs text-muted">
+                      {settings.data?.autoDeleteHours
+                        ? describeHours(settings.data.autoDeleteHours)
+                        : 'never'}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {AUTO_DELETE_OPTIONS.map((option) => {
+                      const active = (settings.data?.autoDeleteHours ?? null) === option.hours;
+                      return (
+                        <button
+                          key={option.label}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() => updateSettings.mutate({ autoDeleteHours: option.hours })}
+                          className={cn(
+                            'rounded-lg px-2.5 py-1.5 text-xs',
+                            active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                          )}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[11px] text-muted">
+                    One rated, kept or favourited image keeps its whole run. Imported folders are
+                    never touched.
+                  </p>
+                </div>
+                <Row
+                  label={`${archive.data?.images ?? 0} images stored`}
+                  hint={formatBytes(archive.data?.bytes ?? 0)}
+                />
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    busy={pruning}
+                    onClick={async () => {
+                      setPruning(true);
+                      try {
+                        const { removed } = await api.pruneArchive();
+                        setPruneResult(
+                          `Removed ${removed} unrated ${removed === 1 ? 'copy' : 'copies'}.`,
+                        );
+                        await archive.refetch();
+                      } finally {
+                        setPruning(false);
+                      }
+                    }}
                   >
-                    {option.label}
-                  </button>
-                );
-              })}
-            </div>
-            <p className="text-[11px] text-muted">
-              Anything rated, kept or favourited stays — and one of those anywhere in a run keeps
-              the whole run, so a batch is never half-deleted. Imported folders are never touched.
-            </p>
-          </div>
-          <Row
-            label={`${archive.data?.images ?? 0} images stored`}
-            hint={formatBytes(archive.data?.bytes ?? 0)}
-          />
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              busy={pruning}
-              onClick={async () => {
-                setPruning(true);
-                try {
-                  const { removed } = await api.pruneArchive();
-                  setPruneResult(
-                    `Removed ${removed} unrated ${removed === 1 ? 'copy' : 'copies'}.`,
-                  );
-                  await archive.refetch();
-                } finally {
-                  setPruning(false);
-                }
-              }}
-            >
-              Remove unrated copies
-            </Button>
-          </div>
-          {pruneResult && <p className="text-xs text-muted">{pruneResult}</p>}
-        </Card>
-      </section>
+                    Remove unrated copies
+                  </Button>
+                </div>
+                {pruneResult && <p className="text-xs text-muted">{pruneResult}</p>}
+              </Card>
+            </section>
 
-      {/* Folder import ---------------------------------------------- */}
-      <ImportSection />
+            {/* Folder import ------------------------------------------ */}
+            <ImportSection />
+          </>
+        )}
 
-      {/* Software --------------------------------------------------- */}
-      {status.data?.updateEnabled && <UpdateSection />}
+        {group === 'system' && (
+          <>
+            {/* Software --------------------------------------------------- */}
+            {status.data?.updateEnabled && <UpdateSection />}
 
-      {/* Maintenance ------------------------------------------------ */}
-      {status.data?.terminalEnabled && (
-        <section className="space-y-2">
-          <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Maintenance</h2>
-          <Card className="space-y-3">
-            <p className="text-xs text-muted">
-              A shell on the machine running Latent. Enabled because this server was started with
-              LATENT_TERMINAL set.
-            </p>
-            <Button variant="secondary" onClick={() => setTerminalOpen(true)}>
-              Open terminal
-            </Button>
-          </Card>
-        </section>
-      )}
+            {/* Maintenance ------------------------------------------------ */}
+            {status.data?.terminalEnabled && (
+              <section className="space-y-2">
+                <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
+                  Maintenance
+                </h2>
+                <Card className="space-y-3">
+                  <p className="text-xs text-muted">
+                    A shell on the machine running Latent.
+                  </p>
+                  <Button variant="secondary" onClick={() => setTerminalOpen(true)}>
+                    Open terminal
+                  </Button>
+                </Card>
+              </section>
+            )}
 
-      {/* Session ---------------------------------------------------- */}
-      <section className="space-y-2">
-        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Session</h2>
-        {/*
+            {/* Session ---------------------------------------------------- */}
+            <section className="space-y-2">
+              <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Session</h2>
+              {/*
           The archive key is derived from the password and held only in memory,
           so a restarted server leaves you signed in with the archive shut. This
           is the way back that does not involve signing out to fix something
           that is not a sign-in problem.
         */}
-        {status.data?.archiveLocked && (
-          <Card className="space-y-3">
-            <p className="text-xs text-warn">
-              The image archive is locked, so importing and keeping images are unavailable. It needs
-              the same password you signed in with.
+              {status.data?.archiveLocked && (
+                <Card className="space-y-3">
+                  <p className="text-xs text-warn">
+                    The image archive is locked. Unlocking it needs the password you signed in with.
+                  </p>
+                  <Button variant="primary" onClick={() => setUnlocking(true)}>
+                    Unlock the archive
+                  </Button>
+                </Card>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <Button variant="secondary" onClick={() => setChangingPassword(true)}>
+                  Change password
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={async () => {
+                    await api.logout();
+                    window.location.reload();
+                  }}
+                >
+                  Sign out
+                </Button>
+              </div>
+            </section>
+
+            <p className="pt-2 text-center text-xs text-muted">
+              Latent — a mobile client for ComfyUI
             </p>
-            <Button variant="primary" onClick={() => setUnlocking(true)}>
-              Unlock the archive
-            </Button>
-          </Card>
+          </>
         )}
-
-        <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" onClick={() => setChangingPassword(true)}>
-            Change password
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={async () => {
-              await api.logout();
-              window.location.reload();
-            }}
-          >
-            Sign out
-          </Button>
-        </div>
-      </section>
-
-      <p className="pt-2 text-center text-xs text-muted">Latent — a mobile client for ComfyUI</p>
+      </div>
 
       {editing && <FormEditorSheet workflowId={editing} onClose={() => setEditing(null)} />}
       {changingPassword && <PasswordSheet onClose={() => setChangingPassword(false)} />}
@@ -2552,9 +2668,8 @@ function ComfyFolderSection() {
       <h2 className="text-xs font-medium tracking-wide text-muted uppercase">ComfyUI folder</h2>
       <Card className="space-y-3">
         <p className="text-xs text-muted">
-          Where ComfyUI is installed, on the machine running Latent. Everything else is found from
-          there: <code>output</code> to import from, <code>input</code> to feed pictures in, and{' '}
-          <code>user/default/workflows</code> to read workflows out of.
+          Where ComfyUI is installed, on the machine running Latent. <code>output</code>,{' '}
+          <code>input</code> and the workflow folder are found from there.
         </p>
 
         <div className="flex gap-2">
@@ -2596,8 +2711,8 @@ function ComfyFolderSection() {
         */}
         <div className="space-y-1.5 border-t border-line pt-3">
           <p className="text-xs text-muted">
-            Only workflows whose file name starts with this are read, and the prefix is hidden from
-            the name. Leave it empty to read everything.
+            Only file names starting with this are read, and the prefix is then hidden. Empty reads
+            everything.
           </p>
           <div className="flex gap-2">
             <input
@@ -2616,8 +2731,8 @@ function ComfyFolderSection() {
 
         <div className="space-y-1.5 border-t border-line pt-3">
           <p className="text-xs text-muted">
-            Reads every matching workflow saved in that installation. They arrive switched off —
-            turn on the ones you use below, so the generate picker stays short.
+            Reads every matching workflow in that installation. They arrive switched off; turn on
+            the ones you use.
           </p>
           <Button
             variant="secondary"

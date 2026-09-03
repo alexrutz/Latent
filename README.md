@@ -166,6 +166,10 @@ down the side, and the render on screen beside the form that made it. See
 - **Installable.** Add it to your home screen and it runs full-screen like an app.
 - **Password protected.** The first person to open a new install chooses the
   password.
+- **Settings in five pages.** *Servers*, *Workflows*, *Chat*, *Pictures* and
+  *System* — grouped by the errand you came to do rather than in the order they
+  were written, so none of them is more than a screen or two. The page you are
+  on is in the address, so a link can point straight at one.
 - **Settings that outlive the project folder.** Everything you arrange is
   mirrored to two files one directory above the checkout, and the database and
   image archive live there too — so a clean reinstall keeps your gallery, your
@@ -298,7 +302,7 @@ was started with `ENABLE_HTTPS=true` — a self-signed certificate.
 value replaces the auto-generated `OPEN_BUTTON_TOKEN`, which you otherwise
 cannot read without SSHing into the box.
 
-Then in Latent, **Settings → Connections → Add**:
+Then in Latent, **Settings → Servers → Connections → Add**:
 
 | Field | Value |
 | --- | --- |
@@ -336,7 +340,7 @@ everything in known places under it, so the rest follows —
 <ComfyUI>/user/default/workflows    every workflow you have ever saved
 ```
 
-Enter it under **Settings → ComfyUI folder** and tap **Read workflows**. That
+Enter it under **Settings → Servers → ComfyUI folder** and tap **Read workflows**. That
 converts the editor's own save format on the way in: the positional widget lists
 those files use are walked against `/object_info`, so `20` is understood to be
 `steps` without anybody re-exporting anything.
@@ -360,7 +364,7 @@ real subfolder shows up as `portraits/closeup` and a naming scheme as
 `SDXL_fast`; both are treated as folders you can fold shut. A folder of one is
 not a folder — those stay in the flat list.
 
-An *Export (API)* file still imports one at a time through **Settings → Import**,
+An *Export (API)* file still imports one at a time through **Settings → Workflows → Import**,
 and so does an editor file if you would rather pick it by hand.
 
 If a workflow uses a node this ComfyUI does not have, or has nothing in it that
@@ -372,7 +376,7 @@ time.
 Latent identifies fields by node class and input name. That covers the usual
 workflows, but no heuristic handles every custom node — anything it doesn't
 recognise goes to **Advanced** rather than being dropped. Use
-**Settings → Edit form** to show, hide, rename or promote any field. Those
+**Settings → Workflows → Edit form** to show, hide, rename or promote any field. Those
 edits are stored separately from the derived form, so **Refresh models** (which
 re-reads node definitions after you install something new) never overwrites them.
 
@@ -385,7 +389,7 @@ are looking at.
 
 ### Building the form
 
-**Settings → Edit form** is a layout tool, not a list of switches:
+**Settings → Workflows → Edit form** is a layout tool, not a list of switches:
 
 - **Drag the handle** on any field to reorder it. The order here is the order on
   the Generate screen.
@@ -399,7 +403,7 @@ are looking at.
 ### Sliders, or a line of points
 
 Every numeric field has two ways of being edited, chosen per field under
-**Settings → Edit form**:
+**Settings → Workflows → Edit form**:
 
 - **Slider** — the chip opens a sheet with a slider and a keyboard. Right for a
   value that could be anything.
@@ -464,7 +468,7 @@ only ever held in memory, so restarting the Latent server takes it. The *session
 survives — the cookie is signed against the stored password hash, so it keeps
 verifying — which leaves the app signed in, generating perfectly well, and unable
 to import or keep an image. When that happens a bar appears across the top and
-Settings → Session offers **Unlock the archive**; both ask for the same password
+Settings → System → Session offers **Unlock the archive**; both ask for the same password
 you sign in with, and anything that fails because the archive is shut opens the
 same dialog on the spot. Signing out is not needed and never was the point.
 Setting `LATENT_PASSWORD` skips all of this: the archive is unsealed at boot.
@@ -706,7 +710,7 @@ input, and survives a reload.
 
 **A folder at a time.** `<ComfyUI>/output` is routinely tens of thousands of
 files in dozens of dated folders, and a flat list of all of them is something
-nobody can find anything in. Settings → *Import from a folder* walks the tree
+nobody can find anything in. Settings → Pictures → *Import from a folder* walks the tree
 one level at a time, with the image count on each folder, and imports
 a single picture, a selection, or a whole folder and everything under it in one
 request — the expansion happens on the server, so a phone never sends ten
@@ -726,7 +730,7 @@ Latent existed. Pictures with no metadata, or from a workflow you do not have,
 come in as before.
 
 
-**Settings → Import from a folder.** Give it a path, and Latent walks it
+**Settings → Pictures → Import from a folder.** Give it a path, and Latent walks it
 recursively, lists every image, and marks the ones already in your library.
 Select what you want and import — the files are copied into the same encrypted
 archive as generated work and can be rated, favourited and browsed identically.
@@ -755,7 +759,7 @@ and text that is already there is never doubled.
 
 ## What Generate does about the queue
 
-**Settings → Generating.** Three choices, because which one is right depends
+**Settings → Pictures → Generating.** Three choices, because which one is right depends
 entirely on how you are working:
 
 | | |
@@ -914,7 +918,7 @@ keyboard is worst at. The **Chat** tab connects Latent to a local
 anything else speaking its OpenAI-compatible API — so you can describe what you
 are after in prose, be talked out of it, and end up with a prompt.
 
-Add it under **Settings → Connections** — the same list ComfyUI's own address
+Add it under **Settings → Servers → Connections** — the same list ComfyUI's own address
 lives in, with the same dialog — as a **Model server**, and press Test; it
 reports the models it found. Nothing else is required: no key, no account, and
 the conversation never leaves your network. Several can be kept and switched
@@ -2330,6 +2334,20 @@ directory, where photos sent from the phone land. This one starts at **output**,
 because the commonest thing anybody wants is to feed a finished render back in,
 and it carries a path — `output/monday/render_0007.png` — shown under the
 filename, because the same name exists under several roots.
+
+**Favourites, as another category.** Every folder and every file in the browser
+has a star beside it, and starring one puts it in a **★ Favourites** chip beside
+`output` and `input`. Reference material is reused and the same handful of it is
+reused most — the sketch a series is built on, the folder of masks, the one
+photograph every portrait starts from — and finding those by walking down from
+`output` is a cost paid per picture. A starred folder opens where it actually
+lives, so the category is a shortcut into the browser rather than a copy of it.
+
+The list is kept with the settings, not on the device: what you reference is a
+property of the installation, not of the phone you picked it from. A slot only
+offers what it can load — a starred clip does not appear in a picture slot —
+but starring is against the whole list, so a picture slot never drops the clips
+it is not showing.
 
 *Replace* still uploads from the camera roll, editor and all. The upload lands
 in ComfyUI's input directory, which the browser also serves, so it is stored as

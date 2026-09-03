@@ -624,7 +624,19 @@ function mergeSetting(defaults: object, stored: object): object {
 /** Settings held as a group under one key rather than as a single value. */
 function isObjectSetting(key: string): boolean {
   const value = (DEFAULT_SETTINGS as unknown as Record<string, unknown>)[key];
-  return typeof value === 'object' && value !== null;
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Settings held as a list under one key.
+ *
+ * Stored as JSON like the groups above, but never merged: a list is one value,
+ * and `mergeSetting` on an array would key it by index and hand back an object
+ * with `0` and `1` on it. Removing the last favourite has to mean an empty
+ * list, not "no change".
+ */
+function isListSetting(key: string): boolean {
+  return Array.isArray((DEFAULT_SETTINGS as unknown as Record<string, unknown>)[key]);
 }
 
 function toChat(row: ChatRow): ChatConversation {
@@ -1071,6 +1083,7 @@ const DEFAULT_SETTINGS: AppSettings = {
    * empty to go back to reading the whole installation.
    */
   workflowPrefix: 'API_',
+  browseFavorites: [],
 };
 
 export class Store {
@@ -1152,11 +1165,9 @@ export class Store {
 
   /** Only ever set from the first thing the user said, so a list is scannable. */
   renameChat(id: string, title: string): void {
-    this.db.prepare('UPDATE chats SET title = ?, updated_at = ? WHERE id = ?').run(
-      title.slice(0, 120),
-      Date.now(),
-      id,
-    );
+    this.db
+      .prepare('UPDATE chats SET title = ?, updated_at = ? WHERE id = ?')
+      .run(title.slice(0, 120), Date.now(), id);
   }
 
   deleteChat(id: string): void {
@@ -1506,7 +1517,11 @@ export class Store {
    * ComfyUI happened to file it under — `images`, `gifs`, `videos` — says
    * nothing reliable about that.
    */
-  addImages(promptId: string, nodeId: string, images: (ComfyImageRef & { kind?: MediaKind })[]): void {
+  addImages(
+    promptId: string,
+    nodeId: string,
+    images: (ComfyImageRef & { kind?: MediaKind })[],
+  ): void {
     const generation = this.db
       .prepare<[string], { id: string }>('SELECT id FROM generations WHERE prompt_id = ?')
       .get(promptId);
@@ -1688,8 +1703,7 @@ export class Store {
 
     return {
       items: page.map((row) => this.hydrateGeneration(row)),
-      nextCursor:
-        hasMore && last ? `${last.created_at}_${last.id}_${last.best_rating ?? 0}` : null,
+      nextCursor: hasMore && last ? `${last.created_at}_${last.id}_${last.best_rating ?? 0}` : null,
     };
   }
 
@@ -1739,9 +1753,7 @@ export class Store {
 
   private hydrateGeneration(row: GenerationRow): GenerationRecord {
     const images = this.db
-      .prepare<[string], ImageRow>(
-        'SELECT * FROM images WHERE generation_id = ? ORDER BY id ASC',
-      )
+      .prepare<[string], ImageRow>('SELECT * FROM images WHERE generation_id = ? ORDER BY id ASC')
       .all(row.id);
 
     return {
@@ -2016,8 +2028,7 @@ export class Store {
       .prepare<[string], FavoriteRow>('SELECT * FROM favorites WHERE id = ?')
       .get(id);
     if (!row) return null;
-    const available =
-      row.workflow_id !== null && this.getWorkflow(row.workflow_id) !== null;
+    const available = row.workflow_id !== null && this.getWorkflow(row.workflow_id) !== null;
     return toFavorite(
       row,
       available,
@@ -2456,7 +2467,14 @@ export class Store {
         `INSERT INTO system_prompts (id, name, text, position, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, input.name.trim(), input.text, input.position ?? this.countSystemPrompts(), now, now);
+      .run(
+        id,
+        input.name.trim(),
+        input.text,
+        input.position ?? this.countSystemPrompts(),
+        now,
+        now,
+      );
     return this.getSystemPrompt(id) as SystemPrompt;
   }
 
@@ -2557,7 +2575,9 @@ export class Store {
         "SELECT filename, subfolder FROM images WHERE type = 'import'",
       )
       .all();
-    return new Set(rows.map((row) => (row.subfolder ? `${row.subfolder}/${row.filename}` : row.filename)));
+    return new Set(
+      rows.map((row) => (row.subfolder ? `${row.subfolder}/${row.filename}` : row.filename)),
+    );
   }
 
   /**
@@ -2590,9 +2610,7 @@ export class Store {
   /** Archived images nobody rated, offered up for cleanup. */
   listUnratedArchived(): ImageRow[] {
     return this.db
-      .prepare<[], ImageRow>(
-        'SELECT * FROM images WHERE archived_path IS NOT NULL AND rating = 0',
-      )
+      .prepare<[], ImageRow>('SELECT * FROM images WHERE archived_path IS NOT NULL AND rating = 0')
       .all();
   }
 
@@ -2730,9 +2748,7 @@ export class Store {
             'SELECT COUNT(*) AS count FROM connections WHERE kind = ?',
           )
           .get(kind)
-      : this.db
-          .prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM connections')
-          .get();
+      : this.db.prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM connections').get();
     return row?.count ?? 0;
   }
 
@@ -2868,7 +2884,9 @@ export class Store {
   }
 
   getSettings(): AppSettings {
-    const rows = this.db.prepare<[], { key: string; value: string }>('SELECT * FROM settings').all();
+    const rows = this.db
+      .prepare<[], { key: string; value: string }>('SELECT * FROM settings')
+      .all();
     const settings: Record<string, unknown> = { ...DEFAULT_SETTINGS };
     for (const row of rows) {
       if (!(row.key in DEFAULT_SETTINGS)) continue;
@@ -2880,6 +2898,10 @@ export class Store {
        * JSON under one key, merged over the defaults so a value added in a
        * later version appears rather than being undefined.
        */
+      if (isListSetting(row.key)) {
+        settings[row.key] = parseJson<unknown[]>(row.value, []);
+        continue;
+      }
       if (isObjectSetting(row.key)) {
         settings[row.key] = mergeSetting(
           (DEFAULT_SETTINGS as unknown as Record<string, object>)[row.key] ?? {},
@@ -2903,9 +2925,13 @@ export class Store {
     );
     const current = this.getSettings() as unknown as Record<string, unknown>;
 
-
     for (const [key, value] of Object.entries(patch)) {
       if (!(key in DEFAULT_SETTINGS)) continue;
+
+      if (isListSetting(key)) {
+        upsert.run(key, JSON.stringify(Array.isArray(value) ? value : []));
+        continue;
+      }
 
       // Patched a field at a time, so setting the chat's model does not
       // silently reset which system prompt it uses.
@@ -3040,10 +3066,17 @@ export class Store {
    */
   importUiState(state: UiState, makeId: () => string): void {
     const settings = this.getSettings();
+    /*
+     * "Not set" for a list is an empty one, not null — a setting stored as a
+     * list always comes back as an array, so the null test alone would call an
+     * install with no favourites yet "already has favourites" and never restore
+     * the ones in the file.
+     */
+    const unset = (value: unknown) => value == null || (Array.isArray(value) && value.length === 0);
     const missing = Object.fromEntries(
       Object.entries(state.settings ?? {}).filter(
         ([key, value]) =>
-          key in settings && value != null && settings[key as keyof AppSettings] == null,
+          key in settings && !unset(value) && unset(settings[key as keyof AppSettings]),
       ),
     ) as Partial<AppSettings>;
     if (Object.keys(missing).length > 0) this.updateSettings(missing);

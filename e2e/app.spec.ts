@@ -278,7 +278,7 @@ async function seedWorkflow(name = WORKFLOW_NAME) {
 }
 
 async function importViaUi(page: Page, name: string, graph: unknown) {
-  await open(page, '/settings');
+  await open(page, '/settings?in=workflows');
   // Exact: a configured import folder puts a "Show <path>" button on the same
   // screen, and those paths contain the word "import".
   await page.getByRole('button', { name: 'Import', exact: true }).click();
@@ -1052,7 +1052,7 @@ test.describe('the phone ergonomics pass', () => {
    * three taps too many — so a field can be a line of pre-set points instead.
    */
   test('turns a number into a line of points you tap', async ({ page }) => {
-    await open(page, '/settings');
+    await open(page, '/settings?in=workflows');
     await page.getByRole('button', { name: 'Edit form' }).click();
 
     const row = page.locator('[data-field="3.steps"]');
@@ -1133,7 +1133,7 @@ test.describe('the phone ergonomics pass', () => {
    * be able to keep the arrangement and come back to it.
    */
   test('saves a settings layout and restores it in one tap', async ({ page }) => {
-    await open(page, '/settings');
+    await open(page, '/settings?in=workflows');
     await page.getByRole('button', { name: 'Edit form' }).click();
 
     /** The editor card for a field, keyed by the id the schema gave it. */
@@ -1933,7 +1933,7 @@ test.describe('the fixes wave ten asked for', () => {
    * centred static position and the translate carried it off the right end.
    */
   test('draws the switch knob inside its own track', async ({ page }) => {
-    await open(page, '/settings');
+    await open(page, '/settings?in=pictures');
 
     const track = page.getByRole('switch', { name: 'Blur every image' });
     const knob = track.locator('span');
@@ -2026,7 +2026,7 @@ test.describe('the fixes wave ten asked for', () => {
    * editor a layout tool rather than a list of switches.
    */
   test('rearranges the form by dragging, and the Generate screen follows', async ({ page }) => {
-    await open(page, '/settings');
+    await open(page, '/settings?in=workflows');
     await page.getByRole('button', { name: 'Edit form' }).click();
 
     // Width first: a full row is the layout choice the two-column grid needs.
@@ -2305,6 +2305,10 @@ test.describe('the twelfth wave', () => {
       await page.getByRole('button', { name: 'Save' }).first().click();
       await page.getByRole('button', { name: 'Read workflows' }).click();
 
+      // The folder is set up under Servers; what it read is listed under
+      // Workflows, one page along.
+      await page.getByRole('button', { name: 'Workflows', exact: true }).click();
+
       // First: the same name is also in the two shortcut dropdowns.
       await expect(page.getByText('from-the-editor').first()).toBeVisible({ timeout: 20_000 });
       await expect(page.getByText('1 of 1 shown')).toHaveCount(0);
@@ -2316,6 +2320,7 @@ test.describe('the twelfth wave', () => {
       await expect(page.getByText('No workflows switched on')).toBeVisible();
 
       await page.getByRole('link', { name: 'Settings' }).click();
+      await page.getByRole('button', { name: 'Workflows', exact: true }).click();
       await page
         .getByRole('switch', { name: /Show from-the-editor in the generate picker/ })
         .click();
@@ -2348,7 +2353,7 @@ test.describe('the twelfth wave', () => {
   test('says which version is running, and asks for the password before replacing it', async ({
     page,
   }) => {
-    await open(page, '/settings');
+    await open(page, '/settings?in=system');
 
     // Scoped to its own section: half these words appear on the queue controls
     // further up the same page.
@@ -2374,7 +2379,7 @@ test.describe('the twelfth wave', () => {
     await expect(sheet.getByRole('button', { name: 'Install now' })).toHaveCount(0);
   });
 
-  /** Settings is a long page; it must not slide sideways out of the display. */
+  /** Settings must not slide sideways out of the display. */
   test('does not pan sideways', async ({ page }) => {
     await open(page, '/settings');
     const widths = await page.evaluate(() => ({
@@ -2382,6 +2387,60 @@ test.describe('the twelfth wave', () => {
       client: document.documentElement.clientWidth,
     }));
     expect(widths.scroll).toBeLessThanOrEqual(widths.client);
+  });
+
+  /**
+   * Five pages, and the one you are on is in the address.
+   *
+   * The point of the split is that each page holds only its own errand, so the
+   * test worth having is the negative one: opening Servers must not also render
+   * the workflow list, the chat's opinions and the sign-out button below it.
+   */
+  test('splits into pages, and says in the URL which one is open', async ({ page }) => {
+    await open(page, '/settings');
+
+    const workflows = page.getByRole('heading', { name: 'Workflows' });
+    const session = page.getByRole('heading', { name: 'Session' });
+
+    await expect(page.getByRole('heading', { name: 'Connections' })).toBeVisible();
+    await expect(workflows).toHaveCount(0);
+    await expect(session).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Workflows', exact: true }).click();
+    await expect(workflows).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Connections' })).toHaveCount(0);
+    expect(new URL(page.url()).searchParams.get('in')).toBe('workflows');
+
+    // And the address is the way in, not just the record of where you went.
+    await open(page, '/settings?in=system');
+    await expect(session).toBeVisible();
+    await expect(workflows).toHaveCount(0);
+  });
+
+  /**
+   * The page goes back to the top edge once the keyboard has gone.
+   *
+   * A phone keyboard scrolls the document to lift the focused input clear of
+   * the keys — the document, not the app's own scrolling element, and hidden
+   * overflow does not stop it. Dismissing the keyboard by saving the form does
+   * not undo that, which used to leave the tab bar stranded in the middle of
+   * the screen with no way to scroll it back down.
+   *
+   * A real keyboard cannot be summoned here, so this does to the document
+   * exactly what one does to it, and checks that letting go puts it back.
+   */
+  test('puts the page back after the keyboard has gone', async ({ page }) => {
+    await open(page, '/settings');
+
+    const shifted = await page.evaluate(() => {
+      document.documentElement.style.height = '200vh';
+      window.scrollTo(0, 120);
+      return window.scrollY;
+    });
+    expect(shifted).toBeGreaterThan(0);
+
+    await page.evaluate(() => window.dispatchEvent(new Event('focusout')));
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
   });
 
   /**
@@ -2706,7 +2765,7 @@ test.describe('the fifteenth wave', () => {
     await resetState();
     await seedWorkflow();
 
-    await open(page, '/settings');
+    await open(page, '/settings?in=workflows');
     await page.getByRole('button', { name: 'Edit form' }).click();
 
     // Move the prompt below its neighbour and check the Generate screen agrees.
@@ -2754,7 +2813,7 @@ test.describe('the fifteenth wave', () => {
   test('draws the point line as boxes under the Generate button', async ({ page }) => {
     await resetState();
     await seedWorkflow();
-    await open(page, '/settings');
+    await open(page, '/settings?in=workflows');
 
     await page.getByRole('button', { name: 'Edit form' }).click();
     const row = page.locator('[data-field="3.steps"]');
@@ -2826,7 +2885,7 @@ test.describe('the sixteenth wave', () => {
     await resetState();
     await seedWorkflow();
 
-    await open(page, '/settings');
+    await open(page, '/settings?in=pictures');
     await page.getByRole('button', { name: 'Clear what is waiting' }).click();
     await expect(page.getByRole('button', { name: 'Clear what is waiting' })).toHaveAttribute(
       'aria-pressed',
@@ -3837,7 +3896,7 @@ test.describe('the chat module', () => {
       });
     });
 
-    await open(page, '/settings');
+    await open(page, '/settings?in=chat');
     await page.getByRole('button', { name: 'Set up…' }).click();
 
     const sheet = page.getByRole('dialog', { name: 'What wandering draws from' });
@@ -5447,7 +5506,7 @@ test.describe('workflow folders', () => {
       }
     });
 
-    await open(page, '/settings');
+    await open(page, '/settings?in=workflows');
 
     /*
      * Scoped to the workflow list. The names appear again further down the
@@ -5547,7 +5606,7 @@ test.describe('the twenty-fifth wave', () => {
       ctx.post('/api/workflows', { data: { name: 'Named field', graph } }),
     );
 
-    await open(page, '/settings');
+    await open(page, '/settings?in=chat');
     const prompts = page.locator('section', {
       has: page.getByRole('heading', { name: 'System prompts' }),
     });
@@ -6000,7 +6059,7 @@ test.describe('the twenty-seventh wave', () => {
       });
     });
 
-    await open(page, '/settings');
+    await open(page, '/settings?in=chat');
 
     // The summary says what is happening before the dialog is opened at all.
     await expect(
@@ -6029,7 +6088,7 @@ test.describe('the twenty-seventh wave', () => {
     ).toBeVisible();
 
     // It survives a reload, which is the only proof it reached the server.
-    await open(page, '/settings');
+    await open(page, '/settings?in=chat');
     await page.getByRole('button', { name: 'Adjust…' }).click();
     await expect(page.getByRole('textbox', { name: 'Temperature', exact: true })).toHaveValue('0.35');
 
@@ -6880,7 +6939,7 @@ test.describe('on a tablet', () => {
     await withApi((ctx) =>
       ctx.post('/api/workflows', { data: { name: 'Layout demo', graph: sd15Txt2Img } }),
     );
-    await open(page, '/settings');
+    await open(page, '/settings?in=workflows');
 
     await page.getByRole('button', { name: /Edit form/ }).first().click();
 

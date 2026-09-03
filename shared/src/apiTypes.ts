@@ -1012,6 +1012,29 @@ export interface AppSettings {
    * everything", which is what installs from before this did.
    */
   workflowPrefix: string;
+  /**
+   * Folders and files starred in the folder browser, newest first.
+   *
+   * Reference material is reused, and the same handful of it is reused most:
+   * the sketch a series is built on, the folder of masks, the one photograph
+   * every portrait starts from. Finding those by walking down from `output`
+   * every time is the whole cost of using them, and it is paid per picture.
+   *
+   * Kept with the settings rather than on the device because what you reference
+   * is a property of the installation, not of the phone you happened to pick it
+   * from — the same reasoning that puts the workflows and the prompt library
+   * here.
+   */
+  browseFavorites: BrowseFavorite[];
+}
+
+/** One starred entry in the folder browser: `root/relative/path`, plus what it is. */
+export interface BrowseFavorite {
+  /** `output/monday/render_0007.png` — the reference the picker hands back. */
+  ref: string;
+  /** A folder is somewhere to go; a file is something to pick. */
+  kind: 'file' | 'folder';
+  addedAt: number;
 }
 
 /**

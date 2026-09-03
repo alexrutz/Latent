@@ -39,9 +39,7 @@ const KINDS: { value: ConnectionKind; label: string; blurb: string; placeholder:
   {
     value: 'llama',
     label: 'Model server',
-    blurb:
-      'What the chat talks to. Anything offering llama.cpp’s OpenAI-compatible routes works; ' +
-      'the tools need a model that can call them, and images need a multimodal one.',
+    blurb: 'What the chat talks to. Any llama.cpp-style OpenAI-compatible server.',
     placeholder: 'http://127.0.0.1:8080',
   },
 ];
@@ -348,7 +346,7 @@ function ConnectionSheet({
             hint={
               connection?.hasSecret
                 ? 'A token is stored. Leave blank to keep it.'
-                : 'On vast.ai this is the WEB_PASSWORD you set when renting the instance. If you did not set one, it is the auto-generated OPEN_BUTTON_TOKEN, readable only over SSH.'
+                : 'On vast.ai: the WEB_PASSWORD you set, or else the generated OPEN_BUTTON_TOKEN.'
             }
           >
             <input
@@ -368,8 +366,8 @@ function ConnectionSheet({
           <div className="min-w-0">
             <p className="text-sm">Allow self-signed certificate</p>
             <p className="mt-0.5 text-xs text-muted">
-              Needed for vast.ai instances started with ENABLE_HTTPS. Only turn this on for a
-              server you trust — it stops Latent verifying who it is talking to.
+              Needed for vast.ai’s ENABLE_HTTPS. Latent then cannot verify who it is talking to,
+              so only for a server you trust.
             </p>
           </div>
           <Toggle checked={allowSelfSigned} onChange={setAllowSelfSigned} />

@@ -26,7 +26,11 @@ describe('migrating the chat settings', () => {
 
   /** Write the shape an older version stored, straight past the typed API. */
   const writeLegacyChat = (target: Store, chat: Record<string, unknown>) => {
-    (target as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } }).db
+    (
+      target as unknown as {
+        db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } };
+      }
+    ).db
       .prepare(
         `INSERT INTO settings (key, value) VALUES ('chat', ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -130,5 +134,82 @@ describe('connections of two kinds', () => {
     expect(subject.getActiveConnection('comfy')?.id).toBe('comfy-2');
     expect(subject.getActiveConnection('llama')?.id).toBe('llama-1');
     expect(subject.countConnections('comfy')).toBe(2);
+  });
+});
+
+/**
+ * A setting that is a list, not a value and not a group.
+ *
+ * The browse favourites are the first of these, and they land in code written
+ * for the other two shapes: a single string, or a group of fields merged over
+ * its defaults. An array is `typeof 'object'`, so without a path of its own it
+ * would take the group path and come back keyed by index — `{0: …, 1: …}` —
+ * and removing the last entry would merge to no change at all.
+ */
+describe('settings held as a list', () => {
+  const dirs: string[] = [];
+
+  const store = (): Store => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-db-'));
+    dirs.push(dir);
+    return new Store(join(dir, 'test.db'));
+  };
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('comes back as a list, in order', () => {
+    const subject = store();
+    expect(subject.getSettings().browseFavorites).toEqual([]);
+
+    subject.updateSettings({
+      browseFavorites: [
+        { ref: 'output/monday', kind: 'folder', addedAt: 2 },
+        { ref: 'input/face.png', kind: 'file', addedAt: 1 },
+      ],
+    });
+
+    const stored = subject.getSettings().browseFavorites;
+    expect(Array.isArray(stored)).toBe(true);
+    expect(stored.map((entry) => entry.ref)).toEqual(['output/monday', 'input/face.png']);
+    expect(stored[1]?.kind).toBe('file');
+  });
+
+  it('replaces rather than merges, so the last one can be removed', () => {
+    const subject = store();
+    subject.updateSettings({
+      browseFavorites: [
+        { ref: 'output/a.png', kind: 'file', addedAt: 1 },
+        { ref: 'output/b.png', kind: 'file', addedAt: 2 },
+      ],
+    });
+
+    subject.updateSettings({
+      browseFavorites: [{ ref: 'output/b.png', kind: 'file', addedAt: 2 }],
+    });
+    expect(subject.getSettings().browseFavorites.map((entry) => entry.ref)).toEqual([
+      'output/b.png',
+    ]);
+
+    subject.updateSettings({ browseFavorites: [] });
+    expect(subject.getSettings().browseFavorites).toEqual([]);
+  });
+
+  it('survives a restore from the mirror when the database has none', () => {
+    const subject = store();
+    const favorites = [{ ref: 'output/keep', kind: 'folder' as const, addedAt: 7 }];
+
+    subject.importUiState({ settings: { browseFavorites: favorites } } as never, () => 'id');
+    expect(subject.getSettings().browseFavorites).toEqual(favorites);
+
+    // Additive, as everywhere else: what is already stored wins.
+    subject.importUiState(
+      {
+        settings: { browseFavorites: [{ ref: 'output/other', kind: 'folder', addedAt: 8 }] },
+      } as never,
+      () => 'id',
+    );
+    expect(subject.getSettings().browseFavorites).toEqual(favorites);
   });
 });
