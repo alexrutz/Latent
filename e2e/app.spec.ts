@@ -1588,7 +1588,9 @@ test.describe('picking inputs and straightening them', () => {
     await expect(page.getByRole('heading', { name: 'Adjust photo' })).toBeVisible();
     await expect(page.getByTestId('editor-output-size')).toHaveText(/900×600/);
 
-    await page.getByRole('button', { name: 'Use' }).click();
+    // Exact, for the same reason as the other editor: the image field above
+    // carries a "Use this picture" switch, and a loose match reaches both.
+    await page.getByRole('button', { name: 'Use', exact: true }).click();
     await expect(page.getByText(/harbour_edited\.png/)).toBeVisible({ timeout: 20_000 });
   });
 
