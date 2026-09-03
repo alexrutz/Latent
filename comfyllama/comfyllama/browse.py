@@ -27,6 +27,23 @@ from typing import Any, Dict, List, Optional, Tuple
 # and the occasional video — none of which a LoadImage can use.
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tiff", ".tif"}
 
+# And what counts as a clip or a sound worth listing.
+#
+# Kept apart rather than lumped into one "media" set, because a slot that wants
+# a reference video has nothing to do with a slot that wants a soundtrack, and
+# offering all of them everywhere is how somebody ends up picking an mp3 for a
+# picture and finding out at the far end of a decode.
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v", ".gif"}
+AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".opus", ".m4a", ".aac"}
+
+KINDS = {
+    "image": IMAGE_EXTENSIONS,
+    "video": VIDEO_EXTENSIONS,
+    "audio": AUDIO_EXTENSIONS,
+}
+
+DEFAULT_KIND = "image"
+
 # Extra folders to allow, beyond ComfyUI's own, as an os.pathsep-separated list.
 #
 # An environment variable rather than a widget on the node, and this is the
@@ -249,11 +266,18 @@ def _entry(root: str, path: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def _is_image(name: str) -> bool:
-    return os.path.splitext(name)[1].lower() in IMAGE_EXTENSIONS
+def extensions_for(kind: str) -> "set[str]":
+    """The extensions one kind of slot will accept. Unknown kinds mean pictures."""
+    return KINDS.get(kind, IMAGE_EXTENSIONS)
 
 
-def _collect(start: str, *, recursive: bool, limit: int) -> Tuple[List[str], List[str]]:
+def _matches(name: str, allowed: "set[str]") -> bool:
+    return os.path.splitext(name)[1].lower() in allowed
+
+
+def _collect(
+    start: str, *, recursive: bool, limit: int, allowed: "set[str]"
+) -> Tuple[List[str], List[str]]:
     """Subfolders and image files under `start`, as absolute paths.
 
     Only the *immediate* subfolders come back, even walking recursively: they
@@ -277,7 +301,7 @@ def _collect(start: str, *, recursive: bool, limit: int) -> Tuple[List[str], Lis
         try:
             if entry.is_dir(follow_symlinks=False):
                 folders.append(entry.path)
-            elif entry.is_file(follow_symlinks=False) and _is_image(entry.name):
+            elif entry.is_file(follow_symlinks=False) and _matches(entry.name, allowed):
                 files.append(entry.path)
         except OSError:
             continue
@@ -295,7 +319,7 @@ def _collect(start: str, *, recursive: bool, limit: int) -> Tuple[List[str], Lis
         if walk_root == start:
             continue  # already scanned above
         for name in names:
-            if _is_image(name):
+            if _matches(name, allowed):
                 files.append(os.path.join(walk_root, name))
         if len(files) > limit:
             return folders, files
@@ -320,6 +344,7 @@ def list_folder(
     sort: str = "date",
     order: str = "desc",
     limit: int = LIST_LIMIT,
+    kind: str = DEFAULT_KIND,
 ) -> Dict[str, Any]:
     """What is in one folder, ready to draw.
 
@@ -346,7 +371,9 @@ def list_folder(
 
     # Not named `folder_paths`: that is the ComfyUI module this file imports a
     # few lines up, and shadowing it here would be a trap for the next edit.
-    subfolders, pictures = _collect(start, recursive=recursive, limit=limit)
+    subfolders, pictures = _collect(
+        start, recursive=recursive, limit=limit, allowed=extensions_for(kind)
+    )
 
     def keep(entry: Optional[Dict[str, Any]]) -> bool:
         return entry is not None and (not query or query in entry["name"].lower())
@@ -360,6 +387,7 @@ def list_folder(
     files.sort(key=_sort_key(sort), reverse=(order == "desc"))
 
     return {
+        "kind": kind if kind in KINDS else DEFAULT_KIND,
         "root": root_key,
         "path": "" if start == root else os.path.relpath(start, root).replace(os.sep, "/"),
         "folders": folders,

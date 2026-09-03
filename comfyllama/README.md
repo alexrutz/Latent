@@ -49,6 +49,7 @@ These have nothing to do with llama.cpp and work on their own.
 | --- | --- |
 | **Empty Latent (Aspect Ratio + Megapixels)** | An empty latent sized by picking a ratio and a megapixel budget instead of typing width and height, or by borrowing either from a connected picture. Handles SD1.5/SDXL, SD3/Flux and Krea 2 latents. |
 | **Load Image (Folder Browser)** | An image input with a file browser behind it: subfolders, thumbnails, a search box and sorting, over the folders the server allows. See [Browsing folders](#browsing-folders). |
+| **MiniMax H3 Reference Picker** | Fifteen reference slots — nine pictures, three videos, three audio — each picked with the folder browser, each on its own output, for wiring into the stock MiniMax H3 node. See [Picking reference material](#picking-reference-material). |
 | **MiniMax H3 Reference to Video (Slots)** | The stock reference-to-video node with a fixed, switchable slot per reference instead of autogrow inputs — so it can be driven over the API — and tag names so the prompt need not hard-code reference numbers. See [MiniMax H3 references](#minimax-h3-references). |
 
 ## Browsing folders
@@ -157,6 +158,38 @@ Two orderings are worth knowing, both reproduced from upstream exactly:
 A slot that is switched off is never evaluated — its picture is not loaded, its
 video is not decoded or resized. Switching a reference off makes the run
 shorter, not just the prompt shorter.
+
+## Picking reference material
+
+The stock **MiniMax H3 Reference to Video** takes up to nine pictures, three
+videos with their soundtracks and three standalone audio clips. Feeding it by
+hand means a loader node per reference — fifteen nodes trailing wires across the
+canvas before you reach any of the interesting settings.
+
+**MiniMax H3 Reference Picker** is one node holding all of them. Each slot has a
+`Browse <slot>…` button over the folders this server allows, filtered to what
+that slot can use — pictures for picture slots, clips for video slots, sound for
+audio slots. Each slot has an output. Wire the ones you filled into the stock
+node's reference sockets and leave the rest alone.
+
+It does not condition anything and it does not replace the stock node: it loads
+files and hands them over, which is the whole job.
+
+**An empty slot outputs nothing at all.** Literally `None`, which the stock node
+skips — so you can clear a slot without unwiring it, and without disturbing the
+references you already connected. That is also why there is an output per slot
+rather than one list: the order into an autogrow socket is fixed by the wire, so
+a slot that empties has to leave a hole the far end knows to drop.
+
+Every video slot also gives you its **own soundtrack** on a separate output,
+because the stock node pairs a soundtrack to its video by slot number and a
+reference clip that came with sound usually wants it. A silent clip gives
+nothing there rather than failing.
+
+Videos are resampled to `video_fps` (24, what H3 expects) and trimmed to
+`video_seconds`. Decoding is PyAV for both video and audio — the same library
+ComfyUI's own loaders use, rather than a second decoder with its own opinions
+about frame rates and sample formats.
 
 ## Install
 

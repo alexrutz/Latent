@@ -18,9 +18,31 @@ const ROOTS = "/comfyllama/browse/roots";
 const LIST = "/comfyllama/browse/list";
 const THUMB = "/comfyllama/browse/thumb";
 
-/** The node this exists for, and the widget the chosen path goes into. */
-const BROWSER_NODES = new Set(["LoadImageFromFolder"]);
-const PATH_WIDGET = "image";
+/*
+ * Which widgets get a browse button, and what each one is allowed to pick.
+ *
+ * `LoadImageFromFolder` has one; the reference picker has fifteen, of three
+ * different kinds. Rather than a list per node, the kind is declared on the
+ * widget itself in Python (`comfyllama_browse`) and read back from the node
+ * definition here — so adding a slot is a line in one file, not two.
+ */
+const BROWSER_NODES = new Set(["LoadImageFromFolder", "MiniMaxH3ReferencePicker"]);
+
+/** The fallback for `LoadImageFromFolder`, which predates the declaration. */
+const LEGACY_WIDGETS = { LoadImageFromFolder: { image: "image" } };
+
+function browsableWidgets(nodeData) {
+	const declared = {};
+	const inputs = nodeData?.input ?? {};
+	for (const section of ["required", "optional"]) {
+		for (const [name, spec] of Object.entries(inputs[section] ?? {})) {
+			const kind = spec?.[1]?.comfyllama_browse;
+			if (typeof kind === "string") declared[name] = kind;
+		}
+	}
+	if (Object.keys(declared).length > 0) return declared;
+	return LEGACY_WIDGETS[nodeData?.name] ?? {};
+}
 
 /*
  * What the dialog remembers between openings.
@@ -83,8 +105,8 @@ async function getJSON(route, params) {
  * holds a grid of a few hundred images, and leaving those decoded in a detached
  * DOM for the rest of the session is memory nobody asked to spend.
  */
-function openBrowser(node) {
-	const widget = widgetByName(node, PATH_WIDGET);
+function openBrowser(node, widgetName, kind) {
+	const widget = widgetByName(node, widgetName);
 	if (!widget) return;
 
 	const overlay = element("div", "comfyllama-browse-overlay");
@@ -255,6 +277,8 @@ function openBrowser(node) {
 				q: search.value,
 				sort: state.sort,
 				order: state.order,
+				// Pictures, clips or sound: a slot only shows what it can use.
+				kind: kind || "image",
 			});
 			if (closed || mine !== generation) return;
 			state.path = listing.path;
@@ -444,10 +468,27 @@ app.registerExtension({
 		}
 		installStyles();
 
+		const widgets = browsableWidgets(nodeData);
+		const names = Object.keys(widgets);
+		if (names.length === 0) return;
+
 		const onNodeCreated = nodeType.prototype.onNodeCreated;
 		nodeType.prototype.onNodeCreated = function () {
 			onNodeCreated?.apply(this, arguments);
-			this.addWidget("button", "Browse…", null, () => openBrowser(this));
+			/*
+			 * A button per slot, named after it.
+			 *
+			 * One shared button with a dropdown would be fewer widgets and a
+			 * worse node: the thing you want is to fill picture 3, and having
+			 * to first tell a general button which slot you meant is the step
+			 * this node exists to remove.
+			 */
+			for (const name of names) {
+				const label = names.length === 1 ? "Browse…" : `Browse ${name}…`;
+				this.addWidget("button", label, null, () =>
+					openBrowser(this, name, widgets[name]),
+				);
+			}
 		};
 
 		/*
@@ -460,7 +501,9 @@ app.registerExtension({
 		const onDblClick = nodeType.prototype.onDblClick;
 		nodeType.prototype.onDblClick = function () {
 			const handled = onDblClick?.apply(this, arguments);
-			openBrowser(this);
+			// Only where there is one slot to mean. On a node with fifteen,
+			// a double-click cannot know which, so the buttons are the way in.
+			if (names.length === 1) openBrowser(this, names[0], widgets[names[0]]);
 			return handled;
 		};
 	},

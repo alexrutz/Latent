@@ -99,6 +99,10 @@ def _listing(query: Dict[str, str]) -> Dict[str, Any]:
         sort=query.get("sort") or "date",
         order=query.get("order") or "desc",
         limit=limit,
+        # Which files this slot can use. An unknown kind falls back to pictures
+        # rather than to everything: showing an mp3 in a picture slot is a
+        # decode failure somebody has to go and understand.
+        kind=query.get("kind") or "image",
     )
 
 

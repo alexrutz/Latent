@@ -346,3 +346,105 @@ class TestTheNode(BrowseTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMediaKinds(BrowseTestCase):
+    """A slot only sees the files it could actually use.
+
+    Offering everything everywhere is how somebody picks an mp3 for a picture
+    slot and learns about it from a decode error three nodes later.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.write(self.root, "clip.mp4", size=40)
+        self.write(self.root, "song.wav", size=30)
+        self.write(self.root, "readme.md", size=5)
+
+    def names(self, kind):
+        return {entry["name"] for entry in browse.list_folder(self.key, kind=kind)["files"]}
+
+    def test_pictures_by_default(self):
+        self.assertEqual(self.names("image"), {"alpha.png", "beta.jpg"})
+        # The default is pictures, so an unset kind behaves as it always did.
+        default = {entry["name"] for entry in browse.list_folder(self.key)["files"]}
+        self.assertEqual(default, {"alpha.png", "beta.jpg"})
+
+    def test_videos_and_audio_have_their_own_lists(self):
+        self.assertEqual(self.names("video"), {"clip.mp4"})
+        self.assertEqual(self.names("audio"), {"song.wav"})
+
+    def test_nothing_lists_files_that_are_not_media(self):
+        for kind in ("image", "video", "audio"):
+            self.assertNotIn("readme.md", self.names(kind), kind)
+            self.assertNotIn("notes.txt", self.names(kind), kind)
+
+    def test_a_nonsense_kind_shows_pictures_rather_than_everything(self):
+        # The kind comes off a query string; it is not a promise.
+        self.assertEqual(self.names("nonsense"), {"alpha.png", "beta.jpg"})
+
+    def test_the_listing_says_which_kind_it_answered_with(self):
+        self.assertEqual(browse.list_folder(self.key, kind="audio")["kind"], "audio")
+        self.assertEqual(browse.list_folder(self.key, kind="nonsense")["kind"], "image")
+
+
+class TestThePicker(BrowseTestCase):
+    """The node that holds fifteen of these at once."""
+
+    def node(self):
+        from comfyllama.nodes.refpicker import MiniMaxH3ReferencePicker
+
+        return MiniMaxH3ReferencePicker
+
+    def test_it_offers_a_slot_and_an_output_for_every_reference(self):
+        node = self.node()
+        optional = node.INPUT_TYPES()["optional"]
+        self.assertIn("picture_9", optional)
+        self.assertNotIn("picture_10", optional)
+        self.assertIn("video_3", optional)
+        self.assertIn("audio_3", optional)
+        # Nine pictures, three videos, three soundtracks, three audio.
+        self.assertEqual(len(node.RETURN_TYPES), 18)
+        self.assertEqual(node.RETURN_NAMES[0], "picture_1")
+        self.assertIn("video_1_audio", node.RETURN_NAMES)
+
+    def test_every_slot_says_what_it_can_browse(self):
+        """The web extension reads this to filter the dialog."""
+        optional = self.node().INPUT_TYPES()["optional"]
+        self.assertEqual(optional["picture_1"][1]["comfyllama_browse"], "image")
+        self.assertEqual(optional["video_1"][1]["comfyllama_browse"], "video")
+        self.assertEqual(optional["audio_1"][1]["comfyllama_browse"], "audio")
+
+    def test_an_empty_slot_is_not_a_mistake(self):
+        # Most shots use two or three of the fifteen.
+        self.assertIs(self.node().VALIDATE_INPUTS(picture_1="", video_2=None), True)
+
+    def test_a_path_outside_a_root_is_refused_before_the_queue(self):
+        result = self.node().VALIDATE_INPUTS(picture_1=f"{self.key}/../private/secret.png")
+        self.assertIsInstance(result, str)
+        self.assertIn("picture_1", result)
+
+    def test_the_cache_key_changes_when_a_chosen_file_does(self):
+        node = self.node()
+        before = node.IS_CHANGED(picture_1=f"{self.key}/alpha.png")
+        self.write(self.root, "alpha.png", size=999)
+        self.assertNotEqual(before, node.IS_CHANGED(picture_1=f"{self.key}/alpha.png"))
+
+    def test_empty_slots_contribute_nothing_to_the_cache_key(self):
+        node = self.node()
+        self.assertEqual(
+            node.IS_CHANGED(picture_1=f"{self.key}/alpha.png"),
+            node.IS_CHANGED(picture_1=f"{self.key}/alpha.png", picture_5="", video_1=None),
+        )
+
+    @unittest.skipUnless(CAN_DECODE, "Pillow, numpy and torch are required")
+    def test_a_filled_slot_loads_and_the_rest_come_back_empty(self):
+        from PIL import Image
+
+        Image.new("RGB", (8, 4), (0, 128, 255)).save(os.path.join(self.root, "ref.png"))
+        outputs = self.node()().pick(picture_1=f"{self.key}/ref.png")
+
+        self.assertEqual(len(outputs), 18)
+        self.assertEqual(tuple(outputs[0].shape), (1, 4, 8, 3))
+        # Everything else is None, which is what the stock node drops.
+        self.assertTrue(all(entry is None for entry in outputs[1:]))

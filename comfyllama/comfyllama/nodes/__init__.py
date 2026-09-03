@@ -7,6 +7,7 @@ from .generation import (LlamaCppChat, LlamaCppComplete, LlamaCppGrammar,
                          LlamaCppSampling, LlamaCppVisionChat)
 from .latent import EmptyLatentByAspectRatio
 from .minimax_ref import MiniMaxH3ReferencesFlat
+from .refpicker import MiniMaxH3ReferencePicker
 from .loaders import LlamaCppLoader, LlamaCppUnload, LlamaCppVisionLoader
 from .presets import LlamaServerPresetChat
 from .remote import (LlamaServerChat, LlamaServerComplete, LlamaServerConnect,
@@ -38,6 +39,7 @@ NODE_CLASS_MAPPINGS = {
     "EmptyLatentByAspectRatio": EmptyLatentByAspectRatio,
     "LoadImageFromFolder": LoadImageFromFolder,
     "MiniMaxH3ReferencesFlat": MiniMaxH3ReferencesFlat,
+    "MiniMaxH3ReferencePicker": MiniMaxH3ReferencePicker,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -64,6 +66,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "EmptyLatentByAspectRatio": "Empty Latent (Aspect Ratio + Megapixels)",
     "LoadImageFromFolder": "Load Image (Folder Browser)",
     "MiniMaxH3ReferencesFlat": "MiniMax H3 Reference to Video (Slots)",
+    "MiniMaxH3ReferencePicker": "MiniMax H3 Reference Picker",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
