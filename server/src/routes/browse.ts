@@ -45,9 +45,10 @@ export function registerBrowseRoutes(app: FastifyInstance, ctx: AppContext): voi
       order?: string;
       recursive?: string;
       limit?: string;
+      kind?: string;
     };
   }>('/api/browse/list', async (request, reply) => {
-    const { root, path, q, sort, order, recursive, limit } = request.query;
+    const { root, path, q, sort, order, recursive, limit, kind } = request.query;
     if (!root) return reply.code(400).send({ error: 'Which folder?' });
 
     try {
@@ -58,6 +59,15 @@ export function registerBrowseRoutes(app: FastifyInstance, ctx: AppContext): voi
         sort: sort ?? 'date',
         order: order ?? 'desc',
         recursive: recursive === 'true' ? '1' : '',
+        /*
+         * What the slot can load, which the far end filters by.
+         *
+         * It was being dropped here — the picker asked for clips and this
+         * handed the request on without the word, so comfyllama fell back to
+         * its default and a video slot was offered pictures it cannot load.
+         * The kind of thing that only shows up on the machine with the videos.
+         */
+        kind: kind ?? 'image',
         ...(limit ? { limit } : {}),
       });
     } catch (error) {

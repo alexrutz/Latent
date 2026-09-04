@@ -57,6 +57,26 @@ def _slot(kind: str, index: int, label: str) -> Tuple[str, Dict[str, Any]]:
     })
 
 
+def _switch(kind: str, index: int, label: str) -> Tuple[str, Dict[str, Any]]:
+    """The on/off switch in front of one slot.
+
+    Named `use_<slot>`, which is the convention the folder loader's own switch
+    already uses. A slot switched off hands out nothing at all — the same as an
+    empty one, which the stock node drops — so a reference can be taken out of a
+    run without unwiring it or losing the path you found.
+
+    Off is *lazy*: the picture is not loaded and the clip is not decoded, so
+    switching one off makes the run shorter and not only the reference list.
+    """
+    return ("BOOLEAN", {
+        "default": True,
+        "label_on": "on",
+        "label_off": "off",
+        "tooltip": f"Send {label.lower()} {index}. Off keeps the path but leaves "
+                   "the reference out of the run, and skips loading it.",
+    })
+
+
 def load_video(path: str, fps: int = TARGET_FPS, max_seconds: int = MAX_VIDEO_SECONDS):
     """A clip as an `IMAGE` batch of frames, resampled to `fps`.
 
@@ -147,6 +167,19 @@ class MiniMaxH3ReferencePicker:
         for index in range(1, MAX_AUDIOS + 1):
             optional[f"audio_{index}"] = _slot("audio", index, "Reference audio")
 
+        # Appended after every path, never interleaved with them.
+        #
+        # ComfyUI stores a node's widget values as a positional list, so a
+        # widget inserted in the middle shifts every value after it: a workflow
+        # saved before these existed would come back with its picture paths in
+        # the wrong slots. Adding at the end is the one edit that is safe.
+        for index in range(1, MAX_PICTURES + 1):
+            optional[f"use_picture_{index}"] = _switch("image", index, "Reference picture")
+        for index in range(1, MAX_VIDEOS + 1):
+            optional[f"use_video_{index}"] = _switch("video", index, "Reference video")
+        for index in range(1, MAX_AUDIOS + 1):
+            optional[f"use_audio_{index}"] = _switch("audio", index, "Reference audio")
+
         return {
             "required": {
                 "video_fps": ("INT", {
@@ -193,6 +226,11 @@ class MiniMaxH3ReferencePicker:
         """
         marks: List[str] = []
         for name, value in sorted(kwargs.items()):
+            # A flipped switch changes the output without touching a path, so
+            # it has to be part of the mark or the cached result would stand.
+            if isinstance(value, bool):
+                marks.append(f"{name}={value}")
+                continue
             if not isinstance(value, str) or not value.strip():
                 continue
             try:
@@ -210,6 +248,10 @@ class MiniMaxH3ReferencePicker:
                 continue
             if not name.startswith(("picture_", "video_", "audio_")):
                 continue
+            # A stale path in a slot that is switched off is not going to be
+            # read, so it is not a reason to refuse the whole queue.
+            if not kwargs.get(f"use_{name}", True):
+                continue
             try:
                 resolve_reference(value)
             except BrowseError as error:
@@ -218,6 +260,10 @@ class MiniMaxH3ReferencePicker:
 
     def pick(self, video_fps: int = TARGET_FPS, video_seconds: int = MAX_VIDEO_SECONDS, **kwargs):
         def path_of(name: str) -> Optional[str]:
+            # Absent means on: a workflow saved before the switches existed has
+            # no value for them, and it used every slot it had a path for.
+            if not kwargs.get(f"use_{name}", True):
+                return None
             value = kwargs.get(name)
             if not isinstance(value, str) or not value.strip():
                 return None

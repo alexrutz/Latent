@@ -45,6 +45,14 @@ interface ImageViewerProps {
   footer?: React.ReactNode;
   /** A caption drawn over the bottom of the picture, e.g. chosen parameters. */
   overlay?: React.ReactNode;
+  /**
+   * How fast a clip plays. See `PLAYBACK_SPEEDS`.
+   *
+   * A prop rather than state of its own because the control that sets it is in
+   * the footer, which the caller builds — the viewer owns the element, so it
+   * owns the writing of `playbackRate`, and nothing else about it.
+   */
+  speed?: number;
 }
 
 const MAX_SCALE = 5;
@@ -199,37 +207,13 @@ function useViewSources(
  * Stepped rather than a slider: the useful answers are ratios of the rate it
  * was written at — twice as fast, half again — and a continuous control makes
  * you hunt for 2.0 rather than tap it.
+ *
+ * The list lives here, next to the element whose `playbackRate` it sets; the
+ * control that offers it lives in the footer, because floating over the video
+ * put it exactly where the browser draws its own scrubber and the action row
+ * covers the rest.
  */
-const SPEEDS = [0.5, 1, 1.5, 2, 3, 4];
-
-function SpeedDial({ value, onChange }: { value: number; onChange: (next: number) => void }) {
-  return (
-    <div
-      className="absolute bottom-16 left-1/2 flex -translate-x-1/2 gap-1 rounded-full bg-black/60 px-1.5 py-1 backdrop-blur"
-      // The video underneath owns pointer events for its own controls; these
-      // are on top of it and must not reach the swipe handler either.
-      onPointerDown={(event) => event.stopPropagation()}
-      onPointerMove={(event) => event.stopPropagation()}
-      onPointerUp={(event) => event.stopPropagation()}
-    >
-      {SPEEDS.map((speed) => (
-        <button
-          key={speed}
-          type="button"
-          onClick={() => onChange(speed)}
-          aria-pressed={speed === value}
-          aria-label={`Play at ${speed}×`}
-          className={cn(
-            'min-w-9 rounded-full px-2 py-1 text-xs tabular-nums',
-            speed === value ? 'bg-white text-black' : 'text-white/80 active:bg-white/20',
-          )}
-        >
-          {speed}×
-        </button>
-      ))}
-    </div>
-  );
-}
+export const PLAYBACK_SPEEDS = [0.5, 1, 1.5, 2, 3, 4];
 
 export function ImageViewer({
   entries,
@@ -238,6 +222,7 @@ export function ImageViewer({
   onClose,
   footer,
   overlay,
+  speed = 1,
 }: ImageViewerProps) {
   const entry = entries[index];
   const record = entry?.record;
@@ -293,19 +278,18 @@ export function ImageViewer({
   const [controlsVisible, setControlsVisible] = useState(true);
 
   /*
-   * How fast the clip plays, and a handle on the element playing it.
+   * A handle on the element playing the clip.
    *
    * `playbackRate` is a property of the element, not an attribute, so React
    * cannot set it declaratively — it has to be written after the element
    * exists, and written again whenever the source changes, because loading a
    * new clip resets it to 1.
    *
-   * Kept per viewer rather than per clip: it is a decision about the frame rate
-   * the model rendered at, which is a property of the workflow, so the next
-   * clip out of the same one wants the same speed.
+   * The speed itself is the caller's, and kept per viewer rather than per clip:
+   * it is a decision about the frame rate the model rendered at, which is a
+   * property of the workflow, so the next clip out of the same one wants it.
    */
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [speed, setSpeed] = useState(1);
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = speed;
@@ -651,7 +635,6 @@ export function ImageViewer({
               onPointerUp={(event) => event.stopPropagation()}
               className="max-h-full max-w-full"
             />
-            {controlsVisible && <SpeedDial value={speed} onChange={setSpeed} />}
           </div>
         ) : (
           <img

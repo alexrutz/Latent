@@ -203,6 +203,64 @@ class ListingTests(unittest.TestCase):
         with mock.patch.object(models, "_folder_paths", return_value=None):
             self.assertIn("error", models.list_models("loras"))
 
+    def test_an_empty_folder_is_not_a_missing_one(self) -> None:
+        """Configured with nothing in it, versus a key ComfyUI never heard of."""
+        paths = self.fake_paths(())
+        paths.get_filename_list.return_value = []
+        with mock.patch.object(models, "_folder_paths", return_value=paths):
+            listed = models.list_models("loras")
+
+        self.assertEqual(listed["models"], [])
+        self.assertNotIn("error", listed)
+
+
+class AliasTests(unittest.TestCase):
+    """`unet` is not a second folder — ComfyUI aliases it to the same entry."""
+
+    def setUp(self) -> None:
+        self.dir = tempfile.mkdtemp(prefix="comfyllama-models-")
+        models.reset()
+        write_safetensors(os.path.join(self.dir, "flux.safetensors"), {})
+
+    def tearDown(self) -> None:
+        models.reset()
+        for name in os.listdir(self.dir):
+            os.unlink(os.path.join(self.dir, name))
+        os.rmdir(self.dir)
+
+    def paths_knowing(self, known: "set[str]"):
+        fake = mock.Mock()
+
+        def filenames(key):
+            if key not in known:
+                raise KeyError(key)
+            return ["flux.safetensors"]
+
+        fake.get_filename_list.side_effect = filenames
+        fake.get_full_path.side_effect = lambda key, name: (
+            os.path.join(self.dir, name) if key in known else None
+        )
+        return fake
+
+    def test_uses_the_modern_key_where_it_exists(self) -> None:
+        paths = self.paths_knowing({"diffusion_models"})
+        with mock.patch.object(models, "_folder_paths", return_value=paths):
+            listed = models.list_models("diffusion_models")
+        self.assertEqual([entry["name"] for entry in listed["models"]], ["flux.safetensors"])
+
+    def test_falls_back_to_the_old_one_on_an_older_install(self) -> None:
+        paths = self.paths_knowing({"unet"})
+        with mock.patch.object(models, "_folder_paths", return_value=paths):
+            listed = models.list_models("diffusion_models")
+        self.assertEqual([entry["name"] for entry in listed["models"]], ["flux.safetensors"])
+
+    def test_unet_is_not_a_category_of_its_own(self) -> None:
+        """Serving both listed the same files twice, under two names."""
+        self.assertNotIn("unet", models.FOLDERS)
+        paths = self.paths_knowing({"unet", "diffusion_models"})
+        with mock.patch.object(models, "_folder_paths", return_value=paths):
+            self.assertIn("error", models.list_models("unet"))
+
 
 class HashTests(unittest.TestCase):
     def setUp(self) -> None:

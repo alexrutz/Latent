@@ -4,6 +4,7 @@ import { Route, Routes, useLocation } from 'react-router-dom';
 import { setArchiveLockedHandler } from './api/client';
 import { useLiveCacheSync, useStatus } from './api/queries';
 import { BottomTabs } from './components/BottomTabs';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { LiveBar } from './components/LiveBar';
 import { SideRail } from './components/SideRail';
 import { ArchiveLockedBar, UnlockArchiveDialog } from './components/UnlockArchive';
@@ -102,20 +103,28 @@ export function App() {
           onChat ? 'overflow-y-hidden' : 'overflow-y-auto',
         )}
       >
-        <Routes>
-          <Route path="/" element={<GenerateScreen />} />
-          <Route path="/gallery" element={<GalleryScreen />} />
-          <Route path="/chat" element={<ChatScreen />} />
-          <Route path="/favorites" element={<FavoritesScreen />} />
-          <Route path="/blocks" element={<BlocksScreen />} />
-          <Route path="/variation" element={<VariationScreen />} />
-          <Route path="/models" element={<ModelsScreen />} />
-          <Route path="/monitor" element={<MonitorScreen />} />
-          <Route path="/study" element={<StudyScreen />} />
-          <Route path="/queue" element={<QueueScreen />} />
-          <Route path="/settings" element={<SettingsScreen />} />
-          <Route path="*" element={<GenerateScreen />} />
-        </Routes>
+        {/*
+          Inside `<main>`, so the tab bar and the rail stay outside it: a screen
+          that fails to draw should cost that screen, not the way out of it.
+          Keyed on the path so navigating away clears the wreck rather than
+          latching every later screen into the same error.
+        */}
+        <ErrorBoundary resetKey={pathname}>
+          <Routes>
+            <Route path="/" element={<GenerateScreen />} />
+            <Route path="/gallery" element={<GalleryScreen />} />
+            <Route path="/chat" element={<ChatScreen />} />
+            <Route path="/favorites" element={<FavoritesScreen />} />
+            <Route path="/blocks" element={<BlocksScreen />} />
+            <Route path="/variation" element={<VariationScreen />} />
+            <Route path="/models" element={<ModelsScreen />} />
+            <Route path="/monitor" element={<MonitorScreen />} />
+            <Route path="/study" element={<StudyScreen />} />
+            <Route path="/queue" element={<QueueScreen />} />
+            <Route path="/settings" element={<SettingsScreen />} />
+            <Route path="*" element={<GenerateScreen />} />
+          </Routes>
+        </ErrorBoundary>
       </main>
 
       {/*

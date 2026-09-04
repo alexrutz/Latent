@@ -7,6 +7,7 @@ import { expect, request as apiRequest, test, type Page } from '@playwright/test
 import {
   editWithReference,
   img2img,
+  loadImageFromFolder,
   ltxVideoGguf,
   minimaxMusic,
   sd15Txt2Img,
@@ -282,7 +283,16 @@ async function resetState() {
      * waiting, which quietly breaks any later test that queues a batch.
      */
     await ctx.patch('/api/settings', {
-      data: { comfyRoot: null, importRoot: null, inputRoot: null, queuePolicy: 'append' },
+      data: {
+        comfyRoot: null,
+        importRoot: null,
+        inputRoot: null,
+        queuePolicy: 'append',
+        // Starred folders and pictures are settings too, and they survive the
+        // portable file being deleted — one test's stars would otherwise be
+        // sitting in the next test's browser.
+        browseFavorites: [],
+      },
     });
 
     // Endless generation is server-side and survives a reload, let alone a test.
@@ -6923,6 +6933,31 @@ test.describe('generating video', () => {
     await expect(page.getByRole('button', { name: 'img2img' })).toBeDisabled();
     await expect(page.getByRole('button', { name: 'Upscale' })).toBeDisabled();
     await page.screenshot({ path: 'test-results/86-video-viewer.png' });
+
+    /*
+     * The speed control, in the row rather than floating over the clip.
+     *
+     * It used to sit just above the bottom of the video, which is where the
+     * browser draws its own scrubber and where this action row is — so it was
+     * covered by the buttons it stood among. It takes Keep's cell on a clip
+     * now, shows the rate it is on, and opens the rest upward, over the
+     * picture, which is the one direction with nothing in it.
+     */
+    await expect(page.getByRole('button', { name: 'Keep', exact: true })).toHaveCount(0);
+    const speed = page.getByRole('button', { name: '1×', exact: true });
+    await expect(speed).toBeVisible();
+    // Closed until asked: six speeds do not fit in a tenth of a phone.
+    await expect(page.getByRole('button', { name: 'Play at 2×' })).toHaveCount(0);
+
+    await speed.click();
+    await page.screenshot({ path: 'test-results/87-video-speed.png' });
+    await page.getByRole('button', { name: 'Play at 2×' }).click();
+
+    // The popup closes, the cell says where it landed, and — the only part
+    // that matters — the element is actually playing at that rate.
+    await expect(page.getByRole('button', { name: 'Play at 2×' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '2×', exact: true })).toBeVisible();
+    expect(await video.evaluate((element: HTMLVideoElement) => element.playbackRate)).toBe(2);
   });
 
   /**
@@ -7280,5 +7315,80 @@ test.describe('running without the picture', () => {
       'aria-pressed',
       'false',
     );
+  });
+});
+
+/**
+ * The folder browser, and the favourites inside it.
+ *
+ * Everything here comes from the ComfyUI machine through Latent's proxy —
+ * which is why none of it had ever been driven through a browser: without a far
+ * end that answers the browse routes there is nothing to open. The mock answers
+ * them now, and what is worth proving is the part that shipped invisible: the
+ * category the starred entries live in has to be *there* before anything is
+ * starred, or nobody ever learns where a star puts things.
+ */
+test.describe('picking a picture out of a folder', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'From a folder', graph: loadImageFromFolder } }),
+    );
+  });
+
+  test('stars a picture and finds it beside the roots', async ({ page }) => {
+    await open(page, '/');
+
+    const picker = page.getByRole('button', { name: 'Browse folders' });
+    await expect(picker).toBeVisible();
+    await picker.click();
+
+    const sheet = page.getByRole('dialog', { name: 'Pick a picture' });
+    await expect(sheet).toBeVisible();
+    // The chip row, which is not the breadcrumb: both name the root.
+    const categories = sheet.getByTestId('browse-categories');
+
+    /*
+     * The roots the far end offers, and the category beside them — before
+     * anything has been starred.
+     *
+     * This is the bug: it used to appear only once it had something in it, so
+     * the star on every row put pictures somewhere that did not visibly exist
+     * and the whole feature read as broken. Empty, it says what a star does.
+     */
+    for (const root of ['output', 'input', 'temp']) {
+      await expect(categories.getByRole('button', { name: root, exact: true })).toBeVisible();
+    }
+    const favourites = categories.getByRole('button', { name: '★ Favourites' });
+    await expect(favourites).toBeVisible();
+    await favourites.click();
+    await expect(sheet.getByText(/Nothing starred yet/)).toBeVisible();
+
+    // Back to output, and down into a folder — the browser's actual job.
+    await categories.getByRole('button', { name: 'output', exact: true }).click();
+    await sheet
+      .getByRole('button', { name: /^Keep monday in favourites$/ })
+      .first()
+      .click();
+
+    await sheet.getByRole('button', { name: 'monday', exact: true }).click();
+    const render = sheet.getByRole('button', { name: 'Keep render_0007.png in favourites' });
+    await expect(render).toBeVisible();
+    await render.click();
+    await page.screenshot({ path: 'test-results/100-folder-browser.png' });
+
+    /*
+     * Both of them are in the category, and each is what it was starred as: the
+     * folder as a row you can open, the picture as a thumbnail you can pick.
+     */
+    await favourites.click();
+    await expect(sheet.getByRole('button', { name: 'output/monday', exact: true })).toBeVisible();
+    const starred = sheet.getByRole('button', { name: 'Keep render_0007.png in favourites' });
+    await expect(starred).toHaveAttribute('aria-pressed', 'true');
+
+    // And picking one out of the category fills the field with its whole
+    // reference — the root included, because the same path exists under three.
+    await sheet.locator('img[alt="render_0007.png"]').click();
+    await expect(page.getByText('output/monday/render_0007.png')).toBeVisible();
   });
 });

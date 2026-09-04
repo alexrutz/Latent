@@ -28,20 +28,21 @@
  * The folders worth a library, named as `/object_info` names them.
  *
  * `diffusion_models` is where the unet-only weights live — Flux, WAN, and most
- * of what has shipped since — and it is a folder people have as many opinions
- * about as their LoRAs. `unet` is the older name for the same thing; installs
- * have one or the other, and the empty one simply lists nothing.
+ * of what has shipped since. There is deliberately no separate `unet` category:
+ * ComfyUI aliases that key to this same entry, the same directories and the
+ * same files, so offering both listed everything twice under two names.
+ * comfyllama still falls back to the old key for an install too old to have the
+ * new one; that is a lookup detail, not a second place to look.
  */
-export type ModelFolder = 'loras' | 'checkpoints' | 'diffusion_models' | 'unet';
+export type ModelFolder = 'loras' | 'checkpoints' | 'diffusion_models';
 
-export const MODEL_FOLDERS: ModelFolder[] = ['loras', 'checkpoints', 'diffusion_models', 'unet'];
+export const MODEL_FOLDERS: ModelFolder[] = ['loras', 'checkpoints', 'diffusion_models'];
 
 /** What to call each on screen. */
 export const MODEL_FOLDER_LABELS: Record<ModelFolder, string> = {
   loras: 'LoRAs',
   checkpoints: 'Checkpoints',
   diffusion_models: 'Diffusion models',
-  unet: 'UNet',
 };
 
 /** One model file, as its own header describes it. */

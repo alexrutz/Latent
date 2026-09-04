@@ -35,11 +35,17 @@ HASH_ROUTE = "/comfyllama/models/hash"
 # Folders worth offering.
 #
 # Anything ComfyUI knows about could be listed, but these are the ones whose
-# trigger words, base model and creator notes anybody asks about. `unet` is the
-# older name for `diffusion_models` and both are still in use — a Flux or WAN
-# install typically has one or the other, so both are served and whichever is
-# configured answers.
-FOLDERS = ("loras", "checkpoints", "diffusion_models", "unet")
+# trigger words, base model and creator notes anybody asks about.
+FOLDERS = ("loras", "checkpoints", "diffusion_models")
+
+# Keys to try for one folder, in order.
+#
+# `unet` is not a second folder — ComfyUI aliases it to the same entry as
+# `diffusion_models`, the same directories and the same files. Serving both as
+# categories listed everything twice under two names, which is what it looked
+# like: the same models in two places. So one category, and the old key only as
+# a fallback for an install too old to have the new one.
+ALIASES = {"diffusion_models": ("diffusion_models", "unet")}
 
 # The header is JSON and small; a file claiming otherwise is not one we read.
 #
@@ -173,16 +179,24 @@ def describe(path: str, name: str, tag_limit: int = 24) -> Dict[str, Any]:
     }
 
 
+def _keys(folder: str) -> "tuple[str, ...]":
+    """The registry keys to try for a folder. See `ALIASES`."""
+    return ALIASES.get(folder, (folder,))
+
+
 def _resolve(folder: str, name: str) -> Optional[str]:
     """The full path of one model, or None. Never escapes the folder registry."""
     paths = _folder_paths()
     if paths is None or folder not in FOLDERS:
         return None
-    try:
-        full = paths.get_full_path(folder, name)
-    except Exception:
-        return None
-    return full if full and os.path.isfile(full) else None
+    for key in _keys(folder):
+        try:
+            full = paths.get_full_path(key, name)
+        except Exception:
+            continue
+        if full and os.path.isfile(full):
+            return full
+    return None
 
 
 def list_models(folder: str, tag_limit: int = 24) -> Dict[str, Any]:
@@ -199,9 +213,22 @@ def list_models(folder: str, tag_limit: int = 24) -> Dict[str, Any]:
     if paths is None:
         return {"folder": folder, "models": [], "error": "not running inside ComfyUI"}
 
-    try:
-        names = paths.get_filename_list(folder)
-    except Exception:
+    # Tried in order, and "readable but empty" is a real answer: a configured
+    # folder with nothing in it is not the same as a key this ComfyUI has never
+    # heard of, and reporting the first as the second would send somebody
+    # looking for a configuration problem that is not there.
+    names: List[str] = []
+    readable = False
+    for key in _keys(folder):
+        try:
+            names = paths.get_filename_list(key)
+        except Exception:
+            continue
+        readable = True
+        if names:
+            break
+
+    if not readable:
         return {"folder": folder, "models": [], "error": "that folder is not configured"}
 
     models = []

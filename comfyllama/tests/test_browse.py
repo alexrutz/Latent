@@ -415,6 +415,42 @@ class TestThePicker(BrowseTestCase):
         self.assertEqual(optional["video_1"][1]["comfyllama_browse"], "video")
         self.assertEqual(optional["audio_1"][1]["comfyllama_browse"], "audio")
 
+    def test_every_slot_has_a_switch_in_front_of_it(self):
+        """A reference can be taken out of a run without unwiring it."""
+        optional = self.node().INPUT_TYPES()["optional"]
+        for name in ("use_picture_1", "use_picture_9", "use_video_3", "use_audio_3"):
+            self.assertIn(name, optional)
+            self.assertEqual(optional[name][0], "BOOLEAN")
+            # Absent means on, and so does a fresh node: a workflow saved before
+            # the switches existed used every slot it had a path for.
+            self.assertIs(optional[name][1]["default"], True)
+
+    def test_the_switches_come_after_every_path(self):
+        """Widget values are positional — an inserted widget shifts the rest."""
+        names = list(self.node().INPUT_TYPES()["optional"])
+        paths = [name for name in names if not name.startswith("use_")]
+        switches = [name for name in names if name.startswith("use_")]
+        self.assertEqual(names, paths + switches)
+
+    def test_a_switched_off_slot_hands_out_nothing(self):
+        node = self.node()()
+        picked = node.pick(**{"picture_1": f"{self.key}/one.png", "use_picture_1": False})
+        self.assertIsNone(picked[0])
+
+    def test_a_stale_path_in_a_switched_off_slot_does_not_block_the_queue(self):
+        """It is not going to be read, so it is not a reason to refuse."""
+        bad = f"{self.key}/../private/secret.png"
+        self.assertIs(self.node().VALIDATE_INPUTS(picture_1=bad, use_picture_1=False), True)
+        # And still refused while it is switched on.
+        self.assertIsInstance(self.node().VALIDATE_INPUTS(picture_1=bad), str)
+
+    def test_flipping_a_switch_changes_the_cache_key(self):
+        """Otherwise the run would be served from the previous result."""
+        node = self.node()
+        on = node.IS_CHANGED(picture_1=f"{self.key}/one.png", use_picture_1=True)
+        off = node.IS_CHANGED(picture_1=f"{self.key}/one.png", use_picture_1=False)
+        self.assertNotEqual(on, off)
+
     def test_an_empty_slot_is_not_a_mistake(self):
         # Most shots use two or three of the fifteen.
         self.assertIs(self.node().VALIDATE_INPUTS(picture_1="", video_2=None), True)

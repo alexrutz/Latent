@@ -49,7 +49,7 @@ These have nothing to do with llama.cpp and work on their own.
 | --- | --- |
 | **Empty Latent (Aspect Ratio + Megapixels)** | An empty latent sized by picking a ratio and a megapixel budget instead of typing width and height, or by borrowing either from a connected picture. Handles SD1.5/SDXL, SD3/Flux and Krea 2 latents. |
 | **Load Image (Folder Browser)** | An image input with a file browser behind it: subfolders, thumbnails, a search box and sorting, over the folders the server allows. See [Browsing folders](#browsing-folders). |
-| **MiniMax H3 Reference Picker** | Fifteen reference slots — nine pictures, three videos, three audio — each picked with the folder browser, each on its own output, for wiring into the stock MiniMax H3 node. See [Picking reference material](#picking-reference-material). |
+| **MiniMax H3 Reference Picker** | Fifteen reference slots — nine pictures, three videos, three audio — each picked with the folder browser, each with a switch, each on its own output, for wiring into the stock MiniMax H3 node. See [Picking reference material](#picking-reference-material). |
 | **MiniMax H3 Reference to Video (Slots)** | The stock reference-to-video node with a fixed, switchable slot per reference instead of autogrow inputs — so it can be driven over the API — and tag names so the prompt need not hard-code reference numbers. See [MiniMax H3 references](#minimax-h3-references). |
 
 ## Browsing folders
@@ -204,6 +204,21 @@ references you already connected. That is also why there is an output per slot
 rather than one list: the order into an autogrow socket is fixed by the wire, so
 a slot that empties has to leave a hole the far end knows to drop.
 
+**A switch in front of every slot.** `use_picture_3`, `use_video_1` and so on,
+the same convention the folder loader's own switch uses. Off is the same as
+empty as far as the stock node is concerned, but it keeps the path — so a
+reference can be taken out of a run and put back without finding the file again.
+Off is also *lazy*: the picture is not loaded and the clip is not decoded, so
+switching one off makes the run shorter and not only the reference list, and a
+stale path in a switched-off slot does not refuse the queue.
+
+The switches are appended **after** every path widget rather than interleaved
+with them. ComfyUI stores a node's widget values as a positional list, so a
+widget inserted in the middle shifts every value after it — a workflow saved
+before these existed would come back with its pictures in the wrong slots.
+Absent means on, for the same reason: a workflow from before this used every
+slot it had a path for.
+
 Every video slot also gives you its **own soundtrack** on a separate output,
 because the stock node pairs a soundtrack to its video by slot number and a
 reference clip that came with sound usually wants it. A silent clip gives
@@ -220,9 +235,11 @@ Two routes, and no node:
 
 - `GET /comfyllama/models?folder=loras` — every file in that folder, with what
   its header holds: the tags it was trained on, the base model, the network
-  dimensions. `loras`, `checkpoints`, `diffusion_models` and `unet` — the last
-  two being the same folder under the two names still in use, so a Flux or WAN
-  install answers whichever one it was configured with.
+  dimensions. Three folders: `loras`, `checkpoints` and `diffusion_models`.
+  `unet` is **not** a fourth — ComfyUI aliases that key to the same entry as
+  `diffusion_models`, the same directories and the same files, so serving both
+  listed every model twice under two names. One category, with the old key tried
+  as a fallback for an install too old to have the new one.
 - `GET /comfyllama/models/hash?folder=loras&name=…` — the file's SHA256, which
   is what Civitai keys on.
 

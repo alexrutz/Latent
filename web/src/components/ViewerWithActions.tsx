@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 
-import { contentTypeOf, mediaKindOf, textOutputLabel } from '@latent/shared';
+import { contentTypeOf, mediaKindOf, playsInVideoElement, textOutputLabel } from '@latent/shared';
 import type { Favorite, GenerationRecord, GridSettings } from '@latent/shared';
 
 import { api, imageUrl } from '../api/client';
@@ -18,7 +18,7 @@ import {
   useUpdateFavorite,
   useWorkflows,
 } from '../api/queries';
-import { ImageViewer, type ViewerEntry } from './ImageViewer';
+import { ImageViewer, PLAYBACK_SPEEDS, type ViewerEntry } from './ImageViewer';
 import { overlayValues, ParamOverlayLine, ParamOverlayPicker } from './ParamOverlay';
 import { RatingStars } from './RatingStars';
 import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
@@ -67,6 +67,12 @@ export function ViewerWithActions({
   const [showDetails, setShowDetails] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /*
+   * How fast a clip plays, held here because the control for it is in the
+   * footer this component builds and the element it applies to is inside the
+   * viewer. Per viewer rather than per clip — see `PLAYBACK_SPEEDS`.
+   */
+  const [speed, setSpeed] = useState(1);
 
   const rateImage = useRateImage();
   const keepImage = useKeepImage();
@@ -213,6 +219,7 @@ export function ViewerWithActions({
       index={index}
       onIndexChange={onIndexChange}
       onClose={onClose}
+      speed={speed}
       /*
         Text a node produced is chosen here like any other value now, rather
         than always being on: a node that writes the prompt is describing the
@@ -285,32 +292,51 @@ export function ViewerWithActions({
             />
             <ViewerAction glyph="⤓" label="Save" onClick={share} />
             {/*
-              Keeping is the promise a rating makes, without the judgement.
-              With automatic cleanup switched on this is the difference between
-              a picture surviving and not, and being made to award it stars
-              first is a tax on saying "not sure yet, but don't bin it".
+              One cell, two jobs, decided by what is on screen.
+
+              The speed dial used to float over the bottom of the video, which
+              is where the browser draws its own scrubber and where this row
+              sits — it was covered by the buttons meant to be beside it. Its
+              place is here, and the cell it takes is Keep's, because Keep is
+              the one action on the row that a clip does not need: rating it or
+              favouriting it protects it from the cleanup just as well, and both
+              are within a thumb of here.
+
+              Still pictures keep Keep. Nothing is gained by taking it from
+              them, and a speed control on a photograph is a control that
+              cannot do anything.
             */}
-            <ViewerAction
-              glyph="⌾"
-              label={image?.kept ? 'Kept' : 'Keep'}
-              active={Boolean(image?.kept)}
-              busy={keepImage.isPending}
-              onClick={() => {
-                if (!image) return;
-                keepImage.mutate(
-                  { generationId: record.id, image, kept: !image.kept },
-                  {
-                    onError: (cause) =>
-                      setError(cause instanceof Error ? cause.message : 'Could not keep that'),
-                  },
-                );
-              }}
-              title={
-                image?.kept
-                  ? 'Kept — the cleanup will leave it alone'
-                  : 'Keep this picture without rating it'
-              }
-            />
+            {playsInVideoElement(image?.filename ?? '') ? (
+              <SpeedAction value={speed} onChange={setSpeed} />
+            ) : (
+              /*
+                Keeping is the promise a rating makes, without the judgement.
+                With automatic cleanup switched on this is the difference
+                between a picture surviving and not, and being made to award it
+                stars first is a tax on saying "not sure yet, but don't bin it".
+              */
+              <ViewerAction
+                glyph="⌾"
+                label={image?.kept ? 'Kept' : 'Keep'}
+                active={Boolean(image?.kept)}
+                busy={keepImage.isPending}
+                onClick={() => {
+                  if (!image) return;
+                  keepImage.mutate(
+                    { generationId: record.id, image, kept: !image.kept },
+                    {
+                      onError: (cause) =>
+                        setError(cause instanceof Error ? cause.message : 'Could not keep that'),
+                    },
+                  );
+                }}
+                title={
+                  image?.kept
+                    ? 'Kept — the cleanup will leave it alone'
+                    : 'Keep this picture without rating it'
+                }
+              />
+            )}
             <ViewerAction
               glyph="⟳"
               label="Reseed"
@@ -565,6 +591,74 @@ function DetailsList({ record }: { record: GenerationRecord }) {
 }
 
 /**
+ * The playback speed, as one cell of the action row.
+ *
+ * Six speeds do not fit in a tenth of a phone's width, and a strip of them
+ * floating over the video is what this replaces — it landed on the scrubber and
+ * under the buttons. So the cell shows the speed it is on and opens the rest
+ * *above* itself, which is the one direction with nothing in it: the row is at
+ * the bottom of the screen and the picture above it is already covered by a
+ * popover the moment you have chosen.
+ *
+ * The same shape as the chat module's send button, deliberately — a cell that
+ * opens a small row of choices over itself, and anywhere else closes it. A
+ * popover whose only way out is the button that opened it is a trap on a touch
+ * screen, where tapping outside is what everybody tries first.
+ */
+function SpeedAction({ value, onChange }: { value: number; onChange: (next: number) => void }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="relative">
+      {open && (
+        <div
+          className="fixed inset-0 z-30"
+          onClick={() => setOpen(false)}
+          role="presentation"
+          // The viewer underneath reads drags as swipes between pictures; a
+          // finger that misses one of these must not turn into one.
+          onPointerDown={(event) => event.stopPropagation()}
+        />
+      )}
+      {open && (
+        <div
+          className="absolute bottom-full left-1/2 z-40 mb-1 flex -translate-x-1/2 gap-0.5 rounded-xl border border-line bg-surface-2 p-1 shadow-lg shadow-black/40"
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          {PLAYBACK_SPEEDS.map((speed) => (
+            <button
+              key={speed}
+              type="button"
+              aria-pressed={speed === value}
+              aria-label={`Play at ${speed}×`}
+              onClick={() => {
+                onChange(speed);
+                setOpen(false);
+              }}
+              className={cn(
+                'min-w-9 rounded-lg px-1.5 py-1.5 text-xs tabular-nums',
+                speed === value ? 'bg-accent text-white' : 'text-muted active:bg-surface-3',
+              )}
+            >
+              {speed}×
+            </button>
+          ))}
+        </div>
+      )}
+      <ViewerAction
+        glyph="⏩"
+        // The rate is the label: the state of this control is the only thing
+        // worth a word here, and "Speed" would say nothing the glyph does not.
+        label={`${value}×`}
+        active={value !== 1}
+        onClick={() => setOpen((current) => !current)}
+        title="How fast the clip plays"
+      />
+    </div>
+  );
+}
+
+/**
  * One action in the viewer's footer: a glyph with a small label under it.
  *
  * Ten actions belong on that screen and none of them is worth a row of its own
@@ -601,7 +695,10 @@ function ViewerAction({
       className={cn(
         // The shadow does what the bar behind these used to: separates them
         // from whatever part of the picture they happen to be sitting on.
-        'flex flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1 shadow-md shadow-black/40 disabled:opacity-40',
+        // Full width and height because one of these is wrapped in a
+        // positioning box — see `SpeedAction` — and a grid stretches its own
+        // children, not its grandchildren.
+        'flex size-full flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1 shadow-md shadow-black/40 disabled:opacity-40',
         danger
           ? 'bg-danger/20 text-danger'
           : active

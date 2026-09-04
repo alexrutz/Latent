@@ -8029,17 +8029,55 @@ describe('browsing folders on the ComfyUI machine', () => {
   /**
    * A proxy, and the interesting case is the ComfyUI that cannot answer.
    *
-   * The mock ComfyUI these tests run against has no comfyllama in it, so it
-   * answers 404 to the browse routes — which is exactly the shape of a real
-   * ComfyUI without the custom nodes installed. That has to arrive as a
-   * sentence somebody can act on rather than an empty folder list, because an
-   * empty list looks like "no pictures" and sends people looking through their
-   * output directory for a fault that is not there.
+   * A stock ComfyUI answers 404 to everything under `/comfyllama/`, and that
+   * has to arrive as a sentence somebody can act on rather than an empty folder
+   * list — an empty list looks like "no pictures" and sends people through
+   * their output directory after a fault that is not there.
+   *
+   * Its own far end, built without the custom nodes: the shared mock has them,
+   * because the browser cannot be exercised at all against one that does not.
    */
   it('says what to install when the far end has no browser', async () => {
-    const barred = await api('/api/browse/roots');
-    expect(barred.status).toBe(404);
-    expect((await json<{ error: string }>(barred)).error).toContain('comfyllama');
+    const stock = createMockComfy({ logLevel: 'silent', withoutComfyllama: true });
+    const address = await stock.listen(0);
+    const server = await bootIsolated({ comfyUrl: address });
+    try {
+      const claimed = await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+      const cookie = claimed.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      const barred = await server.call('/api/browse/roots', { cookie });
+      expect(barred.status).toBe(404);
+      expect((await json<{ error: string }>(barred)).error).toContain('comfyllama');
+    } finally {
+      await server.dispose();
+      await stock.close();
+    }
+  }, 30_000);
+
+  /** And with comfyllama there, the roots it allows come straight through. */
+  it('hands back the folders the far end allows', async () => {
+    const response = await api('/api/browse/roots');
+    expect(response.status).toBe(200);
+    const { roots } = await json<{ roots: { key: string }[] }>(response);
+    expect(roots.map((root) => root.key)).toEqual(['output', 'input', 'temp']);
+  });
+
+  /**
+   * The kind reaches the far end.
+   *
+   * It was being dropped by the proxy: the picker asked for clips, this handed
+   * the request on without the word, and comfyllama fell back to pictures — so
+   * a video slot was offered files it cannot load. Proved by asking for videos
+   * and getting the clip rather than the renders beside it.
+   */
+  it('asks for the kind of file the slot can actually use', async () => {
+    const response = await api('/api/browse/list?root=output&kind=video');
+    expect(response.status).toBe(200);
+    const listing = await json<{ files: { name: string }[] }>(response);
+    expect(listing.files.map((file) => file.name)).toEqual(['a-clip.webm']);
   });
 
   it('will not list a folder without being told which one', async () => {

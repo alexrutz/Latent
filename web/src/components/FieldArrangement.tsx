@@ -114,14 +114,23 @@ export function FieldArrangementSheet({ onClose }: { onClose: () => void }) {
                   : 'Every field is arranged.'}
               </p>
             ) : (
-              <ul className="space-y-1">
+              /*
+                As many columns as the width allows, not one.
+
+                The pool is a long list of short names — forty fields at one a
+                row is a screen and a half of scrolling past mostly empty
+                space. `auto-fill` rather than a fixed count so the same markup
+                gives a phone two columns and the sheet's left half four,
+                without a breakpoint per layout.
+              */
+              <ul className="grid gap-1 [grid-template-columns:repeat(auto-fill,minmax(10rem,1fr))]">
                 {unplaced.map((entry) => (
                   <li key={entry.name}>
                     <button
                       type="button"
                       aria-label={`Arrange ${entry.label}`}
                       onClick={() => write(placeField(arrangement, entry.name))}
-                      className="flex w-full items-center gap-2 rounded-xl border border-line px-3 py-2 text-left active:bg-surface-2"
+                      className="flex h-full w-full items-center gap-1.5 rounded-xl border border-line px-2.5 py-2 text-left active:bg-surface-2"
                     >
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm">{entry.label}</span>
@@ -180,22 +189,26 @@ function ArrangedRow({
         entry.hidden && 'opacity-60',
       )}
     >
+      {/* One line, so a row of the header is not a row of scrolling. The
+          technical name stays beside the label rather than under it: two
+          fields in different workflows can carry the same label, and then it
+          is the only thing telling them apart. */}
       <div className="flex items-center gap-2">
         <span
           {...handle}
           role="button"
           aria-label={`Reorder ${name}`}
-          className="grid size-9 shrink-0 cursor-grab place-items-center rounded-lg bg-surface-2 text-muted"
+          className="grid size-8 shrink-0 cursor-grab place-items-center rounded-lg bg-surface-2 text-muted"
         >
           ⠿
         </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm">{name}</span>
-          <span className="block truncate text-[11px] text-muted">
+        <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+          <span className="shrink-0 truncate text-sm">{name}</span>
+          <span className="min-w-0 flex-1 truncate text-[11px] text-muted">
             {entry.name}
             {pool
               ? ` · in ${pool.workflows} ${pool.workflows === 1 ? 'workflow' : 'workflows'}`
-              : ' · in none of the workflows switched on'}
+              : ' · in none switched on'}
           </span>
         </span>
         <button
@@ -208,13 +221,21 @@ function ArrangedRow({
         </button>
       </div>
 
-      <div className="mt-2 space-y-1.5">
+      {/*
+        The three attributes abreast rather than stacked.
+
+        Stacked, one arranged field was five rows tall and a dozen of them were
+        a screen you could only read by scrolling — which is exactly what the
+        general arrangement is meant to save. Side by side they fit a phone,
+        and the whole arrangement can be taken in at once.
+      */}
+      <div className="mt-2 flex items-start gap-1.5">
         <Choice
           label="Where"
           value={entry.group}
           options={[
-            ['main', 'Main'],
-            ['advanced', 'Advanced'],
+            ['main', 'Main', 'Main'],
+            ['advanced', 'Advanced', 'Adv.'],
           ]}
           field={name}
           onChange={(group) => onPatch({ group })}
@@ -224,8 +245,8 @@ function ArrangedRow({
           label="Width"
           value={entry.width}
           options={[
-            ['half', 'Half'],
-            ['full', 'Full row'],
+            ['half', 'Half', 'Half'],
+            ['full', 'Full row', 'Full'],
           ]}
           field={name}
           onChange={(width) => onPatch({ width })}
@@ -235,47 +256,52 @@ function ArrangedRow({
           label="Shown"
           value={entry.hidden === undefined ? undefined : entry.hidden ? 'hidden' : 'shown'}
           options={[
-            ['shown', 'Shown'],
-            ['hidden', 'Hidden'],
+            ['shown', 'Shown', 'Show'],
+            ['hidden', 'Hidden', 'Hide'],
           ]}
           field={name}
           onChange={(shown) => onPatch({ hidden: shown === 'hidden' })}
           onClear={() => onPatch({ hidden: undefined })}
         />
+      </div>
 
-        {/*
-          Only for numbers, and only when every workflow agrees it is one — see
-          `PoolField.numeric`. Offering "slider or points" for a sampler name
-          would be a control with no possible effect, which is worse than an
-          absent one because it invites the belief that it was tried.
+      {/*
+        Only for numbers, and only when every workflow agrees it is one — see
+        `PoolField.numeric`. Offering "slider or points" for a sampler name
+        would be a control with no possible effect, which is worse than an
+        absent one because it invites the belief that it was tried.
 
-          Absent from the pool entirely — a field arranged before its workflow
-          was switched off — is treated as numeric, because the alternative is
-          silently dropping a choice somebody already made.
-        */}
-        {(pool?.numeric ?? true) && (
-          <>
+        Absent from the pool entirely — a field arranged before its workflow
+        was switched off — is treated as numeric, because the alternative is
+        silently dropping a choice somebody already made.
+      */}
+      {(pool?.numeric ?? true) && (
+        <div className="mt-1.5 space-y-1.5">
+          {/* A third of the width, under Where, so the four attributes read as
+              one grid rather than three small ones and a wide one. */}
+          <div className="flex items-start gap-1.5">
             <Choice
               label="Edited as"
               value={entry.inputMode}
               options={[
-                ['input', 'Slider'],
-                ['points', 'Points'],
+                ['input', 'Slider', 'Slider'],
+                ['points', 'Points', 'Points'],
               ]}
               field={name}
               onChange={(inputMode) => onPatch({ inputMode })}
               onClear={() => onPatch({ inputMode: undefined, points: undefined })}
             />
-            {entry.inputMode === 'points' && (
-              <PointRange
-                field={name}
-                points={entry.points}
-                onChange={(points) => onPatch({ points })}
-              />
-            )}
-          </>
-        )}
-      </div>
+            <span aria-hidden className="flex-[2]" />
+          </div>
+          {entry.inputMode === 'points' && (
+            <PointRange
+              field={name}
+              points={entry.points}
+              onChange={(points) => onPatch({ points })}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -342,7 +368,14 @@ function PointRange({
  * and "nothing to say about the width" are different answers, and without a way
  * back to the second, arranging one attribute of a field would silently take
  * over the other two from every workflow that had settled them itself. So
- * **Leave it** is a button like the others and starts selected.
+ * leaving it alone is a button like the others and starts selected.
+ *
+ * A column — its name over a segmented control — rather than a row, so three of
+ * them stand abreast on a phone. Which is also why each option carries two
+ * strings: what fits in a third of a phone's width, and what it actually means.
+ * The short one is drawn and the long one is the accessible name, so a dash
+ * reads as "leave it to the workflow" to anything that speaks the labels rather
+ * than the pixels.
  */
 function Choice<T extends string>({
   label,
@@ -354,40 +387,44 @@ function Choice<T extends string>({
 }: {
   label: string;
   value: T | undefined;
-  options: readonly (readonly [T, string])[];
+  /** `[stored value, what it means, what fits]`. */
+  options: readonly (readonly [T, string, string])[];
   field: string;
   onChange: (value: T) => void;
   onClear: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-2">
-      <span className="text-[11px] text-muted">{label}</span>
-      <div className="flex gap-1">
+    <div className="min-w-0 flex-1">
+      <span className="mb-1 block truncate text-[10px] tracking-wide text-muted uppercase">
+        {label}
+      </span>
+      <div className="flex gap-0.5 rounded-lg bg-surface-2 p-0.5">
         <button
           type="button"
           aria-pressed={value === undefined}
           aria-label={`${field} ${label}: leave it to the workflow`}
+          title="Leave it to the workflow"
           onClick={onClear}
           className={cn(
-            'h-7 rounded-md px-2 text-[11px]',
-            value === undefined ? 'bg-surface-3 text-body' : 'bg-surface-2 text-muted',
+            'h-7 w-6 shrink-0 rounded-md text-[11px]',
+            value === undefined ? 'bg-surface-3 text-body' : 'text-muted',
           )}
         >
-          Leave it
+          –
         </button>
-        {options.map(([option, text]) => (
+        {options.map(([option, meaning, short]) => (
           <button
             key={option}
             type="button"
             aria-pressed={value === option}
-            aria-label={`${field} ${text}`}
+            aria-label={`${field} ${meaning}`}
             onClick={() => onChange(option)}
             className={cn(
-              'h-7 rounded-md px-2.5 text-[11px]',
-              value === option ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+              'h-7 min-w-0 flex-1 truncate rounded-md px-1 text-[11px]',
+              value === option ? 'bg-accent text-white' : 'text-muted',
             )}
           >
-            {text}
+            {short}
           </button>
         ))}
       </div>

@@ -105,17 +105,6 @@ export function FolderImagePicker({
   }, [roots.data, root]);
 
   /*
-   * Starring the last favourite away while looking at them leaves nowhere to
-   * be, so fall back to the first real root rather than an empty category.
-   */
-  useEffect(() => {
-    if (root === FAVORITES && settings.isSuccess && favorites.length === 0) {
-      setRoot(roots.data?.roots[0]?.key ?? '');
-      setPath('');
-    }
-  }, [root, favorites.length, settings.isSuccess, roots.data]);
-
-  /*
    * Typing does not fetch on every keystroke.
    *
    * A recursive search of a month of renders is a walk of thousands of files on
@@ -177,7 +166,9 @@ export function FolderImagePicker({
   return (
     <Sheet open={open} onClose={onClose} title="Pick a picture" closeLabel="Cancel" full>
       <div className="space-y-3">
-        <div className="flex flex-wrap gap-1.5">
+        {/* Named, because the breadcrumb underneath repeats the root's name as
+            a button too — they are the same word doing two different jobs. */}
+        <div data-testid="browse-categories" className="flex flex-wrap gap-1.5">
           {roots.data?.roots.map((entry) => (
             <button
               key={entry.key}
@@ -196,23 +187,25 @@ export function FolderImagePicker({
               {entry.key}
             </button>
           ))}
-          {/* Last, and only once there is something in it: an empty category
-              you can select is a dead end that has to be backed out of. */}
-          {favorites.length > 0 && (
-            <button
-              type="button"
-              onClick={() => {
-                setRoot(FAVORITES);
-                setPath('');
-              }}
-              className={cn(
-                'rounded-full border px-3 py-1 text-xs',
-                onFavorites ? 'border-accent bg-accent/20 text-accent' : 'border-line text-muted',
-              )}
-            >
-              ★ Favourites
-            </button>
-          )}
+          {/*
+            Always here, beside the real roots, even with nothing in it.
+            A category that only appears once you have used it cannot teach you
+            that it exists: the star on every row is the way in, and this chip is
+            what tells you where the starred things went. Empty, it says so.
+          */}
+          <button
+            type="button"
+            onClick={() => {
+              setRoot(FAVORITES);
+              setPath('');
+            }}
+            className={cn(
+              'rounded-full border px-3 py-1 text-xs',
+              onFavorites ? 'border-accent bg-accent/20 text-accent' : 'border-line text-muted',
+            )}
+          >
+            ★ Favourites
+          </button>
         </div>
 
         {!onFavorites && (
@@ -285,6 +278,7 @@ export function FolderImagePicker({
         {onFavorites && (
           <FavoriteList
             favorites={favorites}
+            hidden={(settings.data?.browseFavorites ?? []).length - favorites.length}
             kind={kind}
             starred={starred}
             onToggle={toggleStar}
@@ -479,6 +473,7 @@ function FileEntry({
  */
 function FavoriteList({
   favorites,
+  hidden,
   kind,
   starred,
   onToggle,
@@ -486,6 +481,8 @@ function FavoriteList({
   onPick,
 }: {
   favorites: BrowseFavorite[];
+  /** Starred, but the wrong sort of media for this slot. See below. */
+  hidden: number;
   kind: 'image' | 'video' | 'audio';
   starred: Set<string>;
   onToggle: (ref: string, kind: BrowseFavorite['kind']) => void;
@@ -494,6 +491,16 @@ function FavoriteList({
 }) {
   const folders = favorites.filter((entry) => entry.kind === 'folder');
   const files = favorites.filter((entry) => entry.kind === 'file');
+
+  if (favorites.length === 0) {
+    return (
+      <p className="py-6 text-center text-sm text-muted">
+        {hidden > 0
+          ? 'Nothing starred that fits this slot. The other favourites are the wrong sort of file for it.'
+          : 'Nothing starred yet. Tap the ☆ beside a folder or a picture and it will wait here.'}
+      </p>
+    );
+  }
 
   return (
     <div className="space-y-3">
@@ -526,6 +533,18 @@ function FavoriteList({
             />
           ))}
         </div>
+      )}
+
+      {/*
+        Said rather than silently dropped. A clip starred from a video slot is
+        not offered in a picture slot — the node would refuse it — but a star
+        that vanishes without explanation reads as a star that did not save.
+      */}
+      {hidden > 0 && (
+        <p className="text-center text-xs text-muted">
+          {hidden} more starred, {hidden === 1 ? 'but it is' : 'but they are'} the wrong sort of
+          file for this slot.
+        </p>
       )}
     </div>
   );

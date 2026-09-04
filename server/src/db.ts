@@ -591,6 +591,41 @@ interface ModelNoteRow {
   updated_at: number;
 }
 
+/**
+ * A stored Civitai blob, with the fields added since it was written.
+ *
+ * The same promise the settings make, for the same reason: this is one JSON
+ * column, and a row written by an older version simply has no key for anything
+ * added later. Handing that straight to a client makes every reader defend
+ * against `undefined` separately — and the one that forgets crashes, which is
+ * exactly what happened here. A note fetched before `tags` and `examples`
+ * existed blanked the Models screen the moment it was opened.
+ *
+ * So the shape is completed once, on the way out, and nothing downstream has to
+ * know which version wrote the row.
+ */
+function toCivitai(raw: string | null): CivitaiInfo | null {
+  const stored = raw ? parseJson<Partial<CivitaiInfo> | null>(raw, null) : null;
+  if (!stored) return null;
+
+  return {
+    modelId: stored.modelId ?? null,
+    versionId: stored.versionId ?? null,
+    name: stored.name ?? null,
+    versionName: stored.versionName ?? null,
+    baseModel: stored.baseModel ?? null,
+    trainedWords: stored.trainedWords ?? [],
+    description: stored.description ?? null,
+    modelDescription: stored.modelDescription ?? null,
+    type: stored.type ?? null,
+    creator: stored.creator ?? null,
+    tags: stored.tags ?? [],
+    examples: stored.examples ?? [],
+    url: stored.url ?? null,
+    fetchedAt: stored.fetchedAt ?? 0,
+  };
+}
+
 function toModelNote(row: ModelNoteRow): ModelNote {
   return {
     folder: row.folder as ModelFolder,
@@ -598,7 +633,7 @@ function toModelNote(row: ModelNoteRow): ModelNote {
     triggerWords: parseJson<string[]>(row.trigger_words, []),
     notes: row.notes,
     strength: row.strength,
-    civitai: row.civitai_json ? parseJson<CivitaiInfo | null>(row.civitai_json, null) : null,
+    civitai: toCivitai(row.civitai_json),
     sha256: row.sha256,
     updatedAt: row.updated_at,
   };

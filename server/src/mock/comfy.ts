@@ -62,6 +62,17 @@ export interface MockComfyOptions {
    * is deliberately small enough that nothing needs shrinking.
    */
   outputSize?: number;
+  /**
+   * A ComfyUI with no comfyllama in its `custom_nodes`.
+   *
+   * The default mock has it, because that is what these features are built
+   * against and there is no way to drive the folder browser or the model
+   * library without a far end that answers. This is the other case, and it is
+   * the one worth a test of its own: everything under `/comfyllama/` 404s, the
+   * way a stock install does, so what Latent says about it can be proved rather
+   * than assumed.
+   */
+  withoutComfyllama?: boolean;
 }
 
 export interface MockComfy {
@@ -456,6 +467,10 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
   /* ---------------------------------------------------------------- */
 
   function route(method: 'GET' | 'POST', path: string, handler: RouteHandlerMethod): void {
+    // A stock ComfyUI has none of these, and Fastify's own 404 is exactly what
+    // it answers with — which is the condition Latent's "install comfyllama"
+    // message is written for, so it is left to happen rather than faked.
+    if (options.withoutComfyllama && path.startsWith('/comfyllama/')) return;
     app.route({ method, url: path, handler });
     app.route({ method, url: `/api${path}`, handler });
   }
@@ -544,6 +559,69 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       gpus: [{ watts: running !== null ? 412.5 : 61.2, limit: 450 }],
       source: 'nvml',
     }));
+
+    /*
+     * The folder browser, as comfyllama would serve it.
+     *
+     * A tree rather than a flat list, because the browser's job is walking one:
+     * `output` holds a `monday` folder with two renders in it and a clip beside
+     * them, and `input` and `temp` are the two other roots any ComfyUI has. The
+     * point of serving it here is that Latent only ever proxies these — which
+     * folders may be read is decided on the machine that has them — so there is
+     * no way to exercise the browser at all without a far end that answers.
+     */
+    const TREE: Record<string, { folders: string[]; files: string[] }> = {
+      'output:': { folders: ['monday'], files: ['render_0001.png', 'a-clip.webm'] },
+      'output:monday': { folders: [], files: ['render_0007.png', 'render_0008.png'] },
+      'input:': { folders: [], files: ['reference.png'] },
+      'temp:': { folders: [], files: [] },
+    };
+
+    route('GET', '/comfyllama/browse/roots', async () => ({
+      roots: [
+        { key: 'output', path: '/comfy/output' },
+        { key: 'input', path: '/comfy/input' },
+        { key: 'temp', path: '/comfy/temp' },
+      ],
+    }));
+
+    route('GET', '/comfyllama/browse/list', async (request) => {
+      const query = request.query as { root?: string; path?: string; q?: string; kind?: string };
+      const root = query.root ?? 'output';
+      const path = query.path ?? '';
+      const here = TREE[`${root}:${path}`] ?? { folders: [], files: [] };
+      const kind = query.kind ?? 'image';
+
+      // The real one filters by what the slot can load, and by the search box.
+      // Both matter to the browser's behaviour, so both are honoured here.
+      const wanted = (name: string) =>
+        kind === 'video' ? /\.(webm|mp4)$/.test(name) : /\.(png|jpg|jpeg|webp)$/.test(name);
+      const matches = (name: string) =>
+        query.q ? name.toLowerCase().includes(query.q.toLowerCase()) : true;
+
+      const entry = (name: string) => ({
+        name,
+        path: path ? `${path}/${name}` : name,
+        size: 1024,
+        mtime: 1_700_000_000,
+      });
+
+      const files = here.files.filter((name) => wanted(name) && matches(name)).map(entry);
+      return {
+        kind,
+        root,
+        path,
+        folders: here.folders.map(entry),
+        files,
+        truncated: false,
+        total: files.length,
+      };
+    });
+
+    route('GET', '/comfyllama/browse/thumb', async (request, reply) => {
+      const { path = 'thumb' } = request.query as { path?: string };
+      return reply.header('content-type', 'image/png').send(renderPlaceholder(64, 64, path));
+    });
 
     /*
      * The model library, as comfyllama would report it.

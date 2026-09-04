@@ -438,11 +438,15 @@ side where there is room:
 - **The pool** — every distinct field across the workflows you have switched on,
   most widespread first, because the ones worth an opinion are the ones that
   keep turning up. It says how many workflows have each, so `duration · in 4
-  workflows` is a fact rather than a guess.
+  workflows` is a fact rather than a guess. In as many columns as the width
+  allows: forty short names one to a row is a screen and a half of scrolling
+  past empty space.
 - **The arrangement** — what you have placed, in the order it will take, each
   with where it goes, how wide it is, whether it is shown at all, and — for
   numbers — whether it is edited with a slider or a line of points, with the
-  range spelled out. The range has to be stated rather than derived: the same
+  range spelled out. Where, width and shown sit **abreast on one line**, so an
+  arranged field is two rows rather than five and a dozen of them can be read
+  without scrolling. The range has to be stated rather than derived: the same
   `steps` is 1–150 in one workflow and 1–10000 in another, and a line built
   from either would be wrong in the other. Stating it is also what makes one
   line of points mean the same thing everywhere, which is the point of
@@ -461,7 +465,9 @@ applied *underneath* the per-workflow overrides, so nothing arranged generally
 can quietly undo work done by hand. Every attribute has a third state,
 **Leave it**, which is not the same as either answer: without it, arranging one
 attribute of a field would take over the other two from every workflow that had
-settled them itself.
+settled them itself — drawn as a dash beside the two real answers, which is what
+fits in a third of a phone's width and still reads as "leave it to the workflow"
+to anything that speaks the labels rather than the pixels.
 
 **Gaps close.** An arrangement written against every workflow will always be
 missing pieces in any one of them, and what must not happen is a hole where the
@@ -490,6 +496,9 @@ removing it.
 
 It covers **LoRAs, checkpoints and diffusion models** — the unet-only weights
 Flux and WAN ship as, which people have as many opinions about as their LoRAs.
+There is deliberately no separate *UNET* category: ComfyUI aliases that key to
+the same folder entry as `diffusion_models`, so offering both listed the same
+files twice under two names.
 
 **Three sources, ranked rather than merged.**
 
@@ -553,6 +562,15 @@ The reading happens in **comfyllama**, on the machine with the files, for the
 same reason as the folder browser: Latent is routinely somewhere else. Without
 it the library still lists what `/object_info` names, and says why there is
 nothing behind the names — a screen showing nothing at all would be worse.
+
+**A stored lookup is completed on the way out of the database.** A note written
+before a field existed simply does not have it, and reading `tags.length` off a
+row like that threw during render — which took the whole app down to a black
+rectangle, because React unmounts the tree when nothing catches it. The blob is
+normalised field by field on read now, so an old row comes back looking like a
+new one. And every screen sits inside a boundary: the next bug of that shape
+costs a screen and a "This screen stopped" message with the tabs still working,
+rather than the app.
 
 ## Where your data lives
 
@@ -762,10 +780,19 @@ empty gallery row.
 
 **Watching them.** A clip opens in the same viewer as a picture, with the
 browser's own controls; swiping the area around it still moves to the next
-output and the actions underneath are the ones that make sense — rate, keep,
+output and the actions underneath are the ones that make sense — rate,
 favourite, save, reuse the settings, delete. img2img and upscaling are shown
 disabled, because those nodes read one frame from a picture and handing them a
 clip fails inside ComfyUI with an error about nothing you did.
+
+**How fast it plays.** A video model renders a fixed number of frames and the
+container is written at whatever rate the workflow chose, so a clip meant to run
+for five seconds often plays at half speed — the frames are all there, the
+header is simply wrong. The cell that says `1×` changes that, and opens the
+other speeds above itself. It takes **Keep**'s place on a clip, because Keep is
+the one action on that row a video does not need — rating or favouriting it
+protects it from the cleanup just as well, and both are a thumb's width away.
+Still pictures keep Keep.
 
 **Thumbnails.** Latent's own image renderer cannot open an mp4 — there is no
 ffmpeg here and no reason to add one — so a video has no still until something
@@ -2487,18 +2514,23 @@ and it carries a path — `output/monday/render_0007.png` — shown under the
 filename, because the same name exists under several roots.
 
 **Favourites, as another category.** Every folder and every file in the browser
-has a star beside it, and starring one puts it in a **★ Favourites** chip beside
-`output` and `input`. Reference material is reused and the same handful of it is
-reused most — the sketch a series is built on, the folder of masks, the one
-photograph every portrait starts from — and finding those by walking down from
-`output` is a cost paid per picture. A starred folder opens where it actually
-lives, so the category is a shortcut into the browser rather than a copy of it.
+has a star beside it, and starring one puts it in a **★ Favourites** chip that
+stands beside `output`, `input` and `temp` — always, whether or not anything has
+been starred yet. It used to appear only once it had something in it, which
+meant the star on every row put pictures into a place that did not visibly
+exist; empty, the category says what a star does instead. Reference material is
+reused and the same handful of it is reused most — the sketch a series is built
+on, the folder of masks, the one photograph every portrait starts from — and
+finding those by walking down from `output` is a cost paid per picture. A
+starred folder opens where it actually lives, so the category is a shortcut into
+the browser rather than a copy of it.
 
 The list is kept with the settings, not on the device: what you reference is a
 property of the installation, not of the phone you picked it from. A slot only
-offers what it can load — a starred clip does not appear in a picture slot —
-but starring is against the whole list, so a picture slot never drops the clips
-it is not showing.
+offers what it can load — a starred clip does not appear in a picture slot, and
+the category says how many it is holding back rather than dropping them without
+a word — but starring is against the whole list, so a picture slot never loses
+the clips it is not showing.
 
 *Replace* still uploads from the camera roll, editor and all. The upload lands
 in ComfyUI's input directory, which the browser also serves, so it is stored as
