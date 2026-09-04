@@ -5,6 +5,7 @@ import {
   applyPresetChat,
   defaultValues,
   findFieldByRole,
+  groupByNode,
   isLlamaServerField,
   matchSystemPrompt,
   planFormRuns,
@@ -27,6 +28,7 @@ import {
   useGenerate,
   usePresets,
   usePromptMode,
+  useRescanWorkflow,
   useSavePreset,
   useSetEndless,
   useWorkflow,
@@ -313,6 +315,16 @@ function GenerateForm({
 
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
+  /*
+   * Reset asks twice, and disarms itself.
+   *
+   * It throws away a prompt somebody wrote, and it sits at the top of the
+   * screen beside the workflow picker where a thumb reaching for the picker
+   * passes over it. One tap arms it, the next does it, and if neither happens
+   * it goes back to being an icon rather than sitting armed until the next
+   * accidental tap lands on it.
+   */
+  const [confirmReset, setConfirmReset] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [justQueued, setJustQueued] = useState(0);
   const initialisedFor = useRef<string | null>(null);
@@ -327,6 +339,13 @@ function GenerateForm({
   const draft = useFormDrafts((state) => (detail ? state.drafts[detail.id] : undefined));
   const setDraft = useFormDrafts((state) => state.set);
   const patchDraft = useFormDrafts((state) => state.patch);
+  const rescan = useRescanWorkflow();
+
+  useEffect(() => {
+    if (!confirmReset) return;
+    const timer = setTimeout(() => setConfirmReset(false), 4000);
+    return () => clearTimeout(timer);
+  }, [confirmReset]);
 
   const values = draft?.values ?? {};
   const lockedSeeds = draft?.lockedSeeds ?? [];
@@ -562,13 +581,77 @@ function GenerateForm({
             </span>
           </button>
 
-          <span
-            title={comfyOnline ? 'ComfyUI connected' : 'ComfyUI unreachable'}
-            className={cn(
-              'size-2.5 shrink-0 rounded-full',
-              comfyOnline ? 'bg-success' : 'bg-danger',
-            )}
-          />
+          {/*
+            The connection light, and under it the way out of a form that has
+            got itself into a state.
+
+            Two things in one gesture, because they are one thought: put this
+            workflow back the way it comes. The values go to the graph's own
+            defaults — not the last run's, which is history rather than the
+            workflow — and the schema is re-read from ComfyUI, so a model
+            installed since, or a custom node that was missing, turns up in the
+            dropdowns without a trip to Settings.
+
+            Under the light rather than beside the picker: it is about the
+            workflow's connection to the machine, which is what the light is
+            about, and putting it in the row proper would have it competing with
+            the one control up here anybody uses often.
+          */}
+          <div className="flex shrink-0 flex-col items-center gap-1.5">
+            <span
+              title={comfyOnline ? 'ComfyUI connected' : 'ComfyUI unreachable'}
+              className={cn('size-2.5 rounded-full', comfyOnline ? 'bg-success' : 'bg-danger')}
+            />
+            <button
+              type="button"
+              aria-label={confirmReset ? 'Reset this workflow — sure?' : 'Reset this workflow'}
+              title={
+                confirmReset
+                  ? 'Tap again to throw away what is set up here'
+                  : 'Put the form back to the workflow’s own values and re-read it from ComfyUI'
+              }
+              onClick={() => {
+                if (!confirmReset) return setConfirmReset(true);
+                setConfirmReset(false);
+                setError(null);
+
+                /*
+                 * The values first, because that half cannot fail: it is a
+                 * local store, and a ComfyUI that has gone away must not be
+                 * the reason the form stays stuck.
+                 */
+                setDraft(detail.id, {
+                  values: { ...defaultValues(detail.schema) },
+                  lockedSeeds: [],
+                  batchCount: 1,
+                });
+
+                rescan.mutate(detail.id, {
+                  // Seeded again from the schema that just came back: a rescan
+                  // can add a field, and one left at `undefined` submits
+                  // nothing rather than its default.
+                  onSuccess: (fresh) =>
+                    setDraft(fresh.id, {
+                      values: { ...defaultValues(fresh.schema) },
+                      lockedSeeds: [],
+                      batchCount: 1,
+                    }),
+                  onError: (cause) =>
+                    setError(
+                      cause instanceof Error
+                        ? `The form was reset, but ComfyUI could not be re-read: ${cause.message}`
+                        : 'The form was reset, but ComfyUI could not be re-read.',
+                    ),
+                });
+              }}
+              className={cn(
+                'rounded-md px-1.5 py-0.5 text-[11px] leading-none',
+                confirmReset ? 'bg-danger/20 text-danger' : 'bg-surface-2 text-muted',
+              )}
+            >
+              {rescan.isPending ? <Spinner className="size-3" /> : confirmReset ? 'Sure?' : '⟳'}
+            </button>
+          </div>
         </div>
 
         {detail.schema.missingNodeTypes.length > 0 && (
@@ -706,35 +789,53 @@ function GenerateForm({
 
             <Sheet open={showAdvanced} onClose={() => setShowAdvanced(false)} title="Advanced" full>
               {/*
-              Two columns of chips, not a stack of labelled blocks.
+              Chips, under the node each one came off.
 
-              Advanced is where a big workflow puts thirty inputs, and giving each
-              one a heading, a caption and a full-width control turned it into
-              several screens of scrolling to reach the one you came for. A chip
-              already carries its own label and value, so the heading was
-              redundant; the wide controls (text, image) still get a full row
-              because they cannot be read in half of one.
+              Two things were wrong with one flat run of them. A chip carries
+              its own label and value, which is why there is no heading per
+              field — but a label alone is only half the name: `denoise`,
+              `strength`, `end_at_step` mean nothing until you know which node
+              they belong to, and a graph with two samplers has the same word
+              twice with nothing to tell them apart. And thirty of them in a
+              heap is a list you scan rather than a list you navigate.
+
+              The wide controls (text, image) still take a full row inside
+              their group, because they cannot be read in half of one.
             */}
-              <div className="flex flex-wrap gap-1.5">
-                {advancedFields.map((field) => (
-                  <div
-                    key={field.id}
-                    className={cn(
-                      'min-w-0',
-                      isWideControl(field) ? 'w-full space-y-1' : 'max-w-full',
-                    )}
-                  >
-                    {isWideControl(field) && (
-                      <span className="block truncate text-[11px] tracking-wide text-muted uppercase">
-                        {field.label}
+              <div className="space-y-4">
+                {groupByNode(advancedFields).map((group) => (
+                  <section key={group.nodeId} className="space-y-1.5">
+                    <h3 className="flex items-baseline gap-2 border-b border-line pb-1">
+                      <span className="min-w-0 truncate text-xs font-medium tracking-wide text-muted uppercase">
+                        {group.title}
                       </span>
-                    )}
-                    <AdvancedRow
-                      field={field}
-                      value={values[field.id] ?? field.defaultValue}
-                      onChange={(value) => setValue(field.id, value)}
-                    />
-                  </div>
+                      <span className="shrink-0 text-[11px] text-muted/70">
+                        {group.fields.length}
+                      </span>
+                    </h3>
+                    <div className="flex flex-wrap gap-1.5">
+                      {group.fields.map((field) => (
+                        <div
+                          key={field.id}
+                          className={cn(
+                            'min-w-0',
+                            isWideControl(field) ? 'w-full space-y-1' : 'max-w-full',
+                          )}
+                        >
+                          {isWideControl(field) && (
+                            <span className="block truncate text-[11px] tracking-wide text-muted uppercase">
+                              {field.label}
+                            </span>
+                          )}
+                          <AdvancedRow
+                            field={field}
+                            value={values[field.id] ?? field.defaultValue}
+                            onChange={(value) => setValue(field.id, value)}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </section>
                 ))}
               </div>
             </Sheet>

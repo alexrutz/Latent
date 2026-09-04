@@ -11,6 +11,7 @@ import {
   ltxVideoGguf,
   minimaxMusic,
   sd15Txt2Img,
+  sdxlBaseRefiner,
   videoCombine,
   sd15Txt2ImgUi,
   sd15WithLoraInput,
@@ -6711,7 +6712,7 @@ test.describe('generating audio', () => {
     );
 
     await open(page, '/');
-    await page.getByRole('button', { name: 'Workflow' }).click();
+    await page.getByRole('button', { name: 'Choose workflow' }).click();
     const picker = page.getByRole('dialog', { name: 'Workflow' });
     // Which of these makes a sound is worth knowing before you open the form.
     await expect(
@@ -6824,7 +6825,7 @@ test.describe('generating video', () => {
     await withApi((ctx) => ctx.post('/api/workflows', { data: { name, graph } }));
 
     await open(page, '/');
-    await page.getByRole('button', { name: 'Workflow' }).click();
+    await page.getByRole('button', { name: 'Choose workflow' }).click();
     const picker = page.getByRole('dialog', { name: 'Workflow' });
     await picker.getByRole('button', { name: new RegExp(name) }).click();
 
@@ -6853,7 +6854,7 @@ test.describe('generating video', () => {
     );
 
     await open(page, '/');
-    await page.getByRole('button', { name: 'Workflow' }).click();
+    await page.getByRole('button', { name: 'Choose workflow' }).click();
     // Which of these makes a clip is the first thing worth knowing about a list
     // of workflows, and the name does not reliably say.
     const picker = page.getByRole('dialog', { name: 'Workflow' });
@@ -7390,5 +7391,82 @@ test.describe('picking a picture out of a folder', () => {
     // reference — the root included, because the same path exists under three.
     await sheet.locator('img[alt="render_0007.png"]').click();
     await expect(page.getByText('output/monday/render_0007.png')).toBeVisible();
+  });
+});
+
+/**
+ * Advanced, and the way back out of a form that has got into a state.
+ *
+ * Two complaints about the top and the bottom of the same screen. Advanced is
+ * where a big workflow puts everything that is not a prompt, and as a flat run
+ * of chips it is a heap: `start_at_step` twice, `add_noise` twice, and nothing
+ * saying which sampler either belongs to. And a form that has ended up somewhere
+ * wrong had no way back short of editing every field by hand.
+ */
+test.describe('finding things under Advanced, and starting over', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    // Two KSamplerAdvanced nodes, so several settings share a label — which is
+    // the case that makes the grouping worth having rather than tidy.
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'Base and refiner', graph: sdxlBaseRefiner } }),
+    );
+  });
+
+  test('groups the advanced settings under the node each came from', async ({ page }) => {
+    await open(page, '/');
+
+    const picker = page.getByRole('button', { name: /Base and refiner/ });
+    if (await picker.isVisible().catch(() => false)) await picker.click();
+
+    await page.getByRole('button', { name: 'Advanced' }).click();
+    const sheet = page.getByRole('dialog', { name: 'Advanced' });
+    await expect(sheet).toBeVisible();
+
+    /*
+     * The headings are the node titles, and the same setting appears under
+     * each — which is the whole point. Read as sections rather than as a list
+     * of chips: "which of these two is the refiner's" is the question that had
+     * no answer on screen.
+     */
+    const base = sheet.locator('section').filter({ hasText: 'Base sampler' });
+    const refiner = sheet.locator('section').filter({ hasText: 'Refiner sampler' });
+    await expect(base).toHaveCount(1);
+    await expect(refiner).toHaveCount(1);
+
+    await expect(base.getByRole('button', { name: /Start at step/i })).toHaveCount(1);
+    await expect(refiner.getByRole('button', { name: /Start at step/i })).toHaveCount(1);
+    await page.screenshot({ path: 'test-results/101-advanced-by-node.png' });
+
+    // And a heading belongs to one node: the base sampler's section does not
+    // carry the refiner's settings, which a flat list could not have told you.
+    await expect(base.getByText('Refiner sampler')).toHaveCount(0);
+  });
+
+  test('resets the form back to the workflow’s own values', async ({ page }) => {
+    await open(page, '/');
+
+    const picker = page.getByRole('button', { name: /Base and refiner/ });
+    if (await picker.isVisible().catch(() => false)) await picker.click();
+
+    // Two positive prompts in this graph, one per checkpoint; the first will do.
+    const prompt = page.getByPlaceholder('Describe the image…').first();
+    await expect(prompt).toHaveValue(/astronaut/);
+    await prompt.fill('something else entirely');
+    await expect(prompt).toHaveValue('something else entirely');
+
+    /*
+     * Two taps, because it throws away a prompt somebody wrote and it sits at
+     * the top of the screen where a thumb reaching for the workflow picker
+     * passes over it.
+     */
+    const reset = page.getByRole('button', { name: 'Reset this workflow' });
+    await expect(reset).toBeVisible();
+    await reset.click();
+    await expect(prompt).toHaveValue('something else entirely');
+
+    await page.getByRole('button', { name: 'Reset this workflow — sure?' }).click();
+    await expect(prompt).toHaveValue(/astronaut/);
+    await page.screenshot({ path: 'test-results/102-reset-workflow.png' });
   });
 });

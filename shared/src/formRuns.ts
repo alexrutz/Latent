@@ -82,3 +82,60 @@ export function isSizeable(field: ParamField): boolean {
   if (DEDICATED_ROLES.has(field.role)) return false;
   return !['textarea', 'text', 'image', 'folderImage'].includes(field.control);
 }
+
+/** One node's worth of the Advanced list, with a heading that names it. */
+export interface FieldGroup {
+  nodeId: string;
+  /** What the heading says. See `groupByNode` for how a clash is settled. */
+  title: string;
+  fields: ParamField[];
+}
+
+/**
+ * Advanced, cut into the nodes the settings came from.
+ *
+ * A big workflow puts thirty inputs behind Advanced, and as one flat run of
+ * chips they are thirty unrelated words: `denoise`, `end_at_step`, `tile_size`,
+ * `strength` — none of which mean anything until you know which node they
+ * belong to, and two of which are often the same word on different nodes. The
+ * heading is the missing half of the label.
+ *
+ * The order is the arrangement's own: groups appear in the order their first
+ * field does, and the fields inside a group keep the order they were given. So
+ * dragging a field in the form editor still moves it, and moving one past the
+ * last field of its node moves its whole group — which is the only behaviour
+ * that can be explained in a sentence.
+ *
+ * **Titles are disambiguated, not deduplicated.** Two KSamplers in one graph are
+ * two groups with one name, and a heading that cannot tell them apart is worse
+ * than no heading — so where a title is used twice, every group carrying it
+ * gets its node id appended. Only where it clashes: `#7` on every heading in a
+ * graph that has no clashes at all would be noise.
+ */
+export function groupByNode(fields: ParamField[]): FieldGroup[] {
+  const groups: FieldGroup[] = [];
+  const byNode = new Map<string, FieldGroup>();
+
+  for (const field of fields) {
+    const existing = byNode.get(field.nodeId);
+    if (existing) {
+      existing.fields.push(field);
+      continue;
+    }
+    const group: FieldGroup = {
+      nodeId: field.nodeId,
+      title: field.nodeTitle || field.classType || field.nodeId,
+      fields: [field],
+    };
+    byNode.set(field.nodeId, group);
+    groups.push(group);
+  }
+
+  const seen = new Map<string, number>();
+  for (const group of groups) seen.set(group.title, (seen.get(group.title) ?? 0) + 1);
+  for (const group of groups) {
+    if ((seen.get(group.title) ?? 0) > 1) group.title = `${group.title} #${group.nodeId}`;
+  }
+
+  return groups;
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { DEDICATED_ROLES, isChip, isSizeable, planFormRuns } from './formRuns.js';
+import { DEDICATED_ROLES, groupByNode, isChip, isSizeable, planFormRuns } from './formRuns.js';
 import type { ParamField, ParamRole } from './paramTypes.js';
 
 /**
@@ -112,5 +112,77 @@ describe('which fields may choose their width', () => {
   it('withholds it from the folder browser both ways round', () => {
     expect(isSizeable(field({ role: 'folder_image' as ParamRole }))).toBe(false);
     expect(isSizeable(field({ control: 'folderImage' }))).toBe(false);
+  });
+});
+
+/**
+ * Advanced, cut into the nodes its settings came from.
+ *
+ * Thirty inputs in one flat run of chips are thirty unrelated words — and the
+ * same word twice, on two different nodes, with nothing on screen saying which
+ * is which. The heading is the missing half of the label.
+ */
+describe('grouping the advanced list by node', () => {
+  const shape = (groups: ReturnType<typeof groupByNode>) =>
+    groups.map((group) => `${group.title}:${group.fields.map((f) => f.id).join(',')}`);
+
+  it('gathers each node’s fields under one heading', () => {
+    expect(
+      shape(
+        groupByNode([
+          field({ id: '1.a', nodeId: '1', nodeTitle: 'Sampler' }),
+          field({ id: '2.a', nodeId: '2', nodeTitle: 'Upscaler' }),
+          field({ id: '1.b', nodeId: '1', nodeTitle: 'Sampler' }),
+        ]),
+      ),
+    ).toEqual(['Sampler:1.a,1.b', 'Upscaler:2.a']);
+  });
+
+  it('orders the groups by where each one first appears', () => {
+    /*
+     * The arrangement's own order, not the node ids': a field dragged to the
+     * top of Advanced takes its node's heading with it, which is the only
+     * behaviour that can be explained in a sentence.
+     */
+    const groups = groupByNode([
+      field({ id: '9.a', nodeId: '9', nodeTitle: 'Last' }),
+      field({ id: '3.a', nodeId: '3', nodeTitle: 'Middle' }),
+      field({ id: '9.b', nodeId: '9', nodeTitle: 'Last' }),
+      field({ id: '1.a', nodeId: '1', nodeTitle: 'First' }),
+    ]);
+    expect(groups.map((group) => group.title)).toEqual(['Last', 'Middle', 'First']);
+  });
+
+  it('tells two nodes with the same title apart', () => {
+    // Two KSamplers in one graph is normal, and a heading that cannot
+    // distinguish them is worse than no heading at all.
+    expect(
+      shape(
+        groupByNode([
+          field({ id: '4.steps', nodeId: '4', nodeTitle: 'KSampler' }),
+          field({ id: '7.steps', nodeId: '7', nodeTitle: 'KSampler' }),
+        ]),
+      ),
+    ).toEqual(['KSampler #4:4.steps', 'KSampler #7:7.steps']);
+  });
+
+  it('leaves a title that does not clash alone', () => {
+    // `#7` on every heading in a graph with no clashes would be noise.
+    const groups = groupByNode([
+      field({ id: '4.steps', nodeId: '4', nodeTitle: 'KSampler' }),
+      field({ id: '7.scale', nodeId: '7', nodeTitle: 'Upscaler' }),
+    ]);
+    expect(groups.map((group) => group.title)).toEqual(['KSampler', 'Upscaler']);
+  });
+
+  it('falls back to the class, then the id, for a node with no title', () => {
+    expect(
+      groupByNode([field({ nodeId: '5', nodeTitle: '', classType: 'KSampler' })])[0]?.title,
+    ).toBe('KSampler');
+    expect(groupByNode([field({ nodeId: '5', nodeTitle: '', classType: '' })])[0]?.title).toBe('5');
+  });
+
+  it('has nothing to say about an empty list', () => {
+    expect(groupByNode([])).toEqual([]);
   });
 });

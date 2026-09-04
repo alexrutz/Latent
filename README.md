@@ -380,6 +380,28 @@ recognise goes to **Advanced** rather than being dropped. Use
 edits are stored separately from the derived form, so **Refresh models** (which
 re-reads node definitions after you install something new) never overwrites them.
 
+**Advanced is grouped by node**, with the node's title as the heading. A chip
+carries its own label, but a label is only half the name: `denoise`, `strength`
+and `end_at_step` mean nothing until you know which node they belong to, and a
+graph with two samplers has the same word twice with nothing telling them apart.
+Where two nodes share a title the heading carries the node id as well — only
+where it clashes, since `#7` on every heading in a graph with no clashes would
+be noise. The groups appear in the order their first field does, so dragging a
+field in the editor still moves it, and moving one past the last field of its
+node moves its whole group.
+
+**Reset**, under the connection light at the top of Generate, is the way back
+out of a form that has got into a state. It does two things that are really one
+thought — put this workflow back the way it comes: the values go to the graph's
+own defaults (not the last run's, which is history rather than the workflow),
+seeds are unlocked, the batch count goes back to one, and the schema is re-read
+from ComfyUI, so a model installed since or a custom node that was missing turns
+up in the dropdowns without a trip to Settings. It asks twice, because it throws
+away a prompt somebody wrote and it sits where a thumb reaching for the workflow
+picker passes over it. The values reset even if ComfyUI cannot be reached — that
+half is local, and an unreachable server must not be the reason a form stays
+stuck.
+
 Rearranging a form on a phone is fiddly enough that you should only do it once.
 **Save current** at the top of that sheet stores the arrangement under a name,
 and tapping a saved layout puts it back — so one workflow can have a stripped
