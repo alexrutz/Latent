@@ -84,6 +84,14 @@ export default defineConfig({
       env: {
         PORT: String(SERVER_PORT),
         COMFY_URL: `http://127.0.0.1:${MOCK_PORT}`,
+        /*
+         * Civitai, as far as the model library is concerned. Pointed at the
+         * mock so the suite never depends on a public site being up — and the
+         * image origin separately, because the proxy's allowlist is the whole
+         * security of that route and must not be widened by the base URL.
+         */
+        LATENT_CIVITAI_BASE: `http://127.0.0.1:${MOCK_PORT}/civitai`,
+        LATENT_CIVITAI_IMAGE_ORIGIN: `http://127.0.0.1:${MOCK_PORT}`,
         LATENT_DATA_DIR: 'data/e2e',
         // Keep the portable settings files inside the test data directory
         // rather than beside the checkout.

@@ -32,9 +32,14 @@ from typing import Any, Dict, List, Optional
 ROUTE = "/comfyllama/models"
 HASH_ROUTE = "/comfyllama/models/hash"
 
-# Folders worth offering. Anything ComfyUI knows about could be listed, but
-# these are the two whose trigger words and base model anybody asks about.
-FOLDERS = ("loras", "checkpoints")
+# Folders worth offering.
+#
+# Anything ComfyUI knows about could be listed, but these are the ones whose
+# trigger words, base model and creator notes anybody asks about. `unet` is the
+# older name for `diffusion_models` and both are still in use — a Flux or WAN
+# install typically has one or the other, so both are served and whichever is
+# configured answers.
+FOLDERS = ("loras", "checkpoints", "diffusion_models", "unet")
 
 # The header is JSON and small; a file claiming otherwise is not one we read.
 #

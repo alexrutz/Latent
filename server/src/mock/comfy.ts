@@ -598,6 +598,46 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       sha256: 'b'.repeat(64),
     }));
 
+    /*
+     * Civitai, as far as Latent is concerned.
+     *
+     * Two endpoints because the client asks twice: the version by hash, then
+     * the model behind it — which is where the creator's actual explanation
+     * lives, and the half worth proving reaches the screen.
+     */
+    route('GET', '/civitai/model-versions/by-hash/:hash', async () => ({
+      id: 456,
+      modelId: 123,
+      name: 'v2',
+      baseModel: 'SDXL 1.0',
+      trainedWords: ['lighthousestyle'],
+      description: '<p>Fixed the hands.</p>',
+      model: { name: 'Lighthouses', type: 'LORA' },
+      images: [
+        {
+          url: `http://127.0.0.1:${process.env.MOCK_PORT ?? 8188}/civitai/image`,
+          width: 832,
+          height: 1216,
+          nsfwLevel: 1,
+          type: 'image',
+          meta: { prompt: 'a lighthouse in a storm, dusk' },
+        },
+      ],
+    }));
+
+    route('GET', '/civitai/models/:id', async () => ({
+      name: 'Lighthouses',
+      type: 'LORA',
+      description: '<p>Works best at 0.7. Fights with detail LoRAs.</p>',
+      tags: ['style', 'landscape'],
+      creator: { username: 'somebody' },
+    }));
+
+    /** The example picture itself, so the proxy has something to fetch. */
+    route('GET', '/civitai/image', async (_request, reply) =>
+      reply.header('content-type', 'image/png').send(renderPlaceholder(64, 96, 'example')),
+    );
+
     route('POST', '/prompt', async (request, reply) => {
       const body = request.body as {
         prompt?: ApiWorkflow;

@@ -196,6 +196,30 @@ describe('the pool of every field in use', () => {
     expect(pool[1]?.classes).toEqual(['WanVideo']);
   });
 
+  /*
+   * Which fields can be asked "slider or points". Every one of them has to be
+   * a number, not just one: a name used for a number here and a string there
+   * gets no input-mode choice, because an answer applying to both would be an
+   * answer to a question one of them cannot be asked.
+   */
+  it('marks a field numeric only when every workflow agrees it is', () => {
+    const pool = poolFields([
+      schemaOf([
+        field({ inputName: 'steps', control: 'int' }),
+        field({ inputName: 'cfg', control: 'float' }),
+        field({ inputName: 'sampler', control: 'combo' }),
+      ]),
+      schemaOf([
+        field({ inputName: 'steps', control: 'int' }),
+        // The same name, holding text in this one.
+        field({ inputName: 'cfg', control: 'text' }),
+      ]),
+    ]);
+
+    const numeric = Object.fromEntries(pool.map((entry) => [entry.name, entry.numeric]));
+    expect(numeric).toEqual({ steps: true, cfg: false, sampler: false });
+  });
+
   it('names a field by the label most of them derive for it', () => {
     const pool = poolFields([
       schemaOf([field({ inputName: 'cfg', label: 'CFG' })]),

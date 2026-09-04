@@ -440,7 +440,14 @@ side where there is room:
   keep turning up. It says how many workflows have each, so `duration · in 4
   workflows` is a fact rather than a guess.
 - **The arrangement** — what you have placed, in the order it will take, each
-  with where it goes, how wide it is and whether it is shown at all.
+  with where it goes, how wide it is, whether it is shown at all, and — for
+  numbers — whether it is edited with a slider or a line of points, with the
+  range spelled out. The range has to be stated rather than derived: the same
+  `steps` is 1–150 in one workflow and 1–10000 in another, and a line built
+  from either would be wrong in the other. Stating it is also what makes one
+  line of points mean the same thing everywhere, which is the point of
+  arranging it generally at all. The choice is offered only where every
+  workflow agrees the field is a number.
 
 It is keyed by the field's **input name** — `steps`, `duration`, `cfg` — which
 is what the same field is called wherever it appears, whatever node it hangs off
@@ -481,6 +488,9 @@ it needs. It is deliberately not a gallery of cards: the thing that is actually
 tedious is smaller than choosing between files, and the screen is shaped around
 removing it.
 
+It covers **LoRAs, checkpoints and diffusion models** — the unet-only weights
+Flux and WAN ship as, which people have as many opinions about as their LoRAs.
+
 **Three sources, ranked rather than merged.**
 
 1. **Yours**, typed here, and always right — you wrote them after using the thing.
@@ -502,12 +512,42 @@ set up rather than replacing it. Words already in the prompt are not repeated,
 matched on whole words — so "cat" is not found inside "delicate". That pair of
 edits, in two different fields, is the work this screen exists to remove.
 
+**What a lookup actually brings back.** Two requests, and the split is not where
+you would guess. The by-hash endpoint identifies the *version* — trigger words,
+base model, changelog, and the creator's example pictures. The thing people
+actually read, the explanation of what the model is for and what weight it
+likes, hangs off the **model** one level up, so that is fetched too. A library
+with only the first would have been missing the paragraph the creator wrote to
+explain their own model. The second request is allowed to fail: the trigger
+words are already in hand by then, and losing the prose is a smaller library
+rather than a failed lookup.
+
+All of it is shown **above** the fields you can type in, because the question
+somebody opens a model to answer is "what is this and what can it do". The
+example pictures come with the prompts behind them where the creator left the
+metadata on — "what can this do" is the picture, "how do I get that" is the
+prompt — and the first one sits behind that model's row in the list, because an
+image is the fastest answer to "which one is this" that exists.
+
+**The pictures come through Latent**, never from Civitai directly: the phone may
+have no route to the internet while the server does, and a page fetching from a
+third-party CDN tells that CDN which models somebody has installed. The proxy
+takes only an allowlisted image host — without that it would be a machine that
+fetches whatever anybody names, from inside the network Latent runs in.
+
 **Civitai is a button, not a background job.** It needs the file's hash, and
 hashing a 7 GB checkpoint is tens of seconds of pure I/O on the ComfyUI machine.
 So it is asked for per model, the hash is kept afterwards, and a lookup that
 fails still keeps the hash — that is the expensive half and it does not change.
 A file trained at home is simply not there, which the screen says plainly rather
 than reporting as a failure.
+
+**Or look up the lot.** One button walks everything not yet fetched, one at a
+time, with the count on screen and a stop. Sequential rather than parallel
+because the far end rate-limits and the hashing is disk-bound on one machine —
+eight at once would be eight times the seeking for the same throughput — and on
+the client rather than in one long request because watching it stop at 12 of 40
+is information, where a request that times out is not.
 
 The reading happens in **comfyllama**, on the machine with the files, for the
 same reason as the folder browser: Latent is routinely somewhere else. Without

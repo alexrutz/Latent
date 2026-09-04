@@ -659,6 +659,10 @@ export const api = {
       body: JSON.stringify(patch),
     }),
 
+  /** Forget everything about a model: your words and what was gathered. */
+  forgetModelNote: (folder: ModelFolder, name: string) =>
+    request<void>(`/api/models/${folder}/${encodeURIComponent(name)}/note`, { method: 'DELETE' }),
+
   /** Hash the file and ask Civitai what it is. Slow, so it is a button. */
   lookupModel: (folder: ModelFolder, name: string) =>
     request<ModelNote>(`/api/models/${folder}/${encodeURIComponent(name)}/lookup`, {
@@ -931,3 +935,14 @@ export const api = {
   updateSettings: (patch: Partial<AppSettings>) =>
     request<AppSettings>('/api/settings', { method: 'PATCH', body: JSON.stringify(patch) }),
 };
+
+/**
+ * One of a model's example pictures, through Latent rather than from Civitai.
+ *
+ * The phone talks to Latent and to nothing else — it may have no route to the
+ * internet at all while the server does, and fetching directly would tell a
+ * third-party CDN which models somebody has installed.
+ */
+export function modelExampleUrl(url: string): string {
+  return `/api/models/example?url=${encodeURIComponent(url)}`;
+}

@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { MODEL_FOLDERS, resolveWords } from '@latent/shared';
 import type { ModelFile, ModelFolder, ModelNote, ModelSummary } from '@latent/shared';
 
-import { CivitaiError, lookupByHash } from '../civitai.js';
+import { CivitaiError, isExampleUrl, lookupByHash } from '../civitai.js';
 import type { AppContext } from './context.js';
 
 /**
@@ -94,6 +94,44 @@ export function registerModelRoutes(app: FastifyInstance, ctx: AppContext): void
     return { folder, models, warning };
   });
 
+  /**
+   * One of the creator's example pictures, fetched by Latent, not by the phone.
+   *
+   * Proxied for the same reason every other picture here is: the phone talks to
+   * Latent and to nothing else. It may be on a LAN with no route to the
+   * internet while the server has one, and a page reaching a third-party CDN
+   * directly tells that CDN which models somebody has installed.
+   *
+   * The allowlist is the whole security of it — see `isExampleUrl`. Without it
+   * this is a machine that fetches whatever anybody names, from inside the
+   * network Latent runs in.
+   */
+  app.get<{ Querystring: { url?: string } }>('/api/models/example', async (request, reply) => {
+    const url = request.query.url ?? '';
+    if (!isExampleUrl(url)) return reply.code(400).send({ error: 'Not an example image' });
+
+    let upstream: Response;
+    try {
+      upstream = await fetch(url, { headers: { accept: 'image/*' } });
+    } catch {
+      return reply.code(502).send({ error: 'Could not fetch that picture' });
+    }
+
+    const type = upstream.headers.get('content-type') ?? '';
+    if (!upstream.ok || !type.startsWith('image/')) {
+      return reply.code(502).send({ error: 'Could not fetch that picture' });
+    }
+
+    /*
+     * Civitai's URLs carry the transformation in the path, so a given URL is
+     * one immutable picture and can be held for as long as anybody likes.
+     */
+    return reply
+      .header('content-type', type)
+      .header('cache-control', 'private, max-age=604800, immutable')
+      .send(Buffer.from(await upstream.arrayBuffer()));
+  });
+
   /** Your own words, notes and strength for one model. */
   app.put<{
     Params: { folder: string; name: string };
@@ -125,6 +163,25 @@ export function registerModelRoutes(app: FastifyInstance, ctx: AppContext): void
 
     return ctx.store.saveModelNote(folder, decodeURIComponent(name), patch);
   });
+
+  /**
+   * Forget everything Latent knows about one model.
+   *
+   * Distinct from clearing the fields, which is why it is its own verb: the
+   * words and notes you typed are only half a note, and a lookup that matched
+   * the wrong thing, or a description from a version you have since replaced,
+   * cannot be emptied by blanking a text box. This puts the model back to
+   * "nothing gathered", which is where it started.
+   */
+  app.delete<{ Params: { folder: string; name: string } }>(
+    '/api/models/:folder/:name/note',
+    async (request, reply) => {
+      const { folder } = request.params;
+      if (!isFolder(folder)) return reply.code(400).send({ error: 'Unknown model folder' });
+      ctx.store.deleteModelNote(folder, decodeURIComponent(request.params.name));
+      return reply.code(204).send();
+    },
+  );
 
   /**
    * Ask Civitai what this file is.

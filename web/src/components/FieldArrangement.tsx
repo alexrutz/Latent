@@ -2,17 +2,20 @@ import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import {
+  discreteValues,
   patchArranged,
   placeField,
   reorderArrangement,
   unplaceField,
   type ArrangedField,
+  type FieldPoints,
   type FieldArrangement,
   type PoolField,
 } from '@latent/shared';
 
 import { api } from '../api/client';
 import { queryKeys, useSettings, useUpdateSettings } from '../api/queries';
+import { NumericInput } from './NumericInput';
 import { SortableList, type DragHandleProps } from './SortableList';
 import { Button, Sheet, Spinner, cn } from './ui';
 
@@ -239,7 +242,95 @@ function ArrangedRow({
           onChange={(shown) => onPatch({ hidden: shown === 'hidden' })}
           onClear={() => onPatch({ hidden: undefined })}
         />
+
+        {/*
+          Only for numbers, and only when every workflow agrees it is one — see
+          `PoolField.numeric`. Offering "slider or points" for a sampler name
+          would be a control with no possible effect, which is worse than an
+          absent one because it invites the belief that it was tried.
+
+          Absent from the pool entirely — a field arranged before its workflow
+          was switched off — is treated as numeric, because the alternative is
+          silently dropping a choice somebody already made.
+        */}
+        {(pool?.numeric ?? true) && (
+          <>
+            <Choice
+              label="Edited as"
+              value={entry.inputMode}
+              options={[
+                ['input', 'Slider'],
+                ['points', 'Points'],
+              ]}
+              field={name}
+              onChange={(inputMode) => onPatch({ inputMode })}
+              onClear={() => onPatch({ inputMode: undefined, points: undefined })}
+            />
+            {entry.inputMode === 'points' && (
+              <PointRange
+                field={name}
+                points={entry.points}
+                onChange={(points) => onPatch({ points })}
+              />
+            )}
+          </>
+        )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The three numbers a point line offers.
+ *
+ * Spelled out rather than derived, because the arrangement has no single
+ * field's range to derive from: the same `steps` is 1–150 in one workflow and
+ * 1–10000 in another, and a line built from either would be wrong in the other.
+ * Stating them is the only honest option — and it is also what makes one line
+ * of points mean the same thing everywhere, which is the point of arranging it
+ * generally at all.
+ *
+ * The values are shown underneath, so the answer to "what will this offer" is
+ * on screen rather than arithmetic somebody has to do.
+ */
+function PointRange({
+  field,
+  points,
+  onChange,
+}: {
+  field: string;
+  points: FieldPoints | undefined;
+  onChange: (points: FieldPoints) => void;
+}) {
+  const current: FieldPoints = points ?? { min: 20, max: 50, step: 10 };
+  const preview = discreteValues(current.min, current.max, current.step);
+
+  const set = (change: Partial<FieldPoints>) => onChange({ ...current, ...change });
+
+  return (
+    <div className="space-y-1 rounded-lg bg-surface-2 px-2 py-1.5">
+      <div className="flex items-center gap-1.5">
+        {(
+          [
+            ['min', 'from'],
+            ['max', 'to'],
+            ['step', 'step'],
+          ] as const
+        ).map(([key, word]) => (
+          <label key={key} className="flex min-w-0 flex-1 items-center gap-1">
+            <span className="text-[11px] text-muted">{word}</span>
+            <NumericInput
+              value={current[key]}
+              onChange={(value) => set({ [key]: value } as Partial<FieldPoints>)}
+              aria-label={`${field} points ${word}`}
+              className="w-full min-w-0 rounded-md border border-line bg-surface px-1.5 py-1 text-[11px]"
+            />
+          </label>
+        ))}
+      </div>
+      <p className="truncate text-[11px] text-muted">
+        {preview.length > 0 ? preview.join(', ') : 'Nothing — check the range.'}
+      </p>
     </div>
   );
 }

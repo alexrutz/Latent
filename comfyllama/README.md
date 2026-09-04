@@ -220,7 +220,9 @@ Two routes, and no node:
 
 - `GET /comfyllama/models?folder=loras` — every file in that folder, with what
   its header holds: the tags it was trained on, the base model, the network
-  dimensions. `loras` and `checkpoints` only.
+  dimensions. `loras`, `checkpoints`, `diffusion_models` and `unet` — the last
+  two being the same folder under the two names still in use, so a Flux or WAN
+  install answers whichever one it was configured with.
 - `GET /comfyllama/models/hash?folder=loras&name=…` — the file's SHA256, which
   is what Civitai keys on.
 

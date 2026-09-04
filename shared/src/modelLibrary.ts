@@ -24,10 +24,25 @@
  * what you are overriding.
  */
 
-/** The folders worth a library. Both are what `/object_info` names them. */
-export type ModelFolder = 'loras' | 'checkpoints';
+/**
+ * The folders worth a library, named as `/object_info` names them.
+ *
+ * `diffusion_models` is where the unet-only weights live — Flux, WAN, and most
+ * of what has shipped since — and it is a folder people have as many opinions
+ * about as their LoRAs. `unet` is the older name for the same thing; installs
+ * have one or the other, and the empty one simply lists nothing.
+ */
+export type ModelFolder = 'loras' | 'checkpoints' | 'diffusion_models' | 'unet';
 
-export const MODEL_FOLDERS: ModelFolder[] = ['loras', 'checkpoints'];
+export const MODEL_FOLDERS: ModelFolder[] = ['loras', 'checkpoints', 'diffusion_models', 'unet'];
+
+/** What to call each on screen. */
+export const MODEL_FOLDER_LABELS: Record<ModelFolder, string> = {
+  loras: 'LoRAs',
+  checkpoints: 'Checkpoints',
+  diffusion_models: 'Diffusion models',
+  unet: 'UNet',
+};
 
 /** One model file, as its own header describes it. */
 export interface ModelFile {
@@ -48,7 +63,38 @@ export interface ModelFile {
   hasMetadata: boolean;
 }
 
-/** What Civitai says about a file, keyed by its hash. */
+/**
+ * One picture the creator put up to show what the model does.
+ *
+ * The prompt behind it matters as much as the picture. "What can this do" is
+ * answered by the image; "how do I get that" is answered by the prompt under
+ * it, and a gallery without them is a mood board.
+ */
+export interface CivitaiExample {
+  url: string;
+  width: number | null;
+  height: number | null;
+  /**
+   * Civitai's own content rating for the image, 1–32, low is tame.
+   *
+   * Kept so the screen can decide rather than guess. Latent's blur setting
+   * already covers "not on this screen"; this is about not being surprised.
+   */
+  nsfwLevel: number | null;
+  /** The prompt that produced it, when the creator left the metadata on. */
+  prompt: string | null;
+}
+
+/**
+ * What Civitai says about a file, keyed by its hash.
+ *
+ * Two requests behind this, because the interesting half is not where you would
+ * expect. `by-hash` identifies the *version* — its trigger words, its base
+ * model, its changelog — and the thing people actually write, the explanation of
+ * what the model is for and how to drive it, hangs off the **model** one level
+ * up. A library that fetched only the version would be missing the paragraph
+ * everybody reads.
+ */
 export interface CivitaiInfo {
   modelId: number | null;
   versionId: number | null;
@@ -57,8 +103,23 @@ export interface CivitaiInfo {
   baseModel: string | null;
   /** The creator's own trigger words. The reason this lookup exists. */
   trainedWords: string[];
-  /** The version notes, as plain text — Civitai sends HTML. */
+  /** The version notes — usually a changelog. Plain text; Civitai sends HTML. */
   description: string | null;
+  /**
+   * The model's own description: what it does, how to use it, what weight.
+   *
+   * This is where creators write the things worth knowing, and it is a
+   * different field from the one above on a different endpoint.
+   */
+  modelDescription: string | null;
+  /** `LORA`, `Checkpoint`, `TextualInversion`… as Civitai classifies it. */
+  type: string | null;
+  /** Who made it, so credit and "more from them" are possible. */
+  creator: string | null;
+  /** Civitai's own tags — style, concept, character, and so on. */
+  tags: string[];
+  /** What the creator put up to show it off, best first. */
+  examples: CivitaiExample[];
   /** The page, so "where did this come from" is one tap. */
   url: string | null;
   fetchedAt: number;

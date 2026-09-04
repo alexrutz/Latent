@@ -230,9 +230,13 @@ async function resetState() {
       };
       for (const model of listed.models ?? []) {
         if (!model.note) continue;
-        await ctx.put(`/api/models/${folder}/${encodeURIComponent(model.name)}/note`, {
-          data: { triggerWords: [], notes: '', strength: null },
-        });
+        /*
+         * Deleted, not blanked. Blanking the fields leaves the Civitai half of
+         * the note behind — it is patched, not replaced — and a description
+         * surviving into the next test reads as the file's own metadata having
+         * changed, which is a baffling way to fail.
+         */
+        await ctx.delete(`/api/models/${folder}/${encodeURIComponent(model.name)}/note`);
       }
     }
 
@@ -1062,6 +1066,57 @@ test.describe('the phone ergonomics pass', () => {
     await expect(
       page.getByRole('textbox', { name: 'detail_tweaker_xl.safetensors strength' }),
     ).toBeVisible();
+  });
+
+  /**
+   * The module is a source of information first.
+   *
+   * What a model *is* — the creator's explanation, the pictures they chose, the
+   * prompts behind them — is the reason to open it, and it is the half that
+   * needed a second request to a second endpoint to get at. The test that
+   * matters is that all of it reaches the screen, and that the picture arrives
+   * through Latent rather than from a CDN the phone talks to directly.
+   */
+  test('gathers what the creator wrote, and shows it above everything typed', async ({ page }) => {
+    await resetState();
+    await seedWorkflow();
+    await open(page, '/');
+    await openModule(page, 'Models');
+
+    const row = page.locator('[data-model="detail_tweaker_xl.safetensors"]');
+    await expect(row).toBeVisible({ timeout: 30_000 });
+
+    // Nothing is fetched on its own — hashing a checkpoint is not free.
+    await expect(page.getByText('not looked up yet')).toBeVisible();
+
+    await row.getByRole('button').first().click();
+    const sheet = page.getByRole('dialog');
+    await sheet.getByRole('button', { name: 'Look up' }).click();
+
+    /*
+     * The model-level description, which is the field creators actually write
+     * the usage notes in and which lives on the *other* endpoint.
+     */
+    await expect(sheet.getByText('Works best at 0.7.')).toBeVisible({ timeout: 30_000 });
+    // The version's own notes are kept, and kept apart.
+    await expect(sheet.getByText('Fixed the hands.')).toBeVisible();
+    await expect(sheet.getByText('somebody', { exact: false })).toBeVisible();
+
+    // An example, and the prompt behind it — which is what turns a mood board
+    // into something you can act on.
+    await sheet.getByRole('button', { name: 'Example 1' }).click();
+    await expect(page.getByText('a lighthouse in a storm, dusk')).toBeVisible();
+    await page.getByRole('button', { name: 'Close' }).click();
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    /*
+     * And back in the list, the picture sits behind the row — fetched through
+     * Latent, never from the CDN, because the phone talks to Latent and to
+     * nothing else.
+     */
+    const behind = row.locator('img');
+    await expect(behind).toHaveAttribute('src', /\/api\/models\/example\?url=/);
+    await page.screenshot({ path: 'test-results/60-model-info.png' });
   });
 
   /**

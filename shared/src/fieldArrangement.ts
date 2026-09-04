@@ -158,6 +158,16 @@ export interface PoolField {
   workflows: number;
   /** Node classes it hangs off, so an ambiguous name can be recognised. */
   classes: string[];
+  /**
+   * Whether this is a number, and so whether asking "slider or points" means
+   * anything for it.
+   *
+   * True when *every* field of the name is numeric. A name used for a number in
+   * one workflow and a string in another gets no input-mode choice, because an
+   * answer that applied to both would be an answer to a question one of them
+   * cannot be asked.
+   */
+  numeric: boolean;
 }
 
 /**
@@ -171,7 +181,7 @@ export interface PoolField {
 export function poolFields(schemas: ParamSchema[]): PoolField[] {
   const seen = new Map<
     string,
-    { labels: Map<string, number>; classes: Set<string>; count: number }
+    { labels: Map<string, number>; classes: Set<string>; count: number; numeric: boolean }
   >();
 
   for (const schema of schemas) {
@@ -183,9 +193,12 @@ export function poolFields(schemas: ParamSchema[]): PoolField[] {
         labels: new Map<string, number>(),
         classes: new Set<string>(),
         count: 0,
+        numeric: true,
       };
       entry.labels.set(field.label, (entry.labels.get(field.label) ?? 0) + 1);
       entry.classes.add(field.classType);
+      // Every one of them, not any: see `PoolField.numeric`.
+      entry.numeric &&= field.control === 'int' || field.control === 'float';
       if (!here.has(field.inputName)) {
         entry.count += 1;
         here.add(field.inputName);
@@ -200,6 +213,7 @@ export function poolFields(schemas: ParamSchema[]): PoolField[] {
       label: commonest(entry.labels) ?? name,
       workflows: entry.count,
       classes: [...entry.classes].sort(),
+      numeric: entry.numeric,
     }))
     .sort((a, b) => b.workflows - a.workflows || a.label.localeCompare(b.label));
 }
