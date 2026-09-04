@@ -468,6 +468,52 @@ group, and those beat the arrangement — so a workflow you have dragged in
 ignores the general order. The editor says so when it happens, with the one
 button that hands it back.
 
+## The models you have, and the words they want
+
+A LoRA does a fraction of what it can without its trigger words. Those words are
+on the page you downloaded it from — which is not open, on a phone, at the moment
+you are writing a prompt — so in practice they get typed from memory or not at
+all, and the LoRA quietly underperforms in a way that looks like the LoRA being
+disappointing.
+
+**More → Models** is a library of what is installed, each row carrying the words
+it needs. It is deliberately not a gallery of cards: the thing that is actually
+tedious is smaller than choosing between files, and the screen is shaped around
+removing it.
+
+**Three sources, ranked rather than merged.**
+
+1. **Yours**, typed here, and always right — you wrote them after using the thing.
+2. **The creator's**, from Civitai, looked up by the file's SHA256.
+3. **The file's own header.** A `.safetensors` file begins with a JSON header,
+   and the kohya trainers that produce most LoRAs write what they trained on
+   into it — `ss_tag_frequency` is literally the tag list with counts. It costs
+   one seek, works with no network at all, and is what everything falls back to.
+
+Ranked, because a merge produces a fragment nobody wrote: two creator words plus
+thirty training tags is not a prompt, it is a word cloud. One source wins, the
+others stay visible, and each row says which one it is using — "from the creator"
+and "trained on" are different degrees of confidence and you should be able to
+see which you are trusting.
+
+**One tap uses it.** *Add to the form* puts `<lora:name:0.8>` in the workflow's
+LoRA field *and* the trigger words in its prompt, on top of whatever is already
+set up rather than replacing it. Words already in the prompt are not repeated,
+matched on whole words — so "cat" is not found inside "delicate". That pair of
+edits, in two different fields, is the work this screen exists to remove.
+
+**Civitai is a button, not a background job.** It needs the file's hash, and
+hashing a 7 GB checkpoint is tens of seconds of pure I/O on the ComfyUI machine.
+So it is asked for per model, the hash is kept afterwards, and a lookup that
+fails still keeps the hash — that is the expensive half and it does not change.
+A file trained at home is simply not there, which the screen says plainly rather
+than reporting as a failure.
+
+The reading happens in **comfyllama**, on the machine with the files, for the
+same reason as the folder browser: Latent is routinely somewhere else. Without
+it the library still lists what `/object_info` names, and says why there is
+nothing behind the names — a screen showing nothing at all would be worse.
+
 ## Where your data lives
 
 **Everything is outside the project directory**, which is the one you delete

@@ -34,6 +34,7 @@ export const queryKeys = {
   status: ['status'] as const,
   workflows: ['workflows'] as const,
   poolFields: ['workflow-fields'] as const,
+  models: (folder: string) => ['models', folder] as const,
   workflow: (id: string) => ['workflow', id] as const,
   gallery: (workflowId?: string | null) => ['gallery', workflowId ?? 'all'] as const,
   settings: ['settings'] as const,

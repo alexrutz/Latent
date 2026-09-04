@@ -143,7 +143,7 @@ async function dismissResult(page: Page) {
  * is two taps rather than one. In its own helper because every test that uses
  * those screens would otherwise repeat it.
  */
-async function openModule(page: Page, label: 'Blocks' | 'Random' | 'Monitor' | 'Study') {
+async function openModule(page: Page, label: 'Blocks' | 'Models' | 'Random' | 'Monitor' | 'Study') {
   await page.getByRole('button', { name: 'More modules' }).click();
   await page.getByTestId('more-menu').getByRole('button', { name: label }).click();
   await expect(page.getByTestId('more-menu')).toHaveCount(0);
@@ -218,6 +218,23 @@ async function resetState() {
      * test's fields out from under it.
      */
     await ctx.patch('/api/settings', { data: { fieldArrangement: [] } });
+
+    /*
+     * Model notes are server state too, and the words in one are what the
+     * Models screen shows — a set left behind reads as the file's own metadata
+     * having changed, which is a confusing way to fail.
+     */
+    for (const folder of ['loras', 'checkpoints']) {
+      const listed = (await (await ctx.get(`/api/models?folder=${folder}`)).json()) as {
+        models: { name: string; note: unknown }[];
+      };
+      for (const model of listed.models ?? []) {
+        if (!model.note) continue;
+        await ctx.put(`/api/models/${folder}/${encodeURIComponent(model.name)}/note`, {
+          data: { triggerWords: [], notes: '', strength: null },
+        });
+      }
+    }
 
     /*
      * Model servers are connections now. The ComfyUI one is left alone — it is
@@ -981,6 +998,71 @@ test.describe('the phone ergonomics pass', () => {
       ctx.post('/api/prompt-blocks', { data: { name, text, group: 'Lighting' } }),
     );
   }
+
+  /**
+   * The library of models, and the one thing it exists to make quick.
+   *
+   * A LoRA does a fraction of what it can without its trigger words, and those
+   * words are on a web page rather than anywhere near the prompt box — so in
+   * practice they are typed from memory or not at all. The test worth having is
+   * therefore not "the list renders": it is that one button puts the LoRA tag
+   * in the LoRA field *and* its words in the prompt, because doing that by hand
+   * on a phone is the whole cost this screen removes.
+   */
+  test('lists what is installed and puts a LoRA into the form with its words', async ({ page }) => {
+    // A workflow with somewhere for the tag to go — the default one has no
+    // LoRA field, and then only the words would land.
+    await resetState();
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'with loras', graph: sd15WithLoraInput } }),
+    );
+
+    await open(page, '/');
+    await openModule(page, 'Models');
+
+    // Read out of the file itself, on the machine that has it.
+    const row = page.locator('[data-model="detail_tweaker_xl.safetensors"]');
+    await expect(row).toBeVisible({ timeout: 30_000 });
+    await expect(row).toContainText('trained on');
+    await expect(row).toContainText('a lighthouse');
+    await page.screenshot({ path: 'test-results/59-models.png' });
+
+    // A file whose header says nothing still appears, with a name to write
+    // against — which is most of the value, and the case that would be easiest
+    // to drop.
+    await expect(page.locator('[data-model="pixel_art_xl.safetensors"]')).toBeVisible();
+
+    // Yours win over everything the file or the creator says.
+    await row.getByRole('button').first().click();
+    const sheet = page.getByRole('dialog');
+    await sheet.getByLabel('Trigger words').fill('storm light, my own phrasing');
+    await sheet.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(row).toContainText('yours', { timeout: 20_000 });
+
+    /*
+     * And the button this screen is for, from the sheet that is still open —
+     * saving keeps it open, and the words it adds have to be the ones just
+     * saved rather than the ones the sheet was opened with.
+     */
+    await sheet.getByRole('button', { name: 'Add to the form' }).click();
+
+    await page.getByRole('link', { name: 'Generate' }).click();
+    const prompt = page.getByPlaceholder('Describe the image…');
+    await expect(prompt).toHaveValue(/storm light/);
+    await expect(prompt).toHaveValue(/my own phrasing/);
+
+    /*
+     * The tag lands in the LoRA field, not in the prompt beside the words —
+     * and it carries the extension, because that is what ComfyUI's `lora_name`
+     * resolves and what every tag already in the field looks like.
+     */
+    await expect(prompt).not.toHaveValue(/<lora:/);
+    // The editor shows a tidied name, so the full one is checked through the
+    // control it labels — which is the value that actually reaches ComfyUI.
+    await expect(
+      page.getByRole('textbox', { name: 'detail_tweaker_xl.safetensors strength' }),
+    ).toBeVisible();
+  });
 
   /**
    * One arrangement, applied to every workflow that has the field.

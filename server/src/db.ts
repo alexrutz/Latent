@@ -24,6 +24,9 @@ import type {
   FormLayout,
   GenerationImage,
   MediaKind,
+  CivitaiInfo,
+  ModelFolder,
+  ModelNote,
   ParamSummaryItem,
   ParamValues,
   PromptBlock,
@@ -552,6 +555,54 @@ CREATE TABLE chat_runs (
 MIGRATIONS.push(`
 ALTER TABLE generations ADD COLUMN origins_json TEXT NOT NULL DEFAULT '[]';
 `);
+
+/*
+ * What Latent knows about a model beyond what its file says.
+ *
+ * Keyed by folder and name rather than by hash, because the name is the only
+ * identifier that survives the trip to a phone and back into a prompt — a
+ * `<lora:…>` tag takes a name, `/object_info` offers names, and the hash is not
+ * known at all until somebody asks for a lookup. The hash is stored alongside
+ * once computed, so a model that is renamed loses its note and one that is
+ * replaced in place can be told apart.
+ */
+MIGRATIONS.push(`
+CREATE TABLE IF NOT EXISTS model_notes (
+  folder         TEXT NOT NULL,
+  name           TEXT NOT NULL,
+  trigger_words  TEXT NOT NULL DEFAULT '[]',
+  notes          TEXT NOT NULL DEFAULT '',
+  strength       REAL,
+  civitai_json   TEXT,
+  sha256         TEXT,
+  updated_at     INTEGER NOT NULL,
+  PRIMARY KEY (folder, name)
+);
+`);
+
+interface ModelNoteRow {
+  folder: string;
+  name: string;
+  trigger_words: string;
+  notes: string;
+  strength: number | null;
+  civitai_json: string | null;
+  sha256: string | null;
+  updated_at: number;
+}
+
+function toModelNote(row: ModelNoteRow): ModelNote {
+  return {
+    folder: row.folder as ModelFolder,
+    name: row.name,
+    triggerWords: parseJson<string[]>(row.trigger_words, []),
+    notes: row.notes,
+    strength: row.strength,
+    civitai: row.civitai_json ? parseJson<CivitaiInfo | null>(row.civitai_json, null) : null,
+    sha256: row.sha256,
+    updatedAt: row.updated_at,
+  };
+}
 
 interface ChatRunRow {
   chat_id: string;
@@ -2882,6 +2933,81 @@ export class Store {
 
   deleteVariationPreset(id: string): void {
     this.db.prepare('DELETE FROM variation_presets WHERE id = ?').run(id);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* The model library                                                  */
+  /* ---------------------------------------------------------------- */
+
+  listModelNotes(folder: ModelFolder): ModelNote[] {
+    const rows = this.db
+      .prepare<[string], ModelNoteRow>('SELECT * FROM model_notes WHERE folder = ?')
+      .all(folder);
+    return rows.map(toModelNote);
+  }
+
+  getModelNote(folder: ModelFolder, name: string): ModelNote | null {
+    const row = this.db
+      .prepare<[string, string], ModelNoteRow>(
+        'SELECT * FROM model_notes WHERE folder = ? AND name = ?',
+      )
+      .get(folder, name);
+    return row ? toModelNote(row) : null;
+  }
+
+  /**
+   * Write part of a model's note, leaving the rest.
+   *
+   * Patched a field at a time because two different things write here — you,
+   * typing trigger words, and a Civitai lookup filling in what the creator
+   * said — and a whole-row write from either would silently discard the other.
+   */
+  saveModelNote(
+    folder: ModelFolder,
+    name: string,
+    patch: Partial<Omit<ModelNote, 'folder' | 'name' | 'updatedAt'>>,
+  ): ModelNote {
+    const current = this.getModelNote(folder, name);
+    const next: ModelNote = {
+      folder,
+      name,
+      triggerWords: patch.triggerWords ?? current?.triggerWords ?? [],
+      notes: patch.notes ?? current?.notes ?? '',
+      strength: patch.strength !== undefined ? patch.strength : (current?.strength ?? null),
+      civitai: patch.civitai !== undefined ? patch.civitai : (current?.civitai ?? null),
+      sha256: patch.sha256 !== undefined ? patch.sha256 : (current?.sha256 ?? null),
+      updatedAt: Date.now(),
+    };
+
+    this.db
+      .prepare(
+        `INSERT INTO model_notes
+           (folder, name, trigger_words, notes, strength, civitai_json, sha256, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(folder, name) DO UPDATE SET
+           trigger_words = excluded.trigger_words,
+           notes         = excluded.notes,
+           strength      = excluded.strength,
+           civitai_json  = excluded.civitai_json,
+           sha256        = excluded.sha256,
+           updated_at    = excluded.updated_at`,
+      )
+      .run(
+        folder,
+        name,
+        JSON.stringify(next.triggerWords),
+        next.notes,
+        next.strength,
+        next.civitai ? JSON.stringify(next.civitai) : null,
+        next.sha256,
+        next.updatedAt,
+      );
+
+    return next;
+  }
+
+  deleteModelNote(folder: ModelFolder, name: string): void {
+    this.db.prepare('DELETE FROM model_notes WHERE folder = ? AND name = ?').run(folder, name);
   }
 
   getSettings(): AppSettings {

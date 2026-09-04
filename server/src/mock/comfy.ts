@@ -545,6 +545,59 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       source: 'nvml',
     }));
 
+    /*
+     * The model library, as comfyllama would report it.
+     *
+     * One LoRA with a header worth reading and one without, because the
+     * interesting case is the second: a `.ckpt` or a file trained by somebody
+     * who wrote no metadata still has to appear in the list, with a name you
+     * can write your own trigger words against.
+     */
+    route('GET', '/comfyllama/models', async (request) => {
+      const folder = (request.query as { folder?: string }).folder ?? 'loras';
+      if (folder !== 'loras') {
+        return {
+          folder,
+          models: CHECKPOINTS.map((name) => ({
+            name,
+            size: 2 * 1024 ** 3,
+            modified: Date.now() / 1000,
+            trainedTags: [],
+            baseModel: 'SD 1.5',
+            title: null,
+            description: null,
+            networkDim: null,
+            networkAlpha: null,
+            clipSkip: null,
+            trainImages: null,
+            hasMetadata: true,
+          })),
+        };
+      }
+
+      return {
+        folder,
+        models: LORAS.map((name, index) => ({
+          name,
+          size: 144 * 1024 ** 2,
+          modified: Date.now() / 1000,
+          trainedTags: index === 0 ? ['a lighthouse', 'storm light'] : [],
+          baseModel: index === 0 ? 'sdxl_base_v1-0' : null,
+          title: index === 0 ? 'Lighthouses' : null,
+          description: null,
+          networkDim: index === 0 ? '64' : null,
+          networkAlpha: index === 0 ? '32' : null,
+          clipSkip: null,
+          trainImages: index === 0 ? '180' : null,
+          hasMetadata: index === 0,
+        })),
+      };
+    });
+
+    route('GET', '/comfyllama/models/hash', async () => ({
+      sha256: 'b'.repeat(64),
+    }));
+
     route('POST', '/prompt', async (request, reply) => {
       const body = request.body as {
         prompt?: ApiWorkflow;

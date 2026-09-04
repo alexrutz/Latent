@@ -61,6 +61,9 @@ import type {
   WorkflowScanResult,
   WorkflowSummary,
   PoolField,
+  ModelFolder,
+  ModelNote,
+  ModelSummary,
 } from '@latent/shared';
 import { regionKey } from '@latent/shared';
 
@@ -636,6 +639,31 @@ export const api = {
 
   /** Every distinct field across the workflows in use, for the arrangement. */
   poolFields: () => request<PoolField[]>('/api/workflows/fields'),
+
+  /* ---------------------------------------------------------------- */
+  /* The model library                                                 */
+  /* ---------------------------------------------------------------- */
+
+  listModels: (folder: ModelFolder) =>
+    request<{ folder: ModelFolder; models: ModelSummary[]; warning: string | null }>(
+      `/api/models?folder=${folder}`,
+    ),
+
+  saveModelNote: (
+    folder: ModelFolder,
+    name: string,
+    patch: Partial<Pick<ModelNote, 'triggerWords' | 'notes' | 'strength'>>,
+  ) =>
+    request<ModelNote>(`/api/models/${folder}/${encodeURIComponent(name)}/note`, {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+
+  /** Hash the file and ask Civitai what it is. Slow, so it is a button. */
+  lookupModel: (folder: ModelFolder, name: string) =>
+    request<ModelNote>(`/api/models/${folder}/${encodeURIComponent(name)}/lookup`, {
+      method: 'POST',
+    }),
 
   getWorkflow: (id: string) => request<WorkflowDetail>(`/api/workflows/${id}`),
 

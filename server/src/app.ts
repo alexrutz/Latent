@@ -42,6 +42,7 @@ import { registerUpdateRoutes } from './routes/update.js';
 import { registerPromptBlockRoutes } from './routes/promptBlocks.js';
 import { registerPresetRoutes } from './routes/presets.js';
 import { registerQueueRoutes } from './routes/queue.js';
+import { registerModelRoutes } from './routes/models.js';
 import { registerSystemRoutes } from './routes/system.js';
 import { registerSystemPromptRoutes } from './routes/systemPrompts.js';
 import { registerTasteRoutes } from './routes/taste.js';
@@ -250,6 +251,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
 
   const chatEngine = registerChatRoutes(app, ctx);
   registerSystemRoutes(app, ctx);
+  registerModelRoutes(app, ctx);
   registerConnectionRoutes(app, ctx);
   registerWorkflowRoutes(app, ctx);
   registerPresetRoutes(app, ctx);

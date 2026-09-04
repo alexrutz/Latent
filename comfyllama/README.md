@@ -214,6 +214,37 @@ Videos are resampled to `video_fps` (24, what H3 expects) and trimmed to
 ComfyUI's own loaders use, rather than a second decoder with its own opinions
 about frame rates and sample formats.
 
+## Reading what a model file says about itself
+
+Two routes, and no node:
+
+- `GET /comfyllama/models?folder=loras` — every file in that folder, with what
+  its header holds: the tags it was trained on, the base model, the network
+  dimensions. `loras` and `checkpoints` only.
+- `GET /comfyllama/models/hash?folder=loras&name=…` — the file's SHA256, which
+  is what Civitai keys on.
+
+A `.safetensors` file begins with a JSON header — eight bytes of length, then
+that much JSON — and the kohya trainers that produce most LoRAs write what they
+trained on into it. `ss_tag_frequency` is the tag list with counts, per training
+folder; they are summed rather than taking the first, because a tag appearing in
+every folder is exactly the one that matters. `modelspec.*` is the newer
+cross-tool standard and wins where it exists.
+
+Reading it costs one seek and a few kilobytes, and needs no network — which is
+why it is the fallback for everything. A `.ckpt` pickle, a truncated download or
+a file that is not a model at all reads as *nothing* rather than raising: a
+listing of forty models must not fail on one of them.
+
+**Hashing is separate and on demand.** A 7 GB checkpoint is tens of seconds of
+pure I/O, so nothing calls it on its own initiative; it is computed when
+somebody actually asks to look a model up, and cached by the file's identity —
+path, size and mtime — so a replaced file is rehashed and an unchanged one never
+is.
+
+Both are here rather than in whatever is asking, for the same reason as the
+folder browser: this is the process on the machine the files are on.
+
 ## Reporting the GPU's power draw
 
 One route, `GET /comfyllama/power`, and no node at all:

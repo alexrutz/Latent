@@ -14,6 +14,7 @@ import { GalleryScreen } from './screens/GalleryScreen';
 import { FavoritesScreen } from './screens/FavoritesScreen';
 import { GenerateScreen } from './screens/GenerateScreen';
 import { LoginScreen } from './screens/LoginScreen';
+import { ModelsScreen } from './screens/ModelsScreen';
 import { MonitorScreen } from './screens/MonitorScreen';
 import { StudyScreen } from './screens/StudyScreen';
 import { QueueScreen } from './screens/QueueScreen';
@@ -108,6 +109,7 @@ export function App() {
           <Route path="/favorites" element={<FavoritesScreen />} />
           <Route path="/blocks" element={<BlocksScreen />} />
           <Route path="/variation" element={<VariationScreen />} />
+          <Route path="/models" element={<ModelsScreen />} />
           <Route path="/monitor" element={<MonitorScreen />} />
           <Route path="/study" element={<StudyScreen />} />
           <Route path="/queue" element={<QueueScreen />} />

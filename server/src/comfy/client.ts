@@ -356,6 +356,22 @@ export class ComfyClient {
     return this.json('/comfyllama/power');
   }
 
+  /**
+   * The model files in one of ComfyUI's folders, with what their headers say.
+   *
+   * Needs comfyllama: core ComfyUI serves the *names* in a folder and nothing
+   * about the files behind them, and the trigger words a LoRA was trained on
+   * are in the safetensors header, which only something on that disk can read.
+   */
+  listModelFiles(folder: string): Promise<{ folder: string; models: unknown[]; error?: string }> {
+    return this.json('/comfyllama/models', { query: { folder } });
+  }
+
+  /** The SHA256 of one model file. Slow for a checkpoint — only when asked. */
+  modelHash(folder: string, name: string): Promise<{ sha256: string }> {
+    return this.json('/comfyllama/models/hash', { query: { folder, name } });
+  }
+
   browseList(query: Record<string, string | number | undefined>): Promise<unknown> {
     return this.json('/comfyllama/browse/list', { query });
   }

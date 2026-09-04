@@ -49,6 +49,7 @@ export const TABS: Tab[] = [
  */
 export const MORE: Tab[] = [
   { to: '/blocks', label: 'Blocks', icon: '¶' },
+  { to: '/models', label: 'Models', icon: '◈' },
   { to: '/variation', label: 'Random', icon: '⁂' },
   { to: '/monitor', label: 'Monitor', icon: '∿' },
   { to: '/study', label: 'Study', icon: '⊞' },
