@@ -111,54 +111,54 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
    * this, not a cut-down version of it.
    */
   const sheet = (
-      <Sheet open={expanded} onClose={() => setExpanded(false)} title="Generating">
-        <div className="space-y-4">
-          <div className="overflow-hidden rounded-2xl border border-line bg-surface-2">
-            {previewUrl ? (
-              <img src={previewUrl} alt="Live preview" className="w-full object-contain" />
-            ) : holdover ? (
-              <img src={holdover} alt="The previous result" className="w-full object-contain" />
-            ) : (
-              <div className="grid aspect-square place-items-center text-sm text-muted">
-                Waiting for the first preview…
-              </div>
-            )}
-          </div>
-          {!previewUrl && holdover && (
-            <p className="-mt-2 text-center text-[11px] text-muted">
-              The run before this one — the new preview replaces it.
-            </p>
+    <Sheet open={expanded} onClose={() => setExpanded(false)} title="Generating">
+      <div className="space-y-4">
+        <div className="overflow-hidden rounded-2xl border border-line bg-surface-2">
+          {previewUrl ? (
+            <img src={previewUrl} alt="Live preview" className="w-full object-contain" />
+          ) : holdover ? (
+            <img src={holdover} alt="The previous result" className="w-full object-contain" />
+          ) : (
+            <div className="grid aspect-square place-items-center text-sm text-muted">
+              Waiting for the first preview…
+            </div>
           )}
-
-          <div>
-            <p className="text-sm font-medium">{job.title}</p>
-            <p className="text-xs text-muted">{job.nodeTitle ?? 'Starting…'}</p>
-          </div>
-
-          <div className="space-y-1">
-            <div className="h-2 overflow-hidden rounded-full bg-surface-3">
-              <div
-                className="h-full rounded-full bg-accent transition-[width] duration-150"
-                style={{ width: `${Math.min(100, Math.max(2, fraction * 100))}%` }}
-              />
-            </div>
-            <div className="flex justify-between text-xs text-muted">
-              <span>
-                {job.progressMax > 0
-                  ? `Step ${job.progress} of ${job.progressMax}`
-                  : `${Math.round(job.graphProgress * 100)}% of the graph`}
-              </span>
-              {queueRemaining > 1 && <span>{queueRemaining - 1} more queued</span>}
-            </div>
-          </div>
-
-          <JobStatsPanel job={job} now={now} liveAt={liveAt} queueRemaining={queueRemaining} />
-
-          <Button variant="danger" size="lg" busy={cancelling} onClick={cancel}>
-            Cancel this run
-          </Button>
         </div>
-      </Sheet>
+        {!previewUrl && holdover && (
+          <p className="-mt-2 text-center text-[11px] text-muted">
+            The run before this one — the new preview replaces it.
+          </p>
+        )}
+
+        <div>
+          <p className="text-sm font-medium">{job.title}</p>
+          <p className="text-xs text-muted">{job.nodeTitle ?? 'Starting…'}</p>
+        </div>
+
+        <div className="space-y-1">
+          <div className="h-2 overflow-hidden rounded-full bg-surface-3">
+            <div
+              className="h-full rounded-full bg-accent transition-[width] duration-150"
+              style={{ width: `${Math.min(100, Math.max(2, fraction * 100))}%` }}
+            />
+          </div>
+          <div className="flex justify-between text-xs text-muted">
+            <span>
+              {job.progressMax > 0
+                ? `Step ${job.progress} of ${job.progressMax}`
+                : `${Math.round(job.graphProgress * 100)}% of the graph`}
+            </span>
+            {queueRemaining > 1 && <span>{queueRemaining - 1} more queued</span>}
+          </div>
+        </div>
+
+        <JobStatsPanel job={job} now={now} liveAt={liveAt} queueRemaining={queueRemaining} />
+
+        <Button variant="danger" size="lg" busy={cancelling} onClick={cancel}>
+          Cancel this run
+        </Button>
+      </div>
+    </Sheet>
   );
 
   /*
@@ -176,8 +176,7 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
           className="flex min-w-0 flex-1 flex-col justify-center gap-1 rounded-xl border border-line bg-surface px-2.5 py-1.5 text-left"
         >
           <p className="truncate text-[11px] tabular-nums text-muted">
-            {Math.round(fraction * 100)}%
-            {eta !== null && ` · ${formatSeconds(eta)} left`}
+            {Math.round(fraction * 100)}%{eta !== null && ` · ${formatSeconds(eta)} left`}
             {job.progressMax > 0 && ` · ${job.progress}/${job.progressMax}`}
             {queueRemaining > 1 && ` · ${queueRemaining - 1} queued`}
           </p>
@@ -196,7 +195,7 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
 
   return (
     <>
-      <div className="border-t border-line bg-surface/95 backdrop-blur">
+      <div data-testid="live-bar" className="border-t border-line bg-surface/95 backdrop-blur">
         <button
           type="button"
           onClick={() => setExpanded(true)}
@@ -204,8 +203,12 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
         >
           <div className="flex items-center gap-3">
             <div className="size-9 shrink-0 overflow-hidden rounded-lg bg-surface-2">
-              {previewUrl ?? holdover ? (
-                <img src={previewUrl ?? (holdover as string)} alt="" className="size-full object-cover" />
+              {(previewUrl ?? holdover) ? (
+                <img
+                  src={previewUrl ?? (holdover as string)}
+                  alt=""
+                  className="size-full object-cover"
+                />
               ) : (
                 <div className="grid size-full animate-pulse place-items-center text-xs opacity-40">
                   ●
@@ -344,9 +347,7 @@ export function RunProgress({
         </div>
 
         <div className="min-w-0 flex-1">
-          <p className="truncate text-xs">
-            {mine?.nodeTitle ?? queued ?? 'Queued'}
-          </p>
+          <p className="truncate text-xs">{mine?.nodeTitle ?? queued ?? 'Queued'}</p>
           {/*
             ETA first: it is the only question being asked. Then the step count,
             which is what actually moves, then the queue behind it.
@@ -535,9 +536,7 @@ function ResultBar({
     >
       <span className="size-8 shrink-0 overflow-hidden rounded-md bg-surface-2">{thumbnail}</span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[11px] font-medium">
-          {failed ? 'Failed' : 'Done'}
-        </span>
+        <span className="block truncate text-[11px] font-medium">{failed ? 'Failed' : 'Done'}</span>
         <span className="block truncate text-[11px] text-muted">{record.title}</span>
       </span>
     </button>
@@ -568,11 +567,7 @@ function ResultBar({
     <>
       {bar}
 
-      <Sheet
-        open={expanded}
-        onClose={onDismiss}
-        title={failed ? 'Generation failed' : 'Result'}
-      >
+      <Sheet open={expanded} onClose={onDismiss} title={failed ? 'Generation failed' : 'Result'}>
         <div className="space-y-4">
           {image ? (
             <button

@@ -580,6 +580,29 @@ CREATE TABLE IF NOT EXISTS model_notes (
 );
 `);
 
+/*
+ * Notes filed under the folder that turned out not to be one.
+ *
+ * `unet` was offered as a category of its own until it became clear that
+ * ComfyUI aliases the key to the same entry as `diffusion_models` — the same
+ * directories, the same files, listed twice under two names. Dropping the
+ * category was right; leaving the rows behind was not. A note written while the
+ * UNET tab existed is keyed to a folder nothing asks for any more, so the
+ * trigger words somebody typed are still in the database and unreachable from
+ * every screen.
+ *
+ * `OR IGNORE`, because the same model may well have been noted under both names
+ * — they were the same list — and in that case the row filed under the name
+ * that survived is the one to keep rather than a coin toss. The strays are
+ * deleted either way, so a second run has nothing left to do.
+ */
+MIGRATIONS.push(`
+UPDATE OR IGNORE model_notes SET folder = 'diffusion_models' WHERE folder = 'unet';
+`);
+MIGRATIONS.push(`
+DELETE FROM model_notes WHERE folder = 'unet';
+`);
+
 interface ModelNoteRow {
   folder: string;
   name: string;

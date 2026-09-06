@@ -7789,6 +7789,34 @@ test.describe('at a desk', () => {
     expect(width).toBeGreaterThan(46 * 16);
   });
 
+  /**
+   * What the panel defers to, when the panel is not there.
+   *
+   * The live bar is suppressed at a desk because the bench says the same thing
+   * in full, one column over — which stops being true the moment the bench is
+   * put away, and that is remembered. Without this a run had no progress, no
+   * ETA and no way to stop it anywhere outside Generate.
+   */
+  test('@desk brings the progress bar back when the bench is put away', async ({ page }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a pier at dusk');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    const dock = page.getByTestId('dock');
+    await expect(dock.getByRole('button', { name: 'Stop' })).toBeVisible({ timeout: 30_000 });
+
+    // With the bench open the bar would be saying it twice.
+    await expect(page.getByTestId('live-bar')).toHaveCount(0);
+
+    await page.keyboard.press('[');
+    await expect(dock).toHaveCount(0);
+    await expect(page.getByTestId('live-bar')).toBeVisible();
+
+    await page.keyboard.press('[');
+    await expect(page.getByTestId('dock')).toBeVisible();
+  });
+
   test('@desk answers the pointer before it is pressed', async ({ page }) => {
     await open(page, '/gallery');
 

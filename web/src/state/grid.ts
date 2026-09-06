@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { create } from 'zustand';
 
 import { DEFAULT_GRID_SETTINGS, type GridSettings, type TileSpan } from '@latent/shared';
 
@@ -32,42 +32,71 @@ export function maxColumns(): number {
  * and absurd on a tablet, where it means two pictures the size of postcards and
  * a scroll for the third.
  */
+/**
+ * One store, not a copy per component.
+ *
+ * This was `useState` seeded from `localStorage`, which is fine while exactly
+ * one thing reads it and quietly wrong the moment two do. Every consumer wrote
+ * the *whole* settings object on every change, so two mounted copies drifted
+ * apart the first time either changed anything and then took turns reverting
+ * the other — the gallery's column count undone by a viewer opened from
+ * somewhere else, with nothing on screen to say why.
+ *
+ * It was always latent: the chat and the viewer over it are two, so are the
+ * gallery and its viewer. The bench panel made it reachable everywhere, because
+ * it is mounted on every screen at a desk. A shared store is the fix for all of
+ * them and not only for that one.
+ */
+interface GridStore {
+  settings: GridSettings;
+  patch: (change: Partial<GridSettings>) => void;
+}
+
+const useGridStore = create<GridStore>((set) => ({
+  settings: load(),
+  patch: (change) =>
+    set((state) => {
+      const settings = { ...state.settings, ...change };
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+      } catch {
+        // Private browsing, quota — not worth failing over.
+      }
+      return { settings };
+    }),
+}));
+
 export function useGridSettings(): [GridSettings, (patch: Partial<GridSettings>) => void] {
-  const [settings, setSettings] = useState<GridSettings>(() => {
-    /*
-     * Three defaults, because the right answer is the screen's.
-     *
-     * Two columns is right for a phone and absurd on a tablet; four is right on
-     * a tablet and thin at a desk, where the grid has a sidebar and a panel
-     * beside it and *still* more width than a tablet has in total — four there
-     * is four postcards on a table with room for eight.
-     */
-    const columns =
-      typeof window === 'undefined'
-        ? null
-        : window.matchMedia(DESK_QUERY).matches
-          ? 6
-          : window.matchMedia(TABLET_QUERY).matches
-            ? 4
-            : null;
-    const initial = columns ? { ...DEFAULT_GRID_SETTINGS, columns } : DEFAULT_GRID_SETTINGS;
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      return stored ? { ...initial, ...JSON.parse(stored) } : initial;
-    } catch {
-      return initial;
-    }
-  });
+  const settings = useGridStore((state) => state.settings);
+  const patch = useGridStore((state) => state.patch);
+  return [settings, patch];
+}
 
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
-    } catch {
-      // Private browsing, quota — not worth failing over.
-    }
-  }, [settings]);
-
-  return [settings, (patch) => setSettings((current) => ({ ...current, ...patch }))];
+/**
+ * What the grid starts as, once, when the module loads.
+ *
+ * Three defaults, because the right answer is the screen's. Two columns is
+ * right for a phone and absurd on a tablet; four is right on a tablet and thin
+ * at a desk, where the grid has a sidebar and a panel beside it and *still* has
+ * more width than a tablet has in total — four there is four postcards on a
+ * table with room for eight.
+ */
+function load(): GridSettings {
+  const columns =
+    typeof window === 'undefined'
+      ? null
+      : window.matchMedia(DESK_QUERY).matches
+        ? 6
+        : window.matchMedia(TABLET_QUERY).matches
+          ? 4
+          : null;
+  const initial = columns ? { ...DEFAULT_GRID_SETTINGS, columns } : DEFAULT_GRID_SETTINGS;
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    return stored ? { ...initial, ...(JSON.parse(stored) as Partial<GridSettings>) } : initial;
+  } catch {
+    return initial;
+  }
 }
 
 /**

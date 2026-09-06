@@ -669,7 +669,20 @@ function SpeedAction({ value, onChange }: { value: number; onChange: (next: numb
       )}
       {open && (
         <div
-          className="absolute bottom-full left-1/2 z-40 mb-1 flex -translate-x-1/2 gap-0.5 rounded-xl border border-line bg-surface-2 p-1 shadow-lg shadow-black/40"
+          className={cn(
+            'absolute bottom-full z-40 mb-1 flex gap-0.5 rounded-xl border border-line bg-surface-2 p-1 shadow-lg shadow-black/40',
+            // Centred on the cell along the bottom of a phone, where the cell
+            // is in the middle of the row and there is screen either side.
+            'left-1/2 -translate-x-1/2',
+            /*
+              Against the edge in the column beside the picture, where it is
+              not. Three cells across a 22rem panel puts this one in the last
+              column, and a 240-point strip centred on a cell 50 points from
+              the right ran past the panel — which clips its own overflow, so
+              3× and 4× were simply not there.
+            */
+            'desk:left-auto desk:right-0 desk:translate-x-0',
+          )}
           onPointerDown={(event) => event.stopPropagation()}
         >
           {PLAYBACK_SPEEDS.map((speed) => (

@@ -541,7 +541,13 @@ function GenerateForm({
    */
   const latestSubmit = useRef(submit);
   latestSubmit.current = submit;
-  const canSubmit = Boolean(detail) && comfyOnline;
+  /*
+    Exactly what the button is willing to do, not a looser version of it.
+    The button is disabled while a queue request is in flight; a chord that only
+    asked "is there a workflow and is ComfyUI up" queued one run per key repeat
+    if you held it down.
+  */
+  const canSubmit = Boolean(detail) && comfyOnline && !generate.isPending && !setEndless.isPending;
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

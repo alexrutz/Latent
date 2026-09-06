@@ -24,6 +24,7 @@ import { QueueScreen } from './screens/QueueScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { SetupScreen } from './screens/SetupScreen';
 import { VariationScreen } from './screens/VariationScreen';
+import { useDock } from './state/dock';
 import { useRefuseStrayDrops } from './state/dropFiles';
 import { useHotkeys } from './state/hotkeys';
 import { useDesk, useTablet } from './state/layout';
@@ -35,6 +36,8 @@ export function App() {
   const pathname = useLocation().pathname;
   const tablet = useTablet();
   const desk = useDesk();
+  /** Whether the bench is showing what the bar would otherwise say. */
+  const dockOpen = useDock((state) => state.open);
   const onGenerate = pathname === '/';
   /*
    * The chat manages its own height and its composer is pinned to the bottom of
@@ -156,11 +159,14 @@ export function App() {
         button — two rows for progress and Generate is a lot of a phone screen
         for two things you look at together.
 
-        And nowhere at all once the panel is beside it: the bar is a strip
-        across the bottom saying what the panel is already saying in full, one
-        column to the right, permanently.
+        And nowhere at all once the panel is beside it *and open*: the bar is a
+        strip across the bottom saying what the panel is already saying in full,
+        one column to the right. Shut, the panel says none of it — and the
+        collapse is remembered, so without this a run had no progress, no ETA
+        and no way to stop it anywhere outside Generate until somebody thought
+        to reopen a panel they had put away days ago.
       */}
-      {!onGenerate && !onChat && !desk && <LiveBar />}
+      {!onGenerate && !onChat && !(desk && dockOpen) && <LiveBar />}
     </div>
   );
 

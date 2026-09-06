@@ -245,13 +245,24 @@ function WipeHandle({
   const pressed = useRef<{ x: number; y: number } | null>(null);
   const [dragging, setDragging] = useState(false);
 
-  /** Where along its axis a point on the screen puts the seam. */
+  /**
+   * Where along its axis a point on the screen puts the seam.
+   *
+   * Measured against the box the seam is a *percentage of* — the handle's own
+   * positioned ancestor — rather than against the window. The two were the same
+   * thing while the viewer was the whole screen, and stopped being when a
+   * column appeared beside it at desk width: the seam is `left: 40%` of a stage
+   * narrower than the window, so a fraction taken from the window put the seam
+   * consistently short of the pointer and capped it at the stage's share of the
+   * width. Reading the box is right in both cases and cannot drift again.
+   */
   const fractionAt = useCallback(
     (event: React.PointerEvent) => {
+      const box = (event.currentTarget as HTMLElement).offsetParent?.getBoundingClientRect();
       const along =
         axis === 'vertical'
-          ? event.clientX / Math.max(1, window.innerWidth)
-          : event.clientY / Math.max(1, window.innerHeight);
+          ? (event.clientX - (box?.left ?? 0)) / Math.max(1, box?.width ?? window.innerWidth)
+          : (event.clientY - (box?.top ?? 0)) / Math.max(1, box?.height ?? window.innerHeight);
       // Measured from the parked edge, so both edges behave the same way round.
       const fromEdge = edge === 'left' || edge === 'top' ? along : 1 - along;
       return Math.min(1, Math.max(0, fromEdge));
