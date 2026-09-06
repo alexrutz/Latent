@@ -2923,6 +2923,15 @@ Use `--project=iPad` to run just those.
 Schema changes go in `server/src/db.ts` as a new entry in `MIGRATIONS` — never by
 editing one that has shipped.
 
+**The e2e suite retries once, and says when it did.** A hundred and seventy-five
+tests drive three servers in one container for nine minutes, and about one run in
+three had a single `await` miss its timeout — a different test each time, always
+a wait rather than an assertion about a value, and every one of them passing on
+its own and in its own describe. That is the shape of contention, not of a bug.
+Playwright reports a test that needed the retry as **flaky** rather than passed,
+with its own count at the end of the run, so nothing is hidden: a genuine break
+still fails twice and still fails the run.
+
 ## Limitations
 
 - **No queue reordering.** ComfyUI's API can delete and clear queue entries but

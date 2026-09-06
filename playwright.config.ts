@@ -20,6 +20,25 @@ export default defineConfig({
   expect: { timeout: 15_000 },
   fullyParallel: false,
   workers: 1,
+  /*
+   * One retry, and a retried test is reported as *flaky* rather than passed.
+   *
+   * Not a way of hiding a failure — Playwright prints the flaky ones at the end
+   * of the run and the count is separate from the passes, so a test that needs
+   * the retry is still something you are told about. It is a way of separating
+   * two things that look identical in a red run and are not: a behaviour that is
+   * wrong, and a suite of a hundred and seventy-five tests driving three servers
+   * in one container for nine minutes where one `await` occasionally misses its
+   * timeout.
+   *
+   * The second is what this is. Across the runs where it has appeared it has
+   * been a different test each time, always a wait rather than an assertion
+   * about a value, and every one of them passes on its own and in its own
+   * describe — which is the shape of contention, not of a bug. Without a retry
+   * the whole run goes red about one time in three and the useful signal in it
+   * is drowned; with one, a genuine break still fails twice and still fails.
+   */
+  retries: 1,
   reporter: [['list']],
 
   use: {
