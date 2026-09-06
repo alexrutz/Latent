@@ -30,9 +30,10 @@ export default defineConfig({
   projects: [
     {
       name: 'iPhone 14',
-      // The tablet layout has a project of its own below; these assertions are
-      // about the phone one and would be checking a different tree here.
-      grepInvert: /@tablet/,
+      // The tablet and desk layouts have projects of their own below; these
+      // assertions are about the phone one and would be checking a different
+      // tree here.
+      grepInvert: /@tablet|@desk/,
       // The iPhone viewport, touch behaviour, DPR and user agent, but driven by
       // Chromium — WebKit is not available in every environment, and none of
       // what these tests assert is engine-specific.
@@ -60,6 +61,28 @@ export default defineConfig({
       use: {
         ...devices['iPad (gen 6) landscape'],
         defaultBrowserType: 'chromium',
+        ...(CHROMIUM_PATH ? { launchOptions: { executablePath: CHROMIUM_PATH } } : {}),
+      },
+    },
+    /*
+     * A desk.
+     *
+     * 1600×1000 — a laptop's screen, not a monitor's, deliberately: the desk
+     * layout has to be right at the bottom of its range as well as at the top,
+     * and 1280 of width has to hold a named sidebar, a readable column and the
+     * bench panel all at once. A test run at 2560 would prove only that there
+     * was room to spare.
+     *
+     * No touch, and a mouse: this is the one project where hover exists and
+     * where a keyboard is the primary way of getting about, which is most of
+     * what the layout is for.
+     */
+    {
+      name: 'Desk',
+      grep: /@desk/,
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 1600, height: 1000 },
         ...(CHROMIUM_PATH ? { launchOptions: { executablePath: CHROMIUM_PATH } } : {}),
       },
     },

@@ -19,8 +19,9 @@ import {
 import { api, ApiError, modelExampleUrl } from '../api/client';
 import { queryKeys, useVisibleWorkflows, useWorkflow } from '../api/queries';
 import { NumericInput } from '../components/NumericInput';
-import { Button, Card, cn, ErrorNote, Sheet, Spinner } from '../components/ui';
+import { Button, Card, cn, DetailPane, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { useBlur } from '../state/blur';
+import { useDesk } from '../state/layout';
 import { useFormDrafts } from '../state/formDraft';
 
 /**
@@ -61,68 +62,104 @@ export function ModelsScreen() {
     );
   }, [models.data, search]);
 
+  /*
+   * Two panes at a desk, one column anywhere else.
+   *
+   * The library is a list you compare across — this LoRA's words against that
+   * one's, which of the three checkpoints somebody wrote a note about — and a
+   * modal covering the list to show one row of it is the wrong shape for that
+   * on a screen with room for both. The sheet is still right on a phone, which
+   * shows one thing at a time by construction; `DetailPane` is the one
+   * component that knows which it is.
+   *
+   * The list keeps a reading width of its own rather than stretching: it is
+   * rows of a name and a few words, and a row a foot wide is a name at one end
+   * and its words at the other.
+   */
+  const desk = useDesk();
+
   return (
-    <div className="readable safe-t space-y-4 px-4 pt-3 pb-6">
-      <div>
-        <h1 className="text-xl font-semibold">Models</h1>
-        <p className="mt-1 text-xs text-muted">What is installed, and the words each one wants.</p>
-      </div>
-
-      <div className="flex flex-wrap gap-1.5">
-        {MODEL_FOLDERS.map((entry) => (
-          <button
-            key={entry}
-            type="button"
-            aria-pressed={folder === entry}
-            onClick={() => setFolder(entry)}
-            className={cn(
-              'rounded-lg px-3 py-1.5 text-xs',
-              folder === entry ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
-            )}
-          >
-            {MODEL_FOLDER_LABELS[entry]}
-          </button>
-        ))}
-      </div>
-
-      <input
-        type="search"
-        value={search}
-        onChange={(event) => setSearch(event.target.value)}
-        placeholder="Search names and words"
-        aria-label="Search models"
-        className="w-full rounded-xl border border-line bg-surface px-4 py-2.5 text-sm focus:border-accent focus:outline-none"
-      />
-
-      {models.data && models.data.models.length > 0 && (
-        <LookupAll folder={folder} models={models.data.models} />
+    <div
+      className={cn(
+        'safe-t',
+        desk
+          ? 'flex h-full min-h-0 items-start gap-5 px-5 pt-3 pb-5'
+          : 'readable space-y-4 px-4 pt-3 pb-6',
       )}
-
-      {/* Said, not hidden: without comfyllama the names are all there is. */}
-      {models.data?.warning && <p className="text-xs text-warn">{models.data.warning}</p>}
-      <ErrorNote>{models.error instanceof Error ? models.error.message : null}</ErrorNote>
-
-      {models.isPending ? (
-        <div className="grid place-items-center py-12">
-          <Spinner className="size-6 text-muted" />
-        </div>
-      ) : shown.length === 0 ? (
-        <Card>
-          <p className="text-sm text-muted">
-            {search.trim() !== ''
-              ? 'Nothing here matches that.'
-              : `Nothing in ${MODEL_FOLDER_LABELS[folder].toLowerCase()} on the ComfyUI machine.`}
+    >
+      <div
+        className={cn(
+          'space-y-4',
+          desk && 'h-full min-w-0 flex-1 overflow-y-auto pr-1 [max-width:38rem]',
+        )}
+      >
+        <div>
+          <h1 className="text-xl font-semibold">Models</h1>
+          <p className="mt-1 text-xs text-muted">
+            What is installed, and the words each one wants.
           </p>
-        </Card>
-      ) : (
-        <ul className="space-y-2" data-testid="model-list">
-          {shown.map((model) => (
-            <li key={model.name}>
-              <ModelRow model={model} onEdit={() => setEditing(model)} />
-            </li>
+        </div>
+
+        <div className="flex flex-wrap gap-1.5">
+          {MODEL_FOLDERS.map((entry) => (
+            <button
+              key={entry}
+              type="button"
+              aria-pressed={folder === entry}
+              onClick={() => setFolder(entry)}
+              className={cn(
+                'rounded-lg px-3 py-1.5 text-xs',
+                folder === entry ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+              )}
+            >
+              {MODEL_FOLDER_LABELS[entry]}
+            </button>
           ))}
-        </ul>
-      )}
+        </div>
+
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search names and words"
+          aria-label="Search models"
+          className="w-full rounded-xl border border-line bg-surface px-4 py-2.5 text-sm focus:border-accent focus:outline-none"
+        />
+
+        {models.data && models.data.models.length > 0 && (
+          <LookupAll folder={folder} models={models.data.models} />
+        )}
+
+        {/* Said, not hidden: without comfyllama the names are all there is. */}
+        {models.data?.warning && <p className="text-xs text-warn">{models.data.warning}</p>}
+        <ErrorNote>{models.error instanceof Error ? models.error.message : null}</ErrorNote>
+
+        {models.isPending ? (
+          <div className="grid place-items-center py-12">
+            <Spinner className="size-6 text-muted" />
+          </div>
+        ) : shown.length === 0 ? (
+          <Card>
+            <p className="text-sm text-muted">
+              {search.trim() !== ''
+                ? 'Nothing here matches that.'
+                : `Nothing in ${MODEL_FOLDER_LABELS[folder].toLowerCase()} on the ComfyUI machine.`}
+            </p>
+          </Card>
+        ) : (
+          <ul className="space-y-2" data-testid="model-list">
+            {shown.map((model) => (
+              <li key={model.name}>
+                <ModelRow
+                  model={model}
+                  open={editing?.name === model.name}
+                  onEdit={() => setEditing(model)}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
       {editing && (
         <ModelSheet
@@ -140,6 +177,18 @@ export function ModelsScreen() {
             setEditing({ ...editing, note, words, wordsFrom: from });
           }}
         />
+      )}
+
+      {/*
+        The pane's own empty state, so the column is not a hole in the layout.
+        Only at a desk: below it there is no second column to be empty.
+      */}
+      {desk && !editing && (
+        <aside className="grid h-full w-[26rem] shrink-0 place-items-center rounded-2xl border border-dashed border-line px-6 text-center">
+          <p className="text-sm text-muted">
+            Pick a model to see what is known about it, and to write down what you know.
+          </p>
+        </aside>
       )}
     </div>
   );
@@ -166,12 +215,36 @@ const SOURCE_LABEL: Record<WordSource, string> = {
  * image nobody has seen, which may be white, busy, or both. A fixed dark
  * gradient is the only version of this that cannot fail.
  */
-function ModelRow({ model, onEdit }: { model: ModelSummary; onEdit: () => void }) {
+function ModelRow({
+  model,
+  open,
+  onEdit,
+}: {
+  model: ModelSummary;
+  /**
+   * This is the one showing in the pane beside the list.
+   *
+   * Only ever true at a desk, where the detail is a column rather than a sheet
+   * over everything — and there it is necessary rather than decorative: a pane
+   * showing one record with nothing in the list saying which record is a pane
+   * you have to read to find your place in the list you are looking at.
+   */
+  open: boolean;
+  onEdit: () => void;
+}) {
   const example = model.note?.civitai?.examples?.[0] ?? null;
   const blurred = useBlur((state) => state.blurred);
 
   return (
-    <Card className="relative overflow-hidden" data-model={model.name}>
+    <Card
+      className={cn(
+        'relative overflow-hidden',
+        // A ring rather than a border: a border would move every other row by
+        // a pixel as the selection travels down the list.
+        open && 'ring-2 ring-accent ring-inset',
+      )}
+      data-model={model.name}
+    >
       {example && (
         <>
           <img
@@ -366,7 +439,7 @@ function ModelSheet({
   });
 
   return (
-    <Sheet open onClose={onClose} title={model.title || stripExtension(model.name)} full>
+    <DetailPane open onClose={onClose} title={model.title || stripExtension(model.name)}>
       <div className="space-y-4">
         <p className="text-xs break-all text-muted">
           {model.name}
@@ -499,7 +572,7 @@ function ModelSheet({
           </div>
         )}
       </div>
-    </Sheet>
+    </DetailPane>
   );
 }
 

@@ -7,6 +7,8 @@ import {
   type ReactNode,
 } from 'react';
 
+import { useDesk } from '../state/layout';
+
 export function cn(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(' ');
 }
@@ -281,6 +283,82 @@ export function Sheet({
       </div>
     </div>,
     document.body,
+  );
+}
+
+/**
+ * One record, opened: a sheet where there is no room, a pane where there is.
+ *
+ * The same content either way, and the difference is not decoration. A modal is
+ * the right answer on a phone — the screen shows one thing, so showing this
+ * thing means covering the other — and it is a bad answer at a desk, where
+ * covering a window to show one row of a list is a program hiding the list you
+ * were comparing against. Desktop software has panes for exactly this reason,
+ * and has since before it had windows.
+ *
+ * It is a *component* rather than a rule each screen writes for itself because
+ * every list screen here has the same shape and would otherwise each invent its
+ * own answer to "what happens on a big screen" — which is how an app ends up
+ * with three kinds of detail view.
+ *
+ * The screen that uses one has to lay out for it: below desk width this renders
+ * nothing where it stands and a modal over everything, and at desk width it
+ * renders a column exactly where it is placed. See `ModelsScreen` for the
+ * shape — a flex row whose second child is this.
+ */
+export function DetailPane({
+  open,
+  onClose,
+  title,
+  children,
+  closeLabel = 'Done',
+}: {
+  open: boolean;
+  onClose: () => void;
+  title?: ReactNode;
+  children: ReactNode;
+  closeLabel?: string;
+}) {
+  const desk = useDesk();
+
+  useEffect(() => {
+    if (!open || !desk) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, desk, onClose]);
+
+  if (!desk) {
+    return (
+      <Sheet open={open} onClose={onClose} title={title} closeLabel={closeLabel} full>
+        {children}
+      </Sheet>
+    );
+  }
+
+  if (!open) return null;
+
+  return (
+    <aside
+      data-testid="detail-pane"
+      aria-label={typeof title === 'string' ? title : 'Details'}
+      className="flex min-h-0 w-[26rem] shrink-0 flex-col rounded-2xl border border-line bg-surface"
+    >
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line px-4 py-2.5">
+        <h2 className="min-w-0 flex-1 truncate text-base font-semibold">{title}</h2>
+        {/*
+          Not modal, so this is a way to put it away rather than a way to accept
+          it — and Escape does the same, which is what a pane on a desktop is
+          expected to answer to whether or not it is trapping the keyboard.
+        */}
+        <Button variant="ghost" size="sm" onClick={onClose}>
+          {closeLabel}
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-3">{children}</div>
+    </aside>
   );
 }
 

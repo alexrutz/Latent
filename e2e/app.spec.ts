@@ -7470,3 +7470,131 @@ test.describe('finding things under Advanced, and starting over', () => {
     await page.screenshot({ path: 'test-results/102-reset-workflow.png' });
   });
 });
+
+/**
+ * Wave 30: the desk.
+ *
+ * The third layout, and a different kind of step from the second. Phone to
+ * tablet is "there is room for a second thing" — the render beside the form,
+ * the pictures beside the conversation, both of them a second pane *of the
+ * screen you are on*. This is the step where there is room for something that
+ * is not the screen at all: what the machine is doing, in view while you read
+ * the model library or edit a block.
+ *
+ * These run at 1600×1000 rather than on a monitor, because the layout has to be
+ * right at the bottom of its range. Three columns at 2560 proves nothing.
+ */
+test.describe('at a desk', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+  });
+
+  test('@desk names every destination instead of abbreviating it', async ({ page }) => {
+    await open(page, '/');
+
+    /*
+     * The rail is the same rail — the same rows, the same links — turned on its
+     * side and given the width to say what each one is. Five rems is a column
+     * of glyphs you learn the position of; thirteen is a list you read.
+     */
+    const rail = page.getByTestId('side-rail');
+    await expect(rail).toBeVisible();
+    expect((await rail.boundingBox())!.width).toBeGreaterThan(180);
+
+    // And the groups are named rather than merely ruled apart.
+    await expect(rail.getByText('Every day')).toBeVisible();
+    await expect(rail.getByText('Set up once')).toBeVisible();
+  });
+
+  test('@desk keeps the run in view while you are somewhere else', async ({ page }) => {
+    await open(page, '/');
+
+    /*
+     * The whole argument for the panel. Queue something, walk away to another
+     * screen entirely, and the run is still in front of you — where on a phone
+     * it is a strip above the tab bar, and on a tablet it is a pane of the
+     * Generate screen you have just left.
+     */
+    const dock = page.getByTestId('dock');
+    await expect(dock).toBeVisible();
+    await expect(dock.getByText('Nothing running.')).toBeVisible();
+
+    await page.getByPlaceholder('Describe the image…').fill('a lighthouse at dusk');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    // Away to a screen that has nothing to do with generating.
+    await page.getByRole('link', { name: 'Models' }).click();
+    await expect(page).toHaveURL(/\/models$/);
+    await expect(dock.getByRole('button', { name: 'Stop' })).toBeVisible({ timeout: 30_000 });
+    await page.screenshot({ path: 'test-results/103-desk-dock.png' });
+
+    /*
+     * And what came out lands in it — from anywhere, not only from the workflow
+     * whose form happens to be open, which is the Generate pane's question
+     * rather than this one's.
+     */
+    await expect(dock.getByTestId('dock-latest').locator('img').first()).toBeVisible({
+      timeout: 60_000,
+    });
+  });
+
+  test('@desk puts the panel away, and remembers', async ({ page }) => {
+    await open(page, '/');
+    const dock = page.getByTestId('dock');
+    await expect(dock).toBeVisible();
+
+    // By the key, because that is the point of having one.
+    await page.keyboard.press('[');
+    await expect(dock).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Show the run panel' })).toBeVisible();
+
+    /*
+     * A decision about the room you have, not about the thing you are doing —
+     * so it survives a reload rather than being re-applied every morning.
+     */
+    await page.reload();
+    await expect(page.getByTestId('dock')).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Show the run panel' }).click();
+    await expect(page.getByTestId('dock')).toBeVisible();
+  });
+
+  test('@desk gets about on the keyboard, and stands down while you type', async ({ page }) => {
+    await open(page, '/');
+
+    // `g` then the destination's initial, the chord every mail client settled on.
+    await page.keyboard.press('g');
+    await page.keyboard.press('l');
+    await expect(page).toHaveURL(/\/gallery$/);
+
+    await page.keyboard.press('g');
+    await page.keyboard.press('m');
+    await expect(page).toHaveURL(/\/models$/);
+
+    await page.keyboard.press('g');
+    await page.keyboard.press('g');
+    await expect(page).toHaveURL(/\/$/);
+
+    /*
+     * The rule that makes the rest of them safe: a prompt with the word
+     * "gallery" in it is a prompt. Without this every `g` in it is a navigation
+     * and the text you typed is on a screen you have left.
+     */
+    const prompt = page.getByPlaceholder('Describe the image…');
+    await prompt.fill('');
+    await prompt.type('a gallery of lighthouses');
+    await expect(page).toHaveURL(/\/$/);
+    await expect(prompt).toHaveValue('a gallery of lighthouses');
+
+    // And the map of them is on the key every program has used for it —
+    // once the text box has let go of the keyboard again.
+    await prompt.blur();
+    await page.keyboard.press('?');
+    const map = page.getByRole('dialog', { name: 'Keyboard' });
+    await expect(map).toBeVisible();
+    await expect(map.getByText('Go to', { exact: true })).toBeVisible();
+    await expect(map.getByText('g l')).toBeVisible();
+    await page.screenshot({ path: 'test-results/104-desk-keys.png' });
+  });
+});

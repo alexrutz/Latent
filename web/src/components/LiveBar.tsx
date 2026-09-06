@@ -290,13 +290,29 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
  * Only ever about *this* run. While something else is rendering, or before the
  * queue reaches it, there is a bar with no numbers rather than another job's.
  */
-export function RunProgress({ generationId, queued }: { generationId: string; queued?: string }) {
+export function RunProgress({
+  generationId,
+  queued,
+}: {
+  /**
+   * The run this is about — or nothing, meaning whatever is running.
+   *
+   * Two genuinely different questions. A chat card asks the first: several of
+   * them are on screen and only one is the run in progress, so a card without
+   * an id of its own would claim somebody else's progress bar. The bench panel
+   * asks the second, and cannot ask the first — a run started from ComfyUI's
+   * own editor has no Latent generation to name, and is still the thing the
+   * GPU is doing.
+   */
+  generationId?: string | null;
+  queued?: string;
+}) {
   const job = useLiveStore((state) => state.live.job);
   const liveAt = useLiveStore((state) => state.liveAt);
   const previewUrl = useLiveStore((state) => state.previewUrl);
   const queueRemaining = useLiveStore((state) => state.live.queueRemaining);
 
-  const mine = job?.generationId === generationId ? job : null;
+  const mine = generationId === undefined || job?.generationId === generationId ? job : null;
   const now = useTicker(Boolean(mine));
 
   const stepFraction = mine && mine.progressMax > 0 ? mine.progress / mine.progressMax : 0;

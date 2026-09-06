@@ -45,7 +45,13 @@
     background: var(--color-ink);
     color: var(--color-body);
     font-family:
-      ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+      ui-sans-serif,
+      system-ui,
+      -apple-system,
+      'Segoe UI',
+      Roboto,
+      'Helvetica Neue',
+      sans-serif;
     /* Prevent the whole page from rubber-banding; panes scroll individually. */
     overscroll-behavior: none;
   }
@@ -158,6 +164,29 @@
  */
 @custom-variant tablet (@media (min-width: 600px) and (min-height: 600px));
 @custom-variant wide (@media (min-width: 900px) and (min-height: 600px));
+
+/*
+ * A desk.
+ *
+ * The third step, and it is a different kind of step from the first two. Phone
+ * to tablet is "there is room for a second thing"; tablet to desk is "there is
+ * room for a second thing *and* the space left over is still larger than a
+ * phone". That is what changes the shape of the app rather than its proportions
+ * — the navigation stops being a column of glyphs and says what it is, and a
+ * panel appears down the right that is not the screen you are on.
+ *
+ * 1280 is arithmetic rather than taste: 13.5rem of named navigation, the 46rem
+ * a column of settings is allowed to grow to, and 20rem of panel come to 1264
+ * points with nothing to spare. Below that the three of them cannot all be
+ * right, and two columns is the honest answer.
+ *
+ * The height test is 700 rather than 600 because the panel is a *column* — a
+ * run, a queue and a strip of results stacked — and in a window shorter than
+ * that it is a scrollbar with three headings in it.
+ *
+ * Repeated verbatim in `state/layout.ts`. They must stay in step.
+ */
+@custom-variant desk (@media (min-width: 1280px) and (min-height: 700px));
 
 /*
  * A column that stops growing once it is wide enough to read.

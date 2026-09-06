@@ -521,6 +521,39 @@ function GenerateForm({
     }
   };
 
+  /*
+   * ⌘↵ / Ctrl+↵ queues it, from anywhere on this screen.
+   *
+   * The one binding that deliberately fires *while* you are typing, because
+   * that is the only moment it is for: you have just finished the prompt, your
+   * hands are on the keys, and the alternative is reaching for a mouse to press
+   * a button you can already see. Every other shortcut stands down inside a
+   * text box — see `isTyping` — and this is the exception that proves why the
+   * rule is about bare keys rather than about keys.
+   *
+   * Bound here rather than in the app-wide handler because it is this screen's
+   * button: a global binding would need the form's values and the workflow it
+   * is on, which is exactly the state that lives here.
+   *
+   * Through a ref, so the listener is attached once rather than swapped on
+   * every keystroke — `submit` closes over the form's values and is therefore a
+   * different function each time one of them changes.
+   */
+  const latestSubmit = useRef(submit);
+  latestSubmit.current = submit;
+  const canSubmit = Boolean(detail) && comfyOnline;
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
+      if (!canSubmit) return;
+      event.preventDefault();
+      void latestSubmit.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [canSubmit]);
+
   const toggleEndless = async () => {
     if (!detail) return;
     setError(null);

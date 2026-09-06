@@ -71,6 +71,13 @@ export function PromptField({
         onChange={(event) => onChange(event.target.value)}
         rows={compact ? 2 : 3}
         placeholder={field.role === 'negative_prompt' ? 'What to avoid…' : 'Describe the image…'}
+        /*
+          What `/` jumps to. Marked rather than found by placeholder or by
+          position: a workflow can have three text areas and only one of them is
+          the thing you came to type in, and the negative prompt sitting right
+          beneath it is exactly the wrong one to land in.
+        */
+        {...(field.role === 'prompt' ? { 'data-prompt': '' } : {})}
         className={cn(
           'w-full resize-none rounded-xl border border-line bg-surface px-3 py-2',
           'leading-relaxed placeholder:text-muted/60',

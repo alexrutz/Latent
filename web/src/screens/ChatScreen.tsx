@@ -651,6 +651,8 @@ export function ChatScreen() {
             onChange={(event) => store().setDraft(event.target.value)}
             rows={1}
             placeholder="Say something…"
+            // The thing you would type into on this screen — what `/` jumps to.
+            data-prompt=""
             className="max-h-32 min-h-10 flex-1 resize-none rounded-xl border border-line bg-surface px-3 py-2 text-sm leading-relaxed focus:border-accent focus:outline-none"
           />
 

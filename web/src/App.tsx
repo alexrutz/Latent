@@ -4,7 +4,9 @@ import { Route, Routes, useLocation } from 'react-router-dom';
 import { setArchiveLockedHandler } from './api/client';
 import { useLiveCacheSync, useStatus } from './api/queries';
 import { BottomTabs } from './components/BottomTabs';
+import { Dock } from './components/Dock';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { KeyMap } from './components/KeyMap';
 import { LiveBar } from './components/LiveBar';
 import { SideRail } from './components/SideRail';
 import { ArchiveLockedBar, UnlockArchiveDialog } from './components/UnlockArchive';
@@ -22,7 +24,8 @@ import { QueueScreen } from './screens/QueueScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { SetupScreen } from './screens/SetupScreen';
 import { VariationScreen } from './screens/VariationScreen';
-import { useTablet } from './state/layout';
+import { useHotkeys } from './state/hotkeys';
+import { useDesk, useTablet } from './state/layout';
 import { registerScrollContainer, useDocumentScrollAnchor } from './state/scroll';
 import { useLiveSocket } from './state/useLiveSocket';
 
@@ -30,6 +33,7 @@ export function App() {
   const status = useStatus();
   const pathname = useLocation().pathname;
   const tablet = useTablet();
+  const desk = useDesk();
   const onGenerate = pathname === '/';
   /*
    * The chat manages its own height and its composer is pinned to the bottom of
@@ -43,6 +47,16 @@ export function App() {
 
   // The keyboard shifts the page up and does not always shift it back.
   useDocumentScrollAnchor();
+
+  /*
+   * The keyboard as a way of driving the app, not only of typing into it.
+   *
+   * Bound whenever there is a session, rather than only at desk width: a
+   * tablet with a keyboard attached is a machine with a keyboard, and there is
+   * nothing about a narrow window that makes `g l` the wrong way to reach the
+   * gallery. What the width decides is layout, which is a different question.
+   */
+  const { map, closeMap } = useHotkeys(authenticated);
 
   // Only hold a socket open once we're allowed to use the API.
   useLiveSocket(authenticated);
@@ -131,8 +145,12 @@ export function App() {
         Everywhere but Generate, which shows the same bar inline beside its
         button — two rows for progress and Generate is a lot of a phone screen
         for two things you look at together.
+
+        And nowhere at all once the panel is beside it: the bar is a strip
+        across the bottom saying what the panel is already saying in full, one
+        column to the right, permanently.
       */}
-      {!onGenerate && !onChat && <LiveBar />}
+      {!onGenerate && !onChat && !desk && <LiveBar />}
     </div>
   );
 
@@ -148,9 +166,18 @@ export function App() {
       */}
       {tablet && <SideRail />}
       {column}
+      {/*
+        The third column, and the one that is not a screen. See `Dock`.
+
+        Last in the document as well as on the right, so reading order and tab
+        order still run navigation → what you are doing → what the machine is
+        doing, which is the order of importance too.
+      */}
+      {desk && <Dock />}
       {!tablet && <BottomTabs />}
 
       <UnlockArchiveDialog open={unlocking} onClose={() => setUnlocking(false)} />
+      <KeyMap open={map} onClose={closeMap} />
     </div>
   );
 }

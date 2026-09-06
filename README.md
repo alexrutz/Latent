@@ -708,6 +708,80 @@ in which you are still asking why something just happened, and writing a row
 every two seconds to answer that is a poor trade against an SD card. Switching
 connection clears it, because a different endpoint is a different machine.
 
+## On a phone, a tablet, and at a desk
+
+Three layouts, and each step adds something the one before it could not have.
+
+**A phone** shows one thing at a time, which is not a compromise — it is the
+shape of the device. Navigation is a bar along the bottom, because the bottom of
+a phone is the part a thumb reaches; the four modules you set up once live
+behind *More*, because six tabs is as many as a phone's width can label legibly.
+
+**A tablet** (600 points in *both* directions — a width test alone calls a phone
+in landscape a tablet) turns the bar into a rail down the left, where all ten
+destinations fit and the scarce axis, height, is given back to the pictures. Past
+900 points there is room for a second pane *of the screen you are on*: the render
+beside the form that made it, the chat's pictures beside the conversation. That
+is the whole argument for the tablet layout — on a phone, changing one word of a
+prompt and seeing what it did is Generate → a bar → a viewer → back → back, and
+the previous attempt is never on screen at the same time as the words that made
+it.
+
+**A desk** (1280 × 700) is where the app changes shape rather than proportions.
+Three things happen:
+
+- **The rail is named.** Icon and label side by side at a size you read without
+  meaning to, in two groups with headings — *Every day*, *Set up once* — instead
+  of a rule standing in for the sentence.
+- **The bench appears**, down the right, and it belongs to no screen. What is
+  running, with its preview frame and its ETA and a Stop; what is queued; and
+  what came out, newest first across every workflow. This is the answer to what
+  a large screen is actually for. Everything this app does orbits one loop —
+  queue something, watch it, look at what came out — and on a phone that loop is
+  three tabs, walked in order. Here you can read the model library, edit a block
+  or hold a conversation with the run you started ten minutes ago still in front
+  of you. Nothing in it is new: it is the live bar's progress, the queue's list
+  and the gallery's newest, reading the same state those tabs read. `[` puts it
+  away, and it stays away — that is a decision about the room you have, not
+  about the thing you are doing, so it is remembered per machine rather than
+  synced from your phone.
+- **A record opens beside its list, not over it.** The model library is a list
+  you compare across, and covering it to show one row is what a modal is for on
+  a device that can only show one thing. At a desk the detail is a pane and the
+  row it belongs to is ringed in the list. `DetailPane` is the one component
+  that knows which of the two it should be, so the screens that adopt it cannot
+  drift apart.
+
+**What does not change is the reading width.** A stack of settings rows is
+capped at 46rem however much monitor there is, because a row a foot wide is a
+label at one end and its switch at the other. Filling the space is not the same
+as using it — which is why the space left over goes to the bench and to a detail
+pane rather than to stretching a form.
+
+### The keyboard
+
+Not only at a desk — a tablet with a keyboard attached is a machine with a
+keyboard — but it is what a desk is for.
+
+| Key | What it does |
+| --- | --- |
+| `⌘↵` / `Ctrl+↵` | Generate, from anywhere on the form |
+| `/` | Jump to the prompt |
+| `[` | Show or hide the bench |
+| `g` then a letter | Go to a screen — `g l` gallery, `g m` models, `g c` chat, `g g` generate… |
+| `?` | The list of all of them |
+| `Esc` | Close whatever is in front |
+
+Three rules they obey, and the third is the one that matters. **Nothing fires
+while you are typing** — a prompt with the word "gallery" in it must not
+navigate five times on the way in — with one deliberate exception, `⌘↵`, which
+exists precisely for the moment your hands are still on the keys. **Nothing
+claims a key the browser already means**, so tab, space and the arrows stay
+where they are. And **every binding has a visible way to do the same thing**:
+these are a faster route to buttons, never the only route to a behaviour. An app
+you can only fully use once you have read a list of shortcuts is an app that
+does not work on the phone it was written for.
+
 ## Coming back to the app
 
 The socket is the source of truth **while it is connected**. It is not a record
@@ -2782,9 +2856,12 @@ Use `--project=iPad` to run just those.
 | `server/src/taste.ts` | The notes about what you like, sealed and unsealed with the same key |
 | `server/src/images/` | A dependency-free PNG decoder/resizer, and the thumbnail cache the gallery is served from |
 | `server/src/mock/` | The mock ComfyUI — and a scriptable stand-in for `llama-server` — used for development and tests |
-| `web/src/state/layout.ts` | Where a tablet begins, for the layout decisions CSS cannot make — the `tablet:` and `wide:` variants in `index.css` are the same two queries |
-| `web/src/components/SideRail.tsx` | The tablet's navigation, and the four modules a phone hides behind a menu |
+| `web/src/state/layout.ts` | Where a tablet and a desk begin, for the layout decisions CSS cannot make — the `tablet:`, `wide:` and `desk:` variants in `index.css` are the same three queries |
+| `web/src/components/SideRail.tsx` | The tablet's navigation, and the four modules a phone hides behind a menu — named and grouped once there is width for it |
 | `web/src/components/GenerateWorkbench.tsx` | The render, beside the form that made it |
+| `web/src/components/Dock.tsx` | The bench: what is running, what is queued and what came out, in view on every screen at a desk |
+| `web/src/state/hotkeys.ts` | The keyboard bindings, and the rule that keeps them out of the way while you type |
+| `web/src/components/ui.tsx` | `DetailPane` — one record, as a sheet where there is no room and a pane where there is |
 | `web/` | React + Vite PWA |
 | `e2e/` | Playwright tests |
 | `comfyllama/` | The ComfyUI custom nodes, vendored so the two can change together — see [its own README](comfyllama/README.md) |

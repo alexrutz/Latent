@@ -17,6 +17,7 @@ import { useEffect, useState } from 'react';
  */
 export const TABLET_QUERY = '(min-width: 600px) and (min-height: 600px)';
 export const WIDE_QUERY = '(min-width: 900px) and (min-height: 600px)';
+export const DESK_QUERY = '(min-width: 1280px) and (min-height: 700px)';
 
 /**
  * Whether a media query matches, kept current.
@@ -50,4 +51,17 @@ export function useTablet(): boolean {
 /** Wide enough to put two panes side by side and have both of them work. */
 export function useWide(): boolean {
   return useMediaQuery(WIDE_QUERY);
+}
+
+/**
+ * A desk: room for the screen, and for something that is not the screen.
+ *
+ * The step tablet mode cannot take. A tablet's width buys a second pane *of the
+ * screen you are on* — the render beside the form, the pictures beside the
+ * conversation. This buys a column that belongs to no screen at all: what is
+ * running, what is queued, and what came out, in view while you are reading
+ * something else entirely. See `Dock`.
+ */
+export function useDesk(): boolean {
+  return useMediaQuery(DESK_QUERY);
 }
