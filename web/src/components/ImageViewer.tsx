@@ -21,6 +21,7 @@ import { imageUrl, thumbnailUrl, viewUrl } from '../api/client';
 import { reportPoster } from '../lib/poster';
 import { useBlur } from '../state/blur';
 import { useGridSettings } from '../state/grid';
+import { useDesk } from '../state/layout';
 import { CompareWipe } from './CompareWipe';
 import { cn } from './ui';
 
@@ -55,6 +56,15 @@ interface ImageViewerProps {
   speed?: number;
 }
 
+/**
+ * How wide the column beside the picture is, in CSS pixels.
+ *
+ * Written twice — here and as `w-[22rem]` on the element — because the
+ * stylesheet cannot hand a number to the arithmetic that decides how large a
+ * copy of the picture to ask for. They have to stay in step.
+ */
+const ASIDE_WIDTH = 352;
+
 const MAX_SCALE = 5;
 const DOUBLE_TAP_SCALE = 2.5;
 /** How long to wait for a second tap before treating one as a single tap. */
@@ -88,6 +98,8 @@ const DETAIL_SETTLE_MS = 220;
 function useViewSources(
   image: GenerationImage | undefined,
   transform: ViewTransform,
+  /** Width the stage does not have, because something is standing in it. */
+  inset = 0,
 ): {
   fitted: string | undefined;
   detail: string | null;
@@ -140,14 +152,14 @@ function useViewSources(
   const box = useMemo(
     () =>
       viewBox(
-        { width: window.innerWidth, height: window.innerHeight },
+        { width: Math.max(1, window.innerWidth - inset), height: window.innerHeight },
         window.devicePixelRatio,
         scale,
       ),
     // Re-measured per picture rather than per frame: a rotation closes and
     // reopens nothing, but it does change which picture is being looked at
     // rarely enough that the extra work is not worth a resize listener.
-    [image?.filename, image?.id, scale],
+    [image?.filename, image?.id, scale, inset],
   );
 
   /*
@@ -179,7 +191,7 @@ function useViewSources(
     const region = visibleRegion(
       rendered,
       {
-        width: window.innerWidth,
+        width: Math.max(1, window.innerWidth - inset),
         height: window.innerHeight,
       },
       transform,
@@ -190,7 +202,7 @@ function useViewSources(
       setDetail(viewUrl(image, box, regionFraction(region, rendered)));
     }, DETAIL_SETTLE_MS);
     return () => window.clearTimeout(timer);
-  }, [image, rendered, native, box, transform.scale, transform.offsetX, transform.offsetY]);
+  }, [image, rendered, native, box, inset, transform.scale, transform.offsetX, transform.offsetY]);
 
   return { fitted, detail, onFittedLoad, box, native };
 }
@@ -230,12 +242,24 @@ export function ImageViewer({
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
-  const { fitted, detail, onFittedLoad, box, native } = useViewSources(image, {
-    scale,
-    offsetX: offset.x,
-    offsetY: offset.y,
-  });
   const [grid] = useGridSettings();
+  const desk = useDesk();
+  /*
+   * Whether the footer stands beside the picture instead of under it.
+   *
+   * Only when there is one — the viewer is used without a footer in places
+   * where the actions do not apply, and a naked black column there would be a
+   * hole in the layout rather than a panel.
+   */
+  const aside = desk && Boolean(footer);
+  const { fitted, detail, onFittedLoad, box, native } = useViewSources(
+    image,
+    { scale, offsetX: offset.x, offsetY: offset.y },
+    // The stage is not the window once something is beside it, and a picture
+    // fetched to fill a width that a panel is covering is a fifth of a download
+    // spent on pixels nobody can see.
+    aside ? ASIDE_WIDTH : 0,
+  );
 
   /*
    * The picture this one was edited from, when the workflow said which that
@@ -554,17 +578,29 @@ export function ImageViewer({
       so the picture was shown in whatever was left — a letterboxed strip with
       black above and below it. The picture is the whole point of this screen,
       so it gets the whole screen, and the controls float on top of it.
+
+      At a desk that stops being true of one edge. Ten actions as a strip of
+      forty-pixel cells along the bottom of a sixteen-hundred-point window is a
+      phone's answer scaled up: the labels are unreadable, the row is marooned
+      in the middle of a black field, and everything worth knowing about the
+      picture is still behind a button marked Details. So the controls come off
+      the picture and stand beside it in a column that has room to name them —
+      and the picture keeps every pixel that is left, which is still far more
+      than it had.
     */
-    <div className="fixed inset-0 z-60 bg-black">
-      <div
-        className="absolute inset-0 touch-none overflow-hidden"
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-      >
-        {sounds ? (
-          /*
+    <div className="fixed inset-0 z-60 flex bg-black">
+      {/* The stage. `relative` because everything below is positioned against
+          it — which was the fixed root until there was something beside it. */}
+      <div className="relative min-w-0 flex-1">
+        <div
+          className="absolute inset-0 touch-none overflow-hidden"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+        >
+          {sounds ? (
+            /*
             A sound, with nothing to look at.
 
             No frame, no poster, no zoom: what a track has is a title, a length
@@ -574,31 +610,31 @@ export function ImageViewer({
             gestures still have work to do here, since a swipe is the next
             output and a tap closes the viewer.
           */
-          <div className="flex size-full items-center justify-center p-6">
-            <div
-              data-testid="viewer-audio"
-              className="w-full max-w-sm space-y-3 rounded-2xl border border-line bg-surface-2 p-4 text-center"
-              onPointerDown={(event) => event.stopPropagation()}
-              onPointerMove={(event) => event.stopPropagation()}
-              onPointerUp={(event) => event.stopPropagation()}
-            >
-              <p aria-hidden className="text-3xl">
-                ♪
-              </p>
-              <p className="text-sm break-words">{record.title}</p>
-              <audio
-                src={imageUrl(image)}
-                controls
-                preload="metadata"
-                // The length is the one fact about a track worth storing, and
-                // the browser is the only thing here that can read it.
-                onLoadedMetadata={(event) => capturePoster(event.currentTarget)}
-                className="w-full"
-              />
+            <div className="flex size-full items-center justify-center p-6">
+              <div
+                data-testid="viewer-audio"
+                className="w-full max-w-sm space-y-3 rounded-2xl border border-line bg-surface-2 p-4 text-center"
+                onPointerDown={(event) => event.stopPropagation()}
+                onPointerMove={(event) => event.stopPropagation()}
+                onPointerUp={(event) => event.stopPropagation()}
+              >
+                <p aria-hidden className="text-3xl">
+                  ♪
+                </p>
+                <p className="text-sm break-words">{record.title}</p>
+                <audio
+                  src={imageUrl(image)}
+                  controls
+                  preload="metadata"
+                  // The length is the one fact about a track worth storing, and
+                  // the browser is the only thing here that can read it.
+                  onLoadedMetadata={(event) => capturePoster(event.currentTarget)}
+                  className="w-full"
+                />
+              </div>
             </div>
-          </div>
-        ) : plays ? (
-          /*
+          ) : plays ? (
+            /*
             A clip gets the browser's own controls, and keeps its hands off the
             gestures.
 
@@ -614,53 +650,53 @@ export function ImageViewer({
             keeps a swipe moving to the next output and a tap closing the
             viewer.
           */
-          <div className="relative flex size-full items-center justify-center">
-            <video
-              ref={videoRef}
-              data-testid="viewer-video"
-              src={imageUrl(image)}
-              controls
-              loop
-              playsInline
-              preload="metadata"
-              poster={image.hasThumbnail ? thumbnailUrl(image) : undefined}
-              // The first decoded frame is the poster this video does not have
-              // yet — see `lib/poster`. `loadeddata` is the moment there is one.
-              onLoadedData={(event) => capturePoster(event.currentTarget)}
-              // How long it runs arrives first, and separately — see `lib/poster`.
-              onLoadedMetadata={(event) => capturePoster(event.currentTarget)}
-              onPlaying={(event) => capturePoster(event.currentTarget)}
-              onPointerDown={(event) => event.stopPropagation()}
-              onPointerMove={(event) => event.stopPropagation()}
-              onPointerUp={(event) => event.stopPropagation()}
-              className="max-h-full max-w-full"
+            <div className="relative flex size-full items-center justify-center">
+              <video
+                ref={videoRef}
+                data-testid="viewer-video"
+                src={imageUrl(image)}
+                controls
+                loop
+                playsInline
+                preload="metadata"
+                poster={image.hasThumbnail ? thumbnailUrl(image) : undefined}
+                // The first decoded frame is the poster this video does not have
+                // yet — see `lib/poster`. `loadeddata` is the moment there is one.
+                onLoadedData={(event) => capturePoster(event.currentTarget)}
+                // How long it runs arrives first, and separately — see `lib/poster`.
+                onLoadedMetadata={(event) => capturePoster(event.currentTarget)}
+                onPlaying={(event) => capturePoster(event.currentTarget)}
+                onPointerDown={(event) => event.stopPropagation()}
+                onPointerMove={(event) => event.stopPropagation()}
+                onPointerUp={(event) => event.stopPropagation()}
+                className="max-h-full max-w-full"
+              />
+            </div>
+          ) : (
+            <img
+              data-testid="viewer-image"
+              src={fitted}
+              alt={record.title}
+              draggable={false}
+              onLoad={(event) => {
+                onFittedLoad(event.currentTarget);
+                // An animated GIF is a video that a browser draws as a picture,
+                // and the still it needs is the frame already on screen.
+                if (mediaKindOf(image.filename) === 'video') {
+                  capturePoster(event.currentTarget);
+                }
+              }}
+              className={cn(
+                'size-full origin-center object-contain select-none',
+                !dragging && 'transition-transform duration-150',
+              )}
+              style={{
+                transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})`,
+              }}
             />
-          </div>
-        ) : (
-          <img
-            data-testid="viewer-image"
-            src={fitted}
-            alt={record.title}
-            draggable={false}
-            onLoad={(event) => {
-              onFittedLoad(event.currentTarget);
-              // An animated GIF is a video that a browser draws as a picture,
-              // and the still it needs is the frame already on screen.
-              if (mediaKindOf(image.filename) === 'video') {
-                capturePoster(event.currentTarget);
-              }
-            }}
-            className={cn(
-              'size-full origin-center object-contain select-none',
-              !dragging && 'transition-transform duration-150',
-            )}
-            style={{
-              transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})`,
-            }}
-          />
-        )}
+          )}
 
-        {/*
+          {/*
           The zoomed-in rectangle, rendered at the screen's own resolution and
           laid straight over the viewport.
 
@@ -669,17 +705,17 @@ export function ImageViewer({
           needs no transform of its own. Until it arrives the stretched copy
           underneath is what you see, which is blurry rather than blank.
         */}
-        {detail && !plays && !sounds && (
-          <img
-            data-testid="viewer-detail"
-            src={detail}
-            alt=""
-            draggable={false}
-            className="pointer-events-none absolute inset-0 size-full object-cover select-none"
-          />
-        )}
+          {detail && !plays && !sounds && (
+            <img
+              data-testid="viewer-detail"
+              src={detail}
+              alt=""
+              draggable={false}
+              className="pointer-events-none absolute inset-0 size-full object-cover select-none"
+            />
+          )}
 
-        {/*
+          {/*
           Before and after, in one frame.
 
           Over the detail layer as well as the base one, because the crop
@@ -688,37 +724,37 @@ export function ImageViewer({
           original. Only for stills: there is no before-and-after to drag
           through a clip, and the video element has already taken the gestures.
         */}
-        {comparing && (
-          <CompareWipe
-            origin={origin!}
-            src={originSrc!}
-            transform={{ scale, offsetX: offset.x, offsetY: offset.y }}
-            verticalEdge={grid.compareVerticalEdge}
-            horizontalEdge={grid.compareHorizontalEdge}
-            blend={blend}
-            controlsVisible={controlsVisible}
-            onMissing={() => setOriginMissing(true)}
-          />
-        )}
-      </div>
+          {comparing && (
+            <CompareWipe
+              origin={origin!}
+              src={originSrc!}
+              transform={{ scale, offsetX: offset.x, offsetY: offset.y }}
+              verticalEdge={grid.compareVerticalEdge}
+              horizontalEdge={grid.compareHorizontalEdge}
+              blend={blend}
+              controlsVisible={controlsVisible}
+              onMissing={() => setOriginMissing(true)}
+            />
+          )}
+        </div>
 
-      {/*
+        {/*
         `pointer-events-none` on the strip, `auto` on what is actually in it:
         the picture underneath still takes a tap to close, everywhere the close
         button is not.
       */}
-      {controlsVisible && (
-        <div className="safe-t pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center gap-1 bg-gradient-to-b from-black/60 to-transparent px-2 py-2">
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="pointer-events-auto grid size-11 shrink-0 place-items-center rounded-full text-2xl text-white/80 active:bg-white/10"
-          >
-            ✕
-          </button>
+        {controlsVisible && (
+          <div className="safe-t pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center gap-1 bg-gradient-to-b from-black/60 to-transparent px-2 py-2">
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="pointer-events-auto grid size-11 shrink-0 place-items-center rounded-full text-2xl text-white/80 active:bg-white/10"
+            >
+              ✕
+            </button>
 
-          {/*
+            {/*
             The fade, where the counter would be.
 
             The two compete for the same middle, and they are never both the
@@ -726,45 +762,45 @@ export function ImageViewer({
             it was made from, which of forty you are on is not the question. It
             comes back the moment the fade is not on offer.
           */}
-          {comparing ? (
-            <BlendSlider value={blend} onChange={setBlend} title={origin!.nodeTitle} />
-          ) : (
-            <span className="flex-1 text-center text-sm text-white/60 tabular-nums">
-              {entries.length > 1 ? `${index + 1} / ${entries.length}` : ''}
-            </span>
-          )}
-
-          <button
-            type="button"
-            onClick={() => setControlsVisible(false)}
-            aria-label="Hide the controls"
-            className="pointer-events-auto grid size-11 shrink-0 place-items-center rounded-full text-xl text-white/80 active:bg-white/10"
-          >
-            {/* An open frame: what is left when everything in front of the
-                picture has gone. */}
-            ⛶
-          </button>
-
-          <button
-            type="button"
-            onClick={toggleBlur}
-            aria-label="Blur every image"
-            aria-pressed={blurred}
-            className={cn(
-              'pointer-events-auto grid size-11 shrink-0 place-items-center rounded-full text-xl active:bg-white/10',
-              blurred ? 'text-accent' : 'text-white/80',
+            {comparing ? (
+              <BlendSlider value={blend} onChange={setBlend} title={origin!.nodeTitle} />
+            ) : (
+              <span className="flex-1 text-center text-sm text-white/60 tabular-nums">
+                {entries.length > 1 ? `${index + 1} / ${entries.length}` : ''}
+              </span>
             )}
-          >
-            {/* The same glyph the gallery's blur wears: a circle half filled in
+
+            <button
+              type="button"
+              onClick={() => setControlsVisible(false)}
+              aria-label="Hide the controls"
+              className="pointer-events-auto grid size-11 shrink-0 place-items-center rounded-full text-xl text-white/80 active:bg-white/10"
+            >
+              {/* An open frame: what is left when everything in front of the
+                picture has gone. */}
+              ⛶
+            </button>
+
+            <button
+              type="button"
+              onClick={toggleBlur}
+              aria-label="Blur every image"
+              aria-pressed={blurred}
+              className={cn(
+                'pointer-events-auto grid size-11 shrink-0 place-items-center rounded-full text-xl active:bg-white/10',
+                blurred ? 'text-accent' : 'text-white/80',
+              )}
+            >
+              {/* The same glyph the gallery's blur wears: a circle half filled in
                 reads as "obscured" at a glance, where a dotted one reads as a
                 speck of dust on the screen. */}
-            ◍
-          </button>
-        </div>
-      )}
+              ◍
+            </button>
+          </div>
+        )}
 
-      <div className={cn('absolute inset-x-0 bottom-0 z-10', !controlsVisible && 'hidden')}>
-        {/*
+        <div className={cn('absolute inset-x-0 bottom-0 z-10', !controlsVisible && 'hidden')}>
+          {/*
           Over the picture, not below it: this is a glance, and the footer is
           already carrying the actions. Hidden while zoomed, where it would just
           be in the way of what you are inspecting.
@@ -776,9 +812,9 @@ export function ImageViewer({
           text carries its own legibility instead, which costs nothing and
           covers nothing.
         */}
-        {overlay && scale === 1 && (
-          <div className="pointer-events-none overflow-hidden px-3 pt-6 pb-2 [text-shadow:0_1px_3px_rgb(0_0_0/0.9)]">
-            {/*
+          {overlay && scale === 1 && (
+            <div className="pointer-events-none overflow-hidden px-3 pt-6 pb-2 [text-shadow:0_1px_3px_rgb(0_0_0/0.9)]">
+              {/*
               Capped and scrollable rather than as tall as it likes. What a
               node prints can be a paragraph — a model's reasoning, an expanded
               wildcard — and at full height that paragraph covers the picture
@@ -786,13 +822,13 @@ export function ImageViewer({
               scrolled at all; `touch-pan-y` keeps that gesture from being read
               as a swipe to the next image.
             */}
-            <div className="pointer-events-auto max-h-[35svh] touch-pan-y overflow-x-hidden overflow-y-auto overscroll-contain">
-              {overlay}
+              <div className="pointer-events-auto max-h-[35svh] touch-pan-y overflow-x-hidden overflow-y-auto overscroll-contain">
+                {overlay}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/*
+          {/*
           No bar. Just the buttons, over the picture.
 
           This started as a translucent strip with a blur behind it, then a
@@ -801,7 +837,7 @@ export function ImageViewer({
           existed to make the buttons legible, when the buttons already carry
           their own backgrounds and do that themselves.
         */}
-        {/*
+          {/*
           Held to the middle on a big screen.
 
           The actions belong to the picture, and stretched across a tablet they
@@ -809,12 +845,32 @@ export function ImageViewer({
           furniture along the bottom of the window — with the rating at one far
           corner and Delete at the other.
         */}
-        {footer && (
-          <div className="safe-b px-3 pt-2 pb-2 tablet:mx-auto tablet:w-full tablet:max-w-3xl">
-            {footer}
-          </div>
-        )}
+          {footer && !aside && (
+            <div className="safe-b px-3 pt-2 pb-2 tablet:mx-auto tablet:w-full tablet:max-w-3xl">
+              {footer}
+            </div>
+          )}
+        </div>
       </div>
+
+      {/*
+        The same footer, stood up on its side.
+
+        Deliberately outside the stage rather than floating over it: the point
+        of a column here is that it takes nothing away from the picture, and a
+        panel laid over one corner of a render is exactly what you cannot see
+        past while judging it. It is also why this does not hide with the rest
+        of the controls — there is nothing to hide *from*, and a sidebar that
+        vanished would leave a black stripe where it was.
+      */}
+      {aside && (
+        <aside
+          data-testid="viewer-aside"
+          className="safe-t w-[22rem] shrink-0 overflow-x-hidden overflow-y-auto border-l border-white/10 bg-ink px-3 py-3"
+        >
+          {footer}
+        </aside>
+      )}
     </div>
   );
 }
@@ -915,6 +971,16 @@ export function Thumb({
       {...longPress}
       className={cn(
         'relative overflow-hidden rounded-xl bg-surface-2 active:opacity-80',
+        /*
+          A ring on hover, not a tint.
+
+          Everywhere else a pointer gets a lighter surface, and here that would
+          mean laying something over a photograph — in an app whose whole
+          premise is that you are judging what the photograph looks like. So
+          the picture is left exactly alone and the answer happens at its edge.
+          Inset, so nothing moves by two pixels as the pointer travels a grid.
+        */
+        'transition-shadow hover:ring-2 hover:ring-accent/70 hover:ring-inset',
         className,
       )}
     >

@@ -7597,4 +7597,123 @@ test.describe('at a desk', () => {
     await expect(map.getByText('g l')).toBeVisible();
     await page.screenshot({ path: 'test-results/104-desk-keys.png' });
   });
+
+  /**
+   * The viewer, which was the last thing in here still shaped like a phone.
+   *
+   * Ten forty-pixel cells in a strip along the bottom of a sixteen-hundred-point
+   * window, with everything worth knowing about the picture behind a button
+   * marked Details. The picture is still the point and still gets nearly all of
+   * the screen; what changes is that the controls stand beside it in a column
+   * wide enough to name them, and the settings that made it are simply there.
+   */
+  test('@desk opens a picture with its settings beside it, not behind a button', async ({
+    page,
+  }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a pier at dawn');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    const tile = page.locator('main img').first();
+    await expect(tile).toBeVisible({ timeout: 60_000 });
+    await tile.click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+
+    const aside = page.getByTestId('viewer-aside');
+    await expect(aside).toBeVisible();
+
+    /*
+     * No Details button, because there is nothing behind it: the prompt, the
+     * workflow, how long it took and every parameter are in the column.
+     */
+    await expect(page.getByRole('button', { name: 'Details', exact: true })).toHaveCount(0);
+    await expect(aside.getByText('All parameters')).toBeVisible();
+    await expect(aside.getByText('a pier at dawn').first()).toBeVisible();
+    await expect(aside.getByRole('button', { name: 'Favourite' })).toBeVisible();
+
+    // And the picture keeps the rest of the window rather than being letterboxed
+    // into what is left over — which is the trade the column has to earn.
+    const stage = (await page.getByTestId('viewer-image').boundingBox())!;
+    const panel = (await aside.boundingBox())!;
+    expect(stage.width).toBeGreaterThan(panel.width);
+    await page.screenshot({ path: 'test-results/105-desk-viewer.png' });
+
+    // Escape still closes it, and the arrows still walk the run.
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('viewer-image')).toHaveCount(0);
+  });
+
+  /**
+   * The pointer exists here, and until now nothing answered it.
+   *
+   * Every control said what a *press* looked like, because the app was written
+   * for a device with no pointer. A surface where nothing responds to the mouse
+   * reads as a picture of an interface rather than an interface.
+   */
+  /**
+   * The same component, on the two other screens that had a list and a sheet.
+   *
+   * `DetailPane` exists so that "what happens to a record on a big screen" is
+   * answered once. These prove it is actually answered once — that adopting it
+   * is a two-line change and the behaviour that comes with it is the same.
+   */
+  test('@desk edits a block beside the library rather than over it', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/prompt-blocks', {
+        data: { name: 'Golden hour', text: 'warm low sun, long shadows', category: 'Light' },
+      }),
+    );
+    await open(page, '/blocks');
+
+    // Nothing picked: the column says what it is for rather than being a hole.
+    await expect(page.getByText(/Pick a block to edit it/)).toBeVisible();
+
+    // Anchored: the drag handle beside it is a button named "Reorder Golden hour".
+    await page.getByRole('button', { name: /^Golden hour/ }).click();
+    const pane = page.getByTestId('detail-pane');
+    await expect(pane).toBeVisible();
+    await expect(pane.getByRole('textbox', { name: 'Block text' })).toHaveValue(
+      'warm low sun, long shadows',
+    );
+
+    // The library is still there beside it — which is the whole point, since
+    // wording a block means reading the ones you already have.
+    await expect(page.getByRole('button', { name: /^Golden hour/ })).toBeVisible();
+    await page.screenshot({ path: 'test-results/106-desk-blocks.png' });
+
+    // Escape puts it away, as it does for a sheet.
+    await page.keyboard.press('Escape');
+    await expect(pane).toHaveCount(0);
+  });
+
+  test('@desk lists the settings pages down the side', async ({ page }) => {
+    await open(page, '/settings');
+
+    /*
+     * A row of five short words above a column of settings is a navigation you
+     * keep re-reading to find out where you are. Down the side it says it once
+     * — which is the arrangement every settings window has had for decades.
+     */
+    const pages = page.getByRole('navigation', { name: 'Settings pages' });
+    await expect(pages).toBeVisible();
+    for (const label of ['Servers', 'Workflows', 'Chat', 'Pictures', 'System']) {
+      await expect(pages.getByRole('button', { name: label })).toBeVisible();
+    }
+
+    await pages.getByRole('button', { name: 'System' }).click();
+    await expect(page).toHaveURL(/in=system/);
+    await page.screenshot({ path: 'test-results/107-desk-settings.png' });
+  });
+
+  test('@desk answers the pointer before it is pressed', async ({ page }) => {
+    await open(page, '/gallery');
+
+    const link = page.getByTestId('side-rail').getByRole('link', { name: 'Models' });
+    const before = await link.evaluate((el) => getComputedStyle(el).backgroundColor);
+    await link.hover();
+    await expect
+      .poll(async () => link.evaluate((el) => getComputedStyle(el).backgroundColor))
+      .not.toBe(before);
+  });
 });

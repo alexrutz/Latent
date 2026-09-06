@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 
 import { DEFAULT_GRID_SETTINGS, type GridSettings, type TileSpan } from '@latent/shared';
 
-import { TABLET_QUERY } from './layout';
+import { DESK_QUERY, TABLET_QUERY } from './layout';
 
 const STORAGE_KEY = 'latent.grid';
 
@@ -34,10 +34,23 @@ export function maxColumns(): number {
  */
 export function useGridSettings(): [GridSettings, (patch: Partial<GridSettings>) => void] {
   const [settings, setSettings] = useState<GridSettings>(() => {
-    const initial =
-      typeof window !== 'undefined' && window.matchMedia(TABLET_QUERY).matches
-        ? { ...DEFAULT_GRID_SETTINGS, columns: 4 }
-        : DEFAULT_GRID_SETTINGS;
+    /*
+     * Three defaults, because the right answer is the screen's.
+     *
+     * Two columns is right for a phone and absurd on a tablet; four is right on
+     * a tablet and thin at a desk, where the grid has a sidebar and a panel
+     * beside it and *still* more width than a tablet has in total — four there
+     * is four postcards on a table with room for eight.
+     */
+    const columns =
+      typeof window === 'undefined'
+        ? null
+        : window.matchMedia(DESK_QUERY).matches
+          ? 6
+          : window.matchMedia(TABLET_QUERY).matches
+            ? 4
+            : null;
+    const initial = columns ? { ...DEFAULT_GRID_SETTINGS, columns } : DEFAULT_GRID_SETTINGS;
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       return stored ? { ...initial, ...JSON.parse(stored) } : initial;

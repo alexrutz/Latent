@@ -23,6 +23,7 @@ import { overlayValues, ParamOverlayLine, ParamOverlayPicker } from './ParamOver
 import { RatingStars } from './RatingStars';
 import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
 import { usePendingStore } from '../state/pending';
+import { useDesk } from '../state/layout';
 
 /* ------------------------------------------------------------------ */
 /* Viewer with the actions that make a result reusable                 */
@@ -73,6 +74,18 @@ export function ViewerWithActions({
    * viewer. Per viewer rather than per clip — see `PLAYBACK_SPEEDS`.
    */
   const [speed, setSpeed] = useState(1);
+  /*
+   * Whether the actions stand beside the picture rather than under it.
+   *
+   * Two things follow from it, and both are about a column having room a strip
+   * does not. The cells go into three columns instead of ten, so each one is
+   * wide enough for its label to be read rather than recognised. And the
+   * settings that made the picture are simply *there*, under the actions,
+   * instead of behind a button marked Details — which on a phone is the right
+   * trade and here is a click between you and the only thing on this screen
+   * you might want to copy.
+   */
+  const desk = useDesk();
 
   const rateImage = useRateImage();
   const keepImage = useKeepImage();
@@ -176,7 +189,9 @@ export function ViewerWithActions({
       const uploaded = await api.toInput(image);
       setPending({
         workflowId,
-        imageFilename: uploaded.subfolder ? `${uploaded.subfolder}/${uploaded.name}` : uploaded.name,
+        imageFilename: uploaded.subfolder
+          ? `${uploaded.subfolder}/${uploaded.name}`
+          : uploaded.name,
         freshSeed: true,
       });
       onClose();
@@ -248,7 +263,14 @@ export function ViewerWithActions({
             losing it when the instance is destroyed.
           */}
           {image && (
-            <div className="flex items-center justify-between gap-3">
+            <div
+              className={cn(
+                'flex items-center justify-between gap-3',
+                // A column has no room for a row that runs from one edge to the
+                // other; stacked, the hint sits under the stars it explains.
+                desk && 'flex-col items-start gap-1',
+              )}
+            >
               <RatingStars value={image.rating} onChange={rate} size="sm" />
               <span className="text-[11px] text-muted">
                 {image.archived
@@ -275,7 +297,7 @@ export function ViewerWithActions({
             pixels of picture given away for nothing, and ten cells across a
             capped footer are still comfortably wider than a thumb.
           */}
-          <div className="grid grid-cols-5 gap-1 tablet:grid-cols-10">
+          <div className="grid grid-cols-5 gap-1 tablet:grid-cols-10 desk:grid-cols-3">
             <ViewerAction
               glyph={existingFavorite ? '★' : '☆'}
               // The label carries the state as well as the colour: "on or off"
@@ -342,7 +364,9 @@ export function ViewerWithActions({
               label="Reseed"
               disabled={!workflowExists}
               onClick={() => rerun(true)}
-              title={workflowExists ? 'Run again with a new seed' : 'That workflow has been deleted'}
+              title={
+                workflowExists ? 'Run again with a new seed' : 'That workflow has been deleted'
+              }
             />
             <ViewerAction
               glyph="⇥"
@@ -367,7 +391,11 @@ export function ViewerWithActions({
               title={notAStill ? 'Upscaling takes a still picture' : undefined}
               onClick={() => void sendTo('upscale')}
             />
-            <ViewerAction glyph="≡" label="Details" onClick={() => setShowDetails(true)} />
+            {/* Behind a button only where it has to be. In the column beside
+                the picture it is simply below the actions — see `desk`. */}
+            {!desk && (
+              <ViewerAction glyph="≡" label="Details" onClick={() => setShowDetails(true)} />
+            )}
             {/* Which values are drawn over the picture. Its own choice, separate
                 from the grid's — there is room for more here. */}
             <ParamOverlayPicker
@@ -402,26 +430,45 @@ export function ViewerWithActions({
             />
           </div>
 
-          <Sheet open={showDetails} onClose={() => setShowDetails(false)} title="Settings used" full>
-            {/*
-              A favourite's own things, where the rest of this picture's things
-              already are.
+          {/*
+            A favourite's own things, where the rest of this picture's things
+            already are.
 
-              Favourites used to open a page of their own before the viewer:
-              tapping one gave a sheet with the note, the rating and a preview,
-              and the viewer was a tap further in. That page is gone — a
-              favourite opens the same viewer as everything else, and swipes
-              through the other favourites the way the gallery swipes through
-              the gallery. What was genuinely only on that page is here.
-            */}
-            {existingFavorite && (
-              <FavoriteNote
-                favorite={existingFavorite}
-                onShowInGallery={onShowInGallery ? () => onShowInGallery(entry) : undefined}
-              />
-            )}
-            <DetailsList record={record} />
-          </Sheet>
+            Favourites used to open a page of their own before the viewer:
+            tapping one gave a sheet with the note, the rating and a preview,
+            and the viewer was a tap further in. That page is gone — a
+            favourite opens the same viewer as everything else, and swipes
+            through the other favourites the way the gallery swipes through
+            the gallery. What was genuinely only on that page is here.
+
+            The same content, in a sheet or in the column, and written once.
+          */}
+          {desk ? (
+            <div className="mt-3 space-y-3 border-t border-white/10 pt-3">
+              {existingFavorite && (
+                <FavoriteNote
+                  favorite={existingFavorite}
+                  onShowInGallery={onShowInGallery ? () => onShowInGallery(entry) : undefined}
+                />
+              )}
+              <DetailsList record={record} />
+            </div>
+          ) : (
+            <Sheet
+              open={showDetails}
+              onClose={() => setShowDetails(false)}
+              title="Settings used"
+              full
+            >
+              {existingFavorite && (
+                <FavoriteNote
+                  favorite={existingFavorite}
+                  onShowInGallery={onShowInGallery ? () => onShowInGallery(entry) : undefined}
+                />
+              )}
+              <DetailsList record={record} />
+            </Sheet>
+          )}
         </div>
       }
     />
@@ -498,8 +545,8 @@ function FavoriteNote({
       {!favorite.archived && (
         <>
           <p className="text-xs text-warn">
-            This one is not stored on this device — it is still being read from ComfyUI, so it
-            goes when that instance does.
+            This one is not stored on this device — it is still being read from ComfyUI, so it goes
+            when that instance does.
           </p>
           <Button
             variant="secondary"
@@ -700,10 +747,10 @@ function ViewerAction({
         // children, not its grandchildren.
         'flex size-full flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1 shadow-md shadow-black/40 disabled:opacity-40',
         danger
-          ? 'bg-danger/20 text-danger'
+          ? 'bg-danger/20 text-danger hover:bg-danger/30'
           : active
-            ? 'bg-accent/20 text-accent'
-            : 'bg-surface text-body active:bg-surface-2',
+            ? 'bg-accent/20 text-accent hover:bg-accent/30'
+            : 'bg-surface text-body hover:bg-surface-2 active:bg-surface-2',
       )}
     >
       <span aria-hidden className="text-base leading-none">

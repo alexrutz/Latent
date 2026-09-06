@@ -69,6 +69,7 @@ import { ArrangementButton } from '../components/FieldArrangement';
 import { UpdateSection } from '../components/UpdateSoftware';
 import { WanderSetup } from '../components/WanderSetup';
 import { Button, Card, cn, ErrorNote, Row, Sheet, Spinner } from '../components/ui';
+import { useDesk } from '../state/layout';
 import { useBlur } from '../state/blur';
 import { ConnectionsScreen } from './ConnectionsScreen';
 import { TerminalScreen } from './TerminalScreen';
@@ -511,6 +512,7 @@ function KeepInViewLine({ value, onChange }: { value: number; onChange: (value: 
 
 export function SettingsScreen() {
   const [group, setGroup] = useSettingsGroup();
+  const desk = useDesk();
   const status = useStatus();
   const workflows = useWorkflows();
   const settings = useSettings();
@@ -565,20 +567,29 @@ export function SettingsScreen() {
   const workflowFolders = useMemo(() => groupWorkflows(workflows.data ?? []), [workflows.data]);
 
   return (
-    <div className="readable safe-t px-4 pt-3 pb-6">
-      {/*
-        The title and the five tabs stay put while the page under them scrolls,
-        so moving between them never involves scrolling back up first.
-      */}
-      <div className="sticky top-0 z-10 -mx-4 bg-ink/95 px-4 pb-2 backdrop-blur">
-        <h1 className="text-xl font-semibold">Settings</h1>
-        {/*
-          Wrapping, not scrolling sideways. Five of these very nearly fit a
-          phone's width and on the narrowest ones do not, and a tab that has to
-          be scrolled into view is a tab nobody knows is there — the whole point
-          of the row is that the five pages are visible at once.
-        */}
-        <div role="group" aria-label="Settings pages" className="mt-2 flex flex-wrap gap-1">
+    /*
+     * Five pages: a row of tabs on a phone, a column of them at a desk.
+     *
+     * The same five, in the shape the width asks for. Across the top they are
+     * the only thing a phone's width can do with a set of pages, and at a desk
+     * a horizontal row of five short words above a column of settings is a
+     * navigation you keep re-reading to find out where you are — where a list
+     * down the side says it once and stays said. It is also the arrangement
+     * every settings window on every desktop has had for thirty years, which is
+     * worth something on its own.
+     */
+    <div
+      className={cn(
+        'safe-t',
+        desk ? 'flex h-full min-h-0 items-start gap-6 px-6 pt-3 pb-6' : 'readable px-4 pt-3 pb-6',
+      )}
+    >
+      {desk ? (
+        <nav
+          aria-label="Settings pages"
+          className="sticky top-0 w-[11rem] shrink-0 space-y-0.5 pt-1"
+        >
+          <h1 className="mb-2 px-2 text-xl font-semibold">Settings</h1>
           {GROUPS.map((entry) => (
             <button
               key={entry.id}
@@ -586,17 +597,59 @@ export function SettingsScreen() {
               aria-pressed={group === entry.id}
               onClick={() => setGroup(entry.id)}
               className={cn(
-                'rounded-lg px-2.5 py-1.5 text-xs',
-                group === entry.id ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                'block w-full rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+                group === entry.id
+                  ? 'bg-accent/15 text-accent'
+                  : 'text-muted hover:bg-surface-2 hover:text-body',
               )}
             >
               {entry.label}
             </button>
           ))}
+        </nav>
+      ) : (
+        /*
+          The title and the five tabs stay put while the page under them
+          scrolls, so moving between them never involves scrolling back up
+          first.
+        */
+        <div className="sticky top-0 z-10 -mx-4 bg-ink/95 px-4 pb-2 backdrop-blur">
+          <h1 className="text-xl font-semibold">Settings</h1>
+          {/*
+            Wrapping, not scrolling sideways. Five of these very nearly fit a
+            phone's width and on the narrowest ones do not, and a tab that has
+            to be scrolled into view is a tab nobody knows is there — the whole
+            point of the row is that the five pages are visible at once.
+          */}
+          <div role="group" aria-label="Settings pages" className="mt-2 flex flex-wrap gap-1">
+            {GROUPS.map((entry) => (
+              <button
+                key={entry.id}
+                type="button"
+                aria-pressed={group === entry.id}
+                onClick={() => setGroup(entry.id)}
+                className={cn(
+                  'rounded-lg px-2.5 py-1.5 text-xs',
+                  group === entry.id ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                )}
+              >
+                {entry.label}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="space-y-6 pt-3">
+      {/* The page itself keeps the reading cap it has everywhere: a column of
+          settings rows is unreadable at a foot wide however much room there
+          is, and the width freed by moving the tabs out of the way belongs to
+          the panel on the right rather than to stretching these. */}
+      <div
+        className={cn(
+          'space-y-6 pt-3',
+          desk && 'h-full min-w-0 flex-1 overflow-y-auto pr-1 [max-width:46rem]',
+        )}
+      >
         {group === 'servers' && (
           <>
             {/* Connection ------------------------------------------------- */}

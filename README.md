@@ -750,7 +750,25 @@ Three things happen:
   a device that can only show one thing. At a desk the detail is a pane and the
   row it belongs to is ringed in the list. `DetailPane` is the one component
   that knows which of the two it should be, so the screens that adopt it cannot
-  drift apart.
+  drift apart — **Models** and **Blocks** do, and **Settings** puts its five
+  pages down the side instead of across the top, which is the arrangement every
+  settings window has had for thirty years.
+- **The viewer stands its controls beside the picture.** Ten forty-pixel cells
+  in a strip along the bottom of a 1600-point window is a phone's answer scaled
+  up: the labels are unreadable, the row is marooned in the middle of a black
+  field, and everything worth knowing is behind a button marked *Details*. In
+  the column there is room to name each action, and the prompt, the workflow,
+  how long it took and every parameter are simply *there*. The picture keeps
+  everything else — and is fetched at the size of the stage rather than the
+  window, so the panel costs no bandwidth.
+- **The pointer gets an answer.** Every control said what a press looked like,
+  because the app was written for a device with no pointer; a surface where
+  nothing responds to the mouse reads as a picture of an interface. Thumbnails
+  are the exception that proves the rule: they get a ring at the edge rather
+  than a tint, because tinting a photograph in an app built for judging
+  photographs is exactly the wrong answer.
+- **The gallery starts on six columns** rather than a tablet's four. It has a
+  sidebar and a panel beside it and still more width than a tablet has in total.
 
 **What does not change is the reading width.** A stack of settings rows is
 capped at 46rem however much monitor there is, because a row a foot wide is a

@@ -58,11 +58,26 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   fullWidth?: boolean;
 }
 
+/*
+ * `active:` is the press; `hover:` is the pointer.
+ *
+ * The app was written for a device that has no pointer, so every control said
+ * what a press looked like and nothing said what *this is a control* looks like
+ * before you commit to it. On a phone there is nothing to say it to. At a desk
+ * a surface where nothing answers the mouse reads as a picture of an interface
+ * rather than an interface, and the answer is not a bigger effect — it is the
+ * same one, arriving a step earlier.
+ *
+ * Tailwind's `hover:` is itself behind `@media (hover: hover)`, so none of this
+ * reaches a touch screen, where a hover left behind by a tap sticks to whatever
+ * you last pressed.
+ */
 const VARIANTS: Record<ButtonVariant, string> = {
-  primary: 'bg-accent text-white active:bg-accent-hi disabled:bg-surface-3 disabled:text-muted',
-  secondary: 'bg-surface-2 text-body active:bg-surface-3 disabled:text-muted',
-  ghost: 'bg-transparent text-muted active:bg-surface-2',
-  danger: 'bg-danger/15 text-danger active:bg-danger/25',
+  primary:
+    'bg-accent text-white hover:bg-accent-hi active:bg-accent-hi disabled:bg-surface-3 disabled:text-muted',
+  secondary: 'bg-surface-2 text-body hover:bg-surface-3 active:bg-surface-3 disabled:text-muted',
+  ghost: 'bg-transparent text-muted hover:bg-surface-2 hover:text-body active:bg-surface-2',
+  danger: 'bg-danger/15 text-danger hover:bg-danger/25 active:bg-danger/25',
 };
 
 /*

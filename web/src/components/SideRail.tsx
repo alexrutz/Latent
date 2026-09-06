@@ -152,8 +152,8 @@ function RailItem({
           active
             ? 'bg-accent/15 text-accent'
             : quiet
-              ? 'text-muted/70 active:bg-surface-2'
-              : 'text-muted active:bg-surface-2',
+              ? 'text-muted/70 hover:bg-surface-2 hover:text-muted active:bg-surface-2'
+              : 'text-muted hover:bg-surface-2 hover:text-body active:bg-surface-2',
         )}
       >
         {chat ? (
