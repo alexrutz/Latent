@@ -214,7 +214,20 @@ export function MonitorScreen() {
   const latest = samples[samples.length - 1];
 
   return (
-    <div className="readable safe-t px-4 pt-3 pb-6">
+    /*
+      The one screen that wants the width itself.
+
+      Everywhere else a wide column is a label at one end and its control at the
+      other, and the cap earns its keep. A chart is the opposite: its width *is*
+      how much time you can see at once, and the whole reason to look at one is
+      to find the moment something changed. Capped at the reading width a desk
+      shows the same ten minutes a phone does, with two feet of empty screen
+      beside it — so here, and only here, the cap comes off.
+
+      Not to the whole window: past about a hundred rems a line becomes a
+      horizon and the labels on it are further apart than they are informative.
+    */
+    <div className="safe-t px-4 pt-3 pb-6 tablet:mx-auto tablet:max-w-[46rem] desk:max-w-[76rem]">
       <div className="mb-1 flex items-center justify-between gap-2">
         <h1 className="text-xl font-semibold">Monitor</h1>
         <div className="flex gap-1 rounded-full bg-surface p-1">

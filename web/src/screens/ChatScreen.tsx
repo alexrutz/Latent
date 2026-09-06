@@ -23,6 +23,7 @@ import {
   Spinner,
 } from '../components/ui';
 import { useChatStore } from '../state/chat';
+import { pastedImages, useFileDrop } from '../state/dropFiles';
 import { useGridSettings } from '../state/grid';
 import { useWide } from '../state/layout';
 
@@ -275,7 +276,29 @@ export function ChatScreen() {
     setAtBottom(distance < 40);
   };
 
-  const attach = async (files: FileList) => {
+  /*
+    Dropped and pasted pictures take the same road as chosen ones.
+
+    Paste is bound to the window rather than to the composer, and stands down
+    inside a text box — pasting *text* while writing must stay text, and an
+    image on the clipboard while the caret is in the composer is still an image
+    somebody wants attached. `pastedImages` returns nothing for a text paste, so
+    the ordinary case never reaches this at all.
+  */
+  const drop = useFileDrop((files) => void attach(files));
+
+  useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      const images = pastedImages(event);
+      if (images.length === 0) return;
+      event.preventDefault();
+      void attach(images);
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  });
+
+  const attach = async (files: File[] | FileList) => {
     store().setError(null);
     for (const file of [...files].slice(0, 4)) {
       try {
@@ -339,7 +362,21 @@ export function ChatScreen() {
       composer. A chat is the one place where more text on screen is simply
       better, so nothing else competes for the height.
     */
-    <div className="flex h-full min-h-0">
+    /*
+      The whole conversation is one drop target, and one paste target.
+
+      Unambiguous here in a way it is not on a form: a chat has exactly one
+      place a picture can go, so "onto the app" and "onto the thing that wants
+      it" are the same gesture. Both routes go through `attach`, which is the
+      same function the ＋ button calls — the downscale before sending is not
+      optional and must not have two implementations.
+    */
+    <div {...drop.props} data-testid="chat-drop" className="relative flex h-full min-h-0">
+      {drop.over && (
+        <div className="pointer-events-none absolute inset-2 z-40 grid place-items-center rounded-2xl border-2 border-dashed border-accent bg-ink/70">
+          <p className="text-sm text-accent">Drop to attach</p>
+        </div>
+      )}
       {/*
         The conversation itself, in a column that stops widening once the lines
         are long enough to read.

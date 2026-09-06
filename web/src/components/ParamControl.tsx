@@ -10,6 +10,7 @@ import { InputImagePicker } from './InputImagePicker';
 import { NumericInput } from './NumericInput';
 import { FolderImagePicker } from './FolderImagePicker';
 import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
+import { useFileDrop } from '../state/dropFiles';
 
 /**
  * Which workflow the surrounding form belongs to.
@@ -201,6 +202,18 @@ export function ImageField({ field, value, onChange }: ControlProps) {
     }
   };
 
+  /*
+    Straight into the editor, like the file picker's own result. A dropped file
+    is not a different kind of picture from a chosen one, so it must not take a
+    different path — a second route to the same place is a second thing to keep
+    right, and the one that gets used less is the one that rots.
+  */
+  const drop = useFileDrop((files) => {
+    setError(null);
+    const [file] = files;
+    if (file) setPendingFile(file);
+  });
+
   const upload = async (file: File) => {
     setUploading(true);
     setError(null);
@@ -220,7 +233,24 @@ export function ImageField({ field, value, onChange }: ControlProps) {
   };
 
   return (
-    <div className="space-y-2">
+    /*
+      A drop target, on the field that wants the picture.
+
+      On the field rather than on the page, because a workflow can have two
+      image inputs and a page-level drop would have to guess which — dropping
+      on the thing is unambiguous and is the gesture anyway. What lands here
+      goes to the editor first, exactly as a file chosen from the picker does:
+      a dropped photograph is as likely to be the wrong way up or the wrong
+      shape as one browsed for, and fixing it before the upload saves both.
+    */
+    <div
+      {...drop.props}
+      data-testid="image-drop"
+      className={cn(
+        'space-y-2 rounded-xl transition-colors',
+        drop.over && 'outline-2 outline-offset-4 outline-dashed outline-accent',
+      )}
+    >
       {/*
         Foldable, and it remembers.
 

@@ -24,6 +24,7 @@ import { QueueScreen } from './screens/QueueScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { SetupScreen } from './screens/SetupScreen';
 import { VariationScreen } from './screens/VariationScreen';
+import { useRefuseStrayDrops } from './state/dropFiles';
 import { useHotkeys } from './state/hotkeys';
 import { useDesk, useTablet } from './state/layout';
 import { registerScrollContainer, useDocumentScrollAnchor } from './state/scroll';
@@ -57,6 +58,15 @@ export function App() {
    * gallery. What the width decides is layout, which is a different question.
    */
   const { map, closeMap } = useHotkeys(authenticated);
+
+  /*
+   * A file dropped anywhere but on a target is refused rather than opened.
+   *
+   * The browser's default is to navigate to it, so missing an image field by
+   * twenty pixels replaces the app with a PNG in a tab and takes the form you
+   * had set up with it. See `useRefuseStrayDrops`.
+   */
+  useRefuseStrayDrops();
 
   // Only hold a socket open once we're allowed to use the API.
   useLiveSocket(authenticated);

@@ -769,6 +769,40 @@ Three things happen:
   photographs is exactly the wrong answer.
 - **The gallery starts on six columns** rather than a tablet's four. It has a
   sidebar and a panel beside it and still more width than a tablet has in total.
+- **The monitor is the one screen that wants the width itself**, and the only
+  one where the reading cap comes off. A chart's width *is* how much time is on
+  screen at once, which is the opposite of a settings row. Not all the way — past
+  about a hundred rems the labels on the line are further apart than they are
+  informative.
+
+### Dragging a picture in
+
+The gesture a desktop has and a phone does not, and its absence is the kind of
+gap you find by *trying*: the reference is in a folder open beside the browser,
+you drag it across, and nothing happens.
+
+**Drop it on the field that wants it.** On the field rather than on the page,
+because a workflow can have two image inputs and a page-level drop would have to
+guess which one — and dropping on the thing is the gesture anyway. The field
+says it is a target before you let go, since a drag with no feedback is a drag
+people abort.
+
+**Or paste it into the chat**, which is where a picture most often arrives at a
+desk: you crop something, or a chat client hands you one, and the alternative is
+saving it to disk purely so a file picker has something to point at. The chat is
+also one whole drop target — it has exactly one place a picture can go, so
+"onto the app" and "onto the thing that wants it" are the same gesture there.
+Pasting *text* while writing stays text; only an image on the clipboard is
+intercepted.
+
+Everything dropped or pasted goes through the same road a file chosen from the
+picker takes — into the editor first, then the upload. A dropped photograph is
+as likely to be the wrong way up as a browsed one, and a second route to the
+same place is a second thing to keep right.
+
+**A file dropped anywhere else is refused.** A browser's default for that is to
+*navigate to it*, so missing an image field by twenty pixels would replace the
+app with a PNG in a tab and take the form you had set up with it.
 
 **What does not change is the reading width.** A stack of settings rows is
 capped at 46rem however much monitor there is, because a row a foot wide is a
@@ -2879,6 +2913,7 @@ Use `--project=iPad` to run just those.
 | `web/src/components/GenerateWorkbench.tsx` | The render, beside the form that made it |
 | `web/src/components/Dock.tsx` | The bench: what is running, what is queued and what came out, in view on every screen at a desk |
 | `web/src/state/hotkeys.ts` | The keyboard bindings, and the rule that keeps them out of the way while you type |
+| `web/src/state/dropFiles.ts` | Dropping and pasting a picture in, and the refusal that stops a stray drop replacing the app |
 | `web/src/components/ui.tsx` | `DetailPane` — one record, as a sheet where there is no room and a pane where there is |
 | `web/` | React + Vite PWA |
 | `e2e/` | Playwright tests |

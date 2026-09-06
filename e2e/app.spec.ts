@@ -332,6 +332,29 @@ async function importViaUi(page: Page, name: string, graph: unknown) {
   });
 }
 
+/**
+ * A `DataTransfer` carrying one small PNG, built inside the page.
+ *
+ * Playwright cannot start a drag from the operating system, so a drop is driven
+ * by dispatching the events with a transfer the page made for itself. The file
+ * is real bytes — the handler filters on `type`, and a stub with the wrong
+ * shape would pass a test the browser would not.
+ */
+async function fileTransfer(page: Page) {
+  return page.evaluateHandle(() => {
+    const transfer = new DataTransfer();
+    // A 1×1 PNG, which is all the drop path needs to see.
+    const bytes = Uint8Array.from(
+      atob(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      ),
+      (character) => character.charCodeAt(0),
+    );
+    transfer.items.add(new File([bytes], 'dropped.png', { type: 'image/png' }));
+    return transfer;
+  });
+}
+
 test.describe('Latent on a phone', () => {
   test('tells a new user what to do before anything is imported', async ({ page }) => {
     await resetState();
@@ -7704,6 +7727,66 @@ test.describe('at a desk', () => {
     await pages.getByRole('button', { name: 'System' }).click();
     await expect(page).toHaveURL(/in=system/);
     await page.screenshot({ path: 'test-results/107-desk-settings.png' });
+  });
+
+  /**
+   * Getting a picture in, the way a desk gets one in.
+   *
+   * The gesture a desktop has and a phone does not, and its absence is the kind
+   * of gap you find by trying: the reference is in a folder open beside the
+   * browser, you drag it across, and nothing happens. Driven through the DOM
+   * rather than the OS — Playwright cannot start a real drag from the desktop —
+   * so what this proves is the app's half: that the target says it is one, that
+   * a dropped file reaches the editor, and that a stray drop is refused rather
+   * than replacing the app with a PNG in a tab.
+   */
+  test('@desk takes a picture dropped onto the field that wants one', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } }),
+    );
+    await open(page, '/');
+
+    const picker = page.getByRole('button', { name: /img2img/ });
+    if (await picker.isVisible().catch(() => false)) await picker.click();
+
+    const field = page.getByTestId('image-drop').first();
+    await expect(field).toBeVisible();
+
+    /*
+     * A drag carrying a file says so before it lands. Without that there is
+     * nothing to tell you the drop will be caught, and a drag with no feedback
+     * is a drag people abort.
+     */
+    await field.dispatchEvent('dragenter', { dataTransfer: await fileTransfer(page) });
+    await expect(field).toHaveClass(/outline-dashed/);
+
+    await field.dispatchEvent('drop', { dataTransfer: await fileTransfer(page) });
+
+    /*
+     * And it lands in the editor rather than being uploaded on the spot — the
+     * same road a file chosen from the picker takes, because a dropped
+     * photograph is as likely to be the wrong shape as a browsed one.
+     */
+    await expect(page.getByRole('dialog', { name: /Adjust|Edit/ })).toBeVisible();
+    await page.screenshot({ path: 'test-results/108-desk-drop.png' });
+  });
+
+  /**
+   * The monitor is the one screen that wants the width itself.
+   *
+   * A chart's width *is* how much time is on screen at once, which is the
+   * opposite of a settings row — so this is the one place the reading cap comes
+   * off. Not all the way: past about a hundred rems the labels on the line are
+   * further apart than they are informative.
+   */
+  test('@desk gives the charts more than the reading width', async ({ page }) => {
+    await open(page, '/monitor');
+    await expect(page.getByRole('heading', { name: 'Monitor' })).toBeVisible();
+
+    const column = page.getByTestId('monitor-picker');
+    const width = (await column.boundingBox())!.width;
+    // 46rem is the cap every other screen keeps; this one is past it.
+    expect(width).toBeGreaterThan(46 * 16);
   });
 
   test('@desk answers the pointer before it is pressed', async ({ page }) => {
