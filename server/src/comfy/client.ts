@@ -33,15 +33,25 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 
 /** A TLS error, as opposed to the server simply not being there. */
 export function isSelfSignedError(error: unknown): boolean {
-  const codes = ['DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'ERR_TLS_CERT_ALTNAME_INVALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'];
+  const codes = [
+    'DEPTH_ZERO_SELF_SIGNED_CERT',
+    'SELF_SIGNED_CERT_IN_CHAIN',
+    'ERR_TLS_CERT_ALTNAME_INVALID',
+    'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  ];
   const seen = new Set<unknown>();
 
-  for (let current: unknown = error; current && !seen.has(current); current = (current as { cause?: unknown }).cause) {
+  for (
+    let current: unknown = error;
+    current && !seen.has(current);
+    current = (current as { cause?: unknown }).cause
+  ) {
     seen.add(current);
     const code = (current as { code?: string }).code;
     if (code && codes.includes(code)) return true;
     const message = (current as { message?: string }).message ?? '';
-    if (/self.signed certificate|unable to verify the first certificate/i.test(message)) return true;
+    if (/self.signed certificate|unable to verify the first certificate/i.test(message))
+      return true;
   }
   return false;
 }
@@ -243,7 +253,11 @@ export class ComfyClient {
     return this.json<HistoryResponse>(`/history/${encodeURIComponent(promptId)}`);
   }
 
-  submit(workflow: ApiWorkflow, clientId: string, extra?: Record<string, unknown>): Promise<PromptResponse> {
+  submit(
+    workflow: ApiWorkflow,
+    clientId: string,
+    extra?: Record<string, unknown>,
+  ): Promise<PromptResponse> {
     return this.json<PromptResponse>('/prompt', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -271,8 +285,15 @@ export class ComfyClient {
     });
   }
 
-  /** Returns the raw response so the caller can stream image bytes straight through. */
-  view(params: ViewParams): Promise<Response> {
+  /**
+   * Returns the raw response so the caller can stream image bytes straight through.
+   *
+   * `headers` is how a byte range gets through to ComfyUI: a browser playing a
+   * video asks for one part of the file at a time, and forwarding that is the
+   * difference between a clip that starts immediately and one that has to be
+   * downloaded whole before the first frame.
+   */
+  view(params: ViewParams, headers?: Record<string, string>): Promise<Response> {
     return this.request('/view', {
       query: {
         filename: params.filename,
@@ -280,6 +301,7 @@ export class ComfyClient {
         type: params.type ?? 'output',
         preview: params.preview,
       },
+      ...(headers ? { headers } : {}),
       signal: AbortSignal.timeout(60_000),
     });
   }
@@ -301,6 +323,62 @@ export class ComfyClient {
       body: form,
       signal: AbortSignal.timeout(120_000),
     });
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* comfyllama's folder browser                                       */
+  /* ---------------------------------------------------------------- */
+
+  /*
+   * Proxied rather than reimplemented.
+   *
+   * Latent could scan the output folder itself — it already reads the input
+   * folder off disk for the picture picker. But which folders may be browsed is
+   * decided on the ComfyUI machine, by the environment it was started with, and
+   * the node refuses anything outside them. A second implementation here would
+   * be a second answer to that question, and the way it would fail is by
+   * offering a picture the node then declines to load.
+   */
+
+  browseRoots(): Promise<{ roots: { key: string; path: string }[] }> {
+    return this.json('/comfyllama/browse/roots');
+  }
+
+  /**
+   * What the GPU is drawing, from the machine that has it.
+   *
+   * Read over there rather than here: Latent is routinely on a different box
+   * from ComfyUI, and `nvidia-smi` run locally would report the wrong card or
+   * none. Needs comfyllama installed; the caller treats a failure as "no
+   * reading", which is also the honest answer on a machine with no NVIDIA GPU.
+   */
+  gpuPower(): Promise<{ gpus: { watts: number; limit: number | null }[]; source: string | null }> {
+    return this.json('/comfyllama/power');
+  }
+
+  /**
+   * The model files in one of ComfyUI's folders, with what their headers say.
+   *
+   * Needs comfyllama: core ComfyUI serves the *names* in a folder and nothing
+   * about the files behind them, and the trigger words a LoRA was trained on
+   * are in the safetensors header, which only something on that disk can read.
+   */
+  listModelFiles(folder: string): Promise<{ folder: string; models: unknown[]; error?: string }> {
+    return this.json('/comfyllama/models', { query: { folder } });
+  }
+
+  /** The SHA256 of one model file. Slow for a checkpoint — only when asked. */
+  modelHash(folder: string, name: string): Promise<{ sha256: string }> {
+    return this.json('/comfyllama/models/hash', { query: { folder, name } });
+  }
+
+  browseList(query: Record<string, string | number | undefined>): Promise<unknown> {
+    return this.json('/comfyllama/browse/list', { query });
+  }
+
+  /** The raw thumbnail response, to be piped through without re-encoding. */
+  browseThumbnail(root: string, path: string): Promise<Response> {
+    return this.request('/comfyllama/browse/thumb', { query: { root, path } });
   }
 
   /** True when the server answered a cheap request. Used for the status pill. */

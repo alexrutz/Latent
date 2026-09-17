@@ -39,7 +39,7 @@ export function QueueScreen() {
   const anyParams = [...queue.running, ...queue.pending].some((entry) => entry.params.length > 0);
 
   return (
-    <div className="safe-t space-y-3 px-4 pt-3 pb-6">
+    <div className="readable safe-t space-y-3 px-4 pt-3 pb-6">
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-xl font-semibold">Queue</h1>
         {queue.pending.length > 0 && (

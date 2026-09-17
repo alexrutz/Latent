@@ -20,6 +20,8 @@ import type {
   ImportRequest,
   ImportResult,
   ImportScanResult,
+  BrowseListing,
+  BrowseRoot,
   InputScanResult,
   MonitorSnapshot,
   PromptBlock,
@@ -28,13 +30,18 @@ import type {
   RandomPromptRoll,
   SystemPrompt,
   SystemPromptInput,
+  TasteCategory,
+  TasteEntry,
+  TasteProfile,
   TileSpan,
   VariationPreset,
   ConnectionInput,
   ConnectionSummary,
   ConnectionTestResult,
   ChatConversation,
+  ChatAttachment,
   ChatConversationDetail,
+  ChatRun,
   EndlessState,
   ProposedBlock,
   GalleryPage,
@@ -46,11 +53,17 @@ import type {
   QueueState,
   RegionFraction,
   StatusResponse,
+  UpdateRun,
+  UpdateStatus,
   UploadImageResponse,
   WorkflowDetail,
   WorkflowPreset,
   WorkflowScanResult,
   WorkflowSummary,
+  PoolField,
+  ModelFolder,
+  ModelNote,
+  ModelSummary,
 } from '@latent/shared';
 import { regionKey } from '@latent/shared';
 
@@ -78,6 +91,45 @@ export function setArchiveLockedHandler(handler: (() => void) | null): void {
   onArchiveLocked = handler;
 }
 
+/**
+ * The passes for the screens that ask for the password a second time.
+ *
+ * In memory and nowhere else: not `localStorage`, not a cookie. The whole point
+ * of asking again at those screens is that a reload, a new tab or a phone
+ * picked up tomorrow has to ask again, and anything that survives those would
+ * be the lock quietly unlocking itself.
+ *
+ * A table rather than a variable each, so that a pass can only ever be sent on
+ * the paths it was bought for — a pass for one screen is not a credential to
+ * spray across every request the app makes — and so adding a third gate is a
+ * row rather than another branch inside the header spread.
+ */
+const GATES = {
+  taste: { prefix: '/api/taste', header: 'x-latent-taste' },
+  update: { prefix: '/api/update', header: 'x-latent-update' },
+} as const;
+
+type GateName = keyof typeof GATES;
+
+const tickets: Record<GateName, string | null> = { taste: null, update: null };
+
+export function setTasteTicket(ticket: string | null): void {
+  tickets.taste = ticket;
+}
+
+export function setUpdateTicket(ticket: string | null): void {
+  tickets.update = ticket;
+}
+
+function gateHeaders(path: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const [name, gate] of Object.entries(GATES) as [GateName, (typeof GATES)[GateName]][]) {
+    const ticket = tickets[name];
+    if (ticket && path.startsWith(gate.prefix)) headers[gate.header] = ticket;
+  }
+  return headers;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     credentials: 'same-origin',
@@ -86,6 +138,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(init.body && !(init.body instanceof FormData)
         ? { 'content-type': 'application/json' }
         : {}),
+      ...gateHeaders(path),
       ...(init.headers ?? {}),
     },
   });
@@ -176,6 +229,17 @@ export function inputImageUrl(path: string, preview = false): string {
   return `/api/input-images/file?${params.toString()}`;
 }
 
+/** A thumbnail of a picture sitting in a browsable folder on the ComfyUI machine. */
+export function browseThumbUrl(reference: string): string {
+  const cut = reference.indexOf('/');
+  if (cut < 0) return '';
+  const params = new URLSearchParams({
+    root: reference.slice(0, cut),
+    path: reference.slice(cut + 1),
+  });
+  return `/api/browse/thumb?${params.toString()}`;
+}
+
 export const api = {
   status: () => request<StatusResponse>('/api/status'),
 
@@ -225,8 +289,7 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
-  deleteConnection: (id: string) =>
-    request<void>(`/api/connections/${id}`, { method: 'DELETE' }),
+  deleteConnection: (id: string) => request<void>(`/api/connections/${id}`, { method: 'DELETE' }),
 
   activateConnection: (id: string) =>
     request<ConnectionSummary[]>(`/api/connections/${id}/activate`, { method: 'POST' }),
@@ -320,12 +383,27 @@ export const api = {
       body: JSON.stringify({ image, width, height }),
     }),
 
+  /**
+   * Hand back a frame of a video, and how long it runs.
+   *
+   * The server cannot decode an mp4 — see `lib/poster` — so the browser that is
+   * playing it supplies the still every grid tile and every picker needs.
+   */
+  reportPoster: (image: ComfyImageRef, poster: string | null, durationMs?: number) =>
+    request<void>('/api/images/poster', {
+      method: 'PUT',
+      body: JSON.stringify({
+        image,
+        ...(poster ? { poster } : {}),
+        ...(durationMs ? { durationMs } : {}),
+      }),
+    }),
+
   /* ---------------------------------------------------------------- */
   /* Favourites                                                        */
   /* ---------------------------------------------------------------- */
 
-  favorites: (sort: FavoriteSort = 'rating') =>
-    request<Favorite[]>(`/api/favorites?sort=${sort}`),
+  favorites: (sort: FavoriteSort = 'rating') => request<Favorite[]>(`/api/favorites?sort=${sort}`),
 
   addFavorite: (generationId: string, image: ComfyImageRef, note?: string) =>
     request<Favorite>('/api/favorites', {
@@ -355,6 +433,92 @@ export const api = {
 
   deletePromptBlock: (id: string) =>
     request<void>(`/api/prompt-blocks/${id}`, { method: 'DELETE' }),
+
+  /* ---------------------------------------------------------------- */
+  /* What you like                                                     */
+  /* ---------------------------------------------------------------- */
+
+  taste: () => request<TasteProfile>('/api/taste'),
+
+  /** Buy a pass with the app password, and get the notes with it. */
+  unlockTaste: (password: string) =>
+    request<{ ticket: string; profile: TasteProfile }>('/api/taste/unlock', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+
+  /** Hand the pass back, which is what closing the screen does. */
+  lockTaste: () => request<void>('/api/taste/lock', { method: 'POST' }),
+
+  createTasteCategory: (name: string) =>
+    request<TasteCategory>('/api/taste/categories', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
+  updateTasteCategory: (id: string, patch: { name?: string; active?: boolean }) =>
+    request<TasteCategory>(`/api/taste/categories/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+
+  deleteTasteCategory: (id: string) =>
+    request<void>(`/api/taste/categories/${id}`, { method: 'DELETE' }),
+
+  reorderTasteCategories: (ids: string[]) =>
+    request<TasteProfile>('/api/taste/categories/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
+
+  createTasteEntry: (input: { text: string; categoryId: string | null; always?: boolean }) =>
+    request<TasteEntry>('/api/taste/entries', { method: 'POST', body: JSON.stringify(input) }),
+
+  updateTasteEntry: (
+    id: string,
+    patch: { text?: string; active?: boolean; always?: boolean; categoryId?: string | null },
+  ) =>
+    request<TasteEntry>(`/api/taste/entries/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+
+  deleteTasteEntry: (id: string) => request<void>(`/api/taste/entries/${id}`, { method: 'DELETE' }),
+
+  /* ---------------------------------------------------------------- */
+  /* Updating Latent itself                                            */
+  /* ---------------------------------------------------------------- */
+
+  /** State plus whatever log lines happened after `since`. */
+  updateStatus: (since = 0) => request<UpdateStatus>(`/api/update?since=${since}`),
+
+  /** Ask the remote what it has. The only part that touches the network. */
+  checkForUpdate: () => request<UpdateStatus>('/api/update/check', { method: 'POST' }),
+
+  unlockUpdate: (password: string) =>
+    request<{ ticket: string; status: UpdateStatus }>('/api/update/unlock', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+
+  lockUpdate: () => request<void>('/api/update/lock', { method: 'POST' }),
+
+  /** Returns as soon as it has started; watch `updateStatus` for the rest. */
+  runUpdate: () =>
+    request<{ run: UpdateRun; status: UpdateStatus }>('/api/update/run', { method: 'POST' }),
+
+  /**
+   * Replace the running process.
+   *
+   * `force` overrules the guess about whether anything would start Latent
+   * again — the detection is a guess, and not being able to overrule it would
+   * be the more annoying of the two failures.
+   */
+  restartForUpdate: (force = false) =>
+    request<{ ok: true }>('/api/update/restart', {
+      method: 'POST',
+      body: JSON.stringify({ force }),
+    }),
 
   /* ---------------------------------------------------------------- */
   /* System prompts                                                    */
@@ -422,6 +586,34 @@ export const api = {
 
   inputImages: () => request<InputScanResult>('/api/input-images'),
 
+  /* ---------------------------------------------------------------- */
+  /* Browsing folders on the ComfyUI machine                           */
+  /* ---------------------------------------------------------------- */
+
+  browseRoots: () => request<{ roots: BrowseRoot[] }>('/api/browse/roots'),
+
+  browseFolder: (params: {
+    root: string;
+    path?: string;
+    q?: string;
+    sort?: string;
+    order?: string;
+    recursive?: boolean;
+    /** Pictures, clips or sound: a slot only ever shows what it can use. */
+    kind?: string;
+  }) => {
+    const query = new URLSearchParams({
+      root: params.root,
+      path: params.path ?? '',
+      q: params.q ?? '',
+      sort: params.sort ?? 'date',
+      order: params.order ?? 'desc',
+      recursive: params.recursive ? 'true' : '',
+      kind: params.kind ?? 'image',
+    });
+    return request<BrowseListing>(`/api/browse/list?${query.toString()}`);
+  },
+
   /**
    * Copy a folder image into ComfyUI's input directory.
    *
@@ -444,6 +636,38 @@ export const api = {
     request<ImportResult>('/api/import', { method: 'POST', body: JSON.stringify(body) }),
 
   listWorkflows: () => request<WorkflowSummary[]>('/api/workflows'),
+
+  /** Every distinct field across the workflows in use, for the arrangement. */
+  poolFields: () => request<PoolField[]>('/api/workflows/fields'),
+
+  /* ---------------------------------------------------------------- */
+  /* The model library                                                 */
+  /* ---------------------------------------------------------------- */
+
+  listModels: (folder: ModelFolder) =>
+    request<{ folder: ModelFolder; models: ModelSummary[]; warning: string | null }>(
+      `/api/models?folder=${folder}`,
+    ),
+
+  saveModelNote: (
+    folder: ModelFolder,
+    name: string,
+    patch: Partial<Pick<ModelNote, 'triggerWords' | 'notes' | 'strength'>>,
+  ) =>
+    request<ModelNote>(`/api/models/${folder}/${encodeURIComponent(name)}/note`, {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+
+  /** Forget everything about a model: your words and what was gathered. */
+  forgetModelNote: (folder: ModelFolder, name: string) =>
+    request<void>(`/api/models/${folder}/${encodeURIComponent(name)}/note`, { method: 'DELETE' }),
+
+  /** Hash the file and ask Civitai what it is. Slow, so it is a button. */
+  lookupModel: (folder: ModelFolder, name: string) =>
+    request<ModelNote>(`/api/models/${folder}/${encodeURIComponent(name)}/lookup`, {
+      method: 'POST',
+    }),
 
   getWorkflow: (id: string) => request<WorkflowDetail>(`/api/workflows/${id}`),
 
@@ -492,39 +716,92 @@ export const api = {
 
   chats: () => request<ChatConversation[]>('/api/chat/conversations'),
 
-  createChat: () =>
-    request<ChatConversation>('/api/chat/conversations', { method: 'POST' }),
+  createChat: () => request<ChatConversation>('/api/chat/conversations', { method: 'POST' }),
 
-  chat: (id: string) => request<ChatConversationDetail>(`/api/chat/conversations/${id}`),
+  /** The transcript, and what the conversation is currently doing. */
+  chat: (id: string) =>
+    request<ChatConversationDetail & { run: ChatRun }>(`/api/chat/conversations/${id}`),
 
-  deleteChat: (id: string) =>
-    request<void>(`/api/chat/conversations/${id}`, { method: 'DELETE' }),
+  deleteChat: (id: string) => request<void>(`/api/chat/conversations/${id}`, { method: 'DELETE' }),
 
-  resolveTool: (
+  /*
+   * The intents.
+   *
+   * Each one says what somebody wants; none of them says how. What follows —
+   * the reply, accepting a proposal, queueing the render, the turn that judges
+   * it, the next wandering round — is the server's, and happens whether or not
+   * this page is still open. See `server/src/chat/engine.ts`.
+   */
+
+  say: (id: string, body: { content: string; attachments?: ChatAttachment[] }) =>
+    request<{ ok: true }>(`/api/chat/conversations/${id}/say`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  askForPrompt: (id: string, body: { fresh?: boolean; instant?: boolean } = {}) =>
+    request<{ ok: true }>(`/api/chat/conversations/${id}/prompt`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  setWandering: (id: string, on: boolean) =>
+    request<{ ok: true }>(`/api/chat/conversations/${id}/wander`, {
+      method: 'POST',
+      body: JSON.stringify({ on }),
+    }),
+
+  /**
+   * Carry on by itself, and take up whatever is waiting.
+   *
+   * Writes the setting server-side rather than being paired with a settings
+   * patch here: two writes for one switch is how the strip and the loop came to
+   * disagree about whether a run was autonomous.
+   */
+  setAutonomous: (id: string, on: boolean) =>
+    request<{ ok: true }>(`/api/chat/conversations/${id}/autonomous`, {
+      method: 'POST',
+      body: JSON.stringify({ on }),
+    }),
+
+  decideTool: (
     id: string,
     body: {
       messageId: string;
       decision: 'accepted' | 'rejected';
       blocks?: ProposedBlock[];
       note?: string;
-      generationId?: string;
       prompt?: string;
+      workflowId?: string;
     },
   ) =>
-    request<{ ok: true; summary: string }>(`/api/chat/conversations/${id}/tool`, {
+    request<{ ok: true }>(`/api/chat/conversations/${id}/decide`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),
 
-  /** Note that a prompt from further up the conversation was generated again. */
-  rerunPrompt: (
-    id: string,
-    body: { messageId: string; generationId?: string; prompt?: string },
-  ) =>
-    request<{ ok: true; messageId: string }>(`/api/chat/conversations/${id}/rerun`, {
+  stopChat: (id: string) =>
+    request<{ ok: true }>(`/api/chat/conversations/${id}/stop`, { method: 'POST' }),
+
+  /**
+   * A render is on screen.
+   *
+   * The one thing the server still waits for a browser to say. The point of the
+   * sequence is that you see a picture before the model is told anything about
+   * it, and only this side knows when that happened.
+   */
+  notePictureShown: (id: string, generationId: string) =>
+    request<void>(`/api/chat/conversations/${id}/shown`, {
       method: 'POST',
-      body: JSON.stringify(body),
+      body: JSON.stringify({ generationId }),
     }),
+
+  /** Run a prompt from further up the conversation again. */
+  rerunPrompt: (id: string, body: { messageId: string; prompt?: string; workflowId?: string }) =>
+    request<{ ok: true; messageId: string; generationId: string | null }>(
+      `/api/chat/conversations/${id}/rerun`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
 
   /** Drop everything after a message, keeping the message itself. */
   rewindChat: (id: string, messageId: string) =>
@@ -602,7 +879,6 @@ export const api = {
       body: JSON.stringify(image),
     }),
 
-
   /* ---------------------------------------------------------------- */
   /* Parameter studies                                                 */
   /* ---------------------------------------------------------------- */
@@ -624,11 +900,9 @@ export const api = {
 
   studyPreview: (id: string) => request<StudyPreview>(`/api/studies/${id}/preview`),
 
-  startStudy: (id: string) =>
-    request<StudyDetail>(`/api/studies/${id}/start`, { method: 'POST' }),
+  startStudy: (id: string) => request<StudyDetail>(`/api/studies/${id}/start`, { method: 'POST' }),
 
-  pauseStudy: (id: string) =>
-    request<StudyDetail>(`/api/studies/${id}/pause`, { method: 'POST' }),
+  pauseStudy: (id: string) => request<StudyDetail>(`/api/studies/${id}/pause`, { method: 'POST' }),
 
   finishStudy: (id: string) =>
     request<StudyDetail>(`/api/studies/${id}/finish`, { method: 'POST' }),
@@ -658,7 +932,17 @@ export const api = {
 
   settings: () => request<AppSettings>('/api/settings'),
 
-
   updateSettings: (patch: Partial<AppSettings>) =>
     request<AppSettings>('/api/settings', { method: 'PATCH', body: JSON.stringify(patch) }),
 };
+
+/**
+ * One of a model's example pictures, through Latent rather than from Civitai.
+ *
+ * The phone talks to Latent and to nothing else — it may have no route to the
+ * internet at all while the server does, and fetching directly would tell a
+ * third-party CDN which models somebody has installed.
+ */
+export function modelExampleUrl(url: string): string {
+  return `/api/models/example?url=${encodeURIComponent(url)}`;
+}

@@ -5,11 +5,26 @@ import fastifyWebsocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance, type RouteHandlerMethod } from 'fastify';
 import type { WebSocket } from 'ws';
 
-import { BINARY_EVENT_PREVIEW_IMAGE, BINARY_IMAGE_TYPE_PNG, isNodeLink } from '@latent/shared';
+import {
+  BINARY_EVENT_PREVIEW_IMAGE,
+  BINARY_IMAGE_TYPE_PNG,
+  contentTypeOf as contentTypeFor,
+  isNodeLink,
+  isAudioOutputClass,
+  isVideoOutputClass,
+} from '@latent/shared';
 import type { ApiWorkflow, ComfyImageRef, HistoryEntry } from '@latent/shared';
-import { CHECKPOINTS, LORAS, objectInfoFixture, UPSCALE_MODELS } from '@latent/shared/fixtures';
+import {
+  CHECKPOINTS,
+  INPUT_IMAGES,
+  LORAS,
+  objectInfoFixture,
+  UPSCALE_MODELS,
+} from '@latent/shared/fixtures';
 
+import { renderPlaceholderClip, renderPlaceholderWebm } from './gif.js';
 import { renderPlaceholder } from './png.js';
+import { renderPlaceholderWav } from './wav.js';
 
 /**
  * A stand-in for a real ComfyUI server.
@@ -47,6 +62,17 @@ export interface MockComfyOptions {
    * is deliberately small enough that nothing needs shrinking.
    */
   outputSize?: number;
+  /**
+   * A ComfyUI with no comfyllama in its `custom_nodes`.
+   *
+   * The default mock has it, because that is what these features are built
+   * against and there is no way to drive the folder browser or the model
+   * library without a far end that answers. This is the other case, and it is
+   * the one worth a test of its own: everything under `/comfyllama/` 404s, the
+   * way a stock install does, so what Latent says about it can be proved rather
+   * than assumed.
+   */
+  withoutComfyllama?: boolean;
 }
 
 export interface MockComfy {
@@ -85,6 +111,21 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
   const history = new Map<string, HistoryEntry>();
   /** Images this mock has "produced" or had uploaded, keyed by `type/subfolder/filename`. */
   const files = new Map<string, Buffer>();
+
+  /*
+   * The pictures `/object_info` says are already in the input directory.
+   *
+   * A real ComfyUI lists what is on its disk, so every name a `LoadImage`
+   * offers can be fetched. This mock listed them and had none of them, which
+   * looks like nothing at all until something asks for one — the before/after
+   * comparison fetches the picture an edit was made from, and against an empty
+   * input directory it correctly concluded there was nothing to compare.
+   */
+  for (const [index, name] of INPUT_IMAGES.entries()) {
+    // Portrait, and each a different size, so anything that lines two of them
+    // up is doing it by the picture rather than by luck.
+    files.set(`input//${name}`, renderPlaceholder(384, 512, `input#${index}`));
+  }
 
   let running: QueuedPrompt | null = null;
   let interrupted = false;
@@ -199,10 +240,7 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
             max: steps,
           });
           if (previewsEnabled && step % 2 === 0) {
-            sendBinary(
-              clientId,
-              renderPlaceholder(PREVIEW_SIZE, PREVIEW_SIZE, seed, step / steps),
-            );
+            sendBinary(clientId, renderPlaceholder(PREVIEW_SIZE, PREVIEW_SIZE, seed, step / steps));
           }
         }
       } else {
@@ -216,11 +254,62 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       const isOutput =
         !isTextNode &&
         (objectInfoFixture[node.class_type]?.output_node === true ||
-          /^(SaveImage|PreviewImage)/.test(node.class_type));
+          /^(SaveImage|PreviewImage)/.test(node.class_type) ||
+          isVideoOutputClass(node.class_type) ||
+          isAudioOutputClass(node.class_type));
 
-      if (isOutput) {
+      if (isOutput && isAudioOutputClass(node.class_type)) {
+        /*
+         * A sound node, reported under `audio` the way ComfyUI reports one.
+         *
+         * A playable WAV rather than a labelled blob: the point of the mock is
+         * that everything downstream of it is real, and "downstream" here ends
+         * at a browser deciding whether it can play the file.
+         */
+        const seconds = findSeconds(workflow);
+        const filename = `Latent_${String(job.number).padStart(5, '0')}_${nodeId}.wav`;
+        files.set(`output//${filename}`, renderPlaceholderWav(String(seed), seconds));
+
+        const output = {
+          audio: [{ filename, subfolder: '', type: 'output', format: 'audio/wav' }],
+        };
+        outputs[nodeId] = output as (typeof outputs)[string];
+        send(clientId, 'executed', { prompt_id: promptId, node: nodeId, output });
+      } else if (isOutput && isVideoOutputClass(node.class_type)) {
+        /*
+         * A video node, reported the way its own pack reports one.
+         *
+         * The key matters and is not `images` for everybody: VideoHelperSuite
+         * files its result under `gifs` whatever the container is, while core's
+         * own WEBM saver uses `images` with an `.webm` inside. A client that
+         * only reads one of those loses the output of a whole class of
+         * workflow, so the mock produces both shapes.
+         */
+        const vhs = /VideoCombine/i.test(node.class_type);
+        const frames = findFrameCount(workflow);
+        const fps = findFrameRate(workflow);
+        const size = Math.min(findOutputSize(workflow), 128);
+        const filename = `Latent_${String(job.number).padStart(5, '0')}_${nodeId}.${vhs ? 'gif' : 'webm'}`;
+
+        files.set(
+          `output//${filename}`,
+          vhs
+            ? renderPlaceholderClip(size, size, String(seed), Math.min(frames, 16), fps)
+            : renderPlaceholderWebm(String(seed)),
+        );
+
+        const file = {
+          filename,
+          subfolder: '',
+          type: 'output',
+          ...(vhs ? { format: 'image/gif', frame_rate: fps } : {}),
+        };
+        const output = vhs ? { gifs: [file] } : { images: [file] };
+        outputs[nodeId] = output as (typeof outputs)[string];
+        send(clientId, 'executed', { prompt_id: promptId, node: nodeId, output });
+      } else if (isOutput) {
         const batch = typeof findBatchSize(workflow) === 'number' ? findBatchSize(workflow) : 1;
-        const size = findOutputSize(workflow);
+        const { width, height } = findOutputShape(workflow);
         const images: ComfyImageRef[] = [];
         for (let i = 0; i < batch; i += 1) {
           /*
@@ -230,10 +319,7 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
            * never repeats an output filename, and neither should the mock.
            */
           const filename = `Latent_${String(job.number).padStart(5, '0')}_${nodeId}_${i}.png`;
-          files.set(
-            `output//${filename}`,
-            renderPlaceholder(size, size, `${seed}#${i}`),
-          );
+          files.set(`output//${filename}`, renderPlaceholder(width, height, `${seed}#${i}`));
           images.push({ filename, subfolder: '', type: 'output' });
         }
         outputs[nodeId] = { images };
@@ -282,6 +368,38 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
     });
   }
 
+  /** How many frames the graph asked for, for a clip of a plausible length. */
+  function findFrameCount(workflow: ApiWorkflow): number {
+    for (const node of Object.values(workflow)) {
+      for (const name of ['length', 'num_frames', 'frames']) {
+        const value = node.inputs?.[name];
+        if (typeof value === 'number' && value > 1) return Math.min(value, 64);
+      }
+    }
+    return 8;
+  }
+
+  function findFrameRate(workflow: ApiWorkflow): number {
+    for (const node of Object.values(workflow)) {
+      for (const name of ['frame_rate', 'fps']) {
+        const value = node.inputs?.[name];
+        if (typeof value === 'number' && value > 0) return Math.min(value, 60);
+      }
+    }
+    return 8;
+  }
+
+  /** How long the sound runs, capped so a test never renders a whole song. */
+  function findSeconds(workflow: ApiWorkflow): number {
+    for (const node of Object.values(workflow)) {
+      for (const name of ['seconds', 'duration', 'length_seconds']) {
+        const value = node.inputs?.[name];
+        if (typeof value === 'number' && value > 0) return Math.min(value, 3);
+      }
+    }
+    return 1;
+  }
+
   function findBatchSize(workflow: ApiWorkflow): number {
     for (const node of Object.values(workflow)) {
       const value = node.inputs?.batch_size;
@@ -301,14 +419,28 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
    * in a workflow should not hang the mock.
    */
   function findOutputSize(workflow: ApiWorkflow): number {
-    let largest = outputSize;
+    const { width, height } = findOutputShape(workflow);
+    return Math.max(width, height);
+  }
+
+  /**
+   * The shape of the picture, not just how big it is.
+   *
+   * Width and height are read separately so a workflow asking for 832x1216 gets
+   * a portrait. It used to take the larger of the two for both, which made
+   * every mock render square — fine until something downstream cared what shape
+   * a picture was, and the gallery's tile layout cares a great deal.
+   */
+  function findOutputShape(workflow: ApiWorkflow): { width: number; height: number } {
+    let width = outputSize;
+    let height = outputSize;
     for (const node of Object.values(workflow)) {
-      for (const key of ['width', 'height'] as const) {
-        const value = node.inputs?.[key];
-        if (typeof value === 'number' && value > largest) largest = Math.min(value, 4096);
-      }
+      const w = node.inputs?.width;
+      const h = node.inputs?.height;
+      if (typeof w === 'number' && w > width) width = Math.min(w, 4096);
+      if (typeof h === 'number' && h > height) height = Math.min(h, 4096);
     }
-    return largest;
+    return { width, height };
   }
 
   async function drain(): Promise<void> {
@@ -335,6 +467,10 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
   /* ---------------------------------------------------------------- */
 
   function route(method: 'GET' | 'POST', path: string, handler: RouteHandlerMethod): void {
+    // A stock ComfyUI has none of these, and Fastify's own 404 is exactly what
+    // it answers with — which is the condition Latent's "install comfyllama"
+    // message is written for, so it is left to happen rather than faked.
+    if (options.withoutComfyllama && path.startsWith('/comfyllama/')) return;
     app.route({ method, url: path, handler });
     app.route({ method, url: `/api${path}`, handler });
   }
@@ -411,6 +547,175 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       };
     });
 
+    /*
+     * The power draw, as comfyllama would report it.
+     *
+     * Moves with the work like the VRAM above, and for the same reason: the
+     * whole point of the reading is that it changes within a run, and a
+     * constant would let a monitor that never actually samples still look
+     * right. The idle figure is a card with a model resident and nothing to do.
+     */
+    route('GET', '/comfyllama/power', async () => ({
+      gpus: [{ watts: running !== null ? 412.5 : 61.2, limit: 450 }],
+      source: 'nvml',
+    }));
+
+    /*
+     * The folder browser, as comfyllama would serve it.
+     *
+     * A tree rather than a flat list, because the browser's job is walking one:
+     * `output` holds a `monday` folder with two renders in it and a clip beside
+     * them, and `input` and `temp` are the two other roots any ComfyUI has. The
+     * point of serving it here is that Latent only ever proxies these — which
+     * folders may be read is decided on the machine that has them — so there is
+     * no way to exercise the browser at all without a far end that answers.
+     */
+    const TREE: Record<string, { folders: string[]; files: string[] }> = {
+      'output:': { folders: ['monday'], files: ['render_0001.png', 'a-clip.webm'] },
+      'output:monday': { folders: [], files: ['render_0007.png', 'render_0008.png'] },
+      'input:': { folders: [], files: ['reference.png'] },
+      'temp:': { folders: [], files: [] },
+    };
+
+    route('GET', '/comfyllama/browse/roots', async () => ({
+      roots: [
+        { key: 'output', path: '/comfy/output' },
+        { key: 'input', path: '/comfy/input' },
+        { key: 'temp', path: '/comfy/temp' },
+      ],
+    }));
+
+    route('GET', '/comfyllama/browse/list', async (request) => {
+      const query = request.query as { root?: string; path?: string; q?: string; kind?: string };
+      const root = query.root ?? 'output';
+      const path = query.path ?? '';
+      const here = TREE[`${root}:${path}`] ?? { folders: [], files: [] };
+      const kind = query.kind ?? 'image';
+
+      // The real one filters by what the slot can load, and by the search box.
+      // Both matter to the browser's behaviour, so both are honoured here.
+      const wanted = (name: string) =>
+        kind === 'video' ? /\.(webm|mp4)$/.test(name) : /\.(png|jpg|jpeg|webp)$/.test(name);
+      const matches = (name: string) =>
+        query.q ? name.toLowerCase().includes(query.q.toLowerCase()) : true;
+
+      const entry = (name: string) => ({
+        name,
+        path: path ? `${path}/${name}` : name,
+        size: 1024,
+        mtime: 1_700_000_000,
+      });
+
+      const files = here.files.filter((name) => wanted(name) && matches(name)).map(entry);
+      return {
+        kind,
+        root,
+        path,
+        folders: here.folders.map(entry),
+        files,
+        truncated: false,
+        total: files.length,
+      };
+    });
+
+    route('GET', '/comfyllama/browse/thumb', async (request, reply) => {
+      const { path = 'thumb' } = request.query as { path?: string };
+      return reply.header('content-type', 'image/png').send(renderPlaceholder(64, 64, path));
+    });
+
+    /*
+     * The model library, as comfyllama would report it.
+     *
+     * One LoRA with a header worth reading and one without, because the
+     * interesting case is the second: a `.ckpt` or a file trained by somebody
+     * who wrote no metadata still has to appear in the list, with a name you
+     * can write your own trigger words against.
+     */
+    route('GET', '/comfyllama/models', async (request) => {
+      const folder = (request.query as { folder?: string }).folder ?? 'loras';
+      if (folder !== 'loras') {
+        return {
+          folder,
+          models: CHECKPOINTS.map((name) => ({
+            name,
+            size: 2 * 1024 ** 3,
+            modified: Date.now() / 1000,
+            trainedTags: [],
+            baseModel: 'SD 1.5',
+            title: null,
+            description: null,
+            networkDim: null,
+            networkAlpha: null,
+            clipSkip: null,
+            trainImages: null,
+            hasMetadata: true,
+          })),
+        };
+      }
+
+      return {
+        folder,
+        models: LORAS.map((name, index) => ({
+          name,
+          size: 144 * 1024 ** 2,
+          modified: Date.now() / 1000,
+          trainedTags: index === 0 ? ['a lighthouse', 'storm light'] : [],
+          baseModel: index === 0 ? 'sdxl_base_v1-0' : null,
+          title: index === 0 ? 'Lighthouses' : null,
+          description: null,
+          networkDim: index === 0 ? '64' : null,
+          networkAlpha: index === 0 ? '32' : null,
+          clipSkip: null,
+          trainImages: index === 0 ? '180' : null,
+          hasMetadata: index === 0,
+        })),
+      };
+    });
+
+    route('GET', '/comfyllama/models/hash', async () => ({
+      sha256: 'b'.repeat(64),
+    }));
+
+    /*
+     * Civitai, as far as Latent is concerned.
+     *
+     * Two endpoints because the client asks twice: the version by hash, then
+     * the model behind it — which is where the creator's actual explanation
+     * lives, and the half worth proving reaches the screen.
+     */
+    route('GET', '/civitai/model-versions/by-hash/:hash', async () => ({
+      id: 456,
+      modelId: 123,
+      name: 'v2',
+      baseModel: 'SDXL 1.0',
+      trainedWords: ['lighthousestyle'],
+      description: '<p>Fixed the hands.</p>',
+      model: { name: 'Lighthouses', type: 'LORA' },
+      images: [
+        {
+          url: `http://127.0.0.1:${process.env.MOCK_PORT ?? 8188}/civitai/image`,
+          width: 832,
+          height: 1216,
+          nsfwLevel: 1,
+          type: 'image',
+          meta: { prompt: 'a lighthouse in a storm, dusk' },
+        },
+      ],
+    }));
+
+    route('GET', '/civitai/models/:id', async () => ({
+      name: 'Lighthouses',
+      type: 'LORA',
+      description: '<p>Works best at 0.7. Fights with detail LoRAs.</p>',
+      tags: ['style', 'landscape'],
+      creator: { username: 'somebody' },
+    }));
+
+    /** The example picture itself, so the proxy has something to fetch. */
+    route('GET', '/civitai/image', async (_request, reply) =>
+      reply.header('content-type', 'image/png').send(renderPlaceholder(64, 96, 'example')),
+    );
+
     route('POST', '/prompt', async (request, reply) => {
       const body = request.body as {
         prompt?: ApiWorkflow;
@@ -426,7 +731,10 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       for (const [nodeId, node] of Object.entries(body.prompt)) {
         if (!node?.class_type) {
           return reply.code(400).send({
-            error: { type: 'invalid_prompt', message: 'Cannot execute because a node is missing a class_type.' },
+            error: {
+              type: 'invalid_prompt',
+              message: 'Cannot execute because a node is missing a class_type.',
+            },
             node_errors: {
               [nodeId]: { errors: [{ message: 'Missing class_type', details: '' }] },
             },
@@ -438,7 +746,10 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
             node_errors: {
               [nodeId]: {
                 errors: [
-                  { message: `Node type not found: ${node.class_type}`, details: 'Install the custom node.' },
+                  {
+                    message: `Node type not found: ${node.class_type}`,
+                    details: 'Install the custom node.',
+                  },
                 ],
               },
             },
@@ -512,6 +823,35 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
       if (!stored) return reply.code(404).send({ error: 'not found' });
 
       /*
+       * Byte ranges, because a video is fetched in pieces.
+       *
+       * Real ComfyUI serves output files with aiohttp's own file response,
+       * which honours `Range`; a mock that ignored it would let a bug through
+       * in exactly the code path that decides whether a clip starts playing or
+       * has to be downloaded first.
+       */
+      const contentType = contentTypeFor(query.filename);
+      const rangeHeader = request.headers.range;
+      const range =
+        typeof rangeHeader === 'string' ? /^bytes=(\d+)-(\d*)$/.exec(rangeHeader) : null;
+      if (range) {
+        const start = Math.min(Number(range[1]), Math.max(0, stored.length - 1));
+        const end = Math.min(range[2] ? Number(range[2]) : stored.length - 1, stored.length - 1);
+        return reply
+          .code(206)
+          .header('content-type', contentType)
+          .header('accept-ranges', 'bytes')
+          .header('content-range', `bytes ${start}-${end}/${stored.length}`)
+          .send(stored.subarray(start, end + 1));
+      }
+      if (contentType !== 'image/png') {
+        return reply
+          .header('content-type', contentType)
+          .header('accept-ranges', 'bytes')
+          .send(stored);
+      }
+
+      /*
        * `preview` re-encodes and does *not* resize — read the real thing:
        * ComfyUI opens the file, saves it as webp or jpeg at the given quality,
        * and every pixel stays where it was. This mock used to answer with a
@@ -526,7 +866,11 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
     });
 
     route('POST', '/upload/image', async (request, reply) => {
-      const file = await (request as unknown as { file: () => Promise<{ filename: string; toBuffer(): Promise<Buffer> } | undefined> }).file();
+      const file = await (
+        request as unknown as {
+          file: () => Promise<{ filename: string; toBuffer(): Promise<Buffer> } | undefined>;
+        }
+      ).file();
       if (!file) return reply.code(400).send({ error: 'no image supplied' });
 
       const buffer = await file.toBuffer();

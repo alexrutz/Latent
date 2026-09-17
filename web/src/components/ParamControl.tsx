@@ -1,13 +1,16 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
+import { browseKindOf } from '@latent/shared';
 import type { InputImage, ParamField, WidgetValue } from '@latent/shared';
 
-import { api, imageUrl, inputImageUrl } from '../api/client';
+import { api, browseThumbUrl, imageUrl, inputImageUrl } from '../api/client';
 import { useOllamaModels } from '../api/queries';
 import { ImageEditor } from './ImageEditor';
 import { InputImagePicker } from './InputImagePicker';
 import { NumericInput } from './NumericInput';
+import { FolderImagePicker } from './FolderImagePicker';
 import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
+import { useFileDrop } from '../state/dropFiles';
 
 /**
  * Which workflow the surrounding form belongs to.
@@ -42,7 +45,12 @@ const MAX_SAFE_SEED = Number.MAX_SAFE_INTEGER;
 /* ------------------------------------------------------------------ */
 
 /** Grows with its content so a long prompt never hides behind a scrollbar. */
-export function PromptField({ field, value, onChange, compact = false }: ControlProps & { compact?: boolean }) {
+export function PromptField({
+  field,
+  value,
+  onChange,
+  compact = false,
+}: ControlProps & { compact?: boolean }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   const text = typeof value === 'string' ? value : String(value ?? '');
 
@@ -64,6 +72,13 @@ export function PromptField({ field, value, onChange, compact = false }: Control
         onChange={(event) => onChange(event.target.value)}
         rows={compact ? 2 : 3}
         placeholder={field.role === 'negative_prompt' ? 'What to avoid…' : 'Describe the image…'}
+        /*
+          What `/` jumps to. Marked rather than found by placeholder or by
+          position: a workflow can have three text areas and only one of them is
+          the thing you came to type in, and the negative prompt sitting right
+          beneath it is exactly the wrong one to land in.
+        */
+        {...(field.role === 'prompt' ? { 'data-prompt': '' } : {})}
         className={cn(
           'w-full resize-none rounded-xl border border-line bg-surface px-3 py-2',
           'leading-relaxed placeholder:text-muted/60',
@@ -103,7 +118,9 @@ export function SeedField({
       </div>
       <button
         type="button"
-        onClick={() => onChange(Math.floor(Math.random() * Math.min(field.max ?? 2 ** 32, MAX_SAFE_SEED)))}
+        onClick={() =>
+          onChange(Math.floor(Math.random() * Math.min(field.max ?? 2 ** 32, MAX_SAFE_SEED)))
+        }
         aria-label="Roll a new seed"
         className="grid size-11 shrink-0 place-items-center rounded-xl bg-surface-2 text-lg active:bg-surface-3"
       >
@@ -140,7 +157,25 @@ export function ImageField({ field, value, onChange }: ControlProps) {
   /** Held back for editing rather than uploaded straight away. */
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [picking, setPicking] = useState(false);
-  const filename = typeof value === 'string' ? value : '';
+  const stored = typeof value === 'string' ? value : '';
+
+  /*
+   * The same field, with a different folder behind the second button.
+   *
+   * comfyllama's browser holds `output/monday/render.png` and can reach the
+   * output folder; the stock input holds a filename in ComfyUI's input
+   * directory. Everything else — the fold, the preview, replacing the picture
+   * from the camera roll — is identical, and two components alike in all but
+   * one dialog is how the two of them drift apart.
+   */
+  const browsesFolders = field.control === 'folderImage';
+  /** Only the last segment is a name when the value is a path. */
+  const filename = browsesFolders ? (stored.split('/').pop() ?? '') : stored;
+  const preview = !stored
+    ? ''
+    : browsesFolders
+      ? browseThumbUrl(stored)
+      : imageUrl({ filename: stored, subfolder: '', type: 'input' });
   const [open, setOpen] = useState(() => localStorage.getItem(foldKey(field.id)) !== 'closed');
 
   useEffect(() => {
@@ -167,13 +202,29 @@ export function ImageField({ field, value, onChange }: ControlProps) {
     }
   };
 
+  /*
+    Straight into the editor, like the file picker's own result. A dropped file
+    is not a different kind of picture from a chosen one, so it must not take a
+    different path — a second route to the same place is a second thing to keep
+    right, and the one that gets used less is the one that rots.
+  */
+  const drop = useFileDrop((files) => {
+    setError(null);
+    const [file] = files;
+    if (file) setPendingFile(file);
+  });
+
   const upload = async (file: File) => {
     setUploading(true);
     setError(null);
     try {
       const result = await api.upload(file);
       // ComfyUI addresses uploads in subfolders as "sub/name".
-      onChange(result.subfolder ? `${result.subfolder}/${result.name}` : result.name);
+      const uploaded = result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
+      // An upload lands in ComfyUI's input directory, which the folder browser
+      // also serves — so naming it that way keeps one kind of value in the
+      // field, rather than two that look alike and resolve differently.
+      onChange(browsesFolders ? `input/${uploaded}` : uploaded);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Upload failed');
     } finally {
@@ -182,7 +233,24 @@ export function ImageField({ field, value, onChange }: ControlProps) {
   };
 
   return (
-    <div className="space-y-2">
+    /*
+      A drop target, on the field that wants the picture.
+
+      On the field rather than on the page, because a workflow can have two
+      image inputs and a page-level drop would have to guess which — dropping
+      on the thing is unambiguous and is the gesture anyway. What lands here
+      goes to the editor first, exactly as a file chosen from the picker does:
+      a dropped photograph is as likely to be the wrong way up or the wrong
+      shape as one browsed for, and fixing it before the upload saves both.
+    */
+    <div
+      {...drop.props}
+      data-testid="image-drop"
+      className={cn(
+        'space-y-2 rounded-xl transition-colors',
+        drop.over && 'outline-2 outline-offset-4 outline-dashed outline-accent',
+      )}
+    >
       {/*
         Foldable, and it remembers.
 
@@ -214,9 +282,9 @@ export function ImageField({ field, value, onChange }: ControlProps) {
 
       <div className={cn('flex items-center gap-3', !open && 'hidden')}>
         <div className="size-20 shrink-0 overflow-hidden rounded-xl border border-line bg-surface-2">
-          {filename ? (
+          {preview ? (
             <img
-              src={imageUrl({ filename, subfolder: '', type: 'input' })}
+              src={preview}
               alt=""
               className="size-full object-cover"
               // A stale filename (input dir cleared) shouldn't show a broken icon.
@@ -231,6 +299,8 @@ export function ImageField({ field, value, onChange }: ControlProps) {
 
         <div className="min-w-0 flex-1 space-y-2">
           <p className="truncate text-sm text-muted">{filename || 'No image selected'}</p>
+          {/* Which folder it came from: the same name exists under several. */}
+          {browsesFolders && stored && <p className="truncate text-[11px] text-muted">{stored}</p>}
           <div className="flex flex-wrap gap-2">
             <Button
               variant="secondary"
@@ -243,18 +313,27 @@ export function ImageField({ field, value, onChange }: ControlProps) {
             {/* The folder on the Latent machine, for reference shots and masks
                 that were never on the phone to begin with. */}
             <Button variant="ghost" size="sm" onClick={() => setPicking(true)}>
-              From folder
+              {browsesFolders ? 'Browse folders' : 'From folder'}
             </Button>
           </div>
         </div>
       </div>
 
-      <InputImagePicker
-        open={picking}
-        onClose={() => setPicking(false)}
-        onPicked={onChange}
-        onEdit={(image) => void editFromFolder(image)}
-      />
+      {browsesFolders ? (
+        <FolderImagePicker
+          open={picking}
+          onClose={() => setPicking(false)}
+          onPicked={onChange}
+          kind={browseKindOf(field)}
+        />
+      ) : (
+        <InputImagePicker
+          open={picking}
+          onClose={() => setPicking(false)}
+          onPicked={onChange}
+          onEdit={(image) => void editFromFolder(image)}
+        />
+      )}
 
       {/*
         No `capture` attribute: it forces the camera and hides the photo
@@ -307,7 +386,12 @@ export function formatValue(field: ParamField, value: WidgetValue): string {
   const text = String(value);
   // Model filenames are long and the meaningful part is the end.
   if (field.role === 'model' || field.role === 'lora' || field.role === 'vae') {
-    return text.replace(/\.(safetensors|ckpt|pth|gguf|pt)$/i, '').split(/[\\/]/).pop() ?? text;
+    return (
+      text
+        .replace(/\.(safetensors|ckpt|pth|gguf|pt)$/i, '')
+        .split(/[\\/]/)
+        .pop() ?? text
+    );
   }
   return text.length > 18 ? `${text.slice(0, 17)}…` : text;
 }
@@ -390,6 +474,9 @@ export function FieldEditor({ field, value, onChange }: ControlProps) {
       return <PromptField field={field} value={value} onChange={onChange} />;
     case 'image':
       return <ImageField field={field} value={value} onChange={onChange} />;
+    case 'folderImage':
+      // The same field; only the folder behind its second button differs.
+      return <ImageField field={field} value={value} onChange={onChange} />;
     case 'text':
     default:
       return (
@@ -466,7 +553,9 @@ function NumberEditor({ field, value, onChange }: ControlProps) {
             onClick={() => setFullRange((current) => !current)}
             className="rounded-lg px-2 py-1 text-accent active:bg-surface-2"
           >
-            {fullRange ? 'Usual range' : `Full range (${trim(field.min ?? 0)}–${trim(field.max ?? 0)})`}
+            {fullRange
+              ? 'Usual range'
+              : `Full range (${trim(field.min ?? 0)}–${trim(field.max ?? 0)})`}
           </button>
         )}
       </div>

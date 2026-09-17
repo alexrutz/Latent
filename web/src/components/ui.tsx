@@ -7,9 +7,36 @@ import {
   type ReactNode,
 } from 'react';
 
+import { useDesk } from '../state/layout';
+
 export function cn(...parts: (string | false | null | undefined)[]): string {
   return parts.filter(Boolean).join(' ');
 }
+
+/* ------------------------------------------------------------------ */
+/* Small controls on a dark screen                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The chrome that makes a small icon control visible.
+ *
+ * `surface` on `ink` is barely four per cent of lightness apart. That is right
+ * for a card — it should sit on the page, not shout — and wrong for something
+ * you are meant to press: a 36-pixel circle in it reads as a faint glyph
+ * floating on black, and a glyph is not a target. Anything pressable up in a
+ * toolbar gets the next surface up and a line around it, so its *shape* is
+ * visible before you have worked out what the symbol means.
+ *
+ * The border is on every state, including the lit ones, so switching a control
+ * on does not move it by two pixels.
+ */
+export const CONTROL_FACE = 'border border-line bg-surface-2 text-body active:bg-surface-3';
+
+/** The same control while it is doing something: lit, and still the same size. */
+export const CONTROL_FACE_ON = 'border border-accent bg-accent text-white';
+
+/** And the middle state: a setting is in force, but the control is not "on". */
+export const CONTROL_FACE_SET = 'border border-accent/50 bg-accent/20 text-accent';
 
 /* ------------------------------------------------------------------ */
 /* Button                                                              */
@@ -31,11 +58,26 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   fullWidth?: boolean;
 }
 
+/*
+ * `active:` is the press; `hover:` is the pointer.
+ *
+ * The app was written for a device that has no pointer, so every control said
+ * what a press looked like and nothing said what *this is a control* looks like
+ * before you commit to it. On a phone there is nothing to say it to. At a desk
+ * a surface where nothing answers the mouse reads as a picture of an interface
+ * rather than an interface, and the answer is not a bigger effect — it is the
+ * same one, arriving a step earlier.
+ *
+ * Tailwind's `hover:` is itself behind `@media (hover: hover)`, so none of this
+ * reaches a touch screen, where a hover left behind by a tap sticks to whatever
+ * you last pressed.
+ */
 const VARIANTS: Record<ButtonVariant, string> = {
-  primary: 'bg-accent text-white active:bg-accent-hi disabled:bg-surface-3 disabled:text-muted',
-  secondary: 'bg-surface-2 text-body active:bg-surface-3 disabled:text-muted',
-  ghost: 'bg-transparent text-muted active:bg-surface-2',
-  danger: 'bg-danger/15 text-danger active:bg-danger/25',
+  primary:
+    'bg-accent text-white hover:bg-accent-hi active:bg-accent-hi disabled:bg-surface-3 disabled:text-muted',
+  secondary: 'bg-surface-2 text-body hover:bg-surface-3 active:bg-surface-3 disabled:text-muted',
+  ghost: 'bg-transparent text-muted hover:bg-surface-2 hover:text-body active:bg-surface-2',
+  danger: 'bg-danger/15 text-danger hover:bg-danger/25 active:bg-danger/25',
 };
 
 /*
@@ -84,12 +126,7 @@ export function Spinner({ className }: { className?: string }) {
   return (
     <svg className={cn('animate-spin', className)} viewBox="0 0 24 24" fill="none" aria-hidden>
       <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
-      <path
-        d="M21 12a9 9 0 0 0-9-9"
-        stroke="currentColor"
-        strokeWidth="3"
-        strokeLinecap="round"
-      />
+      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
     </svg>
   );
 }
@@ -105,6 +142,17 @@ interface SheetProps {
   children: ReactNode;
   /** Fill the screen instead of hugging its content. */
   full?: boolean;
+  /**
+   * Let it grow past the reading width on a big screen.
+   *
+   * The cap on the others is deliberate — a dialog is a column of controls, and
+   * a column two feet wide is unreadable however much monitor there is. The
+   * exception is a sheet whose content is genuinely side-by-side: the form
+   * editor is a list of fields *and* a preview of the phone, and squeezing both
+   * into 672px on a desktop wastes the screen and cramps the pair of them. Only
+   * for content that has somewhere to put the width.
+   */
+  wide?: boolean;
   /**
    * Label for the header's dismiss button.
    *
@@ -122,6 +170,14 @@ interface SheetProps {
  * Editing a number in a cramped inline field is the worst part of using a
  * desktop UI on a phone; raising a sheet puts the control under the thumb and
  * gives it room to be a real slider or a real list.
+ *
+ * On a tablet the same content is a panel in the middle of the screen instead.
+ * A sheet is a shape for a phone: it comes up from the bottom edge because that
+ * is where the hand is, and it spans the full width because there is no width
+ * to spare. Neither applies to a nine-inch screen, where the same sheet is a
+ * band of controls a foot wide with two inches of them in the middle, hanging
+ * off an edge nobody is holding. The rules inside are untouched — only where
+ * the box is, and how wide it is allowed to get.
  */
 export function Sheet({
   open,
@@ -129,6 +185,7 @@ export function Sheet({
   title,
   children,
   full = false,
+  wide = false,
   closeLabel = 'Done',
 }: SheetProps) {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -166,7 +223,7 @@ export function Sheet({
      * full-screen layers of their own. A sheet is only ever open because
      * something asked for it, so it is always the thing on top.
      */
-    <div className="fixed inset-0 z-70 flex flex-col justify-end">
+    <div className="fixed inset-0 z-70 flex flex-col justify-end tablet:items-center tablet:justify-center tablet:p-6">
       <div
         className="animate-fade absolute inset-0 bg-black/60"
         onClick={onClose}
@@ -178,7 +235,7 @@ export function Sheet({
         aria-modal="true"
         aria-label={typeof title === 'string' ? title : 'Options'}
         className={cn(
-          'animate-rise safe-b relative flex flex-col rounded-t-[var(--radius-sheet)]',
+          'animate-rise sheet-safe-b relative flex flex-col rounded-t-[var(--radius-sheet)]',
           'border-t border-line bg-surface',
           /*
            * `svh`, not `dvh`.
@@ -191,10 +248,29 @@ export function Sheet({
            * true.
            */
           full ? 'h-[92svh]' : 'max-h-[85svh]',
+          /*
+           * The same box, in the middle, with a width it cannot exceed. `full`
+           * still means "as much as you can have" — it is what Advanced and the
+           * notes use, and they are lists that genuinely fill a screen — but
+           * even that stops short of the edges here, because a dialog touching
+           * all four sides of a tablet is not a dialog any more.
+           */
+          'tablet:w-full tablet:rounded-[var(--radius-sheet)] tablet:border',
+          full ? 'tablet:h-[85svh]' : 'tablet:max-h-[80svh] tablet:max-w-lg',
+          full && (wide ? 'tablet:max-w-[min(96vw,80rem)]' : 'tablet:max-w-2xl'),
         )}
       >
+        {/*
+          The grab handle is a phone thing.
+
+          It says "this came up from the bottom edge and can be pushed back
+          down", which is true of a sheet and a small lie in the middle of a
+          tablet screen. What replaces it there is the panel's own rounding on
+          all four corners and the Done button, which was always the real way
+          out. The row itself stays, so the title keeps the same air above it.
+        */}
         <div className="flex shrink-0 items-center justify-between px-4 pt-2 pb-1">
-          <div className="mx-auto h-1 w-10 rounded-full bg-surface-3" />
+          <div className="mx-auto h-1 w-10 rounded-full bg-surface-3 tablet:invisible" />
         </div>
         {title && (
           <div className="flex shrink-0 items-center justify-between gap-3 px-4 pb-2">
@@ -222,6 +298,82 @@ export function Sheet({
       </div>
     </div>,
     document.body,
+  );
+}
+
+/**
+ * One record, opened: a sheet where there is no room, a pane where there is.
+ *
+ * The same content either way, and the difference is not decoration. A modal is
+ * the right answer on a phone — the screen shows one thing, so showing this
+ * thing means covering the other — and it is a bad answer at a desk, where
+ * covering a window to show one row of a list is a program hiding the list you
+ * were comparing against. Desktop software has panes for exactly this reason,
+ * and has since before it had windows.
+ *
+ * It is a *component* rather than a rule each screen writes for itself because
+ * every list screen here has the same shape and would otherwise each invent its
+ * own answer to "what happens on a big screen" — which is how an app ends up
+ * with three kinds of detail view.
+ *
+ * The screen that uses one has to lay out for it: below desk width this renders
+ * nothing where it stands and a modal over everything, and at desk width it
+ * renders a column exactly where it is placed. See `ModelsScreen` for the
+ * shape — a flex row whose second child is this.
+ */
+export function DetailPane({
+  open,
+  onClose,
+  title,
+  children,
+  closeLabel = 'Done',
+}: {
+  open: boolean;
+  onClose: () => void;
+  title?: ReactNode;
+  children: ReactNode;
+  closeLabel?: string;
+}) {
+  const desk = useDesk();
+
+  useEffect(() => {
+    if (!open || !desk) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, desk, onClose]);
+
+  if (!desk) {
+    return (
+      <Sheet open={open} onClose={onClose} title={title} closeLabel={closeLabel} full>
+        {children}
+      </Sheet>
+    );
+  }
+
+  if (!open) return null;
+
+  return (
+    <aside
+      data-testid="detail-pane"
+      aria-label={typeof title === 'string' ? title : 'Details'}
+      className="flex min-h-0 w-[26rem] shrink-0 flex-col rounded-2xl border border-line bg-surface"
+    >
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line px-4 py-2.5">
+        <h2 className="min-w-0 flex-1 truncate text-base font-semibold">{title}</h2>
+        {/*
+          Not modal, so this is a way to put it away rather than a way to accept
+          it — and Escape does the same, which is what a pane on a desktop is
+          expected to answer to whether or not it is trapping the keyboard.
+        */}
+        <Button variant="ghost" size="sm" onClick={onClose}>
+          {closeLabel}
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-3">{children}</div>
+    </aside>
   );
 }
 

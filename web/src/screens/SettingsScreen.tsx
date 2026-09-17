@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import {
   CHAT_IMAGE_SIZES,
+  DEFAULT_WANDER_DRAW,
   defaultSampling,
   fieldPoints,
+  clearOwnOrder,
+  hasOwnOrder,
+  isSizeable,
   fieldPointValues,
   SAMPLING_GROUPS,
   SAMPLING_PARAMS,
@@ -19,7 +24,12 @@ import type {
   ParamField,
   QueuePolicy,
   SystemPrompt,
+  PromptDetail,
+  ReviewAsk,
+  ReviewThreshold,
+  TasteInfluence,
   ToolEagerness,
+  WanderDraw,
   WidgetValue,
   WorkflowDetail,
   WorkflowSummary,
@@ -54,7 +64,12 @@ import { NumericInput } from '../components/NumericInput';
 import { SortableList, type DragHandleProps } from '../components/SortableList';
 import { FieldChip, Toggle, WorkflowScope } from '../components/ParamControl';
 import { UnlockArchiveDialog } from '../components/UnlockArchive';
+import { FormPreview } from '../components/FormPreview';
+import { ArrangementButton } from '../components/FieldArrangement';
+import { UpdateSection } from '../components/UpdateSoftware';
+import { WanderSetup } from '../components/WanderSetup';
 import { Button, Card, cn, ErrorNote, Row, Sheet, Spinner } from '../components/ui';
+import { useDesk } from '../state/layout';
 import { useBlur } from '../state/blur';
 import { ConnectionsScreen } from './ConnectionsScreen';
 import { TerminalScreen } from './TerminalScreen';
@@ -84,6 +99,66 @@ const EAGERNESS_OPTIONS: { value: ToolEagerness; label: string; hint: string }[]
 
 /** Only asking has the enforced top step; the other tools stop at "freely". */
 const ASK_ONLY: ToolEagerness[] = ['always'];
+
+/**
+ * How perfectionist it is about a finished picture, on the same kind of line.
+ *
+ * The same shape as the pace scale above because it is the same kind of
+ * setting: one ordered judgement made on your behalf, where the interesting
+ * distinctions are between neighbours rather than at the ends. Each step is
+ * both a sentence and a score the model has to beat, so moving it one point
+ * visibly changes what comes back.
+ */
+/** The scale reads as pictures, because that is what the number is. */
+const KEEP_IN_VIEW_LABELS = [
+  'None',
+  'The last one',
+  'The last two',
+  'The last three',
+  'The last four',
+];
+
+/** When it stops and asks instead of rewriting the prompt for you. */
+const ASK_OPTIONS: { value: ReviewAsk; label: string; hint: string }[] = [
+  { value: 'never', label: 'Never', hint: 'always decides for itself' },
+  { value: 'unclear', label: 'When it cannot tell', hint: 'only if the miss is a mystery' },
+  { value: 'unsure', label: 'When unsure', hint: 'several fixes, no obvious one' },
+  { value: 'often', label: 'More than one way', hint: 'offers the choice rather than picking' },
+  { value: 'always', label: 'Always first', hint: 'nothing is rewritten unasked' },
+];
+
+/** How much of the picture a prompt settles, rather than how long it is. */
+const DETAIL_OPTIONS: { value: PromptDetail; label: string; hint: string }[] = [
+  { value: 'sparse', label: 'Sparse', hint: 'a sentence; the model fills in the rest' },
+  { value: 'plain', label: 'Plain', hint: 'subject, light, framing, medium' },
+  { value: 'balanced', label: 'Balanced', hint: 'settled, but not exhausted' },
+  { value: 'detailed', label: 'Detailed', hint: 'the whole scene, clause by clause' },
+  { value: 'elaborate', label: 'Elaborate', hint: 'nothing important left to chance' },
+];
+
+/**
+ * How far the notes about what you like are allowed to reach.
+ *
+ * Every step is about empty space rather than authority: what changes is how
+ * much of what you *did not* say gets filled in from them. Nothing on this
+ * scale overrides something you asked for — see `tastePolicy` on the server.
+ */
+const TASTE_OPTIONS: { value: TasteInfluence; label: string; hint: string }[] = [
+  { value: 'off', label: 'Off', hint: 'nothing is sent, pinned notes too' },
+  { value: 'sparingly', label: 'Sparingly', hint: 'only when you say nothing at all' },
+  { value: 'hints', label: 'Hints', hint: 'colours a vague idea, leaves a clear one' },
+  { value: 'guiding', label: 'Guiding', hint: 'shapes what it offers first' },
+  { value: 'strong', label: 'House style', hint: 'everything starts from it' },
+];
+
+const REVIEW_OPTIONS: { value: ReviewThreshold; label: string; hint: string }[] = [
+  { value: 'never', label: 'Never', hint: 'says how it went and stops there' },
+  { value: 'wrong', label: 'Plainly wrong', hint: 'wrong subject, wrong medium' },
+  { value: 'loose', label: 'Something missing', hint: 'a thing the prompt asked for' },
+  { value: 'balanced', label: 'Noticeably off', hint: 'a part of it did not come through' },
+  { value: 'strict', label: 'Any part off', hint: 'down to light and framing' },
+  { value: 'exacting', label: 'Not exact', hint: 'unless it matches in every detail' },
+];
 
 const TOOL_ROWS: { key: keyof ChatSettings['tools']; label: string; hint: string }[] = [
   { key: 'build_prompt', label: 'Build a prompt', hint: 'stops the conversation' },
@@ -122,6 +197,62 @@ const AUTO_DELETE_OPTIONS: { label: string; hours: number | null }[] = [
   { label: '1 month', hours: 720 },
 ];
 
+/**
+ * Settings, in five pages rather than one.
+ *
+ * Everything here used to be a single column: twelve sections, each with a
+ * paragraph explaining itself, stacked in the order they happened to be
+ * written. Reaching the sign-out button meant a dozen flicks past the workflow
+ * list, and finding a setting you had seen once meant scrolling the whole thing
+ * twice — the second time more slowly.
+ *
+ * The grouping is by *what you came to change*, which is not the same as what
+ * the code is organised by. Where the pictures go and how long they are kept is
+ * one errand; which boxes Latent talks to is another; the chat's opinions are a
+ * third. Each page is now a screen or two, which is short enough that you can
+ * see what is on it without scrolling to find out.
+ */
+const GROUPS = [
+  { id: 'servers', label: 'Servers' },
+  { id: 'workflows', label: 'Workflows' },
+  { id: 'chat', label: 'Chat' },
+  { id: 'pictures', label: 'Pictures' },
+  { id: 'system', label: 'System' },
+] as const;
+
+type SettingsGroup = (typeof GROUPS)[number]['id'];
+
+/**
+ * The page is in the URL, not in a `useState`.
+ *
+ * It costs nothing and buys three things: the back button steps between pages
+ * the way it does everywhere else, "the update button is under System" can be
+ * sent as a link, and anything that wants to open Settings *at* something —
+ * a test, a shortcut from elsewhere in the app — can just say so.
+ */
+function useSettingsGroup(): [SettingsGroup, (group: SettingsGroup) => void] {
+  const [params, setParams] = useSearchParams();
+  const asked = params.get('in');
+  const group = GROUPS.some((entry) => entry.id === asked)
+    ? (asked as SettingsGroup)
+    : GROUPS[0].id;
+  return [
+    group,
+    (next) => {
+      // Replace, so a run along the five tabs does not bury the screen you came
+      // from under five back presses.
+      setParams(
+        (current) => {
+          const updated = new URLSearchParams(current);
+          updated.set('in', next);
+          return updated;
+        },
+        { replace: true },
+      );
+    },
+  ];
+}
+
 function describeHours(hours: number): string {
   if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'}`;
   const days = Math.round(hours / 24);
@@ -130,7 +261,258 @@ function describeHours(hours: number): string {
   return weeks < 5 ? `${weeks} week${weeks === 1 ? '' : 's'}` : `${Math.round(days / 30)} months`;
 }
 
+/**
+ * One ordered choice, as a line of points.
+ *
+ * The control the tool settings use, because these are all the same kind of
+ * decision — how much the model does on its own, on a scale where the useful
+ * distinctions are between neighbours. Six labelled buttons in a phone's width
+ * are six unreadable ones.
+ */
+function PointsLine<T extends string>({
+  label,
+  aside,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  aside: string;
+  options: { value: T; label: string; hint: string }[];
+  value: T;
+  onChange: (value: T) => void;
+}) {
+  const at = Math.max(
+    0,
+    options.findIndex((option) => option.value === value),
+  );
+  const current = options[at]!;
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm">{label}</span>
+        <span className="min-w-0 truncate text-[11px] text-muted">{aside}</span>
+      </div>
+
+      <div className="flex items-center gap-1">
+        {options.map((option, index) => (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={index === at}
+            aria-label={`${label}: ${option.label}`}
+            onClick={() => onChange(option.value)}
+            className="min-w-0 flex-1 py-2"
+          >
+            <span
+              className={cn(
+                'block h-2 rounded-[3px]',
+                index === at ? 'bg-accent' : index < at ? 'bg-accent/30' : 'bg-surface-3',
+              )}
+            />
+          </button>
+        ))}
+      </div>
+
+      <p className="text-[11px]">
+        <span className="text-body">{current.label}</span>
+        <span className="text-muted"> — {current.hint}</span>
+      </p>
+    </div>
+  );
+}
+
+/**
+ * How many recent renders the model still has in front of it.
+ *
+ * Not a detail: a model that saw a picture once, two turns ago, is working from
+ * its own description of it by the time anybody asks for a change — and every
+ * change after that compounds the description rather than the picture. The
+ * ceiling is low because each one is prefill on every turn from then on.
+ */
+/**
+ * How many renders one autonomous run may make.
+ *
+ * The same line of points as everything else here, because it is the same kind
+ * of choice: one ordered number where the interesting distinctions are between
+ * neighbours. Starts at two — a run that may make one picture is not a run, it
+ * is the ✦ button.
+ */
+function RoundsLine({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  const at = Math.max(0, Math.min(ROUND_LIMITS.length - 1, ROUND_LIMITS.indexOf(value)));
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm">Renders before it stops</span>
+        <span className="min-w-0 truncate text-[11px] text-muted">
+          {ROUND_LIMITS[at]} in one run
+        </span>
+      </div>
+
+      <div className="flex items-center gap-1">
+        {ROUND_LIMITS.map((limit, index) => (
+          <button
+            key={limit}
+            type="button"
+            aria-pressed={index === at}
+            aria-label={`Renders before it stops: ${limit}`}
+            onClick={() => onChange(limit)}
+            className="min-w-0 flex-1 py-2"
+          >
+            <span
+              className={cn(
+                'block h-2 rounded-[3px]',
+                index === at ? 'bg-accent' : index < at ? 'bg-accent/30' : 'bg-surface-3',
+              )}
+            />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** The steps the round limit offers. Doubling, because 5 and 6 are not a choice. */
+const ROUND_LIMITS = [2, 3, 4, 6, 8, 12];
+
+/**
+ * The draw rules as one sentence, for the row that opens the sheet.
+ *
+ * By exception rather than by inventory: the row is a summary of what a round
+ * may do, and listing four unchanged defaults back at you says nothing. Only
+ * the headings you have actually singled out are counted, because those are the
+ * settings you would want reminding of.
+ */
+function describeDraw(draw: WanderDraw): string {
+  const rules = Object.values(draw.categories ?? {});
+  const insisting = rules.filter((rule) => rule.role === 'always').length;
+  const excluded = rules.filter((rule) => rule.role === 'off').length;
+
+  const parts: string[] = [];
+  if (insisting > 0) parts.push(`${insisting} heading${insisting === 1 ? '' : 's'} always in`);
+  if (excluded > 0) parts.push(`${excluded} left out`);
+  if (draw.perCategory > 0) parts.push(`at most ${draw.perCategory} from any one`);
+  if (draw.loose === 'off') parts.push('nothing unfiled');
+  if (draw.pinned === 'always') parts.push('pins always in');
+  if (draw.pinned === 'off') parts.push('pins left out');
+
+  if (parts.length === 0) {
+    return 'Everything switched on, drawn flat. Set which headings it must use, which it may not, and how much one of them may contribute.';
+  }
+  // Sentence case, and full stops rather than a heap of commas at the end.
+  return `${parts[0]!.charAt(0).toUpperCase()}${parts[0]!.slice(1)}${
+    parts.length > 1 ? `, ${parts.slice(1).join(', ')}` : ''
+  }.`;
+}
+
+/**
+ * How many notes go into each wandering picture.
+ *
+ * The whole dial of that mode, so it gets a line of points like the rest: one
+ * note is a variation on a theme, three is where it is interesting, and six is
+ * a collage in which every picture contains everything and they all start to
+ * look alike.
+ */
+function AttributesLine({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  const at = Math.max(0, Math.min(ATTRIBUTE_COUNTS.length - 1, ATTRIBUTE_COUNTS.indexOf(value)));
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm">Notes in each picture</span>
+        <span className="min-w-0 truncate text-[11px] text-muted">{ATTRIBUTE_HINTS[at] ?? ''}</span>
+      </div>
+
+      <div className="flex items-center gap-1">
+        {ATTRIBUTE_COUNTS.map((count, index) => (
+          <button
+            key={count}
+            type="button"
+            aria-pressed={index === at}
+            aria-label={`Notes in each picture: ${attributeLabel(count)}`}
+            onClick={() => onChange(count)}
+            className="min-w-0 flex-1 py-2"
+          >
+            <span
+              className={cn(
+                'block h-2 rounded-[3px]',
+                index === at ? 'bg-accent' : index < at ? 'bg-accent/30' : 'bg-surface-3',
+              )}
+            />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * `0` first, and it is not "none".
+ *
+ * It is "no ceiling": take as many as the rules allow, which under the default
+ * cap of one per heading is one note from each — a picture made of your list
+ * rather than of whichever corner of it won the shuffle. Every other step is a
+ * fixed number that the caps can still cut short. See `wanderCount`.
+ */
+const ATTRIBUTE_COUNTS = [0, 1, 2, 3, 4, 5, 6];
+const ATTRIBUTE_HINTS = [
+  'one from each heading',
+  'one thing at a time',
+  'two, held together',
+  'three — a fixed handful',
+  'four, and busier',
+  'five, a collage',
+  'six; they start to rhyme',
+];
+const attributeLabel = (count: number) => (count === 0 ? 'one from each heading' : String(count));
+
+function KeepInViewLine({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  const at = Math.max(0, Math.min(KEEP_IN_VIEW_LABELS.length - 1, value));
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm">Pictures it keeps in view</span>
+        <span className="min-w-0 truncate text-[11px] text-muted">costs a wait each</span>
+      </div>
+
+      <div className="flex items-center gap-1">
+        {KEEP_IN_VIEW_LABELS.map((label, index) => (
+          <button
+            key={label}
+            type="button"
+            aria-pressed={index === at}
+            aria-label={`Pictures it keeps in view: ${label}`}
+            onClick={() => onChange(index)}
+            className="min-w-0 flex-1 py-2"
+          >
+            <span
+              className={cn(
+                'block h-2 rounded-[3px]',
+                index === at ? 'bg-accent' : index < at ? 'bg-accent/30' : 'bg-surface-3',
+              )}
+            />
+          </button>
+        ))}
+      </div>
+
+      <p className="text-[11px]">
+        <span className="text-body">{KEEP_IN_VIEW_LABELS[at]}</span>
+        <span className="text-muted">
+          {at === 0
+            ? ' — shown while it is judged, then gone'
+            : ' — sent again with every turn, so a change can be asked for'}
+        </span>
+      </p>
+    </div>
+  );
+}
+
 export function SettingsScreen() {
+  const [group, setGroup] = useSettingsGroup();
+  const desk = useDesk();
   const status = useStatus();
   const workflows = useWorkflows();
   const settings = useSettings();
@@ -182,328 +564,437 @@ export function SettingsScreen() {
    * Shown workflows stay first *within* their folder, and a folder holding one
    * gets pulled to the top, so the handful you actually use is never buried.
    */
-  const workflowFolders = useMemo(
-    () => groupWorkflows(workflows.data ?? []),
-    [workflows.data],
-  );
+  const workflowFolders = useMemo(() => groupWorkflows(workflows.data ?? []), [workflows.data]);
 
   return (
-    <div className="safe-t space-y-6 px-4 pt-3 pb-6">
-      <h1 className="text-xl font-semibold">Settings</h1>
-
-      {/* Connection ------------------------------------------------- */}
-      <section className="space-y-2">
-        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">ComfyUI</h2>
-        <Card className="divide-y divide-line py-0">
-          <Row
-            label={status.data?.comfyOnline ? 'Connected' : 'Not reachable'}
-            hint={status.data?.activeConnectionName ?? status.data?.comfyUrl ?? undefined}
-          >
-            <span
+    /*
+     * Five pages: a row of tabs on a phone, a column of them at a desk.
+     *
+     * The same five, in the shape the width asks for. Across the top they are
+     * the only thing a phone's width can do with a set of pages, and at a desk
+     * a horizontal row of five short words above a column of settings is a
+     * navigation you keep re-reading to find out where you are — where a list
+     * down the side says it once and stays said. It is also the arrangement
+     * every settings window on every desktop has had for thirty years, which is
+     * worth something on its own.
+     */
+    <div
+      className={cn(
+        'safe-t',
+        desk ? 'flex h-full min-h-0 items-start gap-6 px-6 pt-3 pb-6' : 'readable px-4 pt-3 pb-6',
+      )}
+    >
+      {desk ? (
+        <nav
+          aria-label="Settings pages"
+          className="sticky top-0 w-[11rem] shrink-0 space-y-0.5 pt-1"
+        >
+          <h1 className="mb-2 px-2 text-xl font-semibold">Settings</h1>
+          {GROUPS.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              aria-pressed={group === entry.id}
+              onClick={() => setGroup(entry.id)}
               className={cn(
-                'size-2.5 rounded-full',
-                status.data?.comfyOnline ? 'bg-success' : 'bg-danger',
+                'block w-full rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors',
+                group === entry.id
+                  ? 'bg-accent/15 text-accent'
+                  : 'text-muted hover:bg-surface-2 hover:text-body',
               )}
-            />
-          </Row>
-          {status.data?.comfyVersion && (
-            <Row label="Version" hint={status.data.comfyVersion} />
-          )}
-          {device && (
-            <Row
-              label={device.name}
-              hint={`${formatBytes(device.vramFree)} free of ${formatBytes(device.vramTotal)} VRAM`}
-            />
-          )}
-        </Card>
-      </section>
-
-      <ConnectionsScreen />
-
-      <ComfyFolderSection />
-
-      {/* Workflows -------------------------------------------------- */}
-      <section className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Workflows</h2>
-          <Button
-            variant="secondary"
-            size="sm"
-            busy={importWorkflow.isPending}
-            onClick={() => fileRef.current?.click()}
-          >
-            Import
-          </Button>
+            >
+              {entry.label}
+            </button>
+          ))}
+        </nav>
+      ) : (
+        /*
+          The title and the five tabs stay put while the page under them
+          scrolls, so moving between them never involves scrolling back up
+          first.
+        */
+        <div className="sticky top-0 z-10 -mx-4 bg-ink/95 px-4 pb-2 backdrop-blur">
+          <h1 className="text-xl font-semibold">Settings</h1>
+          {/*
+            Wrapping, not scrolling sideways. Five of these very nearly fit a
+            phone's width and on the narrowest ones do not, and a tab that has
+            to be scrolled into view is a tab nobody knows is there — the whole
+            point of the row is that the five pages are visible at once.
+          */}
+          <div role="group" aria-label="Settings pages" className="mt-2 flex flex-wrap gap-1">
+            {GROUPS.map((entry) => (
+              <button
+                key={entry.id}
+                type="button"
+                aria-pressed={group === entry.id}
+                onClick={() => setGroup(entry.id)}
+                className={cn(
+                  'rounded-lg px-2.5 py-1.5 text-xs',
+                  group === entry.id ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                )}
+              >
+                {entry.label}
+              </button>
+            ))}
+          </div>
         </div>
-
-        <input
-          ref={fileRef}
-          type="file"
-          accept="application/json,.json"
-          className="hidden"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            if (file) void onFile(file);
-            event.target.value = '';
-          }}
-        />
-
-        <ErrorNote>{importError}</ErrorNote>
-
-        {workflows.data?.length === 0 && (
-          <Card>
-            <p className="text-sm text-muted">
-              No workflows yet. Set the ComfyUI folder above and tap{' '}
-              <strong className="text-body">Read workflows</strong> to pull in everything already
-              saved there — or import a single file with the button above.
-            </p>
-          </Card>
-        )}
-
-        {(workflows.data?.length ?? 0) > 0 && (
-          <p className="text-xs text-muted">
-            The switch decides whether a workflow appears in the generate picker.{' '}
-            {workflows.data?.filter((workflow) => workflow.visible).length} of{' '}
-            {workflows.data?.length} shown.
-          </p>
-        )}
-
-        <div className="space-y-2" data-testid="workflow-list">
-          {workflowFolders.map((folder) =>
-            folder.name === '' ? (
-              folder.workflows.map((workflow) => (
-                <WorkflowRow
-                  key={workflow.id}
-                  workflow={workflow}
-                  onEdit={() => setEditing(workflow.id)}
-                />
-              ))
-            ) : (
-              <WorkflowFolder
-                key={folder.name}
-                folder={folder}
-                onEdit={(id) => setEditing(id)}
-              />
-            ),
-          )}
-        </div>
-      </section>
-
-      {/* Shortcut targets ------------------------------------------- */}
-      {(workflows.data?.length ?? 0) > 0 && (
-        <section className="space-y-2">
-          <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
-            Gallery shortcuts
-          </h2>
-          <Card className="space-y-3">
-            <p className="text-xs text-muted">
-              Which workflow the gallery’s buttons should open. Only workflows with an image input
-              can receive a picture.
-            </p>
-            <WorkflowPicker
-              label="img2img"
-              workflows={workflows.data ?? []}
-              value={settings.data?.img2imgWorkflowId ?? null}
-              onChange={(id) => updateSettings.mutate({ img2imgWorkflowId: id })}
-            />
-            <WorkflowPicker
-              label="Upscale"
-              workflows={workflows.data ?? []}
-              value={settings.data?.upscaleWorkflowId ?? null}
-              onChange={(id) => updateSettings.mutate({ upscaleWorkflowId: id })}
-            />
-          </Card>
-        </section>
       )}
 
-      <SystemPromptsSection />
-
-      <ChatSection />
-
-      {/* Generating -------------------------------------------------- */}
-      <section className="space-y-2">
-        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Generating</h2>
-        <Card className="space-y-3">
-          <p className="text-xs text-muted">
-            What <strong className="text-body">Generate</strong> does about work already queued.
-            Building a batch up to compare later wants the first; iterating on a prompt wants one
-            of the others, because eight renders of wording you have just changed your mind about
-            are eight renders of nothing.
-          </p>
-          <div className="space-y-1">
-            {QUEUE_POLICIES.map((option) => {
-              const active = (settings.data?.queuePolicy ?? 'append') === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() => updateSettings.mutate({ queuePolicy: option.value })}
-                  className={cn(
-                    'flex w-full flex-col items-start gap-0.5 rounded-lg px-3 py-2 text-left',
-                    active ? 'bg-accent/15 text-accent' : 'bg-surface-2 active:bg-surface-3',
-                  )}
+      {/* The page itself keeps the reading cap it has everywhere: a column of
+          settings rows is unreadable at a foot wide however much room there
+          is, and the width freed by moving the tabs out of the way belongs to
+          the panel on the right rather than to stretching these. */}
+      <div
+        className={cn(
+          'space-y-6 pt-3',
+          desk && 'h-full min-w-0 flex-1 overflow-y-auto pr-1 [max-width:46rem]',
+        )}
+      >
+        {group === 'servers' && (
+          <>
+            {/* Connection ------------------------------------------------- */}
+            <section className="space-y-2">
+              <h2 className="text-xs font-medium tracking-wide text-muted uppercase">ComfyUI</h2>
+              <Card className="divide-y divide-line py-0">
+                <Row
+                  label={status.data?.comfyOnline ? 'Connected' : 'Not reachable'}
+                  hint={status.data?.activeConnectionName ?? status.data?.comfyUrl ?? undefined}
                 >
-                  <span className="text-sm">{option.label}</span>
-                  <span className="text-[11px] text-muted">{option.hint}</span>
-                </button>
-              );
-            })}
-          </div>
-          <p className="text-[11px] text-muted">
-            Endless generation ignores this: there, Generate queues nothing at all — it hands over
-            the settings for the next run.
-          </p>
-        </Card>
-      </section>
+                  <span
+                    className={cn(
+                      'size-2.5 rounded-full',
+                      status.data?.comfyOnline ? 'bg-success' : 'bg-danger',
+                    )}
+                  />
+                </Row>
+                {status.data?.comfyVersion && (
+                  <Row label="Version" hint={status.data.comfyVersion} />
+                )}
+                {device && (
+                  <Row
+                    label={device.name}
+                    hint={`${formatBytes(device.vramFree)} free of ${formatBytes(device.vramTotal)} VRAM`}
+                  />
+                )}
+              </Card>
+            </section>
 
-      {/* Display ---------------------------------------------------- */}
-      <section className="space-y-2">
-        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Display</h2>
-        <Card>
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-sm">Blur every image</p>
-              <p className="text-xs text-muted">
-                Thumbnails, previews and the viewer, everywhere in the app. Kept on this device.
-              </p>
-            </div>
-            <Toggle checked={blurred} onChange={setBlurred} label="Blur every image" />
-          </div>
-        </Card>
-      </section>
+            <ConnectionsScreen />
 
-      {/* Archive ---------------------------------------------------- */}
-      <section className="space-y-2">
-        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Saved images</h2>
-        <Card className="space-y-3">
-          <p className="text-xs text-muted">
-            Rating an image copies it onto this device, so it stays available after the ComfyUI
-            instance that produced it is gone. Keeping one does the same without the stars.
-          </p>
+            <ComfyFolderSection />
+          </>
+        )}
 
-          {/*
+        {group === 'workflows' && (
+          <>
+            {/* Workflows -------------------------------------------------- */}
+            <section className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
+                  Workflows
+                </h2>
+                <div className="flex shrink-0 gap-2">
+                  {/* An opinion about a field is usually an opinion about every
+                      workflow that has one, so the general arrangement sits
+                      beside the list rather than inside any one form. */}
+                  <ArrangementButton />
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    busy={importWorkflow.isPending}
+                    onClick={() => fileRef.current?.click()}
+                  >
+                    Import
+                  </Button>
+                </div>
+              </div>
+
+              <input
+                ref={fileRef}
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void onFile(file);
+                  event.target.value = '';
+                }}
+              />
+
+              <ErrorNote>{importError}</ErrorNote>
+
+              {workflows.data?.length === 0 && (
+                <Card>
+                  <p className="text-sm text-muted">
+                    No workflows yet. Set the ComfyUI folder above and tap{' '}
+                    <strong className="text-body">Read workflows</strong> to pull in everything
+                    already saved there — or import a single file with the button above.
+                  </p>
+                </Card>
+              )}
+
+              {(workflows.data?.length ?? 0) > 0 && (
+                <p className="text-xs text-muted">
+                  {workflows.data?.filter((workflow) => workflow.visible).length} of{' '}
+                  {workflows.data?.length} shown in the generate picker.
+                </p>
+              )}
+
+              <div className="space-y-2" data-testid="workflow-list">
+                {workflowFolders.map((folder) =>
+                  folder.name === '' ? (
+                    folder.workflows.map((workflow) => (
+                      <WorkflowRow
+                        key={workflow.id}
+                        workflow={workflow}
+                        onEdit={() => setEditing(workflow.id)}
+                      />
+                    ))
+                  ) : (
+                    <WorkflowFolder
+                      key={folder.name}
+                      folder={folder}
+                      onEdit={(id) => setEditing(id)}
+                    />
+                  ),
+                )}
+              </div>
+            </section>
+
+            {/* Shortcut targets ------------------------------------------- */}
+            {(workflows.data?.length ?? 0) > 0 && (
+              <section className="space-y-2">
+                <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
+                  Gallery shortcuts
+                </h2>
+                <Card className="space-y-3">
+                  <p className="text-xs text-muted">
+                    Which workflow the gallery’s buttons open. Only one with an image input can
+                    receive a picture.
+                  </p>
+                  <WorkflowPicker
+                    label="img2img"
+                    workflows={workflows.data ?? []}
+                    value={settings.data?.img2imgWorkflowId ?? null}
+                    onChange={(id) => updateSettings.mutate({ img2imgWorkflowId: id })}
+                  />
+                  <WorkflowPicker
+                    label="Upscale"
+                    workflows={workflows.data ?? []}
+                    value={settings.data?.upscaleWorkflowId ?? null}
+                    onChange={(id) => updateSettings.mutate({ upscaleWorkflowId: id })}
+                  />
+                </Card>
+              </section>
+            )}
+          </>
+        )}
+
+        {group === 'chat' && (
+          <>
+            <SystemPromptsSection />
+
+            <ChatSection />
+          </>
+        )}
+
+        {group === 'pictures' && (
+          <>
+            {/* Generating -------------------------------------------------- */}
+            <section className="space-y-2">
+              <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Generating</h2>
+              <Card className="space-y-3">
+                <p className="text-xs text-muted">
+                  What <strong className="text-body">Generate</strong> does about work already
+                  queued.
+                </p>
+                <div className="space-y-1">
+                  {QUEUE_POLICIES.map((option) => {
+                    const active = (settings.data?.queuePolicy ?? 'append') === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => updateSettings.mutate({ queuePolicy: option.value })}
+                        className={cn(
+                          'flex w-full flex-col items-start gap-0.5 rounded-lg px-3 py-2 text-left',
+                          active ? 'bg-accent/15 text-accent' : 'bg-surface-2 active:bg-surface-3',
+                        )}
+                      >
+                        <span className="text-sm">{option.label}</span>
+                        <span className="text-[11px] text-muted">{option.hint}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] text-muted">
+                  Endless generation ignores this — it queues nothing at all.
+                </p>
+              </Card>
+            </section>
+
+            {/* Display ---------------------------------------------------- */}
+            <section className="space-y-2">
+              <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Display</h2>
+              <Card>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm">Blur every image</p>
+                    <p className="text-xs text-muted">
+                      Everywhere in the app. Kept on this device.
+                    </p>
+                  </div>
+                  <Toggle checked={blurred} onChange={setBlurred} label="Blur every image" />
+                </div>
+              </Card>
+            </section>
+
+            {/* Archive ---------------------------------------------------- */}
+            <section className="space-y-2">
+              <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
+                Saved images
+              </h2>
+              <Card className="space-y-3">
+                <p className="text-xs text-muted">
+                  Rating or keeping an image copies it here, so it outlives the ComfyUI instance
+                  that made it.
+                </p>
+
+                {/*
             The counterweight to how cheap generating is: without a cleanup the
             gallery becomes thousands of near-misses you scrolled past once,
             which makes the good ones harder to find rather than easier.
           */}
-          <div className="space-y-1.5">
-            <div className="flex items-baseline justify-between gap-2">
-              <span className="text-sm">Delete unkept runs after</span>
-              <span className="text-xs text-muted">
-                {settings.data?.autoDeleteHours
-                  ? describeHours(settings.data.autoDeleteHours)
-                  : 'never'}
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-1">
-              {AUTO_DELETE_OPTIONS.map((option) => {
-                const active = (settings.data?.autoDeleteHours ?? null) === option.hours;
-                return (
-                  <button
-                    key={option.label}
-                    type="button"
-                    aria-pressed={active}
-                    onClick={() => updateSettings.mutate({ autoDeleteHours: option.hours })}
-                    className={cn(
-                      'rounded-lg px-2.5 py-1.5 text-xs',
-                      active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
-                    )}
+                <div className="space-y-1.5">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-sm">Delete unkept runs after</span>
+                    <span className="text-xs text-muted">
+                      {settings.data?.autoDeleteHours
+                        ? describeHours(settings.data.autoDeleteHours)
+                        : 'never'}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {AUTO_DELETE_OPTIONS.map((option) => {
+                      const active = (settings.data?.autoDeleteHours ?? null) === option.hours;
+                      return (
+                        <button
+                          key={option.label}
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() => updateSettings.mutate({ autoDeleteHours: option.hours })}
+                          className={cn(
+                            'rounded-lg px-2.5 py-1.5 text-xs',
+                            active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                          )}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[11px] text-muted">
+                    One rated, kept or favourited image keeps its whole run. Imported folders are
+                    never touched.
+                  </p>
+                </div>
+                <Row
+                  label={`${archive.data?.images ?? 0} images stored`}
+                  hint={formatBytes(archive.data?.bytes ?? 0)}
+                />
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    busy={pruning}
+                    onClick={async () => {
+                      setPruning(true);
+                      try {
+                        const { removed } = await api.pruneArchive();
+                        setPruneResult(
+                          `Removed ${removed} unrated ${removed === 1 ? 'copy' : 'copies'}.`,
+                        );
+                        await archive.refetch();
+                      } finally {
+                        setPruning(false);
+                      }
+                    }}
                   >
-                    {option.label}
-                  </button>
-                );
-              })}
-            </div>
-            <p className="text-[11px] text-muted">
-              Anything rated, kept or favourited stays — and one of those anywhere in a run keeps
-              the whole run, so a batch is never half-deleted. Imported folders are never touched.
-            </p>
-          </div>
-          <Row
-            label={`${archive.data?.images ?? 0} images stored`}
-            hint={formatBytes(archive.data?.bytes ?? 0)}
-          />
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              busy={pruning}
-              onClick={async () => {
-                setPruning(true);
-                try {
-                  const { removed } = await api.pruneArchive();
-                  setPruneResult(`Removed ${removed} unrated ${removed === 1 ? 'copy' : 'copies'}.`);
-                  await archive.refetch();
-                } finally {
-                  setPruning(false);
-                }
-              }}
-            >
-              Remove unrated copies
-            </Button>
-          </div>
-          {pruneResult && <p className="text-xs text-muted">{pruneResult}</p>}
-        </Card>
-      </section>
+                    Remove unrated copies
+                  </Button>
+                </div>
+                {pruneResult && <p className="text-xs text-muted">{pruneResult}</p>}
+              </Card>
+            </section>
 
-      {/* Folder import ---------------------------------------------- */}
-      <ImportSection />
+            {/* Folder import ------------------------------------------ */}
+            <ImportSection />
+          </>
+        )}
 
-      {/* Maintenance ------------------------------------------------ */}
-      {status.data?.terminalEnabled && (
-        <section className="space-y-2">
-          <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Maintenance</h2>
-          <Card className="space-y-3">
-            <p className="text-xs text-muted">
-              A shell on the machine running Latent. Enabled because this server was started with
-              LATENT_TERMINAL set.
-            </p>
-            <Button variant="secondary" onClick={() => setTerminalOpen(true)}>
-              Open terminal
-            </Button>
-          </Card>
-        </section>
-      )}
+        {group === 'system' && (
+          <>
+            {/* Software --------------------------------------------------- */}
+            {status.data?.updateEnabled && <UpdateSection />}
 
-      {/* Session ---------------------------------------------------- */}
-      <section className="space-y-2">
-        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Session</h2>
-        {/*
+            {/* Maintenance ------------------------------------------------ */}
+            {status.data?.terminalEnabled && (
+              <section className="space-y-2">
+                <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
+                  Maintenance
+                </h2>
+                <Card className="space-y-3">
+                  <p className="text-xs text-muted">A shell on the machine running Latent.</p>
+                  <Button variant="secondary" onClick={() => setTerminalOpen(true)}>
+                    Open terminal
+                  </Button>
+                </Card>
+              </section>
+            )}
+
+            {/* Session ---------------------------------------------------- */}
+            <section className="space-y-2">
+              <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Session</h2>
+              {/*
           The archive key is derived from the password and held only in memory,
           so a restarted server leaves you signed in with the archive shut. This
           is the way back that does not involve signing out to fix something
           that is not a sign-in problem.
         */}
-        {status.data?.archiveLocked && (
-          <Card className="space-y-3">
-            <p className="text-xs text-warn">
-              The image archive is locked, so importing and keeping images are unavailable. It
-              needs the same password you signed in with.
+              {status.data?.archiveLocked && (
+                <Card className="space-y-3">
+                  <p className="text-xs text-warn">
+                    The image archive is locked. Unlocking it needs the password you signed in with.
+                  </p>
+                  <Button variant="primary" onClick={() => setUnlocking(true)}>
+                    Unlock the archive
+                  </Button>
+                </Card>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <Button variant="secondary" onClick={() => setChangingPassword(true)}>
+                  Change password
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={async () => {
+                    await api.logout();
+                    window.location.reload();
+                  }}
+                >
+                  Sign out
+                </Button>
+              </div>
+            </section>
+
+            <p className="pt-2 text-center text-xs text-muted">
+              Latent — a mobile client for ComfyUI
             </p>
-            <Button variant="primary" onClick={() => setUnlocking(true)}>
-              Unlock the archive
-            </Button>
-          </Card>
+          </>
         )}
-
-        <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" onClick={() => setChangingPassword(true)}>
-            Change password
-          </Button>
-          <Button
-            variant="ghost"
-            onClick={async () => {
-              await api.logout();
-              window.location.reload();
-            }}
-          >
-            Sign out
-          </Button>
-        </div>
-      </section>
-
-      <p className="pt-2 text-center text-xs text-muted">Latent — a mobile client for ComfyUI</p>
+      </div>
 
       {editing && <FormEditorSheet workflowId={editing} onClose={() => setEditing(null)} />}
       {changingPassword && <PasswordSheet onClose={() => setChangingPassword(false)} />}
@@ -614,7 +1105,9 @@ function WorkflowFolder({
         </span>
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{folder.name}</span>
         <span className="shrink-0 text-[11px] text-muted tabular-nums">
-          {folder.shown > 0 ? `${folder.shown}/${folder.workflows.length}` : folder.workflows.length}
+          {folder.shown > 0
+            ? `${folder.shown}/${folder.workflows.length}`
+            : folder.workflows.length}
         </span>
       </button>
 
@@ -629,13 +1122,7 @@ function WorkflowFolder({
   );
 }
 
-function WorkflowRow({
-  workflow,
-  onEdit,
-}: {
-  workflow: WorkflowSummary;
-  onEdit: () => void;
-}) {
+function WorkflowRow({ workflow, onEdit }: { workflow: WorkflowSummary; onEdit: () => void }) {
   const remove = useDeleteWorkflow();
   const rescan = useRescanWorkflow();
   const update = useUpdateWorkflow();
@@ -670,39 +1157,39 @@ function WorkflowRow({
 
       {/* A workflow nobody generates with needs no buttons taking up room. */}
       {workflow.visible && (
-      <div className="flex flex-wrap gap-2">
-        <Button variant="secondary" size="sm" onClick={onEdit}>
-          Edit form
-        </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          busy={rescan.isPending}
-          onClick={() => rescan.mutate(workflow.id)}
-          title="Re-read node definitions from ComfyUI, picking up newly installed models"
-        >
-          Refresh models
-        </Button>
-        {confirming ? (
-          <>
-            <Button
-              variant="danger"
-              size="sm"
-              busy={remove.isPending}
-              onClick={() => remove.mutate(workflow.id)}
-            >
-              Really delete
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
-              Cancel
-            </Button>
-          </>
-        ) : (
-          <Button variant="ghost" size="sm" onClick={() => setConfirming(true)}>
-            Delete
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" onClick={onEdit}>
+            Edit form
           </Button>
-        )}
-      </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            busy={rescan.isPending}
+            onClick={() => rescan.mutate(workflow.id)}
+            title="Re-read node definitions from ComfyUI, picking up newly installed models"
+          >
+            Refresh models
+          </Button>
+          {confirming ? (
+            <>
+              <Button
+                variant="danger"
+                size="sm"
+                busy={remove.isPending}
+                onClick={() => remove.mutate(workflow.id)}
+              >
+                Really delete
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
+                Cancel
+              </Button>
+            </>
+          ) : (
+            <Button variant="ghost" size="sm" onClick={() => setConfirming(true)}>
+              Delete
+            </Button>
+          )}
+        </div>
       )}
     </Card>
   );
@@ -753,10 +1240,13 @@ function WorkflowPicker({
 function FormEditorSheet({ workflowId, onClose }: { workflowId: string; onClose: () => void }) {
   const workflow = useWorkflow(workflowId);
   const update = useUpdateWorkflow();
+  const settings = useSettings();
   const [draft, setDraft] = useState<FieldOverrides | null>(null);
 
   const detail = workflow.data;
   const overrides = draft ?? detail?.overrides ?? {};
+  /** Whether there is a general arrangement for this workflow to be ignoring. */
+  const arranged = (settings.data?.fieldArrangement?.length ?? 0) > 0;
 
   const write = (next: FieldOverrides) => {
     setDraft(next);
@@ -782,52 +1272,99 @@ function FormEditorSheet({ workflowId, onClose }: { workflowId: string; onClose:
   };
 
   return (
-    <Sheet open onClose={onClose} title={detail?.name ?? 'Form'} full>
+    /*
+     * Wide, because this one has somewhere to put the width.
+     *
+     * Every other sheet is capped at a reading width and should be — a column
+     * of controls a foot across is worse, not better. This is the exception:
+     * it is a list of fields *and* a picture of the phone, side by side, and on
+     * a desktop monitor both of them were being squeezed into 672px with the
+     * rest of the screen dark.
+     */
+    <Sheet open onClose={onClose} title={detail?.name ?? 'Form'} full wide>
       {!detail ? (
         <div className="grid place-items-center py-12">
           <Spinner className="size-6 text-muted" />
         </div>
       ) : (
-        <div className="space-y-4">
-          <p className="text-xs text-muted">
-            Build the form: drag the handles to reorder, choose whether a field takes half a row or
-            all of it, and hide what you never touch. Hidden fields still use the value the workflow
-            was exported with.
-          </p>
+        /*
+         * Two columns where there is room for two.
+         *
+         * The editor is a list of rows with handles — good for changing things,
+         * useless for judging them. On a desktop there is space to put the
+         * phone beside it and answer "does this read well" without picking the
+         * phone up, which is the whole reason anybody opens this on a PC.
+         */
+        <div className="wide:grid wide:grid-cols-[minmax(0,1fr)_auto] wide:items-start wide:gap-6">
+          <div className="space-y-4">
+            <p className="text-xs text-muted">
+              Build the form: drag the handles to reorder, choose whether a field takes half a row
+              or all of it, and hide what you never touch. Hidden fields still use the value the
+              workflow was exported with.
+            </p>
 
-          <LayoutBar workflowId={workflowId} detail={detail} />
-
-          {(['main', 'advanced'] as const).map((group) => {
-            const fields = detail.schema.fields.filter((field) => field.group === group);
-            if (fields.length === 0) return null;
-            return (
-              <div key={group} className="space-y-2">
-                <h3 className="text-xs font-medium tracking-wide text-muted uppercase">
-                  {group === 'main' ? 'On the main screen' : 'Under Advanced'}
-                </h3>
-                <SortableList
-                  items={fields}
-                  idOf={(field) => field.id}
-                  onReorder={reorder}
-                  className="space-y-2"
-                >
-                  {(field, handle, dragging) => (
-                    <FieldEditorRow
-                      field={field}
-                      handle={handle}
-                      dragging={dragging}
-                      onRename={(label) => patch(field.id, { label })}
-                      onToggleHidden={() => patch(field.id, { hidden: !field.hidden })}
-                      onMove={() =>
-                        patch(field.id, { group: field.group === 'main' ? 'advanced' : 'main' })
-                      }
-                      onPatch={(change) => patch(field.id, change)}
-                    />
-                  )}
-                </SortableList>
+            {/*
+              Said out loud, because the precedence is invisible otherwise.
+              Dragging anything here writes a position for every field in the
+              group, and those beat the general arrangement — which is the right
+              way round, and baffling if you arranged the fields generally and
+              found this one workflow ignoring it.
+            */}
+            {arranged && hasOwnOrder(overrides) && (
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-surface-2 px-3 py-2">
+                <p className="min-w-0 text-[11px] text-muted">
+                  This workflow has an order of its own, so the general arrangement does not set the
+                  order here.
+                </p>
+                <Button variant="ghost" size="sm" onClick={() => write(clearOwnOrder(overrides))}>
+                  Use the general one
+                </Button>
               </div>
-            );
-          })}
+            )}
+
+            <LayoutBar workflowId={workflowId} detail={detail} />
+
+            {(['main', 'advanced'] as const).map((group) => {
+              const fields = detail.schema.fields.filter((field) => field.group === group);
+              if (fields.length === 0) return null;
+              return (
+                <div key={group} className="space-y-2">
+                  <h3 className="text-xs font-medium tracking-wide text-muted uppercase">
+                    {group === 'main' ? 'On the main screen' : 'Under Advanced'}
+                  </h3>
+                  <SortableList
+                    items={fields}
+                    idOf={(field) => field.id}
+                    onReorder={reorder}
+                    className="space-y-2"
+                  >
+                    {(field, handle, dragging) => (
+                      <FieldEditorRow
+                        field={field}
+                        handle={handle}
+                        dragging={dragging}
+                        onRename={(label) => patch(field.id, { label })}
+                        onToggleHidden={() => patch(field.id, { hidden: !field.hidden })}
+                        onMove={() =>
+                          patch(field.id, { group: field.group === 'main' ? 'advanced' : 'main' })
+                        }
+                        onPatch={(change) => patch(field.id, change)}
+                      />
+                    )}
+                  </SortableList>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Only where it fits: on a phone this would be a picture of the
+              screen you are already holding. */}
+          <div className="mt-6 hidden wide:sticky wide:top-0 wide:mt-0 wide:block">
+            <p className="mb-2 text-center text-xs tracking-wide text-muted uppercase">
+              On the phone
+            </p>
+            <FormPreview fields={detail.schema.fields} />
+          </div>
         </div>
       )}
     </Sheet>
@@ -854,11 +1391,7 @@ function FieldEditorRow({
   const [label, setLabel] = useState(field.label);
 
   const numeric = field.control === 'int' || field.control === 'float';
-  // Fields that get their own dedicated control on the form are always a full
-  // row; offering them a width would be a switch that does nothing.
-  const sizeable =
-    !['textarea', 'text', 'image'].includes(field.control) &&
-    !['prompt', 'negative_prompt', 'image_input', 'seed', 'lora_text'].includes(field.role);
+  const sizeable = isSizeable(field);
   const points = usesPointLine(field);
   const line = fieldPoints(field);
   const preview = fieldPointValues(field);
@@ -1276,6 +1809,9 @@ function ChatSection() {
   );
   const [checking, setChecking] = useState(false);
   const [showSampling, setShowSampling] = useState(false);
+  const [showWanderSampling, setShowWanderSampling] = useState(false);
+  const [showWanderDraw, setShowWanderDraw] = useState(false);
+  const workflows = useVisibleWorkflows();
   const status = useChatStatus();
   /** The freshest list we have: what Check just returned, else what was fetched. */
   const models = probe?.models ?? status.data?.models ?? [];
@@ -1283,6 +1819,29 @@ function ChatSection() {
   const message = probe?.message ?? status.data?.message;
 
   if (!chat) return null;
+
+  /*
+   * Written after the rest of the chat settings, so a stored block from before
+   * it existed simply has no field for it. The server merges its defaults in;
+   * this is the same answer on the client, for a response that predates them.
+   */
+  const review = chat.review ?? {
+    enabled: true,
+    threshold: 'balanced' as const,
+    keepInView: 2,
+  };
+  const autonomous = chat.autonomous ?? { enabled: false, maxRounds: 4 };
+  const wander = chat.wander ?? {
+    workflowId: '',
+    attributes: 0,
+    draw: DEFAULT_WANDER_DRAW,
+    sampling: 'chat' as const,
+    ownSampling: defaultSampling(),
+  };
+  const wanderSampling = { ...defaultSampling(), ...(wander.ownSampling ?? {}) };
+  /** Filled in for a rule added since these settings were written. */
+  const wanderDraw = { ...DEFAULT_WANDER_DRAW, ...(wander.draw ?? {}) };
+  const wanderSamplingOn = SAMPLING_PARAMS.filter((param) => wanderSampling[param.key]?.on).length;
 
   const patch = (change: Partial<typeof chat>) =>
     updateSettings.mutate({ chat: { ...chat, ...change } });
@@ -1381,8 +1940,8 @@ function ChatSection() {
           <div className="min-w-0 flex-1">
             <p className="text-sm">Show its thinking</p>
             <p className="text-[11px] text-muted">
-              On by default: the tools ask it to make judgements, and one that has reasoned first
-              is better at them.
+              On by default: the tools ask it to make judgements, and one that has reasoned first is
+              better at them.
             </p>
           </div>
           <Toggle
@@ -1469,11 +2028,186 @@ function ChatSection() {
             ))}
           </div>
           <p className="text-[11px] text-muted">
-            Latent’s own describes the tools and how modern image models read a prompt — plain
-            prose rather than a pile of tags. Replacing it replaces all of that. Write your own
-            under <strong className="text-body">System prompts</strong> above. When each tool is
-            reached for is set below and applies either way.
+            Latent’s own describes the tools and how modern image models read a prompt — plain prose
+            rather than a pile of tags. Replacing it replaces all of that. Write your own under{' '}
+            <strong className="text-body">System prompts</strong> above. When each tool is reached
+            for is set below and applies either way.
           </p>
+        </div>
+
+        {/*
+          How far a prompt goes, separately from what the instructions say.
+
+          Not a length limit — "two sentences" is a rule a model follows by
+          truncating the wrong half. What is being chosen is how much of the
+          scene the prompt settles and how much is left to the sampler, which is
+          a different picture at each end rather than a longer one. It applies
+          to a system prompt you wrote yourself as well.
+        */}
+        <PointsLine
+          label="How much a prompt spells out"
+          aside="the picture, not its length"
+          options={DETAIL_OPTIONS}
+          value={chat.promptDetail ?? 'balanced'}
+          onChange={(promptDetail) => patch({ promptDetail })}
+        />
+      </Card>
+
+      {/* What you like ----------------------------------------------- */}
+      <Card className="space-y-3">
+        <div>
+          <p className="text-sm">What you like</p>
+          <p className="text-[11px] text-muted">
+            Notes about concepts, aesthetics and things you keep coming back to, so “give me an
+            idea” has somewhere to start. They are encrypted with your password and read only by the
+            model — write them under the <strong className="text-body">♥</strong> in the chat
+            header. A note pinned there ignores this scale and applies wherever it is relevant, even
+            to a picture you have already described; <strong className="text-body">Off</strong>{' '}
+            silences everything, pinned notes included.
+          </p>
+        </div>
+
+        {/*
+          A scale, like the pace settings, and read the same way: each step says
+          how much of what you left unsaid comes from the notes. None of them
+          touches what you did say.
+        */}
+        <PointsLine
+          label="How much it draws on them"
+          aside="fills what you leave open"
+          options={TASTE_OPTIONS}
+          value={chat.taste ?? 'hints'}
+          onChange={(taste) => patch({ taste })}
+        />
+      </Card>
+
+      {/* Wandering ---------------------------------------------------- */}
+      <Card className="space-y-3">
+        <div>
+          <p className="text-sm">Wandering</p>
+          <p className="text-[11px] text-muted">
+            The <strong className="text-body">❋</strong> in the chat header starts it: picture after
+            picture, each one made from a few of your notes drawn at random, until you stop it.
+            Nothing is asked and nothing is judged — it is for the evening when you would rather be
+            shown things than decide any.
+          </p>
+        </div>
+
+        <AttributesLine
+          value={wander.attributes}
+          onChange={(attributes) => patch({ wander: { ...wander, attributes } })}
+        />
+
+        {/*
+          Which notes, from where — the part that decides whether this mode is
+          any use at all.
+
+          Its own sheet rather than six more rows here, because it is the only
+          thing in Settings that has to list the headings you wrote, and because
+          half of it is behind the password those headings live behind. The
+          summary is the line above the button: what it says is what a round is
+          currently allowed to do.
+        */}
+        <div className="space-y-1.5 border-t border-line pt-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="min-w-0 flex-1 text-sm">What it draws from</p>
+            <button
+              type="button"
+              onClick={() => setShowWanderDraw(true)}
+              className="shrink-0 rounded-lg bg-surface-2 px-3 py-1.5 text-xs text-body"
+            >
+              Set up…
+            </button>
+          </div>
+          <p className="text-[11px] leading-relaxed text-muted">{describeDraw(wanderDraw)}</p>
+        </div>
+
+        <div className="space-y-1.5 border-t border-line pt-3">
+          <p className="text-sm">Rendered with</p>
+          <div className="flex flex-wrap gap-1">
+            <button
+              type="button"
+              aria-pressed={wander.workflowId === ''}
+              onClick={() => patch({ wander: { ...wander, workflowId: '' } })}
+              className={cn(
+                'rounded-lg px-2.5 py-1.5 text-xs',
+                wander.workflowId === '' ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+              )}
+            >
+              Whatever the chat uses
+            </button>
+            {(workflows.data ?? []).map((workflow) => (
+              <button
+                key={workflow.id}
+                type="button"
+                aria-pressed={wander.workflowId === workflow.id}
+                onClick={() => patch({ wander: { ...wander, workflowId: workflow.id } })}
+                className={cn(
+                  'max-w-full truncate rounded-lg px-2.5 py-1.5 text-xs',
+                  wander.workflowId === workflow.id
+                    ? 'bg-accent text-white'
+                    : 'bg-surface-2 text-muted',
+                )}
+              >
+                {workflow.name}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-muted">
+            Worth setting: the workflow you iterate with is often the slow one, and a run that goes
+            all evening wants the fast one.
+          </p>
+        </div>
+
+        {/*
+          Sampling of its own, because this is not a conversation.
+
+          Nobody is reading the words, the same few notes come round again, and
+          a model at its careful settings writes the same prompt from them every
+          time. Variety is the entire product here, which is a different job
+          from answering well.
+        */}
+        <div className="space-y-1.5 border-t border-line pt-3">
+          <p className="text-sm">Sampling for these</p>
+          <div className="flex gap-1">
+            {(
+              [
+                { value: 'chat' as const, label: 'Same as the chat' },
+                { value: 'own', label: 'Its own' },
+              ] as { value: 'chat' | 'own'; label: string }[]
+            ).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={wander.sampling === option.value}
+                onClick={() => patch({ wander: { ...wander, sampling: option.value } })}
+                className={cn(
+                  'flex-1 rounded-lg px-2.5 py-1.5 text-xs',
+                  wander.sampling === option.value
+                    ? 'bg-accent text-white'
+                    : 'bg-surface-2 text-muted',
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {wander.sampling === 'own' && (
+            <div className="flex items-center justify-between gap-3">
+              <p className="min-w-0 flex-1 text-[11px] text-muted">
+                {wanderSamplingOn === 0
+                  ? 'Nothing set, so this is the chat’s after all — turn something on.'
+                  : `${wanderSamplingOn} ${wanderSamplingOn === 1 ? 'parameter' : 'parameters'} of its own.`}
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowWanderSampling(true)}
+                className="shrink-0 rounded-lg bg-surface-2 px-3 py-1.5 text-xs text-body"
+              >
+                Adjust…
+              </button>
+            </div>
+          )}
         </div>
       </Card>
 
@@ -1483,9 +2217,9 @@ function ChatSection() {
           <p className="text-sm">When it reaches for a tool</p>
           <p className="text-[11px] text-muted">
             Separately per tool, because they are not the same interruption. A question mid-
-            conversation is cheap; a finished prompt while you are still deciding what you want
-            ends the conversation this module is for. <strong className="text-body">Off</strong> is
-            the only one that is a guarantee — the tool is not offered at all.
+            conversation is cheap; a finished prompt while you are still deciding what you want ends
+            the conversation this module is for. <strong className="text-body">Off</strong> is the
+            only one that is a guarantee — the tool is not offered at all.
           </p>
         </div>
 
@@ -1531,11 +2265,7 @@ function ChatSection() {
                     <span
                       className={cn(
                         'block h-2 rounded-[3px]',
-                        index === at
-                          ? 'bg-accent'
-                          : index < at
-                            ? 'bg-accent/30'
-                            : 'bg-surface-3',
+                        index === at ? 'bg-accent' : index < at ? 'bg-accent/30' : 'bg-surface-3',
                       )}
                     />
                   </button>
@@ -1549,6 +2279,99 @@ function ChatSection() {
             </div>
           );
         })}
+
+        {/* Checking the picture -------------------------------------- */}
+        <div className="space-y-3 border-t border-line pt-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-sm">Let it see the pictures</p>
+              <p className="text-[11px] text-muted">
+                On by default. What a prompt produced goes back to the model — most worth running
+                are multimodal — so it can say how much of the prompt came through and knows what
+                you mean by “make the sky darker”. Off for a text-only server.
+              </p>
+            </div>
+            <Toggle
+              checked={review.enabled}
+              onChange={(enabled) => patch({ review: { ...review, enabled } })}
+              label="Let it see the pictures"
+            />
+          </div>
+
+          {review.enabled && (
+            <>
+              <KeepInViewLine
+                value={review.keepInView}
+                onChange={(keepInView) => patch({ review: { ...review, keepInView } })}
+              />
+              <PointsLine
+                label="Propose a rewrite when"
+                aside="how picky it is"
+                options={REVIEW_OPTIONS}
+                value={review.threshold}
+                onChange={(threshold) => patch({ review: { ...review, threshold } })}
+              />
+              {/*
+                A picture can miss for several reasons at once, and which to
+                chase is a matter of taste. Guessing produces a confident
+                rewrite of the wrong thing; asking costs one tap.
+              */}
+              {!autonomous.enabled && (
+                <PointsLine
+                  label="Ask rather than guess"
+                  aside="when the fix is a choice"
+                  options={ASK_OPTIONS}
+                  value={review.askWhen}
+                  onChange={(askWhen) => patch({ review: { ...review, askWhen } })}
+                />
+              )}
+
+              {/* Carrying on by itself ------------------------------- */}
+              <div className="space-y-2 border-t border-line pt-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm">Carry on by itself</p>
+                    <p className="text-[11px] text-muted">
+                      Off by default. With it on, the model’s own prompts and rewrites are accepted
+                      for you and the next render starts — until one clears the mark you set above.
+                      That threshold is the whole of the stopping rule: raise it and it tries
+                      harder, lower it and it settles sooner. It asks you nothing while it runs,
+                      because there is nobody to answer.
+                    </p>
+                  </div>
+                  <Toggle
+                    checked={autonomous.enabled}
+                    onChange={(enabled) => patch({ autonomous: { ...autonomous, enabled } })}
+                    label="Carry on by itself"
+                  />
+                </div>
+
+                {autonomous.enabled && (
+                  <>
+                    {/*
+                      The brake, and the reason there is one.
+
+                      A model convinced its prompt is nearly right will rewrite
+                      it indefinitely, and by definition nobody is watching. The
+                      limit is renders, not rewrites, because renders are what
+                      cost the GPU an hour.
+                    */}
+                    <RoundsLine
+                      value={autonomous.maxRounds}
+                      onChange={(maxRounds) => patch({ autonomous: { ...autonomous, maxRounds } })}
+                    />
+                    <p className="text-[11px] text-muted">
+                      It stops at the limit with the last proposal waiting rather than throwing it
+                      away, and the <strong className="text-body">∞</strong> strip above the
+                      composer stops it sooner. Anything you decide yourself hands the run back to
+                      you.
+                    </p>
+                  </>
+                )}
+              </div>
+            </>
+          )}
+        </div>
       </Card>
 
       {/* Pictures, and what they are made with ----------------------- */}
@@ -1634,18 +2457,16 @@ function ChatSection() {
           <div>
             <p className="text-sm">Mark what changed</p>
             <p className="text-[11px] text-muted">
-              Against the conversation’s previous prompt. Two paragraphs of near-identical prose
-              are hard to compare by eye, which is how you regenerate something you meant to
-              change and do not notice.
+              Against the conversation’s previous prompt. Two paragraphs of near-identical prose are
+              hard to compare by eye, which is how you regenerate something you meant to change and
+              do not notice.
             </p>
           </div>
           <div className="flex items-center justify-between gap-3">
             <span className="min-w-0 flex-1 text-sm">In the prompt dialog</span>
             <Toggle
               checked={chat.showDiff?.inDialog ?? true}
-              onChange={(inDialog) =>
-                patch({ showDiff: { ...chat.showDiff, inDialog } })
-              }
+              onChange={(inDialog) => patch({ showDiff: { ...chat.showDiff, inDialog } })}
               label="Mark changes in the prompt dialog"
             />
           </div>
@@ -1653,9 +2474,7 @@ function ChatSection() {
             <span className="min-w-0 flex-1 text-sm">Under the picture</span>
             <Toggle
               checked={chat.showDiff?.underPicture ?? true}
-              onChange={(underPicture) =>
-                patch({ showDiff: { ...chat.showDiff, underPicture } })
-              }
+              onChange={(underPicture) => patch({ showDiff: { ...chat.showDiff, underPicture } })}
               label="Mark changes under the picture"
             />
           </div>
@@ -1669,6 +2488,22 @@ function ChatSection() {
         sampling={sampling}
         onClose={() => setShowSampling(false)}
         onChange={(next) => patch({ sampling: next })}
+      />
+
+      <WanderSetup
+        open={showWanderDraw}
+        onClose={() => setShowWanderDraw(false)}
+        draw={wanderDraw}
+        attributes={wander.attributes}
+        onChange={(draw) => patch({ wander: { ...wander, draw } })}
+      />
+
+      {/* The same dialog, pointed at the wandering run's own copy. */}
+      <SamplingSheet
+        open={showWanderSampling}
+        sampling={wanderSampling}
+        onClose={() => setShowWanderSampling(false)}
+        onChange={(next) => patch({ wander: { ...wander, ownSampling: next } })}
       />
     </section>
   );
@@ -1709,9 +2544,9 @@ function SamplingSheet({
       <div className="space-y-4">
         <p className="text-xs text-muted">
           Each of these is off until you turn it on, and off means the model server’s own — the
-          flags it was started with, chosen for the model behind it. An untouched setting here
-          sends nothing at all, which is almost always the better answer. Turn one on when you
-          have a specific complaint about the replies.
+          flags it was started with, chosen for the model behind it. An untouched setting here sends
+          nothing at all, which is almost always the better answer. Turn one on when you have a
+          specific complaint about the replies.
         </p>
 
         {anyOn && (
@@ -1821,8 +2656,7 @@ function ChatGenerationSettingsEditor({
 
   // Prompts are excluded: the whole point is that the model writes those.
   const fields = (detail.data?.schema.fields ?? []).filter(
-    (field) =>
-      !field.hidden && field.role !== 'prompt' && field.role !== 'negative_prompt',
+    (field) => !field.hidden && field.role !== 'prompt' && field.role !== 'negative_prompt',
   );
 
   return (
@@ -1916,7 +2750,8 @@ function ComfyFolderSection() {
    */
   const storedPrefix = settings.data?.workflowPrefix;
   useEffect(() => {
-    if (storedPrefix !== undefined) setPrefix((current) => (current === '' ? storedPrefix : current));
+    if (storedPrefix !== undefined)
+      setPrefix((current) => (current === '' ? storedPrefix : current));
   }, [storedPrefix]);
 
   return (
@@ -1924,9 +2759,8 @@ function ComfyFolderSection() {
       <h2 className="text-xs font-medium tracking-wide text-muted uppercase">ComfyUI folder</h2>
       <Card className="space-y-3">
         <p className="text-xs text-muted">
-          Where ComfyUI is installed, on the machine running Latent. Everything else is found from
-          there: <code>output</code> to import from, <code>input</code> to feed pictures in, and{' '}
-          <code>user/default/workflows</code> to read workflows out of.
+          Where ComfyUI is installed, on the machine running Latent. <code>output</code>,{' '}
+          <code>input</code> and the workflow folder are found from there.
         </p>
 
         <div className="flex gap-2">
@@ -1968,8 +2802,8 @@ function ComfyFolderSection() {
         */}
         <div className="space-y-1.5 border-t border-line pt-3">
           <p className="text-xs text-muted">
-            Only workflows whose file name starts with this are read, and the prefix is hidden from
-            the name. Leave it empty to read everything.
+            Only file names starting with this are read, and the prefix is then hidden. Empty reads
+            everything.
           </p>
           <div className="flex gap-2">
             <input
@@ -1988,8 +2822,8 @@ function ComfyFolderSection() {
 
         <div className="space-y-1.5 border-t border-line pt-3">
           <p className="text-xs text-muted">
-            Reads every matching workflow saved in that installation. They arrive switched off —
-            turn on the ones you use below, so the generate picker stays short.
+            Reads every matching workflow in that installation. They arrive switched off; turn on
+            the ones you use.
           </p>
           <Button
             variant="secondary"
@@ -2102,8 +2936,8 @@ function ImportSection() {
       </h2>
       <Card className="space-y-3">
         <p className="text-xs text-muted">
-          ComfyUI’s <code>output</code> directory, found from the folder above. If ComfyUI runs on
-          a remote instance its outputs are not on this filesystem, so point the folder above at a
+          ComfyUI’s <code>output</code> directory, found from the folder above. If ComfyUI runs on a
+          remote instance its outputs are not on this filesystem, so point the folder above at a
           local copy, a network mount, or something synced.
         </p>
 
@@ -2176,16 +3010,15 @@ function ImportSection() {
                       <span className="block text-[11px] text-muted">
                         {folder.images} image{folder.images === 1 ? '' : 's'}
                         {folder.imported > 0 && `, ${folder.imported} in library`}
-                        {folder.folders > 0 && ` · ${folder.folders} folder${folder.folders === 1 ? '' : 's'}`}
+                        {folder.folders > 0 &&
+                          ` · ${folder.folders} folder${folder.folders === 1 ? '' : 's'}`}
                       </span>
                     </button>
                     <Button
                       variant="ghost"
                       size="sm"
                       busy={importFiles.isPending}
-                      onClick={() =>
-                        void run({ folder: folder.path, recursive }, folder.name)
-                      }
+                      onClick={() => void run({ folder: folder.path, recursive }, folder.name)}
                     >
                       Import
                     </Button>
@@ -2305,13 +3138,7 @@ function ImportSection() {
  * exposed both make sense. Without this, setting up the second destroyed the
  * first.
  */
-function LayoutBar({
-  workflowId,
-  detail,
-}: {
-  workflowId: string;
-  detail: WorkflowDetail;
-}) {
+function LayoutBar({ workflowId, detail }: { workflowId: string; detail: WorkflowDetail }) {
   const save = useSaveLayout(workflowId);
   const activate = useActivateLayout(workflowId);
   const remove = useDeleteLayout(workflowId);
@@ -2439,9 +3266,7 @@ function PasswordSheet({ onClose }: { onClose: () => void }) {
           className="w-full rounded-xl border border-line bg-surface px-4 py-3 focus:border-accent focus:outline-none"
         />
         <ErrorNote>{error}</ErrorNote>
-        <p className="text-xs text-muted">
-          Every other signed-in device will be logged out.
-        </p>
+        <p className="text-xs text-muted">Every other signed-in device will be logged out.</p>
         <Button
           variant="primary"
           size="lg"

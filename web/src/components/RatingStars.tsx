@@ -11,15 +11,24 @@ export function RatingStars({
   value,
   onChange,
   size = 'md',
+  label = 'Rating',
 }: {
   value: number;
   onChange: (rating: number) => void;
   size?: 'sm' | 'md';
+  /**
+   * What this particular set of stars means.
+   *
+   * Two of these can be on screen at once — a picture's rating and, for a
+   * favourite, how much you want more like it. They are different judgements,
+   * and two groups both called "Rating" is one control described twice.
+   */
+  label?: string;
 }) {
   const dimension = size === 'sm' ? 'size-7 text-base' : 'size-9 text-xl';
 
   return (
-    <div className="flex items-center" role="group" aria-label="Rating">
+    <div className="flex items-center" role="group" aria-label={label}>
       {[1, 2, 3, 4, 5].map((star) => (
         <button
           key={star}

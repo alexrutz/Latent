@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyBaseLogger } from 'fastify';
 import type { WebSocket } from 'ws';
 
+import { mediaKindFor } from '@latent/shared';
 import type {
   ApiWorkflow,
   ComfyExecutedMessage,
@@ -13,8 +14,10 @@ import type {
   ComfyImageRef,
   ComfyStatusMessage,
   ComfyWsMessage,
+  EditOrigin,
   JobStats,
   LiveState,
+  MediaKind,
   ObjectInfo,
   ParamSummaryItem,
   ParamValues,
@@ -96,6 +99,69 @@ function emptyStats(): JobStats {
 const BINARY_OUTPUT_KEYS = new Set(['images', 'gifs', 'audio', 'video', 'latents', 'masks']);
 
 /**
+ * Output keys that carry a *file we can show*.
+ *
+ * There is no convention here either. Core ComfyUI files a rendered video under
+ * `images` — the same key as a picture, with an `.mp4` in it — while
+ * VideoHelperSuite uses `gifs` whatever the container actually is, and others
+ * use `videos`. Reading only `images` is how a video workflow finished
+ * successfully and left an empty gallery row behind.
+ *
+ * `audio` is there for the music and speech models, which file their result
+ * under it — and which are otherwise indistinguishable from a picture workflow
+ * from out here.
+ */
+const FILE_OUTPUT_KEYS = ['images', 'gifs', 'videos', 'video', 'audio'] as const;
+
+/** One output entry as a node reported it, before it is known to be a file. */
+interface OutputFile extends ComfyImageRef {
+  /** VideoHelperSuite's own `video/h264-mp4`, when it says. */
+  format?: string;
+}
+
+/** A file we are going to record, with what it turned out to be. */
+type OutputRef = ComfyImageRef & { kind: MediaKind };
+
+/**
+ * Every file in one node's output, whichever key it was filed under.
+ *
+ * `temp` entries are dropped: they are ComfyUI's in-flight previews — and for a
+ * video node, the low-quality preview it writes beside the real thing.
+ */
+function collectFiles(output: Record<string, unknown> | undefined): OutputRef[] {
+  if (!output) return [];
+  const found: OutputRef[] = [];
+  const seen = new Set<string>();
+
+  for (const key of FILE_OUTPUT_KEYS) {
+    const entries = output[key];
+    if (!Array.isArray(entries)) continue;
+
+    for (const entry of entries as OutputFile[]) {
+      if (!entry || typeof entry.filename !== 'string' || entry.filename === '') continue;
+      if (entry.type === 'temp') continue;
+
+      const ref: OutputRef = {
+        filename: entry.filename,
+        subfolder: entry.subfolder ?? '',
+        type: entry.type ?? 'output',
+        // The name decides, and the node's own `format` breaks a tie for a
+        // container this build has never heard of.
+        kind: mediaKindFor(entry.filename, entry.format),
+      };
+      // A node can report the same file under two keys — VideoHelperSuite lists
+      // its result as both a `gif` and, on some builds, an image.
+      const identity = `${ref.type}/${ref.subfolder}/${ref.filename}`;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      found.push(ref);
+    }
+  }
+
+  return found;
+}
+
+/**
  * Every string a node produced, whatever it chose to call the field.
  *
  * There is no convention here: the core preview node uses `text`, others use
@@ -125,20 +191,13 @@ function collectTexts(output: Record<string, unknown> | undefined): string[] {
  * events are gone, but the history still knows what was produced.
  */
 function collectHistoryImages(entry: {
-  outputs?: Record<string, { images?: ComfyImageRef[] }>;
-}): [string, ComfyImageRef[]][] {
-  const found: [string, ComfyImageRef[]][] = [];
+  outputs?: Record<string, Record<string, unknown>>;
+}): [string, OutputRef[]][] {
+  const found: [string, OutputRef[]][] = [];
 
   for (const [nodeId, output] of Object.entries(entry.outputs ?? {})) {
-    const images = (output?.images ?? [])
-      // `temp` is a live preview, not a result.
-      .filter((image) => image.type !== 'temp')
-      .map((image) => ({
-        filename: image.filename,
-        subfolder: image.subfolder ?? '',
-        type: image.type ?? 'output',
-      }));
-    if (images.length > 0) found.push([nodeId, images]);
+    const files = collectFiles(output);
+    if (files.length > 0) found.push([nodeId, files]);
   }
 
   return found;
@@ -437,6 +496,8 @@ export class Orchestrator {
     seeds: Record<string, number>;
     /** Readable summary of the submitted values, for the queue listing. */
     params?: ParamSummaryItem[];
+    /** The pictures that went in, when the workflow named which was which. */
+    origins?: EditOrigin[];
     /** `study` keeps the run out of the gallery. See `Store.insertGeneration`. */
     source?: 'comfy' | 'study';
   }): Promise<{ generationId: string; promptId: string }> {
@@ -469,6 +530,7 @@ export class Orchestrator {
       values: input.values,
       seeds: input.seeds,
       params,
+      origins: input.origins ?? [],
       source: input.source ?? 'comfy',
     });
 
@@ -739,17 +801,7 @@ export class Orchestrator {
       this.emitGeneration(promptId);
     }
 
-    const images = output?.images ?? [];
-    if (images.length === 0) return;
-
-    // `temp` images are ComfyUI's in-flight previews, not results.
-    const results: ComfyImageRef[] = images
-      .filter((image) => image.type !== 'temp')
-      .map((image) => ({
-        filename: image.filename,
-        subfolder: image.subfolder ?? '',
-        type: image.type ?? 'output',
-      }));
+    const results = collectFiles(output as Record<string, unknown> | undefined);
     if (results.length === 0) return;
 
     this.store.addImages(promptId, node, results);
@@ -802,14 +854,23 @@ export class Orchestrator {
   /**
    * Called once per run as it settles, with whether it produced anything.
    *
-   * Set by whoever needs it — today the study runner, which has to know the
-   * moment a shot lands so it can queue the next and, when it was the last,
-   * turn the study over to its rating phase by itself. A callback rather than
-   * a subscription to the event hub because this is server-internal
-   * bookkeeping, not something a client should be able to miss by having
-   * closed its tab.
+   * Two subscribers today and both for the same reason: the study runner has to
+   * know the moment a shot lands so it can queue the next, and the chat engine
+   * has to know so the turn that judges a picture happens after the picture
+   * exists. A list rather than one slot because the second of those arrived and
+   * would have silently replaced the first.
+   *
+   * Callbacks rather than a subscription to the event hub because this is
+   * server-internal bookkeeping, not something that should be missable by
+   * having closed a tab — which is the whole reason either of them is here.
    */
-  onSettled: ((generationId: string, ok: boolean) => void) | null = null;
+  private readonly settled = new Set<(generationId: string, ok: boolean) => void>();
+
+  /** Subscribe. Returns the way to stop, which long-lived listeners need. */
+  onSettled(listener: (generationId: string, ok: boolean) => void): () => void {
+    this.settled.add(listener);
+    return () => this.settled.delete(listener);
+  }
 
   /** Idempotent: ComfyUI can send both `executing:null` and `execution_success`. */
   private markFinished(
@@ -828,7 +889,14 @@ export class Orchestrator {
 
     this.store.setGenerationStatus(promptId, status, error);
     this.emitGeneration(promptId);
-    this.onSettled?.(existing.id, status === 'completed');
+    for (const listener of this.settled) {
+      try {
+        listener(existing.id, status === 'completed');
+      } catch {
+        // One listener throwing must not stop the others being told, nor leave
+        // the run half-finished from the orchestrator's own point of view.
+      }
+    }
 
     // Keep the map from growing without bound over a long-running server.
     setTimeout(() => this.tracked.delete(promptId), 60_000).unref?.();

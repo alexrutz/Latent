@@ -1,6 +1,7 @@
 import {
   useInfiniteQuery,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
   type QueryClient,
@@ -9,6 +10,7 @@ import { useEffect, useMemo } from 'react';
 
 import type {
   AppSettings,
+  GenerationRecord,
   ComfyImageRef,
   FavoriteSort,
   FieldOverrides,
@@ -25,11 +27,14 @@ import type {
 } from '@latent/shared';
 
 import { useLiveStore } from '../state/live';
+import { noteMeasured } from '../state/measured';
 import { api } from './client';
 
 export const queryKeys = {
   status: ['status'] as const,
   workflows: ['workflows'] as const,
+  poolFields: ['workflow-fields'] as const,
+  models: (folder: string) => ['models', folder] as const,
   workflow: (id: string) => ['workflow', id] as const,
   gallery: (workflowId?: string | null) => ['gallery', workflowId ?? 'all'] as const,
   settings: ['settings'] as const,
@@ -37,6 +42,7 @@ export const queryKeys = {
   favorites: ['favorites'] as const,
   promptBlocks: ['prompt-blocks'] as const,
   systemPrompts: ['system-prompts'] as const,
+  taste: ['taste'] as const,
   promptMode: ['prompt-mode'] as const,
   variationPresets: ['variation-presets'] as const,
   importScan: ['import-scan'] as const,
@@ -82,7 +88,19 @@ export function useUpdateSettings() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (patch: Partial<AppSettings>) => api.updateSettings(patch),
-    onSuccess: (settings) => client.setQueryData(queryKeys.settings, settings),
+    onSuccess: (settings, patch) => {
+      client.setQueryData(queryKeys.settings, settings);
+      /*
+       * The general arrangement is not only a setting — it is a layer of every
+       * workflow's form, resolved on the server. Change it and every schema
+       * already in the cache is describing a form that no longer exists, which
+       * showed up as the editor reopening on the arrangement before last.
+       */
+      if ('fieldArrangement' in patch) {
+        void client.invalidateQueries({ queryKey: ['workflow'] });
+        void client.invalidateQueries({ queryKey: queryKeys.workflows });
+      }
+    },
   });
 }
 
@@ -250,6 +268,28 @@ export function useGeneration(id: string | null) {
   });
 }
 
+/**
+ * Several runs at once, for a screen that shows a column of them.
+ *
+ * The chat's viewer swipes across every picture in the conversation rather than
+ * across one run's batch — they are the last things generated, in the order
+ * they were made, which is exactly the list you want to move through. That
+ * needs all their records at once, and one hook per message is not something a
+ * list can do.
+ */
+export function useGenerations(ids: string[]) {
+  return useQueries({
+    queries: ids.map((id) => ({
+      queryKey: ['generation', id] as const,
+      queryFn: () => api.generation(id),
+      refetchInterval: (query: { state: { data?: GenerationRecord } }) => {
+        const status = query.state.data?.status;
+        return status === 'queued' || status === 'running' ? 2_000 : false;
+      },
+    })),
+  });
+}
+
 /* ------------------------------------------------------------------ */
 /* Connections                                                         */
 /* ------------------------------------------------------------------ */
@@ -280,8 +320,9 @@ export const useCreateConnection = () => useConnectionMutation(api.createConnect
 export const useActivateConnection = () => useConnectionMutation(api.activateConnection);
 export const useDeleteConnection = () => useConnectionMutation(api.deleteConnection);
 export const useUpdateConnection = () =>
-  useConnectionMutation(({ id, patch }: { id: string; patch: Parameters<typeof api.updateConnection>[1] }) =>
-    api.updateConnection(id, patch),
+  useConnectionMutation(
+    ({ id, patch }: { id: string; patch: Parameters<typeof api.updateConnection>[1] }) =>
+      api.updateConnection(id, patch),
   );
 
 /* ------------------------------------------------------------------ */
@@ -441,6 +482,12 @@ const reportedSizes = new Set<string>();
  * never surface as an error over a picture that loaded perfectly.
  */
 export function reportImageDimensions(image: ComfyImageRef, width: number, height: number): void {
+  // Kept here first, whatever the server makes of it: the grid lays a tile out
+  // at the shape of its picture, and waiting for a refetch to learn a size this
+  // browser has already measured means the pictures you just made are square
+  // for a while. See `state/measured`.
+  noteMeasured(image, width, height);
+
   const key = `${image.type}/${image.subfolder}/${image.filename}`;
   if (reportedSizes.has(key)) return;
   reportedSizes.add(key);
@@ -506,13 +553,22 @@ function useFavoriteMutation<TArgs>(fn: (args: TArgs) => Promise<unknown>) {
 }
 
 export const useAddFavorite = () =>
-  useFavoriteMutation(({ generationId, image, note }: { generationId: string; image: ComfyImageRef; note?: string }) =>
-    api.addFavorite(generationId, image, note),
+  useFavoriteMutation(
+    ({
+      generationId,
+      image,
+      note,
+    }: {
+      generationId: string;
+      image: ComfyImageRef;
+      note?: string;
+    }) => api.addFavorite(generationId, image, note),
   );
 
 export const useUpdateFavorite = () =>
-  useFavoriteMutation(({ id, patch }: { id: string; patch: { rating?: number; note?: string | null } }) =>
-    api.updateFavorite(id, patch),
+  useFavoriteMutation(
+    ({ id, patch }: { id: string; patch: { rating?: number; note?: string | null } }) =>
+      api.updateFavorite(id, patch),
   );
 
 export const useDeleteFavorite = () => useFavoriteMutation((id: string) => api.deleteFavorite(id));
@@ -546,6 +602,60 @@ export const useDeletePromptBlock = () =>
 
 export const useReorderPromptBlocks = () =>
   usePromptBlockMutation((ids: string[]) => api.reorderPromptBlocks(ids));
+
+/* ------------------------------------------------------------------ */
+/* What you like                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The notes, decrypted by the server.
+ *
+ * Not retried on failure: the interesting failure is a locked vault, and
+ * hammering a 423 four times does not open it. The sheet says so instead.
+ */
+export function useTaste(enabled = true) {
+  return useQuery({ queryKey: queryKeys.taste, queryFn: api.taste, enabled, retry: false });
+}
+
+function useTasteMutation<TArgs>(fn: (args: TArgs) => Promise<unknown>) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => void client.invalidateQueries({ queryKey: queryKeys.taste }),
+  });
+}
+
+export const useCreateTasteCategory = () =>
+  useTasteMutation((name: string) => api.createTasteCategory(name));
+
+export const useUpdateTasteCategory = () =>
+  useTasteMutation(({ id, patch }: { id: string; patch: { name?: string; active?: boolean } }) =>
+    api.updateTasteCategory(id, patch),
+  );
+
+export const useDeleteTasteCategory = () =>
+  useTasteMutation((id: string) => api.deleteTasteCategory(id));
+
+export const useReorderTasteCategories = () =>
+  useTasteMutation((ids: string[]) => api.reorderTasteCategories(ids));
+
+export const useCreateTasteEntry = () =>
+  useTasteMutation((input: { text: string; categoryId: string | null; always?: boolean }) =>
+    api.createTasteEntry(input),
+  );
+
+export const useUpdateTasteEntry = () =>
+  useTasteMutation(
+    ({
+      id,
+      patch,
+    }: {
+      id: string;
+      patch: { text?: string; active?: boolean; always?: boolean; categoryId?: string | null };
+    }) => api.updateTasteEntry(id, patch),
+  );
+
+export const useDeleteTasteEntry = () => useTasteMutation((id: string) => api.deleteTasteEntry(id));
 
 /* ------------------------------------------------------------------ */
 /* System prompts                                                      */
@@ -679,7 +789,10 @@ export function useLayouts(workflowId: string | null) {
  * Any layout change rewrites the workflow's live overrides, so the form itself
  * has to be refetched — not just the list of layouts.
  */
-function useLayoutMutation<TArgs>(workflowId: string | null, fn: (args: TArgs) => Promise<unknown>) {
+function useLayoutMutation<TArgs>(
+  workflowId: string | null,
+  fn: (args: TArgs) => Promise<unknown>,
+) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: fn,
@@ -691,8 +804,10 @@ function useLayoutMutation<TArgs>(workflowId: string | null, fn: (args: TArgs) =
 }
 
 export const useSaveLayout = (workflowId: string | null) =>
-  useLayoutMutation(workflowId, ({ name, overrides }: { name: string; overrides?: FieldOverrides }) =>
-    api.saveLayout(workflowId as string, name, overrides),
+  useLayoutMutation(
+    workflowId,
+    ({ name, overrides }: { name: string; overrides?: FieldOverrides }) =>
+      api.saveLayout(workflowId as string, name, overrides),
   );
 
 export const useActivateLayout = (workflowId: string | null) =>
@@ -841,4 +956,3 @@ export function useKeepStudyShot(studyId: string) {
     },
   });
 }
-

@@ -7,6 +7,7 @@ import { api, thumbnailUrl } from '../api/client';
 import { formatSeconds, formatStepRate } from '../lib/format';
 import { useTicker } from '../lib/useTicker';
 import { useLiveStore } from '../state/live';
+import { Still } from './ImageViewer';
 import { RatingStars } from './RatingStars';
 import { Button, cn, ErrorNote, Sheet } from './ui';
 
@@ -94,7 +95,15 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
    * own is the difference between watching a batch and watching an empty box.
    */
   const lastImage = finished?.images[0];
-  const holdover = !previewUrl && lastImage ? thumbnailUrl(lastImage) : null;
+  /*
+   * Only a picture, and only one there is a still for. A video's poster does
+   * not exist until a browser has played the clip, and a holdover that 404s is
+   * a broken image where the previous result should be.
+   */
+  const holdover =
+    !previewUrl && lastImage && (lastImage.kind !== 'video' || lastImage.hasThumbnail)
+      ? thumbnailUrl(lastImage)
+      : null;
 
   /*
    * The full detail, shared by both shapes. Whichever bar you tapped, the same
@@ -102,54 +111,54 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
    * this, not a cut-down version of it.
    */
   const sheet = (
-      <Sheet open={expanded} onClose={() => setExpanded(false)} title="Generating">
-        <div className="space-y-4">
-          <div className="overflow-hidden rounded-2xl border border-line bg-surface-2">
-            {previewUrl ? (
-              <img src={previewUrl} alt="Live preview" className="w-full object-contain" />
-            ) : holdover ? (
-              <img src={holdover} alt="The previous result" className="w-full object-contain" />
-            ) : (
-              <div className="grid aspect-square place-items-center text-sm text-muted">
-                Waiting for the first preview…
-              </div>
-            )}
-          </div>
-          {!previewUrl && holdover && (
-            <p className="-mt-2 text-center text-[11px] text-muted">
-              The run before this one — the new preview replaces it.
-            </p>
+    <Sheet open={expanded} onClose={() => setExpanded(false)} title="Generating">
+      <div className="space-y-4">
+        <div className="overflow-hidden rounded-2xl border border-line bg-surface-2">
+          {previewUrl ? (
+            <img src={previewUrl} alt="Live preview" className="w-full object-contain" />
+          ) : holdover ? (
+            <img src={holdover} alt="The previous result" className="w-full object-contain" />
+          ) : (
+            <div className="grid aspect-square place-items-center text-sm text-muted">
+              Waiting for the first preview…
+            </div>
           )}
-
-          <div>
-            <p className="text-sm font-medium">{job.title}</p>
-            <p className="text-xs text-muted">{job.nodeTitle ?? 'Starting…'}</p>
-          </div>
-
-          <div className="space-y-1">
-            <div className="h-2 overflow-hidden rounded-full bg-surface-3">
-              <div
-                className="h-full rounded-full bg-accent transition-[width] duration-150"
-                style={{ width: `${Math.min(100, Math.max(2, fraction * 100))}%` }}
-              />
-            </div>
-            <div className="flex justify-between text-xs text-muted">
-              <span>
-                {job.progressMax > 0
-                  ? `Step ${job.progress} of ${job.progressMax}`
-                  : `${Math.round(job.graphProgress * 100)}% of the graph`}
-              </span>
-              {queueRemaining > 1 && <span>{queueRemaining - 1} more queued</span>}
-            </div>
-          </div>
-
-          <JobStatsPanel job={job} now={now} liveAt={liveAt} queueRemaining={queueRemaining} />
-
-          <Button variant="danger" size="lg" busy={cancelling} onClick={cancel}>
-            Cancel this run
-          </Button>
         </div>
-      </Sheet>
+        {!previewUrl && holdover && (
+          <p className="-mt-2 text-center text-[11px] text-muted">
+            The run before this one — the new preview replaces it.
+          </p>
+        )}
+
+        <div>
+          <p className="text-sm font-medium">{job.title}</p>
+          <p className="text-xs text-muted">{job.nodeTitle ?? 'Starting…'}</p>
+        </div>
+
+        <div className="space-y-1">
+          <div className="h-2 overflow-hidden rounded-full bg-surface-3">
+            <div
+              className="h-full rounded-full bg-accent transition-[width] duration-150"
+              style={{ width: `${Math.min(100, Math.max(2, fraction * 100))}%` }}
+            />
+          </div>
+          <div className="flex justify-between text-xs text-muted">
+            <span>
+              {job.progressMax > 0
+                ? `Step ${job.progress} of ${job.progressMax}`
+                : `${Math.round(job.graphProgress * 100)}% of the graph`}
+            </span>
+            {queueRemaining > 1 && <span>{queueRemaining - 1} more queued</span>}
+          </div>
+        </div>
+
+        <JobStatsPanel job={job} now={now} liveAt={liveAt} queueRemaining={queueRemaining} />
+
+        <Button variant="danger" size="lg" busy={cancelling} onClick={cancel}>
+          Cancel this run
+        </Button>
+      </div>
+    </Sheet>
   );
 
   /*
@@ -167,8 +176,7 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
           className="flex min-w-0 flex-1 flex-col justify-center gap-1 rounded-xl border border-line bg-surface px-2.5 py-1.5 text-left"
         >
           <p className="truncate text-[11px] tabular-nums text-muted">
-            {Math.round(fraction * 100)}%
-            {eta !== null && ` · ${formatSeconds(eta)} left`}
+            {Math.round(fraction * 100)}%{eta !== null && ` · ${formatSeconds(eta)} left`}
             {job.progressMax > 0 && ` · ${job.progress}/${job.progressMax}`}
             {queueRemaining > 1 && ` · ${queueRemaining - 1} queued`}
           </p>
@@ -187,7 +195,7 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
 
   return (
     <>
-      <div className="border-t border-line bg-surface/95 backdrop-blur">
+      <div data-testid="live-bar" className="border-t border-line bg-surface/95 backdrop-blur">
         <button
           type="button"
           onClick={() => setExpanded(true)}
@@ -195,8 +203,12 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
         >
           <div className="flex items-center gap-3">
             <div className="size-9 shrink-0 overflow-hidden rounded-lg bg-surface-2">
-              {previewUrl ?? holdover ? (
-                <img src={previewUrl ?? (holdover as string)} alt="" className="size-full object-cover" />
+              {(previewUrl ?? holdover) ? (
+                <img
+                  src={previewUrl ?? (holdover as string)}
+                  alt=""
+                  className="size-full object-cover"
+                />
               ) : (
                 <div className="grid size-full animate-pulse place-items-center text-xs opacity-40">
                   ●
@@ -269,13 +281,120 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
  * Never the server's timestamps: on a rented box the clock is routinely minutes
  * off, and subtracting one clock from another would produce an ETA in the past.
  */
-function sinceUpdate(now: number, liveAt: number): number {
+/**
+ * One run's progress, wherever that run is being watched.
+ *
+ * The same numbers the bar above the tab bar shows — the live preview frame,
+ * how much longer, which node, the step count — for a run somebody is watching
+ * somewhere else. The chat is the case that needs it: a picture asked for in a
+ * conversation is watched in that conversation, and a thin bar with no preview
+ * and no ETA is not what the rest of the app shows for the same wait.
+ *
+ * Only ever about *this* run. While something else is rendering, or before the
+ * queue reaches it, there is a bar with no numbers rather than another job's.
+ */
+export function RunProgress({
+  generationId,
+  queued,
+}: {
+  /**
+   * The run this is about — or nothing, meaning whatever is running.
+   *
+   * Two genuinely different questions. A chat card asks the first: several of
+   * them are on screen and only one is the run in progress, so a card without
+   * an id of its own would claim somebody else's progress bar. The bench panel
+   * asks the second, and cannot ask the first — a run started from ComfyUI's
+   * own editor has no Latent generation to name, and is still the thing the
+   * GPU is doing.
+   */
+  generationId?: string | null;
+  queued?: string;
+}) {
+  const job = useLiveStore((state) => state.live.job);
+  const liveAt = useLiveStore((state) => state.liveAt);
+  const previewUrl = useLiveStore((state) => state.previewUrl);
+  const queueRemaining = useLiveStore((state) => state.live.queueRemaining);
+
+  const mine = generationId === undefined || job?.generationId === generationId ? job : null;
+  const now = useTicker(Boolean(mine));
+
+  const stepFraction = mine && mine.progressMax > 0 ? mine.progress / mine.progressMax : 0;
+  // Before the sampler says anything, how much of the graph is done — otherwise
+  // the bar sits at zero through model loading, which reads as nothing
+  // happening at all.
+  const fraction = mine ? (mine.progressMax > 0 ? stepFraction : mine.graphProgress) : 0;
+  const eta = mine ? remainingEta(mine.stats, now, liveAt) : null;
+
+  return (
+    <div className="space-y-1.5 rounded-xl border border-line bg-surface-2/50 p-2.5">
+      <div className="flex items-center gap-2.5">
+        {/*
+          The frame it is up to, at thumbnail size.
+
+          The single thing that makes a wait bearable is seeing it take shape,
+          and the preview is already arriving over the socket for the bar above
+          the tab bar — showing it here costs nothing and is the whole
+          difference between watching a render and watching a spinner.
+        */}
+        <div className="size-11 shrink-0 overflow-hidden rounded-lg bg-surface-3">
+          {mine && previewUrl ? (
+            <img src={previewUrl} alt="" className="size-full object-cover" />
+          ) : (
+            <div className="grid size-full animate-pulse place-items-center text-xs opacity-40">
+              ●
+            </div>
+          )}
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs">{mine?.nodeTitle ?? queued ?? 'Queued'}</p>
+          {/*
+            ETA first: it is the only question being asked. Then the step count,
+            which is what actually moves, then the queue behind it.
+          */}
+          <p className="truncate text-[11px] tabular-nums text-muted">
+            {eta !== null ? `${formatSeconds(eta)} left` : 'Starting…'}
+            {mine && mine.progressMax > 0 && ` · ${mine.progress}/${mine.progressMax}`}
+            {mine?.stats.msPerStep != null && ` · ${formatStepRate(mine.stats.msPerStep)}`}
+            {queueRemaining > 1 && ` · ${queueRemaining - 1} queued`}
+          </p>
+        </div>
+
+        <span className="shrink-0 text-[11px] tabular-nums text-muted">
+          {fraction > 0 ? `${Math.round(fraction * 100)}%` : ''}
+        </span>
+      </div>
+
+      <div className="h-1.5 overflow-hidden rounded-full bg-surface-3">
+        <div
+          className={cn(
+            'h-full rounded-full bg-accent transition-[width] duration-300',
+            // Nothing to report yet: a bar at zero looks stuck, so it pulses
+            // across instead of claiming a progress it does not have.
+            fraction === 0 && 'w-1/3 animate-pulse',
+          )}
+          style={fraction > 0 ? { width: `${Math.round(fraction * 100)}%` } : undefined}
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * How long ago the last update from the server was.
+ *
+ * Exported because the tablet's Generate pane counts the same clock — the
+ * elapsed time and the ETA there are the same two numbers this bar shows, and
+ * two copies of "count down from the last event" would drift apart the first
+ * time either was corrected.
+ */
+export function sinceUpdate(now: number, liveAt: number): number {
   if (now === 0 || liveAt === 0) return 0;
   return Math.max(0, now - liveAt);
 }
 
 /** The server's ETA, counted down by however long ago it arrived. */
-function remainingEta(stats: JobStats, now: number, liveAt: number): number | null {
+export function remainingEta(stats: JobStats, now: number, liveAt: number): number | null {
   if (stats.etaMs === null) return null;
   return Math.max(0, stats.etaMs - sinceUpdate(now, liveAt));
 }
@@ -392,7 +511,7 @@ function ResultBar({
   const label = failed ? 'Show what went wrong' : 'Show the finished picture';
 
   const thumbnail = image ? (
-    <img src={thumbnailUrl(image)} alt="" className="size-full object-cover" />
+    <Still image={image} alt="" className="size-full" />
   ) : (
     <div className="grid size-full place-items-center text-sm">{failed ? '!' : '✓'}</div>
   );
@@ -417,9 +536,7 @@ function ResultBar({
     >
       <span className="size-8 shrink-0 overflow-hidden rounded-md bg-surface-2">{thumbnail}</span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-[11px] font-medium">
-          {failed ? 'Failed' : 'Done'}
-        </span>
+        <span className="block truncate text-[11px] font-medium">{failed ? 'Failed' : 'Done'}</span>
         <span className="block truncate text-[11px] text-muted">{record.title}</span>
       </span>
     </button>
@@ -450,11 +567,7 @@ function ResultBar({
     <>
       {bar}
 
-      <Sheet
-        open={expanded}
-        onClose={onDismiss}
-        title={failed ? 'Generation failed' : 'Result'}
-      >
+      <Sheet open={expanded} onClose={onDismiss} title={failed ? 'Generation failed' : 'Result'}>
         <div className="space-y-4">
           {image ? (
             <button
@@ -468,7 +581,7 @@ function ResultBar({
               {/* A preview, not the original: this sheet appears on its own
                   after every render, and a 4000×4000 picture behind it is
                   64 MB of bitmap for something the size of a phone screen. */}
-              <img src={thumbnailUrl(image)} alt={record.title} className="w-full object-contain" />
+              <Still image={image} alt={record.title} fit="contain" className="w-full" />
             </button>
           ) : (
             <div className="rounded-2xl border border-line bg-surface-2 p-6 text-center text-sm text-muted">

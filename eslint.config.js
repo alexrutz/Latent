@@ -10,6 +10,17 @@ export default tseslint.config(
       'data/**',
       'test-results/**',
       'playwright-report/**',
+      /*
+       * The vendored ComfyUI nodes are not part of this app.
+       *
+       * `comfyllama/` is a copy of alexrutz/comfyllama, kept here so the two
+       * can be changed together and copied straight into
+       * `ComfyUI/custom_nodes/`. Its one JavaScript file is a ComfyUI frontend
+       * extension: it imports from `../../scripts/`, which only resolves inside
+       * ComfyUI, and lives by ComfyUI's conventions rather than by this repo's.
+       * Linting it here would be judging it against the wrong rules.
+       */
+      'comfyllama/**',
     ],
   },
   js.configs.recommended,

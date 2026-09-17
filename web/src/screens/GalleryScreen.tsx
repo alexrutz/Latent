@@ -1,12 +1,6 @@
 import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 
-import {
-  textOutputLabel,
-  VIEWER_SCALE_STEPS,
-  viewerScaleLabel,
-  viewerScaleOf,
-} from '@latent/shared';
+import { VIEWER_SCALE_STEPS, viewerScaleLabel, viewerScaleOf } from '@latent/shared';
 import type {
   GallerySort,
   GenerationImage,
@@ -14,34 +8,33 @@ import type {
   GridSettings,
 } from '@latent/shared';
 
-import { api, imageUrl } from '../api/client';
 import {
-  useAddFavorite,
-  useDeleteFavorite,
-  useFavorites,
-  useDeleteImage,
   useGallery,
-  useKeepImage,
-  useRateImage,
   reportImageDimensions,
   useSetTileSpan,
-  useSettings,
   useWorkflows,
 } from '../api/queries';
-import { ImageViewer, Thumb, type ViewerEntry } from '../components/ImageViewer';
+import { Thumb, type ViewerEntry } from '../components/ImageViewer';
 import {
   overlayValues,
   ParamOverlayLine,
   ParamOverlayPicker,
 } from '../components/ParamOverlay';
-import { RatingStars } from '../components/RatingStars';
-import { ThumbGrid, useTileStyle } from '../components/ThumbGrid';
+import { shapeOf, ThumbGrid, useTileStyle } from '../components/ThumbGrid';
 import { Toggle } from '../components/ParamControl';
-import { cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
-import { useBlur } from '../state/blur';
-import { TILE_OPTIONS, useGridSettings } from '../state/grid';
+import { BlurButton } from '../components/BlurButton';
+import {
+  cn,
+  CONTROL_FACE,
+  CONTROL_FACE_SET,
+  EmptyState,
+  Sheet,
+  Spinner,
+} from '../components/ui';
+import { ViewerWithActions } from '../components/ViewerWithActions';
+import { maxColumns, TILE_OPTIONS, useGridSettings } from '../state/grid';
 import { useGalleryTargetStore } from '../state/galleryTarget';
-import { usePendingStore } from '../state/pending';
+import { useMeasuredVersion } from '../state/measured';
 
 /** A stable identity for one picture, unique across runs. */
 function identify(entry: ViewerEntry | undefined): string | null {
@@ -168,6 +161,51 @@ function FilterSheet({
   );
 }
 
+/**
+ * One of two edges, named by the edge rather than by a direction.
+ *
+ * "Left" and "Right" are where the thing rests, which is what you are choosing;
+ * a label like "wipe rightwards" describes the gesture instead, and the gesture
+ * is the same either way round.
+ */
+function EdgeChoice<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: readonly T[];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="space-y-1">
+      <p className="text-xs text-muted">{label}</p>
+      <div role="radiogroup" aria-label={label} className="flex gap-1">
+        {options.map((option) => {
+          const active = value === option;
+          return (
+            <button
+              key={option}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => onChange(option)}
+              className={cn(
+                'min-w-16 rounded-lg px-2.5 py-1.5 text-xs capitalize',
+                active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+              )}
+            >
+              {option}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const FILTERS = [
   { label: 'All', minRating: 0 },
   { label: 'Rated', minRating: 1 },
@@ -215,8 +253,6 @@ export function GalleryScreen() {
   // still means what it meant.
   const viewerScale = viewerScaleOf(settings);
   const [showLayout, setShowLayout] = useState(false);
-  const blurred = useBlur((state) => state.blurred);
-  const toggleBlur = useBlur((state) => state.toggle);
   const sentinel = useRef<HTMLDivElement>(null);
   const firstResult = useRef<HTMLDivElement>(null);
   const scrolledOnce = useRef(false);
@@ -404,77 +440,97 @@ export function GalleryScreen() {
       the filters are wanted *while* looking through a long gallery, which is
       exactly when the top of the page is thousands of pixels behind you.
     */
-    <div className="sticky top-0 z-20 -mx-4 mb-3 flex items-center justify-between gap-2 bg-ink/95 px-4 py-2 backdrop-blur">
-      <h1 className="text-xl font-semibold">Gallery</h1>
-      <div className="flex items-center gap-2">
-        <div className="flex gap-1 rounded-full bg-surface p-1">
-          {FILTERS.map((filter) => (
-            <button
-              key={filter.label}
-              type="button"
-              onClick={() => setMinRating(filter.minRating)}
-              className={cn(
-                'rounded-full px-3 py-1.5 text-xs',
-                minRating === filter.minRating ? 'bg-accent text-white' : 'text-muted',
-              )}
-            >
-              {filter.label}
-            </button>
-          ))}
-        </div>
-        {/* Sorting and the workflow filter live behind one button: they are
-            decisions you make occasionally, and three more chips across the
-            top would leave no room for the pictures. */}
-        <button
-          type="button"
-          onClick={() => setShowFilters(true)}
-          aria-label="Sort and filter"
-          className={cn(
-            'flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] leading-none',
-            sort !== 'newest' || workflowId ? 'bg-accent/20 text-accent' : 'bg-surface text-muted',
-          )}
-        >
-          <span aria-hidden className="text-base leading-none">
-            ⇅
-          </span>
-          <span aria-hidden className="opacity-60">
-            ▾
-          </span>
-        </button>
+    <div className="sticky top-0 z-20 -mx-4 mb-3 space-y-1.5 bg-ink/95 px-4 py-2 backdrop-blur">
+      {/*
+        Two rows, because five controls and a title do not fit across a phone.
 
-        {/* Its own selection, separate from the viewer's: a thumbnail has room
-            for two or three numbers, not eight. */}
-        <ParamOverlayPicker
-          label="Values on thumbnails"
-          records={items}
-          selected={settings.gridParams}
-          withLabels={settings.overlayLabels}
-          onChange={(gridParams) => updateSettings({ gridParams })}
-          onWithLabelsChange={(overlayLabels) => updateSettings({ overlayLabels })}
-        />
-        {/* Reachable from where the pictures are, not only from Settings —
-            the moment you want it is the moment somebody sits down next to
-            you. */}
-        <button
-          type="button"
-          onClick={toggleBlur}
-          aria-label="Blur every image"
-          aria-pressed={blurred}
-          className={cn(
-            'grid size-9 shrink-0 place-items-center rounded-full active:bg-surface-2',
-            blurred ? 'bg-accent text-white' : 'bg-surface text-muted',
-          )}
-        >
-          ◌
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowLayout(true)}
-          aria-label="Grid layout"
-          className="grid size-9 shrink-0 place-items-center rounded-full bg-surface text-muted active:bg-surface-2"
-        >
-          ▦
-        </button>
+        They used to be one row, and the last two — the blur and the grid — hung
+        off the right-hand edge of the screen where nothing could reach them.
+        The split is not arbitrary: the top row is what this screen *is* plus
+        the things you open occasionally, and the rating filter gets a row of
+        its own because it is the one you actually tap, which also lets each
+        chip be a third of the screen wide instead of forty pixels.
+      */}
+      <div className="flex items-center justify-between gap-2">
+        <h1 className="min-w-0 truncate text-xl font-semibold">Gallery</h1>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {/* Sorting and the workflow filter live behind one button: they are
+              decisions you make occasionally, and three more chips across the
+              top would leave no room for the pictures. */}
+          <button
+            type="button"
+            onClick={() => setShowFilters(true)}
+            aria-label="Sort and filter"
+            className={cn(
+              'flex h-9 shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] leading-none',
+              sort !== 'newest' || workflowId ? CONTROL_FACE_SET : CONTROL_FACE,
+            )}
+          >
+            <span aria-hidden className="text-base leading-none">
+              ⇅
+            </span>
+            <span aria-hidden className="opacity-60">
+              ▾
+            </span>
+          </button>
+
+          {/* Its own selection, separate from the viewer's: a thumbnail has room
+              for two or three numbers, not eight. */}
+          <ParamOverlayPicker
+            label="Values on thumbnails"
+            records={items}
+            selected={settings.gridParams}
+            withLabels={settings.overlayLabels}
+            onChange={(gridParams) => updateSettings({ gridParams })}
+            onWithLabelsChange={(overlayLabels) => updateSettings({ overlayLabels })}
+          />
+          <button
+            type="button"
+            onClick={() => setShowLayout(true)}
+            aria-label="Grid layout"
+            className={cn(
+              'grid size-9 shrink-0 place-items-center rounded-full text-base',
+              CONTROL_FACE,
+            )}
+          >
+            ▦
+          </button>
+          {/*
+            Last, always, on every screen that has one of these rows.
+
+            Reachable from where the pictures are rather than only from
+            Settings — the moment you want it is the moment somebody sits down
+            next to you — and always in the same corner, because a control you
+            reach for without looking has to be somewhere your thumb already
+            knows.
+          */}
+          <BlurButton />
+        </div>
+      </div>
+
+      {/*
+        Three pills, not three-quarters of a metre of segmented control.
+
+        The row is full-width on a phone because the phone's width is three
+        thumbs across and every pill needs one. Stretched to a tablet each pill
+        becomes a third of the screen with a five-letter word in the middle of
+        it — the same three targets, ten times the furniture. Held to a size the
+        words justify instead.
+      */}
+      <div className="flex gap-1 rounded-full bg-surface p-1 tablet:max-w-md">
+        {FILTERS.map((filter) => (
+          <button
+            key={filter.label}
+            type="button"
+            onClick={() => setMinRating(filter.minRating)}
+            className={cn(
+              'min-w-0 flex-1 truncate rounded-full px-3 py-1.5 text-xs',
+              minRating === filter.minRating ? 'bg-accent text-white' : 'text-muted',
+            )}
+          >
+            {filter.label}
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -490,7 +546,7 @@ export function GalleryScreen() {
           <input
             type="range"
             min={1}
-            max={5}
+            max={maxColumns()}
             step={1}
             value={settings.columns}
             onChange={(event) => updateSettings({ columns: Number(event.target.value) })}
@@ -554,6 +610,39 @@ export function GalleryScreen() {
             wait and most of the memory while the next render is going.{' '}
             <strong className="text-body">The file</strong> fetches it whole, for when you want to
             inspect the pixels rather than look at the picture.
+          </p>
+        </div>
+
+        {/*
+          Where the before/after handles sit.
+
+          A question about the hand holding the phone, not about the picture: a
+          right thumb reaches the right edge and a left one does not, and a
+          handle parked where your thumb already rests is one you can use
+          without looking away from what you are comparing.
+        */}
+        <div className="space-y-1.5">
+          <p className="text-sm">Before/after handles</p>
+          <div className="flex flex-wrap gap-4">
+            <EdgeChoice
+              label="Across"
+              value={settings.compareVerticalEdge}
+              options={['left', 'right'] as const}
+              onChange={(compareVerticalEdge) => updateSettings({ compareVerticalEdge })}
+            />
+            <EdgeChoice
+              label="Down"
+              value={settings.compareHorizontalEdge}
+              options={['top', 'bottom'] as const}
+              onChange={(compareHorizontalEdge) => updateSettings({ compareHorizontalEdge })}
+            />
+          </div>
+          <p className="text-xs text-muted">
+            A picture made by an edit workflow opens with two handles parked on these edges. Drag
+            one across the screen and the picture it was made from shows behind the seam; tap it
+            for all of it, and tap again to put it back. They only appear when the workflow said
+            which input was the original — a <strong className="text-body">Reference</strong> tag
+            on the node that loads it.
           </p>
         </div>
       </div>
@@ -628,26 +717,14 @@ export function GalleryScreen() {
             )}
 
             {!shut && (
-              <ThumbGrid columns={settings.columns}>
-                {section.items.map((record) =>
-                  record.images.length > 0 ? (
-                    record.images.map((image, imageIndex) => (
-                      <GalleryTile
-                        key={`${record.id}-${image.filename}`}
-                        ref={record.id === firstResultId && imageIndex === 0 ? firstResult : undefined}
-                        record={record}
-                        image={image}
-                        index={imageIndex}
-                        settings={settings}
-                        onOpen={openTile}
-                        onHold={holdTile}
-                      />
-                    ))
-                  ) : (
-                    <PlaceholderCard key={record.id} record={record} />
-                  ),
-                )}
-              </ThumbGrid>
+              <SectionGrid
+                items={section.items}
+                settings={settings}
+                firstResultId={firstResultId}
+                firstResult={firstResult}
+                onOpen={openTile}
+                onHold={holdTile}
+              />
             )}
           </div>
         );
@@ -723,8 +800,84 @@ export function GalleryScreen() {
   );
 }
 
+/** One slot in the grid: a picture, or a run that has not made one yet. */
+type SectionEntry =
+  | { kind: 'image'; record: GenerationRecord; image: GenerationImage; index: number }
+  | { kind: 'placeholder'; record: GenerationRecord };
+
 /**
- * One thumbnail, shaped by its aspect ratio and badged with its rating.
+ * One day's pictures.
+ *
+ * A component rather than a loop body because the layout has to be worked out
+ * for the whole day at once: a tile's shape belongs to its row, and a row is
+ * only knowable from the flat order of everything in the grid — which is not
+ * the shape the data arrives in, where pictures are nested inside their runs.
+ */
+function SectionGrid({
+  items,
+  settings,
+  firstResultId,
+  firstResult,
+  onOpen,
+  onHold,
+}: {
+  items: GenerationRecord[];
+  settings: GridSettings;
+  firstResultId: string | null;
+  firstResult: React.RefObject<HTMLDivElement | null>;
+  onOpen: (record: GenerationRecord, image: GenerationImage, index: number) => void;
+  onHold: (record: GenerationRecord, image: GenerationImage) => void;
+}) {
+  const entries = useMemo<SectionEntry[]>(
+    () =>
+      items.flatMap((record): SectionEntry[] =>
+        record.images.length > 0
+          ? record.images.map((image, index) => ({ kind: 'image', record, image, index }))
+          : [{ kind: 'placeholder', record }],
+      ),
+    [items],
+  );
+
+  /*
+   * Re-planned when a picture is measured, not only when the list changes: the
+   * shapes of the pictures just made are learned by the browser a moment after
+   * they appear, and a layout that ignored that would leave them square.
+   */
+  const measured = useMeasuredVersion();
+  const shapes = useMemo(
+    () => entries.map((entry) => (entry.kind === 'image' ? shapeOf(entry.image) : {})),
+    // `measured` is a signal rather than a value: it changes when a picture's
+    // size becomes known, which is when the rows need working out again.
+    [entries, measured],
+  );
+
+  return (
+    <ThumbGrid columns={settings.columns} shapes={shapes} uniform={settings.uniformTiles}>
+      {entries.map((entry, at) =>
+        entry.kind === 'image' ? (
+          <GalleryTile
+            key={`${entry.record.id}-${entry.image.filename}`}
+            ref={
+              entry.record.id === firstResultId && entry.index === 0 ? firstResult : undefined
+            }
+            record={entry.record}
+            image={entry.image}
+            index={entry.index}
+            at={at}
+            settings={settings}
+            onOpen={onOpen}
+            onHold={onHold}
+          />
+        ) : (
+          <PlaceholderCard key={entry.record.id} record={entry.record} at={at} />
+        ),
+      )}
+    </ThumbGrid>
+  );
+}
+
+/**
+ * One thumbnail, shaped by its row and badged with its rating.
  *
  * Memoised, and it matters: a gallery is hundreds of these, and without it every
  * one re-rendered whenever anything on the screen changed.
@@ -736,12 +889,20 @@ const GalleryTile = memo(
       record: GenerationRecord;
       image: GenerationImage;
       index: number;
+      /**
+       * Where this tile sits in the grid, counting placeholders.
+       *
+       * Not the same as `index`, which is the picture's place within its own
+       * run. The shape of a tile belongs to its row rather than to its picture,
+       * so the layout is looked up by position — see `planTiles`.
+       */
+      at: number;
       settings: GridSettings;
       onOpen: (record: GenerationRecord, image: GenerationImage, index: number) => void;
       onHold: (record: GenerationRecord, image: GenerationImage) => void;
     }
-  >(function GalleryTile({ record, image, index, settings, onOpen, onHold }, ref) {
-    const style = useTileStyle(image, settings);
+  >(function GalleryTile({ record, image, index, at, settings, onOpen, onHold }, ref) {
+    const style = useTileStyle(at);
     const overlay = useMemo(
       () => overlayValues(record, settings.gridParams),
       [record, settings.gridParams],
@@ -816,508 +977,34 @@ const GalleryTile = memo(
  * image. Clearing a queue of eight used to leave eight tombstones at the top of
  * the gallery for pictures that were never made.
  */
-function PlaceholderCard({ record }: { record: GenerationRecord }) {
+function PlaceholderCard({ record, at }: { record: GenerationRecord; at: number }) {
   const failed = record.status === 'failed';
+  // A slot in the grid like any other, so the rows after it stay in step. Its
+  // height comes from the row rather than from an aspect ratio of its own.
+  const style = useTileStyle(at);
 
   return (
-    <div
-      className={cn(
-        'grid aspect-square place-items-center rounded-xl border p-3 text-center',
-        failed ? 'border-danger/30 bg-danger/5' : 'border-line bg-surface',
-      )}
-      title={record.error ?? undefined}
-    >
-      {failed ? (
-        <div className="space-y-1">
-          <p className="text-xs font-medium text-danger">Failed</p>
-          <p className="line-clamp-3 text-[10px] text-muted">{record.error}</p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          <Spinner className="mx-auto size-5 text-muted" />
-          <p className="text-[10px] text-muted">
-            {record.status === 'running' ? 'Rendering' : 'Queued'}
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/* Viewer with the actions that make a result reusable                 */
-/* ------------------------------------------------------------------ */
-
-function ViewerWithActions({
-  entries,
-  index,
-  grid,
-  onGridChange,
-  onIndexChange,
-  onClose,
-}: {
-  entries: ViewerEntry[];
-  index: number;
-  /** Which parameters to draw over the picture, shared with the grid's own. */
-  grid: GridSettings;
-  onGridChange: (patch: Partial<GridSettings>) => void;
-  onIndexChange: (index: number) => void;
-  onClose: () => void;
-}) {
-  const navigate = useNavigate();
-  const setPending = usePendingStore((state) => state.setPending);
-  const workflows = useWorkflows();
-  const settings = useSettings();
-  const [showDetails, setShowDetails] = useState(false);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const rateImage = useRateImage();
-  const keepImage = useKeepImage();
-  const deleteImage = useDeleteImage();
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const addFavorite = useAddFavorite();
-  const removeFavorite = useDeleteFavorite();
-  const favorites = useFavorites();
-
-  // Swiping to the next picture must not leave a primed delete button behind.
-  useEffect(() => setConfirmDelete(false), [index]);
-
-  // Every hook above runs unconditionally; only then is it safe to bail. The
-  // gallery only renders this once it has found the entry, so a miss means the
-  // picture was deleted underneath us — closing is the right answer.
-  const entry = entries[index];
-  if (!entry) return null;
-
-  const { record, image } = entry;
-  const workflowExists = workflows.data?.some((item) => item.id === record.workflowId) ?? false;
-  const viewerOverlay = overlayValues(record, grid.viewerParams);
-
-  /*
-   * Whether *this* image is already a favourite.
-   *
-   * Read from the stored list rather than tracked locally, so the button tells
-   * the truth when the viewer is reopened — and so a second tap removes it
-   * instead of silently saving a duplicate, which is what used to happen.
-   */
-  const existingFavorite = image
-    ? (favorites.data?.find(
-        (entry) =>
-          entry.generationId === record.id &&
-          entry.image?.filename === image.filename &&
-          entry.image?.subfolder === image.subfolder,
-      ) ?? null)
-    : null;
-
-  const favorite = async () => {
-    if (!image) return;
-    setError(null);
-    try {
-      if (existingFavorite) {
-        await removeFavorite.mutateAsync(existingFavorite.id);
-      } else {
-        await addFavorite.mutateAsync({ generationId: record.id, image });
-      }
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not save that favourite');
-    }
-  };
-
-  const rate = async (rating: number) => {
-    if (!image) return;
-    setError(null);
-    try {
-      await rateImage.mutateAsync({ generationId: record.id, image, rating });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not save that rating');
-    }
-  };
-
-  const rerun = (freshSeed: boolean) => {
-    if (!record.workflowId) return;
-    setPending({ workflowId: record.workflowId, values: record.values, freshSeed });
-    onClose();
-    navigate('/');
-  };
-
-  /** Copy this result into ComfyUI's inputs, then open the target workflow. */
-  const sendTo = async (target: 'img2img' | 'upscale') => {
-    if (!image) return;
-    const workflowId =
-      target === 'upscale' ? settings.data?.upscaleWorkflowId : settings.data?.img2imgWorkflowId;
-
-    if (!workflowId) {
-      setError(
-        `No ${target} workflow chosen yet. Pick one in Settings so this button knows where to send the image.`,
-      );
-      return;
-    }
-
-    setBusy(target);
-    setError(null);
-    try {
-      const uploaded = await api.toInput(image);
-      setPending({
-        workflowId,
-        imageFilename: uploaded.subfolder ? `${uploaded.subfolder}/${uploaded.name}` : uploaded.name,
-        freshSeed: true,
-      });
-      onClose();
-      navigate('/');
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not send the image');
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const share = async () => {
-    if (!image) return;
-    const url = imageUrl(image);
-    try {
-      const response = await fetch(url);
-      const blob = await response.blob();
-      const file = new File([blob], image.filename, { type: blob.type || 'image/png' });
-
-      // Web Share with files is the only route to "save to camera roll" on iOS.
-      if (navigator.canShare?.({ files: [file] })) {
-        await navigator.share({ files: [file], title: record.title });
-        return;
-      }
-    } catch {
-      // Fall through to a plain download.
-    }
-
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = image.filename;
-    link.click();
-  };
-
-  return (
-    <ImageViewer
-      entries={entries}
-      index={index}
-      onIndexChange={onIndexChange}
-      onClose={onClose}
-      /*
-        Text a node produced is chosen here like any other value now, rather
-        than always being on: a node that writes the prompt is describing the
-        picture the way the seed is, but a caption several lines long is not
-        something to have permanently across the bottom of every image.
-      */
-      overlay={
-        /*
-          Nothing chosen, nothing rendered — not an empty strip. The viewer
-          reserves room for whatever this is, so handing it a component that
-          draws nothing left a band of blank space over the picture.
-        */
-        viewerOverlay.length > 0 ? (
-          <ParamOverlayLine items={viewerOverlay} withLabels={grid.overlayLabels} />
-        ) : undefined
-      }
-      footer={
-        <div className="space-y-2">
-          <ErrorNote>{error}</ErrorNote>
-
-          {/* Scrolls sideways rather than wrapping — a two-line button row eats
-              the bottom of the image on a small screen. */}
-          {/*
-            Rating is what copies the bytes onto this device, so it is the first
-            thing offered — it is the difference between keeping an image and
-            losing it when the instance is destroyed.
-          */}
-          {image && (
-            <div className="flex items-center justify-between gap-3">
-              <RatingStars value={image.rating} onChange={rate} size="sm" />
-              <span className="text-[11px] text-muted">
-                {image.archived
-                  ? 'Stored on this device'
-                  : image.rating > 0 || image.kept
-                    ? 'Not copied locally'
-                    : 'Rate or keep it to store a copy'}
-              </span>
-            </div>
-          )}
-
-          {/*
-            Five columns of icon-led cells, two rows.
-
-            Three columns of full-width buttons was flush at both edges and far
-            too tall: ten actions became four rows of text that ate the bottom
-            of the picture, which is the thing you opened. An icon with a small
-            label underneath says the same in a fifth of the width, so
-            everything stays reachable without a sheet and the image keeps the
-            room.
-          */}
-          <div className="grid grid-cols-5 gap-1">
-            <ViewerAction
-              glyph={existingFavorite ? '★' : '☆'}
-              // The label carries the state as well as the colour: "on or off"
-              // has to survive being read rather than looked at.
-              label={existingFavorite ? 'Favourited' : 'Favourite'}
-              active={Boolean(existingFavorite)}
-              busy={addFavorite.isPending || removeFavorite.isPending}
-              onClick={favorite}
-              title={
-                existingFavorite
-                  ? 'In Favourites — tap to remove'
-                  : 'Keep this image and its settings in Favourites'
-              }
-            />
-            <ViewerAction glyph="⤓" label="Save" onClick={share} />
-            {/*
-              Keeping is the promise a rating makes, without the judgement.
-              With automatic cleanup switched on this is the difference between
-              a picture surviving and not, and being made to award it stars
-              first is a tax on saying "not sure yet, but don't bin it".
-            */}
-            <ViewerAction
-              glyph="⌾"
-              label={image?.kept ? 'Kept' : 'Keep'}
-              active={Boolean(image?.kept)}
-              busy={keepImage.isPending}
-              onClick={() => {
-                if (!image) return;
-                keepImage.mutate(
-                  { generationId: record.id, image, kept: !image.kept },
-                  {
-                    onError: (cause) =>
-                      setError(cause instanceof Error ? cause.message : 'Could not keep that'),
-                  },
-                );
-              }}
-              title={
-                image?.kept
-                  ? 'Kept — the cleanup will leave it alone'
-                  : 'Keep this picture without rating it'
-              }
-            />
-            <ViewerAction
-              glyph="⟳"
-              label="Reseed"
-              disabled={!workflowExists}
-              onClick={() => rerun(true)}
-              title={workflowExists ? 'Run again with a new seed' : 'That workflow has been deleted'}
-            />
-            <ViewerAction
-              glyph="⇥"
-              label="Reuse"
-              disabled={!workflowExists}
-              onClick={() => rerun(false)}
-              title="Load these settings into the form"
-            />
-            <ViewerAction
-              glyph="◨"
-              label="img2img"
-              busy={busy === 'img2img'}
-              onClick={() => void sendTo('img2img')}
-            />
-            <ViewerAction
-              glyph="⤢"
-              label="Upscale"
-              busy={busy === 'upscale'}
-              onClick={() => void sendTo('upscale')}
-            />
-            <ViewerAction glyph="≡" label="Details" onClick={() => setShowDetails(true)} />
-            {/* Which values are drawn over the picture. Its own choice, separate
-                from the grid's — there is room for more here. */}
-            <ParamOverlayPicker
-              label="Values on the picture"
-              caption="Values"
-              records={entries.map((candidate) => candidate.record)}
-              selected={grid.viewerParams}
-              withLabels={grid.overlayLabels}
-              onChange={(viewerParams) => onGridChange({ viewerParams })}
-              onWithLabelsChange={(overlayLabels) => onGridChange({ overlayLabels })}
-              // Shaped like the cells it shares a row with: glyph, then a word.
-              className="h-auto w-full flex-col justify-center gap-0.5 rounded-lg px-1 py-1 shadow-md shadow-black/40"
-            />
-            {/* Two taps, because it cannot be undone. */}
-            <ViewerAction
-              glyph="⌫"
-              label={confirmDelete ? 'Sure?' : 'Delete'}
-              danger={confirmDelete}
-              busy={deleteImage.isPending}
-              onClick={() => {
-                if (!confirmDelete) return setConfirmDelete(true);
-                if (!image) return;
-                deleteImage.mutate(
-                  { generationId: record.id, image },
-                  {
-                    onSuccess: () => onClose(),
-                    onError: (cause) =>
-                      setError(cause instanceof Error ? cause.message : 'Could not delete that'),
-                  },
-                );
-              }}
-            />
+    <div style={style} title={record.error ?? undefined}>
+      <div
+        className={cn(
+          'grid size-full place-items-center rounded-xl border p-3 text-center',
+          failed ? 'border-danger/30 bg-danger/5' : 'border-line bg-surface',
+        )}
+      >
+        {failed ? (
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-danger">Failed</p>
+            <p className="line-clamp-3 text-[10px] text-muted">{record.error}</p>
           </div>
-
-          <Sheet open={showDetails} onClose={() => setShowDetails(false)} title="Settings used" full>
-            <DetailsList record={record} />
-          </Sheet>
-        </div>
-      }
-    />
-  );
-}
-
-function DetailsList({ record }: { record: GenerationRecord }) {
-  const entries = Object.entries(record.values).filter(
-    ([, value]) => value !== null && value !== '',
-  );
-
-  return (
-    <div className="space-y-4">
-      <div>
-        <p className="text-xs tracking-wide text-muted uppercase">Prompt</p>
-        <p className="mt-1 text-sm break-words">{record.title}</p>
-      </div>
-
-      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-        <Detail label="Workflow" value={record.workflowName} />
-        <Detail label="Status" value={record.status} />
-        <Detail label="Created" value={new Date(record.createdAt).toLocaleString()} />
-        {record.completedAt && (
-          <Detail
-            label="Took"
-            value={`${Math.round((record.completedAt - record.createdAt) / 100) / 10}s`}
-          />
+        ) : (
+          <div className="space-y-2">
+            <Spinner className="mx-auto size-5 text-muted" />
+            <p className="text-[10px] text-muted">
+              {record.status === 'running' ? 'Rendering' : 'Queued'}
+            </p>
+          </div>
         )}
       </div>
-
-      {record.error && <ErrorNote>{record.error}</ErrorNote>}
-
-      {/*
-        Whatever the graph printed, one line each until you open it.
-
-        A workflow can print several things — a rewritten prompt, a caption, the
-        reasoning that produced either — and a node titled `rewrite prompt
-        [thinking]` says which is which. Shown the same way as the parameters,
-        because that is what they are: something the run decided, which you
-        occasionally want to read in full and usually only want to know exists.
-      */}
-      {record.texts.length > 0 && (
-        <div>
-          <p className="mb-2 text-xs tracking-wide text-muted uppercase">What the graph printed</p>
-          <dl className="space-y-1.5 text-xs">
-            {record.texts.map((output, index) => (
-              <DetailRow
-                key={`${output.nodeId}-${index}`}
-                name={textOutputLabel(output.nodeTitle)}
-                value={output.text}
-              />
-            ))}
-          </dl>
-        </div>
-      )}
-
-      <div>
-        <p className="mb-2 text-xs tracking-wide text-muted uppercase">All parameters</p>
-        <dl className="space-y-1.5 text-xs">
-          {entries.map(([id, value]) => (
-            <DetailRow key={id} name={id} value={String(value)} />
-          ))}
-        </dl>
-      </div>
-    </div>
-  );
-}
-
-/**
- * One action in the viewer's footer: a glyph with a small label under it.
- *
- * Ten actions belong on that screen and none of them is worth a row of its own
- * — the picture is what the screen is for. A 44px cell is still a comfortable
- * target, and the label means the glyph never has to be guessed at.
- */
-function ViewerAction({
-  glyph,
-  label,
-  onClick,
-  active = false,
-  danger = false,
-  disabled = false,
-  busy = false,
-  title,
-}: {
-  glyph: string;
-  label: string;
-  onClick: () => void;
-  active?: boolean;
-  danger?: boolean;
-  disabled?: boolean;
-  busy?: boolean;
-  title?: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled || busy}
-      aria-pressed={active}
-      aria-label={label}
-      title={title}
-      className={cn(
-        // The shadow does what the bar behind these used to: separates them
-        // from whatever part of the picture they happen to be sitting on.
-        'flex flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1 shadow-md shadow-black/40 disabled:opacity-40',
-        danger
-          ? 'bg-danger/20 text-danger'
-          : active
-            ? 'bg-accent/20 text-accent'
-            : 'bg-surface text-body active:bg-surface-2',
-      )}
-    >
-      <span aria-hidden className="text-base leading-none">
-        {busy ? <Spinner className="size-4" /> : glyph}
-      </span>
-      <span className="w-full truncate text-center text-[9px] leading-none text-muted">
-        {label}
-      </span>
-    </button>
-  );
-}
-
-/**
- * One parameter, cut to a line until you tap it.
- *
- * A prompt is the value people most often want to read here and the one least
- * likely to fit, so truncating it permanently hides exactly what the list is
- * for. Tapping opens the whole thing; tapping again puts it back, so a long
- * value does not push everything below it off the screen for good.
- */
-function DetailRow({ name, value }: { name: string; value: string }) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <div className="border-b border-line/50 pb-1.5">
-      <button
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-        aria-expanded={open}
-        className="flex w-full items-start justify-between gap-4 text-left"
-      >
-        <dt className="shrink-0 text-muted">{name}</dt>
-        <dd
-          className={cn(
-            'min-w-0 text-right',
-            open ? 'break-words [overflow-wrap:anywhere]' : 'truncate',
-          )}
-        >
-          {value}
-        </dd>
-      </button>
-    </div>
-  );
-}
-
-function Detail({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <p className="text-xs text-muted">{label}</p>
-      <p className="truncate">{value}</p>
     </div>
   );
 }

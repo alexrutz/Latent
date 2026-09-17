@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { FastifyInstance } from 'fastify';
 
-import { analyseStudy, applyOverrides, planStudy, switchCounts, MAX_SHOTS } from '@latent/shared';
+import { analyseStudy, planStudy, switchCounts, MAX_SHOTS } from '@latent/shared';
 import type {
   CreateStudyRequest,
   ParamValues,
@@ -19,6 +19,7 @@ import type {
 
 import { keepAsFavorite } from './favorites.js';
 import type { AppContext } from './context.js';
+import { resolveSchema } from '../formSchema.js';
 
 const SAMPLINGS = new Set<StudySamplingName>(['lhs', 'random']);
 const RATINGS = new Set<number>([1, 2, 3]);
@@ -384,6 +385,6 @@ export function registerStudyRoutes(app: FastifyInstance, ctx: AppContext): void
     const detail = ctx.store.getWorkflow(study.workflowId);
     if (!detail) return reply.code(404).send({ error: 'That workflow has been deleted' });
 
-    return applyOverrides(detail.schema, detail.overrides);
+    return resolveSchema(ctx.store, detail.schema, detail.overrides);
   });
 }

@@ -4,6 +4,9 @@ import type { FieldOverrides, ParamSchema, ParamValues } from './paramTypes.js';
 // The rating scale belongs to the analysis, which is where it is defined; the
 // wire types reuse it rather than restating three levels in two places.
 import type { StudyRating } from './studyStats.js';
+import type { MediaKind } from './media.js';
+import type { EditOrigin } from './editOrigin.js';
+import type { FieldArrangement } from './fieldArrangement.js';
 
 /* ------------------------------------------------------------------ */
 /* Workflows                                                           */
@@ -26,6 +29,23 @@ export interface WorkflowSummary {
   visible: boolean;
   /** Where it was read from, when it came from the ComfyUI folder. */
   sourcePath: string | null;
+  /**
+   * Whether this workflow ends in a moving picture.
+   *
+   * Read off the graph's save node, so it is known before anything has been
+   * rendered — which is what lets the picker say so, and what tells a screen
+   * expecting pictures that it is about to be handed a video instead.
+   */
+  producesVideo: boolean;
+  /**
+   * Whether this workflow ends in something you listen to.
+   *
+   * Apart from `producesVideo` rather than one "not a picture" flag: the two
+   * differ in what the screen has to do about them. A clip has a frame to show
+   * and a poster to capture; a track has neither, so a tile for one is a card
+   * rather than a thumbnail that failed to load.
+   */
+  producesAudio: boolean;
 }
 
 export interface WorkflowDetail extends WorkflowSummary {
@@ -121,6 +141,17 @@ export interface GenerationImage extends ComfyImageRef {
   archived: boolean;
   /** True when a small preview is stored, so the grid never fetches full size. */
   hasThumbnail: boolean;
+  /**
+   * Whether this output moves.
+   *
+   * A video is the same row in the same gallery, but almost nothing about
+   * handling it is the same: it is streamed in ranges rather than sent whole,
+   * it cannot be resized by the still-image renderer, and it plays rather than
+   * draws. Decided from the filename when the row is written; see `mediaKindOf`.
+   */
+  kind: MediaKind;
+  /** How long it runs, once anything has managed to measure it. */
+  durationMs: number | null;
   /** Pixel size, used to give the tile a shape that matches the image. */
   width: number | null;
   height: number | null;
@@ -144,6 +175,15 @@ export interface GenerationRecord {
    * ComfyUI's own UI.
    */
   params: ParamSummaryItem[];
+  /**
+   * The pictures this run was given, when it said which was which.
+   *
+   * Recorded at submit time for the same reason `params` is: which input is the
+   * origin comes from a node's title, and the workflow can be re-titled or
+   * deleted long before anybody opens the result. Empty for everything that is
+   * not a labelled edit — see `findEditOrigins`.
+   */
+  origins: EditOrigin[];
   /** A short human summary (the positive prompt) for gallery cards. */
   title: string;
   images: GenerationImage[];
@@ -345,11 +385,7 @@ export interface ConnectionInput {
 }
 
 export type ConnectionTestOutcome =
-  | 'ok'
-  | 'unreachable'
-  | 'unauthorized'
-  | 'self_signed'
-  | 'not_comfyui';
+  'ok' | 'unreachable' | 'unauthorized' | 'self_signed' | 'not_comfyui';
 
 export interface ConnectionTestResult {
   outcome: ConnectionTestOutcome;
@@ -600,6 +636,48 @@ export interface ImportResult {
 }
 
 /* ------------------------------------------------------------------ */
+/* Talking to this server from something it did not ship               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The version of the HTTP contract this build speaks.
+ *
+ * Bumped when something a client depends on changes in a way that would break
+ * one written against the previous number — a route removed, a field that
+ * stops being sent, a meaning that changes under an unchanged name. Adding a
+ * route or a field is not a bump: a client that has never heard of it carries
+ * on working, which is the whole reason to distinguish the two.
+ *
+ * The web app never reads this. It is shipped by the same process it talks to,
+ * so the two cannot disagree. This exists for the clients that are not — a
+ * native app installed once and meeting whatever is running months later.
+ */
+export const LATENT_API_VERSION = 1;
+
+/**
+ * What `GET /api/app` answers: what this is, and how to get in.
+ *
+ * Deliberately small and deliberately unauthenticated. It is the one thing a
+ * client can ask before it has a credential, so it must be safe to hand to a
+ * stranger — the name of the software and the shape of the front door, and
+ * nothing whatever about the machine behind it.
+ */
+export interface AppInfo {
+  /** Always `latent`. Lets a client tell it has reached the right thing. */
+  app: 'latent';
+  api: { version: number };
+  auth: {
+    /** `cookie` for a browser, `bearer` for anything without a cookie jar. */
+    schemes: ('cookie' | 'bearer')[];
+    login: string;
+    /** No password has been chosen yet; the client must run setup first. */
+    setupRequired: boolean;
+    /** Prose, because there is no number: see the route. */
+    tokenLifetime: string;
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* Misc                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -614,6 +692,12 @@ export interface StatusResponse {
   /** The terminal route only exists when the server was started with it enabled. */
   terminalEnabled: boolean;
   /**
+   * The update routes are registered. Not the same as "an update can be
+   * installed" — that needs a git checkout with an upstream, and
+   * `GET /api/update` is where the reason lives when there isn't one.
+   */
+  updateEnabled: boolean;
+  /**
    * The encrypted image archive is sealed. Happens after a server restart,
    * until somebody signs in — the key only ever lives in memory.
    */
@@ -626,6 +710,179 @@ export interface StatusResponse {
 export interface ArchiveStats {
   images: number;
   bytes: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* Browsing folders on the ComfyUI machine                             */
+/* ------------------------------------------------------------------ */
+
+/** One folder comfyllama is willing to serve, by the key a request names it with. */
+export interface BrowseRoot {
+  key: string;
+  path: string;
+}
+
+export interface BrowseEntry {
+  name: string;
+  /** Relative to the root, with `/` separators. Half of a stored reference. */
+  path: string;
+  size: number;
+  /** Seconds, as Python's `st_mtime` gives them. */
+  mtime: number;
+}
+
+export interface BrowseListing {
+  root: string;
+  path: string;
+  folders: BrowseEntry[];
+  files: BrowseEntry[];
+  /** More matched than were returned; narrow the search rather than paging. */
+  truncated: boolean;
+  total: number;
+}
+
+export type BrowseSort = 'date' | 'name' | 'size';
+export type BrowseOrder = 'asc' | 'desc';
+
+/* ------------------------------------------------------------------ */
+/* Updating the software                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The steps an update runs, in the order it runs them.
+ *
+ * Named rather than numbered because the interesting question during an update
+ * is never "how far along" but "which part is slow" — and it is nearly always
+ * `install`, which is the one that compiles better-sqlite3 from source when no
+ * prebuilt binary matches the machine.
+ */
+export type UpdateStepName = 'fetch' | 'reset' | 'install' | 'build' | 'rollback';
+
+export type UpdateStepStatus = 'waiting' | 'running' | 'done' | 'failed' | 'skipped';
+
+export type UpdatePhase = 'running' | 'succeeded' | 'failed';
+
+export interface UpdateStep {
+  name: UpdateStepName;
+  /**
+   * Exactly what was run.
+   *
+   * Shown, not just logged: when an update fails on a machine you are holding a
+   * phone to, the thing you want is the command to try by hand over SSH.
+   */
+  command: string;
+  status: UpdateStepStatus;
+  startedAt: number | null;
+  endedAt: number | null;
+  exitCode: number | null;
+}
+
+export interface UpdateLogLine {
+  /**
+   * Monotonic within one server process, and the cursor a client polls with.
+   *
+   * Polling rather than a socket, and a cursor rather than the whole log: the
+   * build wipes `web/dist` while it runs, so the page watching an update cannot
+   * reload and cannot fetch anything new from the bundle. It has to be able to
+   * lose its connection, come back, and still be told only what it missed.
+   */
+  seq: number;
+  /** Null for the runner's own remarks, which belong to no command. */
+  step: UpdateStepName | null;
+  stream: 'out' | 'err' | 'note';
+  text: string;
+}
+
+/** The install itself: what is checked out, and whether it can be moved. */
+export interface UpdateCheckout {
+  /** Whether an update can be installed from here at all. */
+  updatable: boolean;
+  /** Why not, in a sentence somebody can act on. Null when it can. */
+  reason: string | null;
+  branch: string | null;
+  /** The remote branch `branch` tracks, e.g. `origin/main`. */
+  upstream: string | null;
+  commit: string | null;
+  commitShort: string | null;
+  committedAt: number | null;
+  subject: string | null;
+  /**
+   * Uncommitted changes are in the way.
+   *
+   * Kept apart from `updatable` because it is the one blocker that is somebody's
+   * own work rather than a property of the install, and the screen says so
+   * differently: everything else is "this cannot be updated", this is "you have
+   * edits here that an update would destroy".
+   */
+  dirty: boolean;
+}
+
+/** What the upstream has that this checkout does not. */
+export interface UpdateAvailable {
+  /** When origin was last asked. Null means not since this process started. */
+  checkedAt: number | null;
+  behind: number;
+  /**
+   * Commits here that the upstream does not have.
+   *
+   * Not an error — a checkout somebody has committed to locally still updates
+   * fine — but it is a warning worth showing, because the reset that installs
+   * the update is what makes those commits unreachable.
+   */
+  ahead: number;
+  commit: string | null;
+  commitShort: string | null;
+  subject: string | null;
+}
+
+/** One attempt, from the commit it started at to wherever it ended up. */
+export interface UpdateRun {
+  id: string;
+  phase: UpdatePhase;
+  startedAt: number;
+  endedAt: number | null;
+  /** Where this started, and so where a rollback goes back to. */
+  from: string;
+  /** Where it ended. Equal to `from` again after a rollback. */
+  to: string | null;
+  steps: UpdateStep[];
+  error: string | null;
+  /**
+   * New code is on disk and the running process is still the old one.
+   *
+   * Separate from `phase`, because a *failed* run that rolled back also leaves
+   * a rebuilt tree — identical to what is running, so there is nothing to
+   * restart for — while a successful one has to be replaced to take effect.
+   */
+  restartRequired: boolean;
+}
+
+/**
+ * What would bring Latent back if this process exited.
+ *
+ * The update cannot take effect without replacing the running process, and
+ * nothing in Latent can start itself. So this is checked rather than assumed:
+ * offering a restart button on a machine where `npm start` was typed into a
+ * shell would make it a "stop Latent" button, with the phone that pressed it as
+ * the only way to find out.
+ */
+export interface UpdateSupervisor {
+  kind: 'docker' | 'systemd' | 'pm2' | 'unknown';
+  /** Whether exiting is expected to bring it back. */
+  restarts: boolean;
+  note: string;
+}
+
+export interface UpdateStatus {
+  checkout: UpdateCheckout;
+  available: UpdateAvailable;
+  /** The current or most recent attempt; null if none since the last restart. */
+  run: UpdateRun | null;
+  /** Everything after the `since` the client asked with. */
+  log: UpdateLogLine[];
+  /** The highest seq that exists. Poll with this as the next `since`. */
+  cursor: number;
+  supervisor: UpdateSupervisor;
 }
 
 export interface UploadImageResponse {
@@ -660,6 +917,17 @@ export interface ResourceSample {
   gpuPercent: number | null;
   cpuPercent: number | null;
   gpuTempC: number | null;
+  /**
+   * What the card is drawing, in watts, and what it is allowed to draw.
+   *
+   * The figure that makes utilisation mean something. "GPU at 100%" only says
+   * the scheduler had work resident every interval, which a kernel waiting on
+   * memory satisfies as well as one doing arithmetic — so a bandwidth-bound run
+   * and a compute-bound one read the same, and the power draw is what separates
+   * them. A 450 W card sitting at 160 W is waiting; at 430 W it is working.
+   */
+  gpuWatts: number | null;
+  gpuWattsLimit: number | null;
   /** Jobs waiting, so load can be read against demand. */
   queueRemaining: number;
   /** Sampler speed at that moment, when one was running. */
@@ -695,6 +963,8 @@ export interface MonitorSnapshot {
     ram: boolean;
     gpu: boolean;
     cpu: boolean;
+    /** Needs comfyllama on the ComfyUI machine, and an NVIDIA card in it. */
+    power: boolean;
   };
   deviceName: string | null;
   /** Where utilisation figures came from, when there are any. */
@@ -756,6 +1026,38 @@ export interface AppSettings {
    * everything", which is what installs from before this did.
    */
   workflowPrefix: string;
+  /**
+   * Folders and files starred in the folder browser, newest first.
+   *
+   * Reference material is reused, and the same handful of it is reused most:
+   * the sketch a series is built on, the folder of masks, the one photograph
+   * every portrait starts from. Finding those by walking down from `output`
+   * every time is the whole cost of using them, and it is paid per picture.
+   *
+   * Kept with the settings rather than on the device because what you reference
+   * is a property of the installation, not of the phone you happened to pick it
+   * from — the same reasoning that puts the workflows and the prompt library
+   * here.
+   */
+  browseFavorites: BrowseFavorite[];
+  /**
+   * One form arrangement applied to every workflow. See `fieldArrangement.ts`.
+   *
+   * Keyed by what a field is called rather than by which workflow it is in, so
+   * an opinion about `duration` is an opinion about every workflow that has
+   * one — including the ones imported next week. Per-workflow overrides still
+   * win, so nothing arranged here can quietly undo hand-tuned work.
+   */
+  fieldArrangement: FieldArrangement;
+}
+
+/** One starred entry in the folder browser: `root/relative/path`, plus what it is. */
+export interface BrowseFavorite {
+  /** `output/monday/render_0007.png` — the reference the picker hands back. */
+  ref: string;
+  /** A folder is somewhere to go; a file is something to pick. */
+  kind: 'file' | 'folder';
+  addedAt: number;
 }
 
 /**
@@ -836,6 +1138,22 @@ export interface GridSettings {
   viewerScale: number;
 
   /**
+   * Which side of the screen the two compare handles rest against.
+   *
+   * A picture made by an edit workflow can be wiped away to show the one it was
+   * made from — see `findEditOrigins` — and the handles that do the wiping sit
+   * parked on an edge until they are dragged. Which edge is a question about
+   * the hand holding the phone, not about the picture: a right thumb reaches
+   * the right edge and a left one does not, and a handle parked where your
+   * thumb already rests is one you can use without looking.
+   *
+   * Two of them, one per axis, because an edit changes different things in
+   * different places and a single seam can only be dragged one way.
+   */
+  compareVerticalEdge: 'left' | 'right';
+  compareHorizontalEdge: 'top' | 'bottom';
+
+  /**
    * The old switch, kept only so an existing setting is not silently dropped.
    *
    * @deprecated Read `viewerScale`. Written by no version; still read once,
@@ -881,6 +1199,10 @@ export const DEFAULT_GRID_SETTINGS: GridSettings = {
   viewerParams: [],
   overlayLabels: true,
   viewerScale: 1,
+  // Left and top: where a wipe starts in every comparison anybody has ever
+  // seen, because it is where reading starts. Moved for the hand, not for taste.
+  compareVerticalEdge: 'left',
+  compareHorizontalEdge: 'top',
 };
 
 /**
@@ -938,6 +1260,29 @@ export interface ChatSettings {
   systemPromptId: string | null;
   /** How readily each tool is reached for. */
   tools: ChatToolSettings;
+  /** Whether a finished picture is shown to the model, and how picky it is. */
+  review: ChatReviewSettings;
+  /** An endless run of pictures out of your notes. See `WanderRun`. */
+  wander: WanderRun;
+  /**
+   * Whether it accepts its own rewrites and carries on. See `AutonomousRun`.
+   *
+   * Beside the review rather than inside it, although it is the review's
+   * threshold that ends the loop: settings merge one group deep, and a group
+   * inside a group is the one shape a partial patch cannot fill in from the
+   * defaults.
+   */
+  autonomous: AutonomousRun;
+  /**
+   * How far a prompt goes in describing the picture.
+   *
+   * Instructions rather than a length limit: "two sentences" is a rule a model
+   * follows by truncating, and what is wanted is a different level of decision
+   * — how much of the scene is settled here rather than left to the sampler.
+   */
+  promptDetail: PromptDetail;
+  /** How much what you like shapes what it suggests. See `TasteProfile`. */
+  taste: TasteInfluence;
   /** What a picture generated from the chat is used with. */
   generation: ChatGenerationSettings;
   /**
@@ -1279,7 +1624,9 @@ export function defaultSampling(): ChatSampling {
  * only in the dialog: settings are stored as JSON and edited by hand often
  * enough that the sanitising has to live where the request is built.
  */
-export function samplingOverrides(sampling: Partial<ChatSampling> | undefined): Record<string, number> {
+export function samplingOverrides(
+  sampling: Partial<ChatSampling> | undefined,
+): Record<string, number> {
   const out: Record<string, number> = {};
   if (!sampling) return out;
 
@@ -1337,6 +1684,281 @@ export interface ChatToolSettings {
   prompt_blocks: ToolEagerness;
   build_prompt: ToolEagerness;
   ask_user: ToolEagerness;
+}
+
+/**
+ * How far a picture may be from its prompt before a rewrite is proposed.
+ *
+ * The same shape as the pace scale beside it, and for the same reason: this is
+ * one ordered judgement, not a set of alternatives. What it decides is how
+ * perfectionist the model is on your behalf — everything above `never` is a
+ * standard it holds the picture to, stated to it as a score it has to beat.
+ */
+export type ReviewThreshold =
+  /** Say how it went and stop there. Never proposes a rewrite. */
+  | 'never'
+  /** Only when the picture is plainly not what was asked for. */
+  | 'wrong'
+  /** When something the prompt called for is missing. */
+  | 'loose'
+  /** When a noticeable part of it is off. */
+  | 'balanced'
+  /** When any part of it is off. */
+  | 'strict'
+  /** Unless it is exactly what the prompt describes. */
+  | 'exacting';
+
+/**
+ * Looking at what came out.
+ *
+ * A prompt is a guess about how a model will read it, and the only honest test
+ * is the picture. The chat model is usually multimodal — most worth running
+ * are — so it can be shown the result and asked the one question that matters:
+ * is this what the prompt said? Everything downstream of that (what is missing,
+ * what to change, whether it is worth changing) is a judgement, which is what
+ * `threshold` calibrates.
+ */
+/**
+ * When the model stops and asks rather than deciding for you.
+ *
+ * A picture can miss its prompt for reasons that are not the prompt's fault, or
+ * for several at once — the light is wrong *and* the subject is off centre —
+ * and which of those to fix is a matter of taste rather than of fact. Guessing
+ * at that produces a rewrite that fixes the wrong thing, confidently. This is
+ * how readily it says so instead.
+ */
+export type ReviewAsk =
+  /** Never asks; it rewrites the prompt itself or says nothing. */
+  | 'never'
+  /** Only when it genuinely cannot tell what went wrong. */
+  | 'unclear'
+  /** When it is unsure which of several fixes you would want. */
+  | 'unsure'
+  /** Whenever there is more than one sensible way to improve the match. */
+  | 'often'
+  /** Always asks before rewriting anything. */
+  | 'always';
+
+/**
+ * How much a prompt spells out.
+ *
+ * The same picture can be described in a sentence or in a paragraph, and which
+ * is better is not a fact about prompting — it is a fact about what you are
+ * doing. A sparse prompt leaves the model room and varies wildly between seeds;
+ * an elaborate one pins the picture down and is what you want when you know
+ * exactly what you are after.
+ */
+export type PromptDetail = 'sparse' | 'plain' | 'balanced' | 'detailed' | 'elaborate';
+
+export interface ChatReviewSettings {
+  /**
+   * Show the model the pictures it makes at all. On by default.
+   *
+   * Off for a text-only model, or when the extra wait per picture is not worth
+   * it. With it off the conversation is what it always was: a model that has
+   * written prompts and never seen a single result of one.
+   */
+  enabled: boolean;
+  threshold: ReviewThreshold;
+  /**
+   * How many of the most recent pictures stay in the model's view.
+   *
+   * Not just the moment it is made. "Make the sky darker" means nothing to a
+   * model that saw the picture once, two turns ago, and is now working from its
+   * own description of it — every subsequent change compounds that description
+   * instead of the actual result. So the last few renders are sent with every
+   * turn, and the conversation is about something both of you can see.
+   *
+   * A few rather than all of them, because each one is prefill: a picture is
+   * on the order of a thousand tokens before the model says anything, and a
+   * long session would spend most of its time re-reading its own back
+   * catalogue. Two is enough for "that one was better than this one". `0`
+   * keeps the picture only for the turn where it is judged.
+   */
+  keepInView: number;
+  /** How readily it asks you rather than rewriting the prompt itself. */
+  askWhen: ReviewAsk;
+}
+
+/**
+ * Wandering: picture after picture, out of what you like.
+ *
+ * A different thing from `AutonomousRun`, which is about *one* picture getting
+ * closer to its prompt. This one never converges on anything — each round draws
+ * a few of your notes at random, makes a picture that holds them together, and
+ * moves on. It is for the evening when you do not want to decide anything and
+ * would rather be shown things.
+ *
+ * Drawn on the server, because the notes are encrypted there and are
+ * deliberately never on screen: the point is to be surprised by your own taste,
+ * not to read a list of it.
+ */
+export interface WanderRun {
+  /**
+   * Which workflow renders these. Empty means whatever the chat generates with.
+   *
+   * Worth setting separately: the workflow you are iterating with is often the
+   * slow one, and an endless run wants the fast one.
+   */
+  workflowId: string;
+  /**
+   * How many notes are drawn for each picture.
+   *
+   * The whole dial of this mode. One note is a variation on a theme; five is a
+   * collage that mostly holds together; more than that and every picture starts
+   * to look like every other, because they all contain everything.
+   *
+   * A ceiling rather than a promise: the rules in `draw` can make a round
+   * unable to reach it — a cap of one per heading and three headings is three
+   * notes however high this is set — and a round that quietly doubled up to
+   * hit the number would be breaking the rule that was asked for.
+   *
+   * **`0` means no ceiling**: as many as the rules reach, which under the
+   * default cap of one per heading is one note from each. That is the default —
+   * see `wanderCount`, which is the one place the sentinel is resolved.
+   */
+  attributes: number;
+  /** Which notes are eligible, and how they are picked. See `WanderDraw`. */
+  draw: WanderDraw;
+  /**
+   * Where the sampling for these turns comes from.
+   *
+   * `chat` keeps whatever the conversation uses. `own` is there because this is
+   * not a conversation: nobody is reading the words, the same few notes come
+   * round again, and a model at its careful settings writes the same prompt
+   * from them every time. Creativity is the whole product here.
+   */
+  sampling: 'chat' | 'own';
+  /** Used when `sampling` is `own`. */
+  ownSampling: ChatSampling;
+}
+
+/**
+ * What a wandering round is allowed to draw from, and how.
+ *
+ * A flat shuffle of every note you have switched on is the obvious way to do
+ * this and it is not good enough. Notes are not interchangeable: a heading
+ * called "Format" holds things that belong in every picture, one called "Films"
+ * holds a dozen near-synonyms of which you want exactly one, and one called
+ * "Ideas for later" is not something you want turning up tonight at all. The
+ * draw has to know the difference, and only you can tell it.
+ *
+ * Everything here defaults to the flat shuffle, so an existing setup goes on
+ * behaving as it did until somebody opens the sheet.
+ */
+export interface WanderDraw {
+  /**
+   * Per-heading rules, by category id. A heading not listed is `draw` with no
+   * cap of its own — the default, and the reason a new heading needs no
+   * attention before it starts working.
+   */
+  categories: Record<string, WanderCategoryRule>;
+  /**
+   * At most this many notes from any one heading, unless the heading overrides
+   * it. `0` is no limit.
+   *
+   * Set to one, this is "a round takes at most one thing from each heading",
+   * which is the single most useful rule here: it is what stops a round being
+   * four different ways of saying the same thing because one heading happened
+   * to win the shuffle four times.
+   */
+  perCategory: number;
+  /**
+   * Notes filed under no heading.
+   *
+   * They have no heading to switch off, so they get their own switch. `off` is
+   * for a profile where the loose notes are the unsorted inbox and the filed
+   * ones are the considered list.
+   */
+  loose: 'draw' | 'off';
+  /**
+   * Notes you have pinned.
+   *
+   * `draw` puts them in the pool like any other, with no privilege — the old
+   * behaviour, and defensible: a pin means "this holds even when they have
+   * asked for something specific", and in a wandering round nobody has asked
+   * for anything. `always` is the other reading, that a pinned note is part of
+   * everything you make, and it puts every one of them in every round. `off`
+   * keeps the pins for the conversation and out of this.
+   */
+  pinned: 'draw' | 'always' | 'off';
+  /**
+   * How many rounds back a note stays out of the draw once it has been used.
+   *
+   * The failure mode of an endless run is not repetition of pictures, it is
+   * repetition of *notes*: a profile with eight active notes and three drawn a
+   * round will show you the same one twice within a minute, and by the fourth
+   * picture it reads as the model being stuck. `0` is off.
+   */
+  avoidRepeats: number;
+}
+
+/** What one heading does in the draw. */
+export interface WanderCategoryRule {
+  /**
+   * `draw` is the default: its notes join the pool and may or may not come up.
+   * `always` guarantees the heading a place in every round — the setting for
+   * the heading that decides what kind of picture this is at all. `off` leaves
+   * it out of wandering entirely, without switching it off for the chat.
+   */
+  role: 'off' | 'draw' | 'always';
+  /** At most this many notes from here. `0` defers to `perCategory`. */
+  max: number;
+}
+
+export const DEFAULT_WANDER_DRAW: WanderDraw = {
+  categories: {},
+  /*
+   * One from each heading, which is the shape the mode wants.
+   *
+   * The headings are the things you curated — a *Format* heading, a *Films*
+   * heading, a *Mood* heading — so a picture built from one of each is a
+   * picture made of your list. A flat shuffle is not: it will happily take
+   * three films and no format, because one heading won the toss three times,
+   * and then every round is four ways of saying the same thing.
+   *
+   * With `attributes` at its own default of "no ceiling" (see `wanderCount`),
+   * this is literally one note per heading, every round.
+   */
+  perCategory: 1,
+  loose: 'draw',
+  pinned: 'draw',
+  /*
+   * Two rounds, which is the one new default worth having.
+   *
+   * Unlike the caps it cannot make a round come up short — the exclusion is
+   * dropped the moment it would leave nothing to draw — and the thing it
+   * prevents is the most obvious fault of the mode as it stands.
+   */
+  avoidRepeats: 2,
+};
+
+/**
+ * Leaving it to get on with it.
+ *
+ * Everything the loop needs already exists separately: the model writes a
+ * prompt, a render comes out, the model is shown it and says how much of the
+ * prompt came through, and below the perfectionism threshold it proposes a
+ * rewrite. The only thing standing between that and a picture that improves on
+ * its own is the tap that accepts each proposal — so this is that tap, made
+ * automatic.
+ *
+ * The exit condition is the threshold you already set: it stops the first time
+ * a render clears it. That is the whole point — "keep going until it is good
+ * enough" is a sentence about the threshold, not a new judgement.
+ */
+export interface AutonomousRun {
+  /** Off by default. Each render costs GPU time nobody watched being started. */
+  enabled: boolean;
+  /**
+   * How many renders one run may make before it stops and waits for you.
+   *
+   * A model convinced its prompt is nearly right can rewrite it a dozen times
+   * without getting closer, and an unattended loop that does is a night of GPU
+   * time spent on a picture that was finished at round two. Reaching the limit
+   * leaves the last proposal waiting rather than throwing it away.
+   */
+  maxRounds: number;
 }
 
 /**
@@ -1415,19 +2037,134 @@ export interface ChatConversationDetail extends ChatConversation {
 }
 
 /* ------------------------------------------------------------------ */
+/* What you like                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A heading for notes about your taste — "Colour", "Places", "Films".
+ *
+ * Optional by design: a note that does not belong under any of them is still a
+ * note worth having, and being made to file everything is the reason people
+ * stop writing things down.
+ */
+export interface TasteCategory {
+  id: string;
+  name: string;
+  /** Whether this one, and the notes under it, are currently feeding in. */
+  active: boolean;
+  position: number;
+  createdAt: number;
+}
+
+/** One thing you like, or want, or keep coming back to. */
+export interface TasteEntry {
+  id: string;
+  /** `null` for a note that belongs to no category. */
+  categoryId: string | null;
+  text: string;
+  /**
+   * Whether it is currently feeding in.
+   *
+   * Separately from its category, because "everything about colour except that
+   * one" is the normal shape of changing your mind. A note under a switched-off
+   * category stays off whatever this says.
+   */
+  active: boolean;
+  /**
+   * Ignore the scale for this one: it applies whenever it is relevant.
+   *
+   * The rest of the notes only fill the space you left, so a concrete request
+   * pushes them aside. Some things are not like that — a format you always
+   * want, a thing you never want in a picture, a treatment you have settled on
+   * — and those are exactly the ones that matter most when you *have* said what
+   * you want.
+   *
+   * "Relevant" is the whole of the limit. A standing note is not a phrase to
+   * work into every prompt: one about colour has no business in a request for a
+   * line drawing, and the model is told to leave it out rather than bend the
+   * picture to fit it.
+   */
+  always: boolean;
+  position: number;
+  createdAt: number;
+}
+
+/**
+ * Everything Latent knows about what you like.
+ *
+ * Kept encrypted with the app password like the picture archive, for the same
+ * reason: it is a description of you, sitting on a disk indefinitely. The model
+ * reads it — that is what it is for — but nothing else does, and it never
+ * leaves the machines you already trust with the pictures.
+ */
+export interface TasteProfile {
+  categories: TasteCategory[];
+  entries: TasteEntry[];
+}
+
+/**
+ * How much your taste shapes what the model suggests.
+ *
+ * The rule every level shares: it never overrides something you actually asked
+ * for. What changes is how much it fills the space you left — which is the
+ * whole point of writing it down, since the hardest part of making a picture is
+ * deciding what to make.
+ */
+export type TasteInfluence =
+  /** Never mentioned to the model at all — standing notes included. */
+  | 'off'
+  /** Only when you have said nothing whatever about what you want. */
+  | 'sparingly'
+  /** A vague idea is nudged towards it; a concrete one is left alone. */
+  | 'hints'
+  /** Shapes every suggestion, where it does not contradict what was asked. */
+  | 'guiding'
+  /** Everything starts from it unless you say otherwise. */
+  | 'strong';
+
+/* ------------------------------------------------------------------ */
 /* Chat tools                                                          */
 /* ------------------------------------------------------------------ */
 
+/**
+ * The tools the model may reach for on its own, each with a pace setting.
+ *
+ * `revise_prompt` is deliberately not one of them: it is offered on exactly one
+ * turn — the one where the model has just been shown the picture its prompt
+ * produced — so "how readily does it reach for this" is not a question that
+ * arises. See `ChatCallName`.
+ */
 export type ChatToolName = 'prompt_blocks' | 'build_prompt' | 'ask_user';
+
+/** Every tool a call can name, including the one that is not pace-governed. */
+export type ChatCallName = ChatToolName | 'revise_prompt';
 
 /** A block the model proposes adding, changing or removing. */
 export interface ProposedBlock {
-  /** Set when changing or removing one that already exists. */
+  /**
+   * The existing block this changes or removes.
+   *
+   * Filled in by the server rather than by the model. A model that has been
+   * shown the library knows a block by its name and group, not by a uuid it
+   * would have to copy out by hand, so a change or a removal is matched
+   * against the real library before the proposal is ever stored. See
+   * `resolveProposedBlocks`.
+   */
   id?: string;
   name: string;
   category: string;
   text: string;
   action: 'add' | 'update' | 'remove';
+  /**
+   * Set when a change or a removal names nothing in the library.
+   *
+   * Kept in the proposal instead of being dropped from it, because a silently
+   * missing row is how "it cannot delete blocks" looked from the outside: the
+   * model said it had removed something, the dialog agreed, and nothing
+   * happened. A proposal that cannot be carried out says so on its own row and
+   * cannot be accepted.
+   */
+  missing?: boolean;
 }
 
 export interface PromptBlocksCall {
@@ -1443,6 +2180,36 @@ export interface BuildPromptCall {
   negativePrompt?: string;
   /** What the model was going for, in a sentence. */
   reason: string;
+  /**
+   * Written by a wandering run, from notes drawn at random. See `WanderRun`.
+   *
+   * Recorded by the server rather than claimed by the model, and used for one
+   * thing on the screen: a picture made this way opens what made it, because
+   * "what was that one?" is the only question an endless stream raises.
+   */
+  fromWander?: boolean;
+  /**
+   * Which notes this round was built from, by id.
+   *
+   * Ids rather than the words, because this is what gets written to the
+   * database and the notes are encrypted there on purpose — storing the text
+   * on a chat message would put the whole profile in the clear one round at a
+   * time. The words are filled into `wanderNotes` when a conversation is read,
+   * from the vault, so a locked server simply has none to give.
+   *
+   * They are also what a later round reads to avoid repeating itself; see
+   * `WanderDraw.avoidRepeats`.
+   */
+  wanderNoteIds?: string[];
+  /**
+   * The same notes as words, resolved on the way out and never stored.
+   *
+   * What the picture was actually made of, for the dialog that answers "what
+   * was that one?". The mode used to say nothing about this on the grounds
+   * that being surprised by your own taste is the point — which is true right
+   * up until a picture comes out well and there is no way to find out why.
+   */
+  wanderNotes?: string[];
 }
 
 /**
@@ -1462,6 +2229,15 @@ export interface AskUserQuestion {
 export interface AskUserCall {
   tool: 'ask_user';
   /**
+   * Asked while looking at a picture, rather than while working one out.
+   *
+   * Set by the server, not by the model: it is a fact about which turn the call
+   * arrived on. What it buys is the turn *after* the answer — that one is still
+   * about the picture, so the rewrite is still on offer there rather than the
+   * conversation quietly leaving the review behind.
+   */
+  fromReview?: boolean;
+  /**
    * Several at once, because that is how the decisions actually arrive.
    *
    * "Portrait or landscape, and photograph or illustration?" is one moment's
@@ -1473,7 +2249,25 @@ export interface AskUserCall {
   reason: string;
 }
 
-export type ChatToolCall = (PromptBlocksCall | BuildPromptCall | AskUserCall) & {
+/**
+ * A rewrite, proposed after looking at what the last prompt actually produced.
+ *
+ * The same payload as `build_prompt` and deliberately a different tool: it is
+ * only ever offered on the turn where the model has just been shown a picture,
+ * so it cannot be reached for at random, and the dialog can say what it is —
+ * a second attempt at a prompt that missed, rather than a first at a new one.
+ */
+export interface RevisePromptCall {
+  tool: 'revise_prompt';
+  prompt: string;
+  negativePrompt?: string;
+  /** What was wrong with the picture, and what the change is meant to fix. */
+  reason: string;
+  /** How well the last one matched, out of ten, as the model scored it. */
+  score?: number;
+}
+
+export type ChatToolCall = (PromptBlocksCall | BuildPromptCall | AskUserCall | RevisePromptCall) & {
   /** The id llama.cpp gave it, needed to answer the model. */
   callId: string;
 };
@@ -1491,6 +2285,169 @@ export type ChatStreamEvent =
   | { type: 'tool'; call: ChatToolCall }
   | { type: 'done'; messageId: string }
   | { type: 'error'; message: string };
+
+/* ------------------------------------------------------------------ */
+/* What a conversation is doing                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Where a conversation has got to, as a state the server holds.
+ *
+ * This is the change the chat module needed most. Every multi-step behaviour
+ * here — a wandering run, an autonomous one, waiting for a render before
+ * saying anything about it — used to be a sequence of steps the *browser*
+ * drove: post this, read the stream, decide, queue, record, wait, post the
+ * next. A loop whose control flow lives in a tab is a loop the operating
+ * system may stop at any moment, and it did: switching apps froze the page,
+ * the open stream was killed under it, timers slowed to one tick a minute, and
+ * whatever step was between two `await`s simply never ran. Worse, a browser
+ * that died between queueing a render and recording the decision left the
+ * conversation with a proposal that had no answer — a state most chat
+ * templates refuse to continue from at all.
+ *
+ * So the loop is the server's, and this is what it is doing. Persisted, so a
+ * restart resumes rather than forgets; read by every client at once, so two
+ * tabs agree; and the whole of what the screen needs to draw, so there is
+ * nothing for a client to work out for itself and get wrong.
+ */
+export interface ChatRun {
+  /** What the conversation is doing right now. */
+  phase: ChatRunPhase;
+  /**
+   * Why it is doing it, which is what decides what happens next.
+   *
+   * `manual` is an ordinary conversation: one reply, then it waits for you.
+   * `auto` accepts the model's own rewrites until a render clears the
+   * perfectionism threshold. `wander` makes picture after picture out of notes
+   * drawn at random. The two loops differ only in what they do when a round
+   * ends, which is exactly what a mode should be.
+   */
+  mode: ChatRunMode;
+  /** Rounds this run has completed, for the strip above the composer. */
+  round: number;
+  /**
+   * The proposal waiting on a person, when the phase is `awaiting`.
+   *
+   * The id of the message carrying it. The transcript already holds the call
+   * itself, so sending it again here would be two copies of one thing that
+   * could disagree.
+   */
+  awaiting: string | null;
+  /** The run this conversation is waiting on, when the phase is `generating`. */
+  generationId: string | null;
+  /**
+   * Why a loop stopped short, in a sentence, or nothing while it is going.
+   *
+   * The strip above the composer is the only place a run that has quietly
+   * stopped is distinguishable from one still going, so a loop that gives up
+   * has to say why here.
+   */
+  note: string | null;
+  /** What went wrong, if anything. Cleared by the next thing you do. */
+  error: string | null;
+  /**
+   * What the next turn is for.
+   *
+   * Stored rather than worked out from the transcript, because two of the three
+   * cannot be: "the ✦ button was pressed" and "that render is finished" are
+   * facts about what happened, not about what the last message looks like. The
+   * old code guessed them from the shape of the history and got the awkward
+   * cases wrong — a rejected proposal and a finished render both leave a `tool`
+   * message behind, and only one of them means the model should be shown a
+   * picture and offered a rewrite.
+   */
+  want: ChatWant;
+  /**
+   * Accept the next prompt this conversation produces, without asking.
+   *
+   * Set by "generate now", which says what to do with the answer before the
+   * answer exists. Distinct from `mode: 'auto'`, which is standing permission
+   * for a whole run — this is one instruction about one proposal.
+   */
+  autoAccept: boolean;
+}
+
+export type ChatWant =
+  /** Whatever the model has to say — an ordinary turn. */
+  | 'reply'
+  /** A prompt, by name. The tool is forced rather than requested. */
+  | 'prompt'
+  /**
+   * A prompt, and not the one already on the table.
+   *
+   * The second half of the generate button. Same forced tool, different thing
+   * said: a model handed a conversation that already contains a finished prompt
+   * writes that prompt again with two words moved, which is exactly the state
+   * this asks to get out of.
+   */
+  | 'freshPrompt'
+  /** A judgement of the render that just finished, and maybe a rewrite. */
+  | 'afterRender';
+
+export type ChatRunPhase =
+  /** Nothing in flight. Waiting for you. */
+  | 'idle'
+  /** The model is answering. Tokens are arriving. */
+  | 'thinking'
+  /** A proposal is on the table and only a person can settle it. */
+  | 'awaiting'
+  /** A render is in progress, and the turn after it waits for the picture. */
+  | 'generating';
+
+export type ChatRunMode = 'manual' | 'auto' | 'wander';
+
+/** A conversation doing nothing, which is what a fresh one is doing. */
+export const IDLE_RUN: ChatRun = {
+  phase: 'idle',
+  mode: 'manual',
+  round: 0,
+  awaiting: null,
+  generationId: null,
+  note: null,
+  error: null,
+  want: 'reply',
+  autoAccept: false,
+};
+
+/**
+ * What a subscriber to a conversation receives.
+ *
+ * One long-lived stream per open conversation rather than one per turn. That
+ * is the other half of moving the loop: a stream that exists only while a
+ * request is in flight cannot tell you about anything that happened while you
+ * were away, so a client coming back from a suspended tab had no way to find
+ * out that three pictures had been made in the meantime except to re-read
+ * everything and guess.
+ *
+ * Every stream opens with a `sync`, so a client that has just connected, just
+ * reconnected, or been asleep for an hour all take the same path: draw what
+ * the server says is true, then follow the deltas.
+ */
+export type ChatEvent =
+  /** The whole truth, sent on connect and after anything that reorders history. */
+  | { type: 'sync'; run: ChatRun; partial: ChatPartialReply | null }
+  /** The run state changed: a phase, a round, a note. */
+  | { type: 'run'; run: ChatRun }
+  /** Reasoning, as it arrives. Shown collapsed, never sent back as context. */
+  | { type: 'thinking'; text: string }
+  /** The reply, as it arrives. */
+  | { type: 'content'; text: string }
+  /** A finished message was stored — the transcript should be re-read. */
+  | { type: 'message'; messageId: string }
+  | { type: 'error'; message: string };
+
+/**
+ * A reply that is part-way through, for a client that has just arrived.
+ *
+ * Held in memory by the runner rather than written to the database per token,
+ * which would be a write per token for a record nobody reads until it is
+ * finished. Its purpose is a client reconnecting mid-sentence: without it, a
+ * tab woken after thirty seconds shows nothing at all until the turn ends.
+ */
+export interface ChatPartialReply {
+  content: string;
+  thinking: string;
+}
 
 /* ------------------------------------------------------------------ */
 /* Parameter studies                                                   */

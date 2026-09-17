@@ -9,6 +9,8 @@ import type {
   WidgetValue,
 } from './comfyTypes.js';
 import { hasLoraTags } from './loraTags.js';
+import { imageOffField, isImageOffField, switchableImageNodes } from './imageOff.js';
+import { producesAudio, producesVideo } from './media.js';
 import type {
   ControlKind,
   FieldOverrides,
@@ -144,16 +146,83 @@ const MODEL_INPUTS = new Set([
 const LORA_INPUTS = new Set(['lora_name', 'lora_1', 'lora_2']);
 const VAE_INPUTS = new Set(['vae_name']);
 
+/**
+ * How long the clip is, however the node chose to say it.
+ *
+ * Every video model names this differently — LTX and Wan call it `length`,
+ * Hunyuan `num_frames`, VideoHelperSuite `frames` — and all of them mean the
+ * same decision, which is the one you change most often in a video workflow.
+ */
+const LENGTH_INPUTS = new Set(['length', 'num_frames', 'video_frames', 'frames', 'frame_count']);
+/** And how fast those frames are played back. */
+const FRAME_RATE_INPUTS = new Set(['frame_rate', 'fps', 'framerate']);
+/**
+ * How long a generated sound runs.
+ *
+ * The audio models name it every way there is: `seconds` in ComfyUI's own
+ * `EmptyLatentAudio`, `duration` and `length_seconds` around the music models,
+ * `audio_length` in some TTS packs.
+ */
+const SECONDS_INPUTS = new Set([
+  'seconds',
+  'duration',
+  'duration_seconds',
+  'length_seconds',
+  'audio_length',
+  'audio_seconds',
+]);
+
 /** Nodes whose text inputs are prompt candidates even without a positive/negative link. */
 function isTextEncodeClass(classType: string): boolean {
   return /CLIPTextEncode|TextEncode|PromptEncode/i.test(classType);
 }
 
+/** The stock classes whose `image` widget is a file picker over the input folder. */
+const IMAGE_UPLOAD_CLASSES = new Set(['loadimage', 'loadimagemask', 'imageonlycheckpointloader']);
+
+/**
+ * An `image` widget that means "a picture uploaded to ComfyUI's input folder".
+ *
+ * Matched exactly, not by prefix. `LoadImage` is a prefix of
+ * `LoadImageFromFolder`, whose `image` holds `output/monday/render.png` — a
+ * path into a folder, not a filename in the input directory. Classifying that
+ * as an upload gave it the ordinary picker, which then wrote a bare filename
+ * into it and the node refused the prompt.
+ *
+ * Anything else that really is an upload says so itself: ComfyUI marks those
+ * widgets `image_upload: true`, which is the check above and the reliable one.
+ */
 function isImageLoaderInput(classType: string, inputName: string, options: InputOptions): boolean {
   if (options.image_upload === true) return true;
-  return /^(LoadImage|LoadImageMask|ImageOnlyCheckpointLoader)/i.test(classType)
-    ? inputName === 'image'
-    : false;
+  return IMAGE_UPLOAD_CLASSES.has(classType.toLowerCase()) && inputName === 'image';
+}
+
+/**
+ * comfyllama's fields that hold `root/relative/path.ext` rather than a value.
+ *
+ * `LoadImageFromFolder` has one; the reference picker has fifteen, of three
+ * different kinds. Without this they are STRING inputs like any other and
+ * Latent draws them as text boxes — a path somebody would have to type from
+ * memory, which is no way to choose a picture.
+ */
+const FOLDER_IMAGE_CLASS = 'LoadImageFromFolder';
+const REFERENCE_PICKER_CLASS = 'MiniMaxH3ReferencePicker';
+
+/** Which kind of file a browsed slot takes, from the name of the slot. */
+export function browseKindOf(field: {
+  classType: string;
+  inputName: string;
+}): 'image' | 'video' | 'audio' {
+  if (field.classType !== REFERENCE_PICKER_CLASS) return 'image';
+  if (field.inputName.startsWith('video_')) return 'video';
+  if (field.inputName.startsWith('audio_')) return 'audio';
+  return 'image';
+}
+
+function isFolderImageInput(classType: string, inputName: string): boolean {
+  if (classType === FOLDER_IMAGE_CLASS) return inputName === 'image';
+  if (classType !== REFERENCE_PICKER_CLASS) return false;
+  return /^(picture|video|audio)_\d+$/.test(inputName);
 }
 
 /**
@@ -164,7 +233,12 @@ function isImageLoaderInput(classType: string, inputName: string, options: Input
  * follow links backwards (bounded, cycle-safe) and collect every node with an
  * editable text input we reach.
  */
-function findTextSources(workflow: ApiWorkflow, startNodeId: string, maxDepth = 6): string[] {
+function findTextSources(
+  workflow: ApiWorkflow,
+  startNodeId: string,
+  polarity: 'positive' | 'negative',
+  maxDepth = 6,
+): string[] {
   const found: string[] = [];
   const seen = new Set<string>();
   const queue: { id: string; depth: number }[] = [{ id: startNodeId, depth: 0 }];
@@ -195,10 +269,24 @@ function findTextSources(workflow: ApiWorkflow, startNodeId: string, maxDepth = 
       // Keep walking: ConditioningCombine can merge two prompt nodes.
     }
 
-    for (const value of Object.values(node.inputs ?? {})) {
-      if (isNodeLink(value)) {
-        queue.push({ id: String(value[0]), depth: current.depth + 1 });
+    /*
+     * A node carrying both conditionings is followed on one side only.
+     *
+     * Video models put one between the sampler and the text — LTXV's own
+     * conditioning node takes `positive` and `negative` and hands both back —
+     * and so do ControlNet's advanced appliers. Walking every input from there
+     * reaches both prompts from both directions, which made the negative prompt
+     * indistinguishable from the positive one: a video workflow offered two
+     * boxes both labelled Prompt and no way to say what you did *not* want.
+     */
+    const carriesBoth = isNodeLink(node.inputs?.positive) && isNodeLink(node.inputs?.negative);
+
+    for (const [name, value] of Object.entries(node.inputs ?? {})) {
+      if (!isNodeLink(value)) continue;
+      if (carriesBoth && (name === 'positive' || name === 'negative') && name !== polarity) {
+        continue;
       }
+      queue.push({ id: String(value[0]), depth: current.depth + 1 });
     }
   }
 
@@ -227,9 +315,9 @@ function classifyPrompts(workflow: ApiWorkflow): PromptClassification {
       if (!isNodeLink(value)) continue;
       const sourceId = String(value[0]);
       if (inputName === 'positive') {
-        for (const id of findTextSources(workflow, sourceId)) positive.add(id);
+        for (const id of findTextSources(workflow, sourceId, 'positive')) positive.add(id);
       } else if (inputName === 'negative') {
-        for (const id of findTextSources(workflow, sourceId)) negative.add(id);
+        for (const id of findTextSources(workflow, sourceId, 'negative')) negative.add(id);
       }
     }
   }
@@ -253,7 +341,9 @@ function classifyPrompts(workflow: ApiWorkflow): PromptClassification {
       const empty = textNodes.filter(([, node]) =>
         Object.entries(node.inputs ?? {}).some(
           ([name, value]) =>
-            (name === 'text' || name === 'prompt') && typeof value === 'string' && value.trim() === '',
+            (name === 'text' || name === 'prompt') &&
+            typeof value === 'string' &&
+            value.trim() === '',
         ),
       );
       if (empty.length === 1) {
@@ -346,6 +436,7 @@ function detectRole(
   if ((inputName === 'text' || inputName === 'prompt') && prompts.positive.has(nodeId)) {
     return 'prompt';
   }
+  if (isFolderImageInput(classType, inputName)) return 'folder_image';
   if (isImageLoaderInput(classType, inputName, options)) return 'image_input';
   if (SEED_INPUTS.has(inputName)) return 'seed';
   if (inputName === 'steps') return 'steps';
@@ -357,6 +448,9 @@ function detectRole(
   if (inputName === 'height') return 'height';
   if (inputName === 'aspect_ratio') return 'aspect_ratio';
   if (inputName === 'megapixels') return 'megapixels';
+  if (LENGTH_INPUTS.has(inputName)) return 'length';
+  if (FRAME_RATE_INPUTS.has(inputName)) return 'frame_rate';
+  if (SECONDS_INPUTS.has(inputName)) return 'seconds';
   if (inputName === 'batch_size') return 'batch_size';
   if (LORA_INPUTS.has(inputName)) return 'lora';
   if (VAE_INPUTS.has(inputName)) return 'vae';
@@ -373,12 +467,16 @@ const MAIN_ROLE_ORDER: ParamRole[] = [
   'negative_prompt',
   'lora_text',
   'image_input',
+  'folder_image',
   'model',
   'lora',
   'width',
   'height',
   'aspect_ratio',
   'megapixels',
+  'length',
+  'frame_rate',
+  'seconds',
   'batch_size',
   'steps',
   'cfg',
@@ -426,8 +524,13 @@ function typeControl(
     const opts = usable.map(String);
     // An image combo on LoadImage is really a file picker.
     if (role === 'image_input') return { control: 'image', options: opts };
+    if (role === 'folder_image') return { control: 'folderImage' };
     return { control: 'combo', options: opts, numericOptions };
   }
+
+  // Before the type switch: this one is a STRING and would otherwise become a
+  // plain text box, which is a path somebody has to type from memory.
+  if (role === 'folder_image') return { control: 'folderImage' };
 
   switch (type) {
     case 'INT':
@@ -447,18 +550,20 @@ function typeControl(
     case 'BOOLEAN':
       return { control: 'boolean' };
     case 'STRING':
-      return options.multiline
-        ? { control: 'textarea', multiline: true }
-        : { control: 'text' };
+      return options.multiline ? { control: 'textarea', multiline: true } : { control: 'text' };
     default:
       break;
   }
 
   // Unknown node type (or a custom type): infer from the value we were given.
+  // `folder_image` is not checked again here — it was settled above the switch,
+  // before STRING could claim it as a text box.
   if (role === 'image_input') return { control: 'image' };
   if (typeof literal === 'boolean') return { control: 'boolean' };
   if (typeof literal === 'number') {
-    return Number.isInteger(literal) ? { control: 'int', step: 1 } : { control: 'float', step: 0.1 };
+    return Number.isInteger(literal)
+      ? { control: 'int', step: 1 }
+      : { control: 'float', step: 0.1 };
   }
   if (role === 'prompt' || role === 'negative_prompt') {
     return { control: 'textarea', multiline: true };
@@ -491,6 +596,14 @@ const PRACTICAL_RANGES: Partial<Record<ParamRole, [number, number]>> = {
   // 0.26 MP is SD1.5's native size, 1.0 SDXL's and Flux's; past 4 the node is
   // being asked for something no consumer card renders in one pass.
   megapixels: [0.25, 4],
+  /*
+   * A video model's frame count is quantised — LTX wants 8n+1, Wan 4n+1 — and
+   * the node reports that as a step, which the slider already honours. The
+   * bounds are what a single pass on one card actually renders: a second or two
+   * at the low end, and about ten seconds at the high one.
+   */
+  length: [1, 257],
+  frame_rate: [4, 60],
   batch_size: [1, 8],
 };
 
@@ -535,7 +648,8 @@ function deriveSoftRange(
 
     // Nothing recognised: centre a workable window on the exported default, which
     // is by definition a value that made sense for this workflow.
-    const base = typeof defaultValue === 'number' && Number.isFinite(defaultValue) ? defaultValue : 1;
+    const base =
+      typeof defaultValue === 'number' && Number.isFinite(defaultValue) ? defaultValue : 1;
     const spread = Math.max(Math.abs(base) * 2, control === 'int' ? 10 : 1);
     softMin = base - spread;
     softMax = base + spread;
@@ -557,6 +671,7 @@ const ROLE_LABELS: Partial<Record<ParamRole, string>> = {
   prompt: 'Prompt',
   negative_prompt: 'Negative prompt',
   image_input: 'Input image',
+  folder_image: 'Picture from a folder',
   model: 'Model',
   lora: 'LoRA',
   lora_text: 'LoRAs',
@@ -565,6 +680,8 @@ const ROLE_LABELS: Partial<Record<ParamRole, string>> = {
   height: 'Height',
   aspect_ratio: 'Aspect ratio',
   megapixels: 'Megapixels',
+  length: 'Frames',
+  frame_rate: 'Frames per second',
   batch_size: 'Batch size',
   steps: 'Steps',
   cfg: 'CFG',
@@ -595,18 +712,142 @@ function nodeTitleOf(node: ApiWorkflowNode, objectInfo: ObjectInfo): string {
 /** How an image is encoded before being sent — meaningless without one. */
 const IMAGE_ENCODING_INPUTS = new Set(['image_max_size', 'image_quality']);
 
+/** The switch in front of a chat node's image. See `idleImageControl`. */
+const IMAGE_SWITCH_INPUT = 'use_image';
+
 /**
- * A control for an image the node has not been given.
+ * A control for an image the node is not going to send.
  *
- * comfyllama's chat nodes each grew an optional `image` alongside a size and a
- * quality, so any of them can be multimodal. The two knobs are widgets and are
- * therefore exported whether or not anything is wired to `image` — which on a
- * text-only chat node is two settings that cannot affect the result, on a form
- * where a screenful is four of them.
+ * comfyllama's chat nodes each grew an optional `image` alongside a size, a
+ * quality and a `use_image` switch, so any of them can be multimodal. All three
+ * are widgets and are therefore exported whether or not anything is wired to
+ * `image` — which on a text-only chat node is three settings that cannot affect
+ * the result, on a form where a screenful is four of them.
+ *
+ * Two different reasons to leave one out, in the same shape:
+ *
+ * - Nothing is wired to `image`. Then none of them mean anything, the switch
+ *   included: it switches off a picture that was never coming.
+ * - Something is wired but the switch is off. Then the picture is not being
+ *   sent, so how it would have been encoded is moot — but the switch itself
+ *   stays, because it is the thing that turns the picture back on. Hiding the
+ *   only control that undoes a state is how a form traps somebody in it.
  */
 function idleImageControl(node: { inputs?: Record<string, unknown> }, inputName: string): boolean {
+  const wired = isNodeLink(node.inputs?.image);
+  if (inputName === IMAGE_SWITCH_INPUT) return !wired;
   if (!IMAGE_ENCODING_INPUTS.has(inputName)) return false;
-  return !isNodeLink(node.inputs?.image);
+  return !wired || node.inputs?.[IMAGE_SWITCH_INPUT] === false;
+}
+
+/** comfyllama's MiniMax H3 reference node, with a slot per reference. */
+const REFERENCE_SLOTS_CLASS = 'MiniMaxH3ReferencesFlat';
+/** `image_3_on` / `video_1_tag` — the slot, and which of its two controls. */
+const REFERENCE_SLOT_INPUT = /^(image|video|audio)_(\d+)_(on|tag)$/;
+
+/**
+ * A slot control for a reference that is not there.
+ *
+ * The node offers nine picture slots, three video slots and three audio slots,
+ * each with a switch and a tag — forty-odd controls, of which a normal shot uses
+ * three. Exported wholesale that is a form nobody can read on a phone, so the
+ * same rule the chat nodes use applies here, per slot:
+ *
+ * - Nothing wired to the slot: both its controls go. A switch that turns off a
+ *   picture which was never coming, and a name for it, are equally moot.
+ * - Wired but switched off: the tag goes, because a name is only ever used to
+ *   write a number the prompt will not contain. The switch stays — it is what
+ *   brings the slot back, and hiding the only control that undoes a state is how
+ *   a form traps somebody in it.
+ *
+ * A video's soundtrack rides on its video's switch: it is wired to
+ * `video_2_audio` but is not a slot of its own, and giving it separate controls
+ * would only invite switching off a soundtrack whose video is already off.
+ */
+function idleReferenceSlot(
+  node: { class_type?: string; inputs?: Record<string, unknown> },
+  inputName: string,
+): boolean {
+  if (node.class_type !== REFERENCE_SLOTS_CLASS) return false;
+  const match = REFERENCE_SLOT_INPUT.exec(inputName);
+  if (!match) return false;
+
+  const [, kind, index, control] = match;
+  const wired = isNodeLink(node.inputs?.[`${kind}_${index}`]);
+  if (control === 'on') return !wired;
+  return !wired || node.inputs?.[`${kind}_${index}_on`] === false;
+}
+
+/** comfyllama's empty-latent node, whose size can come from a picture. */
+const LATENT_SIZE_CLASS = 'EmptyLatentByAspectRatio';
+/** The mode that says where the size comes from. See `idleLatentSizeControl`. */
+const FROM_IMAGE_INPUT = 'from_image';
+
+/**
+ * A size control the picture has taken over.
+ *
+ * The node makes an empty latent from a ratio and a megapixel budget, and it
+ * can take either from a connected picture instead — the shape only, keeping
+ * your budget, or the picture's exact size. Whichever it takes stops being
+ * something the form can decide, and a number you can still edit that changes
+ * nothing is worse than no number at all.
+ *
+ * `megapixels` is the interesting one: it survives *aspect ratio*, which is the
+ * whole difference between the two modes, and goes under *resolution*, where
+ * the picture's own size is the answer. `from_image` itself is never hidden —
+ * it is what brings the others back, and hiding the control that undoes a state
+ * is how a form traps somebody in it.
+ */
+function idleLatentSizeControl(
+  node: { class_type?: string; inputs?: Record<string, unknown> },
+  inputName: string,
+): boolean {
+  if (node.class_type !== LATENT_SIZE_CLASS) return false;
+  const mode = node.inputs?.[FROM_IMAGE_INPUT];
+  if (typeof mode !== 'string' || mode === 'off') return false;
+  if (inputName === 'aspect_ratio') return true;
+  return inputName === 'megapixels' && mode === 'resolution';
+}
+
+/** comfyllama's advanced sampler node, the only one with an intensity slider. */
+const SAMPLING_CLASS = 'LlamaCppSampling';
+
+/** The three the slider moves, and the switch each one is sent on. */
+const SCALED_INPUTS = ['temperature', 'top_p', 'top_k'];
+
+/** What the two ends of the slider mean, per parameter. */
+const INTENSITY_BOUNDS = new Set(SCALED_INPUTS.flatMap((name) => [`${name}_min`, `${name}_max`]));
+
+/**
+ * The half of the sampler node that is not currently deciding anything.
+ *
+ * comfyllama's Sampler Settings node reaches temperature, top_p and top_k two
+ * ways: three fields with a switch each, or one `intensity` slider that sets
+ * all three across ranges you give it. In ComfyUI a web extension keeps the two
+ * in step live — move the slider and the fields follow, type a temperature and
+ * the slider snaps to it. There is no extension here, and reimplementing a
+ * two-way binding in a form that submits values rather than editing a graph
+ * would be a second copy of the arithmetic to keep honest.
+ *
+ * So the form shows whichever half is deciding, which the node itself is quite
+ * clear about: with the slider on, it computes all three and the fields cannot
+ * affect the result; with it off, they are the whole story and the slider and
+ * its six bounds are inert.
+ *
+ * The switch is never hidden — it is what moves between the two.
+ */
+function idleSamplingControl(
+  node: { class_type?: string; inputs?: Record<string, unknown> },
+  inputName: string,
+): boolean {
+  if (node.class_type !== SAMPLING_CLASS) return false;
+  const driven = node.inputs?.use_intensity === true;
+
+  if (inputName === 'intensity' || INTENSITY_BOUNDS.has(inputName)) return !driven;
+  if (SCALED_INPUTS.includes(inputName)) return driven;
+  // Their own switches are forced on by the slider, so they are not choices.
+  if (SCALED_INPUTS.some((name) => inputName === `use_${name}`)) return driven;
+  return false;
 }
 
 /**
@@ -638,7 +879,10 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
     const unknownNodeType = def === undefined;
     if (unknownNodeType) missingNodeTypes.add(node.class_type);
 
-    if (def?.output_node === true || /^(SaveImage|PreviewImage|SaveAnimated)/i.test(node.class_type)) {
+    if (
+      def?.output_node === true ||
+      /^(SaveImage|PreviewImage|SaveAnimated)/i.test(node.class_type)
+    ) {
       outputNodeIds.push(nodeId);
     }
 
@@ -689,11 +933,35 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
         group,
         // `control_after_generate` is ComfyUI's own seed-randomiser widget; our
         // seed control replaces it, so hide it rather than showing a duplicate.
-        hidden: inputName === 'control_after_generate' || idleImageControl(node, inputName),
+        hidden:
+          inputName === 'control_after_generate' ||
+          idleImageControl(node, inputName) ||
+          idleSamplingControl(node, inputName) ||
+          idleLatentSizeControl(node, inputName) ||
+          idleReferenceSlot(node, inputName),
         order: group === 'main' ? mainIndex : fields.length,
         unknownNodeType,
       });
     }
+  }
+
+  /*
+   * A switch beside every picture the workflow loads.
+   *
+   * Invented here rather than read off a node, because no node has one: a
+   * loader's filename is a string and every string is a filename, so there is
+   * no value meaning "not this time". The switch is what a form can offer
+   * instead of dragging the link off in the editor. It sits immediately after
+   * the picture it governs — half an order step is enough, the renumbering
+   * below turns it back into an integer.
+   */
+  for (const nodeId of switchableImageNodes({ version: 1, fields } as ParamSchema, workflow)) {
+    const picture = fields.find(
+      (field) => field.nodeId === nodeId && !isImageOffField(field) && !field.hidden,
+    );
+    if (!picture) continue;
+    const switchField = imageOffField(nodeId, picture.nodeTitle, picture.order + 0.5);
+    fields.push({ ...switchField, classType: picture.classType, group: picture.group });
   }
 
   // Renumber so main fields follow MAIN_ROLE_ORDER and advanced keeps graph order.
@@ -713,6 +981,8 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
     capabilities: {
       img2img: fields.some((f) => f.role === 'image_input' && !f.hidden),
       seeded: fields.some((f) => f.role === 'seed' && !f.hidden),
+      video: producesVideo(workflow),
+      audio: producesAudio(workflow),
     },
     missingNodeTypes: [...missingNodeTypes].sort(),
   };
@@ -764,6 +1034,10 @@ export function applyOverrides(schema: ParamSchema, overrides: FieldOverrides = 
     capabilities: {
       img2img: fields.some((f) => f.role === 'image_input' && !f.hidden),
       seeded: fields.some((f) => f.role === 'seed' && !f.hidden),
+      // Hiding a field cannot turn a video workflow into a still one: this is a
+      // fact about the graph, not about the form.
+      video: schema.capabilities?.video === true,
+      audio: schema.capabilities?.audio === true,
     },
   };
 }
@@ -859,6 +1133,9 @@ export function applyParams(
   const seeds: Record<string, number> = {};
 
   for (const field of schema.fields) {
+    // Latent's own switch, not one of the node's inputs — writing it would put
+    // a `__image` key into the prompt that ComfyUI would rightly reject.
+    if (isImageOffField(field)) continue;
     const node = next[field.nodeId];
     if (!node?.inputs) continue;
     // Never overwrite an input that is wired from another node.

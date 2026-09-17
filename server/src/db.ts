@@ -7,12 +7,14 @@ import type {
   ChatConversation,
   ChatConversationDetail,
   ChatMessage,
+  ChatRun,
   ChatToolResult,
   ComfyImageRef,
   ConnectionAuthMode,
   ConnectionInput,
   ConnectionKind,
   ConnectionSummary,
+  EditOrigin,
   FieldOverrides,
   GenerationRecord,
   GenerationStatus,
@@ -21,6 +23,10 @@ import type {
   FavoriteSort,
   FormLayout,
   GenerationImage,
+  MediaKind,
+  CivitaiInfo,
+  ModelFolder,
+  ModelNote,
   ParamSummaryItem,
   ParamValues,
   PromptBlock,
@@ -44,7 +50,10 @@ import type {
 import type { ApiWorkflow, RandomPromptConfig } from '@latent/shared';
 import {
   DEFAULT_RANDOM_PROMPT_CONFIG,
+  DEFAULT_WANDER_DRAW,
   defaultSampling,
+  IDLE_RUN,
+  mediaKindOf,
   normaliseRandomPromptConfig,
 } from '@latent/shared';
 
@@ -423,6 +432,250 @@ CREATE TABLE system_prompts (
 CREATE INDEX idx_system_prompts_order ON system_prompts (position, created_at);
 `);
 
+/**
+ * v11: outputs that move.
+ *
+ * A video workflow leaves an mp4 or a webm where a picture used to be, and the
+ * row is otherwise the same row — same rating, same keeping, same archive. What
+ * differs is everything about handling it, so it is recorded once here rather
+ * than re-derived from the filename at every call site.
+ *
+ * Existing rows are pictures by definition: nothing before this could produce
+ * anything else. The backfill is for imported and generated files whose
+ * extension says otherwise, which cost nothing to catch now.
+ */
+MIGRATIONS.push(`
+ALTER TABLE images ADD COLUMN kind TEXT NOT NULL DEFAULT 'image';
+-- How long it runs, once the browser or the archive has managed to measure it.
+ALTER TABLE images ADD COLUMN duration_ms INTEGER;
+
+UPDATE images SET kind = 'video'
+ WHERE lower(filename) LIKE '%.mp4'
+    OR lower(filename) LIKE '%.webm'
+    OR lower(filename) LIKE '%.mkv'
+    OR lower(filename) LIKE '%.mov'
+    OR lower(filename) LIKE '%.m4v'
+    OR lower(filename) LIKE '%.ogv'
+    OR lower(filename) LIKE '%.avi'
+    OR lower(filename) LIKE '%.gif';
+`);
+
+/**
+ * v12: notes about what the user likes.
+ *
+ * `name` and `text` hold ciphertext, not words. This is a description of a
+ * person's taste sitting on a disk indefinitely, and it is read by a model
+ * rather than displayed on a screen — so the one place it must be legible is
+ * inside a running, signed-in server, which is exactly what the vault gives.
+ * Everything the app needs to *manage* the notes without reading them —
+ * ordering, switching one off, which category a note is under — stays in the
+ * clear, so the list works the same whether or not anyone has signed in.
+ *
+ * Deleting a category keeps its notes and sets them loose, because a note is
+ * something the user wrote and a category is only a heading over it.
+ */
+MIGRATIONS.push(`
+CREATE TABLE taste_categories (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  active     INTEGER NOT NULL DEFAULT 1,
+  position   INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE taste_entries (
+  id          TEXT PRIMARY KEY,
+  category_id TEXT REFERENCES taste_categories (id) ON DELETE SET NULL,
+  text        TEXT NOT NULL,
+  active      INTEGER NOT NULL DEFAULT 1,
+  position    INTEGER NOT NULL DEFAULT 0,
+  created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX idx_taste_categories_order ON taste_categories (position, created_at);
+CREATE INDEX idx_taste_entries_order ON taste_entries (category_id, position, created_at);
+`);
+
+/**
+ * v13: notes that apply whatever the influence setting says.
+ *
+ * The scale governs how much of the space you left gets filled from the notes,
+ * which means a concrete request pushes all of them aside. Some of them should
+ * not be pushed aside — a format you always want, a thing you never want in a
+ * picture — and those matter most in exactly the case the scale silences them.
+ * `always_on` marks one of those. Spelled with the suffix because `ALWAYS` is a
+ * keyword in SQLite's `GENERATED ALWAYS AS`.
+ */
+MIGRATIONS.push(`
+ALTER TABLE taste_entries ADD COLUMN always_on INTEGER NOT NULL DEFAULT 0;
+`);
+
+/**
+ * v14: what a conversation is doing, on the server rather than in a tab.
+ *
+ * The chat's multi-step behaviours — a wandering run, an autonomous one,
+ * waiting for a render before saying anything about it — used to be sequences
+ * the browser drove. A loop whose control flow lives in a tab stops when the
+ * tab is frozen, and the conversation was regularly left mid-step with no
+ * record of where it had got to. This row is that record: one per conversation,
+ * written at every transition, so the server can pick a stalled run back up and
+ * any client can be told what is happening rather than having to remember.
+ *
+ * Deliberately one row per chat rather than a log. What is wanted is the
+ * present tense — the history is the messages, and it is already stored.
+ */
+MIGRATIONS.push(`
+CREATE TABLE chat_runs (
+  chat_id       TEXT PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+  phase         TEXT NOT NULL DEFAULT 'idle',
+  mode          TEXT NOT NULL DEFAULT 'manual',
+  round         INTEGER NOT NULL DEFAULT 0,
+  awaiting      TEXT,
+  generation_id TEXT,
+  note          TEXT,
+  error         TEXT,
+  want          TEXT NOT NULL DEFAULT 'reply',
+  auto_accept   INTEGER NOT NULL DEFAULT 0,
+  updated_at    INTEGER NOT NULL
+);
+`);
+
+/**
+ * v15: what an edit was made from.
+ *
+ * An edit workflow's result is only readable next to the picture it started
+ * from, and that picture is a filename in ComfyUI's input directory that
+ * nothing here was holding on to. Which of a graph's inputs *is* the origin
+ * comes from a node's title — see `findEditOrigins` — so it is resolved once,
+ * at submit time, and written down. Deriving it later would mean asking a
+ * workflow that has since been re-titled, or deleted.
+ *
+ * Empty for everything that is not a labelled edit, which is nearly everything.
+ */
+MIGRATIONS.push(`
+ALTER TABLE generations ADD COLUMN origins_json TEXT NOT NULL DEFAULT '[]';
+`);
+
+/*
+ * What Latent knows about a model beyond what its file says.
+ *
+ * Keyed by folder and name rather than by hash, because the name is the only
+ * identifier that survives the trip to a phone and back into a prompt — a
+ * `<lora:…>` tag takes a name, `/object_info` offers names, and the hash is not
+ * known at all until somebody asks for a lookup. The hash is stored alongside
+ * once computed, so a model that is renamed loses its note and one that is
+ * replaced in place can be told apart.
+ */
+MIGRATIONS.push(`
+CREATE TABLE IF NOT EXISTS model_notes (
+  folder         TEXT NOT NULL,
+  name           TEXT NOT NULL,
+  trigger_words  TEXT NOT NULL DEFAULT '[]',
+  notes          TEXT NOT NULL DEFAULT '',
+  strength       REAL,
+  civitai_json   TEXT,
+  sha256         TEXT,
+  updated_at     INTEGER NOT NULL,
+  PRIMARY KEY (folder, name)
+);
+`);
+
+/*
+ * Notes filed under the folder that turned out not to be one.
+ *
+ * `unet` was offered as a category of its own until it became clear that
+ * ComfyUI aliases the key to the same entry as `diffusion_models` — the same
+ * directories, the same files, listed twice under two names. Dropping the
+ * category was right; leaving the rows behind was not. A note written while the
+ * UNET tab existed is keyed to a folder nothing asks for any more, so the
+ * trigger words somebody typed are still in the database and unreachable from
+ * every screen.
+ *
+ * `OR IGNORE`, because the same model may well have been noted under both names
+ * — they were the same list — and in that case the row filed under the name
+ * that survived is the one to keep rather than a coin toss. The strays are
+ * deleted either way, so a second run has nothing left to do.
+ */
+MIGRATIONS.push(`
+UPDATE OR IGNORE model_notes SET folder = 'diffusion_models' WHERE folder = 'unet';
+`);
+MIGRATIONS.push(`
+DELETE FROM model_notes WHERE folder = 'unet';
+`);
+
+interface ModelNoteRow {
+  folder: string;
+  name: string;
+  trigger_words: string;
+  notes: string;
+  strength: number | null;
+  civitai_json: string | null;
+  sha256: string | null;
+  updated_at: number;
+}
+
+/**
+ * A stored Civitai blob, with the fields added since it was written.
+ *
+ * The same promise the settings make, for the same reason: this is one JSON
+ * column, and a row written by an older version simply has no key for anything
+ * added later. Handing that straight to a client makes every reader defend
+ * against `undefined` separately — and the one that forgets crashes, which is
+ * exactly what happened here. A note fetched before `tags` and `examples`
+ * existed blanked the Models screen the moment it was opened.
+ *
+ * So the shape is completed once, on the way out, and nothing downstream has to
+ * know which version wrote the row.
+ */
+function toCivitai(raw: string | null): CivitaiInfo | null {
+  const stored = raw ? parseJson<Partial<CivitaiInfo> | null>(raw, null) : null;
+  if (!stored) return null;
+
+  return {
+    modelId: stored.modelId ?? null,
+    versionId: stored.versionId ?? null,
+    name: stored.name ?? null,
+    versionName: stored.versionName ?? null,
+    baseModel: stored.baseModel ?? null,
+    trainedWords: stored.trainedWords ?? [],
+    description: stored.description ?? null,
+    modelDescription: stored.modelDescription ?? null,
+    type: stored.type ?? null,
+    creator: stored.creator ?? null,
+    tags: stored.tags ?? [],
+    examples: stored.examples ?? [],
+    url: stored.url ?? null,
+    fetchedAt: stored.fetchedAt ?? 0,
+  };
+}
+
+function toModelNote(row: ModelNoteRow): ModelNote {
+  return {
+    folder: row.folder as ModelFolder,
+    name: row.name,
+    triggerWords: parseJson<string[]>(row.trigger_words, []),
+    notes: row.notes,
+    strength: row.strength,
+    civitai: toCivitai(row.civitai_json),
+    sha256: row.sha256,
+    updatedAt: row.updated_at,
+  };
+}
+
+interface ChatRunRow {
+  chat_id: string;
+  phase: string;
+  mode: string;
+  round: number;
+  awaiting: string | null;
+  generation_id: string | null;
+  note: string | null;
+  error: string | null;
+  want: string;
+  auto_accept: number;
+  updated_at: number;
+}
+
 interface ChatRow {
   id: string;
   title: string;
@@ -444,10 +697,55 @@ interface ChatMessageRow {
   created_at: number;
 }
 
+/**
+ * Stored settings over the defaults, one group deep.
+ *
+ * A group is stored as one JSON blob, and a blob written by an older version —
+ * or by a client patching part of it — simply does not have the fields added
+ * since. Filling those in from the defaults is what the top level always did;
+ * doing it one level further down is the same promise for a group that has
+ * groups of its own, which the chat's settings now do. Without it, adding a
+ * field means every existing install reads it as `undefined` and every caller
+ * has to defend against that separately.
+ *
+ * Deliberately not deeper, and never into arrays: a nested list is a value the
+ * user set, and merging defaults into it would resurrect entries they removed.
+ */
+function mergeSetting(defaults: object, stored: object): object {
+  const out: Record<string, unknown> = { ...defaults };
+
+  for (const [key, value] of Object.entries(stored)) {
+    const fallback = (defaults as Record<string, unknown>)[key];
+    const nested =
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      fallback !== null &&
+      typeof fallback === 'object' &&
+      !Array.isArray(fallback);
+
+    out[key] = nested ? { ...(fallback as object), ...(value as object) } : value;
+  }
+
+  return out;
+}
+
 /** Settings held as a group under one key rather than as a single value. */
 function isObjectSetting(key: string): boolean {
   const value = (DEFAULT_SETTINGS as unknown as Record<string, unknown>)[key];
-  return typeof value === 'object' && value !== null;
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Settings held as a list under one key.
+ *
+ * Stored as JSON like the groups above, but never merged: a list is one value,
+ * and `mergeSetting` on an array would key it by index and hand back an object
+ * with `0` and `1` on it. Removing the last favourite has to mean an empty
+ * list, not "no change".
+ */
+function isListSetting(key: string): boolean {
+  return Array.isArray((DEFAULT_SETTINGS as unknown as Record<string, unknown>)[key]);
 }
 
 function toChat(row: ChatRow): ChatConversation {
@@ -502,6 +800,7 @@ interface GenerationRow {
   seeds_json: string;
   params_json: string;
   texts_json: string;
+  origins_json: string;
   title: string;
   created_at: number;
   completed_at: number | null;
@@ -525,6 +824,8 @@ export interface ImageRow {
   height: number | null;
   encrypted: number;
   tile_span: string | null;
+  kind: string;
+  duration_ms: number | null;
 }
 
 interface FavoriteRow {
@@ -554,6 +855,33 @@ interface PromptBlockRow {
   name: string;
   category: string;
   text: string;
+  position: number;
+  created_at: number;
+}
+
+/**
+ * A taste category as stored: `name` is ciphertext, not a heading.
+ *
+ * Exported because the layer that can read it lives elsewhere — see
+ * `server/src/taste.ts`. Everything here deliberately stops at the encrypted
+ * blob, so the database layer never needs the key.
+ */
+export interface TasteCategoryRow {
+  id: string;
+  name: string;
+  active: number;
+  position: number;
+  created_at: number;
+}
+
+/** A taste note as stored; `text` is ciphertext. */
+export interface TasteEntryRow {
+  id: string;
+  category_id: string | null;
+  text: string;
+  active: number;
+  /** 1 when this one applies whatever the influence setting says. */
+  always_on: number;
   position: number;
   created_at: number;
 }
@@ -650,9 +978,40 @@ export function toGenerationImage(row: ImageRow): GenerationImage {
     kept: Boolean(row.kept),
     archived: Boolean(row.archived_path),
     hasThumbnail: Boolean(row.thumb_path),
+    // Narrowed rather than cast: the column is text, and a row written by a
+    // future version — or by hand — must not become a `kind` nothing handles.
+    kind: row.kind === 'video' || row.kind === 'audio' ? row.kind : 'image',
+    durationMs: row.duration_ms ?? null,
     width: row.width,
     height: row.height,
     tileSpan: parseTileSpan(row.tile_span),
+  };
+}
+
+/**
+ * `live` is the gallery row this favourite points at, when it still exists.
+ *
+ * The stored `image_json` is a snapshot, and it has to be: a favourite outlives
+ * the run it came from, which is most of what makes it a favourite. But while
+ * the run *is* still there, the snapshot is stale the moment anything about the
+ * picture changes — a rating, a tile size, or the poster a browser captured for
+ * a video, which is the difference between a favourite tile showing the clip
+ * and showing a grey plate forever.
+ */
+/**
+ * The favourite's own copy of the picture, made current.
+ *
+ * A snapshot written before videos existed says nothing about what it is, and
+ * every reader would otherwise have to cope with a missing field forever. The
+ * filename has the answer, and it always did.
+ */
+function snapshotImage(imageJson: string): GenerationImage | null {
+  const image = parseJson<GenerationImage | null>(imageJson, null);
+  if (!image?.filename) return image;
+  return {
+    ...image,
+    kind: image.kind ?? mediaKindOf(image.filename),
+    durationMs: image.durationMs ?? null,
   };
 }
 
@@ -660,8 +1019,9 @@ function toFavorite(
   row: FavoriteRow,
   workflowAvailable: boolean,
   archived: boolean,
+  live?: ImageRow | null,
 ): Favorite {
-  const image = parseJson<GenerationImage | null>(row.image_json, null);
+  const image = live ? toGenerationImage(live) : snapshotImage(row.image_json);
   return {
     archived,
     id: row.id,
@@ -744,6 +1104,74 @@ const DEFAULT_SETTINGS: AppSettings = {
        */
       ask_user: 'always',
     },
+    /*
+     * The picture is shown back to the model, and it is picky about it.
+     *
+     * On by default because the alternative is worse in a way that is easy to
+     * miss: the turn after a render used to be the model talking confidently
+     * about a picture it had never seen. Most model servers worth running are
+     * multimodal, and the ones that are not fall back to that same turn without
+     * the picture rather than failing.
+     *
+     * `balanced`, because the useful proposal is the one that names something
+     * genuinely absent. A stricter default would rewrite the prompt over a
+     * shade of light and train you to ignore it.
+     */
+    review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'unsure' },
+    /*
+     * Off, and deliberately so.
+     *
+     * Every round is a render nobody watched being started. That is fine when
+     * you asked for it and wrong as a default — the first surprise would be a
+     * queue full of pictures and a GPU that has been busy for an hour. Four
+     * rounds is what it does once switched on: enough for a rewrite to actually
+     * land, few enough that a model going in circles stops on its own.
+     */
+    autonomous: { enabled: false, maxRounds: 4 },
+    /*
+     * Wandering: off, one note from each heading, the chat's own sampling.
+     *
+     * `0` is not "no notes" — it is "no ceiling", so a round takes as many as
+     * the rules allow, and the rules allow one per heading. The headings are
+     * the thing you curated; a picture made of one of each is a picture made of
+     * your list, where a flat shuffle of a fixed three is a picture made of
+     * whichever corner of it won the toss.
+     */
+    wander: {
+      workflowId: '',
+      attributes: 0,
+      // One per heading, everything else eligible. See the sheet under
+      // Settings → Chat → Wandering to cap, pin or leave a heading out.
+      draw: { ...DEFAULT_WANDER_DRAW },
+      sampling: 'chat',
+      /*
+       * Warm, and only used once "its own" is chosen.
+       *
+       * Every other sampling default in this app is "the server's own flags",
+       * and rightly — but this setting exists precisely because somebody has
+       * said the conversation's settings are too careful for this. Handing them
+       * an identical copy of what they just rejected would be a switch that
+       * does nothing.
+       */
+      ownSampling: { ...defaultSampling(), temperature: { on: true, value: 1.15 } },
+    },
+    /*
+     * Enough detail to make a picture, not so much that it makes only one.
+     *
+     * The failure at either end is real: a sparse prompt varies wildly between
+     * seeds, and an elaborate one produces exactly what it says and nothing
+     * you did not think of. The middle is where a conversation about a picture
+     * usually wants to land.
+     */
+    promptDetail: 'balanced',
+    /*
+     * Your taste fills the space you leave, and no more.
+     *
+     * The default is the behaviour people describe when they ask for this at
+     * all: "when I do not know what I want, start from what I like" — and,
+     * emphatically, leave what I did ask for alone.
+     */
+    taste: 'hints',
     generation: { workflowId: '', values: {} },
     imageSize: 3,
     promptButton: 'generate',
@@ -764,6 +1192,8 @@ const DEFAULT_SETTINGS: AppSettings = {
    * empty to go back to reading the whole installation.
    */
   workflowPrefix: 'API_',
+  browseFavorites: [],
+  fieldArrangement: [],
 };
 
 export class Store {
@@ -845,11 +1275,9 @@ export class Store {
 
   /** Only ever set from the first thing the user said, so a list is scannable. */
   renameChat(id: string, title: string): void {
-    this.db.prepare('UPDATE chats SET title = ?, updated_at = ? WHERE id = ?').run(
-      title.slice(0, 120),
-      Date.now(),
-      id,
-    );
+    this.db
+      .prepare('UPDATE chats SET title = ?, updated_at = ? WHERE id = ?')
+      .run(title.slice(0, 120), Date.now(), id);
   }
 
   deleteChat(id: string): void {
@@ -915,6 +1343,81 @@ export class Store {
       .run(JSON.stringify(result), messageId);
   }
 
+  /* ---------------------------------------------------------------- */
+  /* What a conversation is doing                                      */
+  /* ---------------------------------------------------------------- */
+
+  /** Where this conversation has got to. A chat with no row is idle. */
+  getChatRun(chatId: string): ChatRun {
+    const row = this.db
+      .prepare<[string], ChatRunRow>('SELECT * FROM chat_runs WHERE chat_id = ?')
+      .get(chatId);
+    if (!row) return { ...IDLE_RUN };
+
+    return {
+      phase: row.phase as ChatRun['phase'],
+      mode: row.mode as ChatRun['mode'],
+      round: row.round,
+      awaiting: row.awaiting,
+      generationId: row.generation_id,
+      note: row.note,
+      error: row.error,
+      want: row.want as ChatRun['want'],
+      autoAccept: row.auto_accept === 1,
+    };
+  }
+
+  /** Write it back. Every transition goes through here, including to idle. */
+  setChatRun(chatId: string, run: ChatRun): void {
+    this.db
+      .prepare(
+        `INSERT INTO chat_runs
+           (chat_id, phase, mode, round, awaiting, generation_id, note, error,
+            want, auto_accept, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(chat_id) DO UPDATE SET
+           phase = excluded.phase,
+           mode = excluded.mode,
+           round = excluded.round,
+           awaiting = excluded.awaiting,
+           generation_id = excluded.generation_id,
+           note = excluded.note,
+           error = excluded.error,
+           want = excluded.want,
+           auto_accept = excluded.auto_accept,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        chatId,
+        run.phase,
+        run.mode,
+        run.round,
+        run.awaiting,
+        run.generationId,
+        run.note,
+        run.error,
+        run.want,
+        run.autoAccept ? 1 : 0,
+        Date.now(),
+      );
+  }
+
+  /**
+   * Every conversation that was mid-something, for a server just starting up.
+   *
+   * A restart is indistinguishable from a crash from the database's side, and
+   * the honest thing to do about a run that was in flight is to look at it —
+   * which needs knowing which they were.
+   */
+  listUnsettledChats(): string[] {
+    return this.db
+      .prepare<[], { chat_id: string }>(
+        "SELECT chat_id FROM chat_runs WHERE phase <> 'idle' ORDER BY updated_at",
+      )
+      .all()
+      .map((row) => row.chat_id);
+  }
+
   close(): void {
     this.db.close();
   }
@@ -942,7 +1445,7 @@ export class Store {
         version: 1,
         fields: [],
         outputNodeIds: [],
-        capabilities: { img2img: false, seeded: false },
+        capabilities: { img2img: false, seeded: false, video: false, audio: false },
         missingNodeTypes: [],
       }),
       overrides: parseJson<FieldOverrides>(row.overrides_json, {}),
@@ -1042,7 +1545,7 @@ export class Store {
       version: 1,
       fields: [],
       outputNodeIds: [],
-      capabilities: { img2img: false, seeded: false },
+      capabilities: { img2img: false, seeded: false, video: false, audio: false },
       missingNodeTypes: [],
     });
     return {
@@ -1054,6 +1557,8 @@ export class Store {
       missingNodeTypes: schema.missingNodeTypes ?? [],
       visible: row.visible !== 0,
       sourcePath: row.source_path,
+      producesVideo: schema.capabilities?.video === true,
+      producesAudio: schema.capabilities?.audio === true,
     };
   }
 
@@ -1070,6 +1575,8 @@ export class Store {
     values: ParamValues;
     seeds: Record<string, number>;
     params?: ParamSummaryItem[];
+    /** The input pictures, when the workflow said which was which. */
+    origins?: EditOrigin[];
     /**
      * Where the run came from.
      *
@@ -1083,8 +1590,8 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO generations
-           (id, prompt_id, workflow_id, workflow_name, status, error, values_json, seeds_json, params_json, title, created_at, completed_at, source)
-         VALUES (?, ?, ?, ?, 'queued', NULL, ?, ?, ?, ?, ?, NULL, ?)`,
+           (id, prompt_id, workflow_id, workflow_name, status, error, values_json, seeds_json, params_json, origins_json, title, created_at, completed_at, source)
+         VALUES (?, ?, ?, ?, 'queued', NULL, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       )
       .run(
         record.id,
@@ -1094,6 +1601,7 @@ export class Store {
         JSON.stringify(record.values),
         JSON.stringify(record.seeds),
         JSON.stringify(record.params ?? []),
+        JSON.stringify(record.origins ?? []),
         record.title,
         Date.now(),
         record.source ?? 'comfy',
@@ -1111,23 +1619,48 @@ export class Store {
       .run(status, error ?? null, done ? 1 : 0, Date.now(), promptId);
   }
 
-  /** Takes bare ComfyUI refs; rating and archive state are added later by the user. */
-  addImages(promptId: string, nodeId: string, images: ComfyImageRef[]): void {
+  /**
+   * Takes bare ComfyUI refs; rating and archive state are added later by the user.
+   *
+   * Whether each one moves is settled here, from its name, so nothing further
+   * down has to guess: a `.mp4` is a video wherever it turns up, and the key
+   * ComfyUI happened to file it under — `images`, `gifs`, `videos` — says
+   * nothing reliable about that.
+   */
+  addImages(
+    promptId: string,
+    nodeId: string,
+    images: (ComfyImageRef & { kind?: MediaKind })[],
+  ): void {
     const generation = this.db
       .prepare<[string], { id: string }>('SELECT id FROM generations WHERE prompt_id = ?')
       .get(promptId);
     if (!generation) return;
 
     const insert = this.db.prepare(
-      `INSERT OR IGNORE INTO images (generation_id, node_id, filename, subfolder, type)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO images (generation_id, node_id, filename, subfolder, type, kind)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     );
-    const insertAll = this.db.transaction((items: ComfyImageRef[]) => {
+    const insertAll = this.db.transaction((items: (ComfyImageRef & { kind?: MediaKind })[]) => {
       for (const image of items) {
-        insert.run(generation.id, nodeId, image.filename, image.subfolder ?? '', image.type ?? 'output');
+        insert.run(
+          generation.id,
+          nodeId,
+          image.filename,
+          image.subfolder ?? '',
+          image.type ?? 'output',
+          image.kind ?? mediaKindOf(image.filename),
+        );
       }
     });
     insertAll(images);
+  }
+
+  /** Record how long a video runs, once something has measured it. */
+  setImageDuration(imageId: number, durationMs: number): void {
+    this.db
+      .prepare('UPDATE images SET duration_ms = ? WHERE id = ? AND duration_ms IS NULL')
+      .run(Math.round(durationMs), imageId);
   }
 
   /**
@@ -1280,8 +1813,7 @@ export class Store {
 
     return {
       items: page.map((row) => this.hydrateGeneration(row)),
-      nextCursor:
-        hasMore && last ? `${last.created_at}_${last.id}_${last.best_rating ?? 0}` : null,
+      nextCursor: hasMore && last ? `${last.created_at}_${last.id}_${last.best_rating ?? 0}` : null,
     };
   }
 
@@ -1331,9 +1863,7 @@ export class Store {
 
   private hydrateGeneration(row: GenerationRow): GenerationRecord {
     const images = this.db
-      .prepare<[string], ImageRow>(
-        'SELECT * FROM images WHERE generation_id = ? ORDER BY id ASC',
-      )
+      .prepare<[string], ImageRow>('SELECT * FROM images WHERE generation_id = ? ORDER BY id ASC')
       .all(row.id);
 
     return {
@@ -1346,6 +1876,7 @@ export class Store {
       values: parseJson<ParamValues>(row.values_json, {}),
       seeds: parseJson<Record<string, number>>(row.seeds_json, {}),
       params: parseJson<ParamSummaryItem[]>(row.params_json, []),
+      origins: parseJson<EditOrigin[]>(row.origins_json, []),
       title: row.title,
       images: images.map(toGenerationImage),
       texts: parseJson<TextOutput[]>(row.texts_json, []),
@@ -1464,7 +1995,11 @@ export class Store {
       .prepare(
         `UPDATE images
             SET archived_path = ?, archived_bytes = ?, encrypted = ?,
-                thumb_path = ?, thumb_bytes = ?,
+                -- Kept when this store has none to offer: a video's poster is
+                -- captured long before the file itself is ever archived, and
+                -- archiving must not throw the only preview away.
+                thumb_path = COALESCE(?, thumb_path),
+                thumb_bytes = COALESCE(?, thumb_bytes),
                 width = COALESCE(?, width), height = COALESCE(?, height)
           WHERE id = ?`,
       )
@@ -1478,6 +2013,28 @@ export class Store {
         archive.height ?? null,
         imageId,
       );
+  }
+
+  /**
+   * File a still for something that cannot be resized here.
+   *
+   * A video has no thumbnail until somebody has decoded a frame of it, which on
+   * a server without ffmpeg is the browser — see the poster route. Stored the
+   * same way a thumbnail always was, so every grid, sheet and picker gets it
+   * without knowing where it came from.
+   */
+  setImagePoster(
+    imageId: number,
+    poster: { path: string; bytes: number; width?: number | null; height?: number | null },
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE images
+            SET thumb_path = ?, thumb_bytes = ?,
+                width = COALESCE(?, width), height = COALESCE(?, height)
+          WHERE id = ?`,
+      )
+      .run(poster.path, poster.bytes, poster.width ?? null, poster.height ?? null, imageId);
   }
 
   /** Remember an image's pixel size so the grid can shape its tile up front. */
@@ -1548,11 +2105,30 @@ export class Store {
         .map((entry) => entry.id),
     );
 
+    /*
+     * The rows these favourites point at, where they are still there.
+     *
+     * One query for the lot, like the two above: this list is as long as the
+     * user's taste, and a lookup per row would make opening the screen a
+     * hundred statements.
+     */
+    const live = new Map<number, ImageRow>();
+    const ids = rows.map((row) => row.image_id).filter((id): id is number => id !== null);
+    if (ids.length > 0) {
+      const placeholders = ids.map(() => '?').join(', ');
+      for (const image of this.db
+        .prepare<number[], ImageRow>(`SELECT * FROM images WHERE id IN (${placeholders})`)
+        .all(...ids)) {
+        live.set(image.id, image);
+      }
+    }
+
     return rows.map((row) =>
       toFavorite(
         row,
         row.workflow_id !== null && available.has(row.workflow_id),
         row.image_id !== null && archived.has(row.image_id),
+        row.image_id !== null ? (live.get(row.image_id) ?? null) : null,
       ),
     );
   }
@@ -1562,9 +2138,13 @@ export class Store {
       .prepare<[string], FavoriteRow>('SELECT * FROM favorites WHERE id = ?')
       .get(id);
     if (!row) return null;
-    const available =
-      row.workflow_id !== null && this.getWorkflow(row.workflow_id) !== null;
-    return toFavorite(row, available, this.isArchived(row.image_id));
+    const available = row.workflow_id !== null && this.getWorkflow(row.workflow_id) !== null;
+    return toFavorite(
+      row,
+      available,
+      this.isArchived(row.image_id),
+      row.image_id !== null ? this.getImage(row.image_id) : null,
+    );
   }
 
   /** Whether an image's bytes are stored here rather than only referenced. */
@@ -1583,6 +2163,7 @@ export class Store {
       row,
       row.workflow_id !== null && this.getWorkflow(row.workflow_id) !== null,
       this.isArchived(row.image_id),
+      this.getImage(imageId),
     );
   }
 
@@ -1789,6 +2370,171 @@ export class Store {
   }
 
   /* ---------------------------------------------------------------- */
+  /* Notes about what the user likes                                   */
+  /* ---------------------------------------------------------------- */
+
+  /*
+   * Ciphertext in, ciphertext out.
+   *
+   * The methods below move opaque strings; only `Taste` knows what is in them.
+   * Keeping the split at this line means the database layer cannot leak a
+   * plaintext it never holds, and the ordering and switching still work while
+   * the vault is locked.
+   */
+
+  listTasteCategoryRows(): TasteCategoryRow[] {
+    return this.db
+      .prepare<[], TasteCategoryRow>(
+        'SELECT * FROM taste_categories ORDER BY position ASC, created_at ASC',
+      )
+      .all();
+  }
+
+  getTasteCategoryRow(id: string): TasteCategoryRow | null {
+    return (
+      this.db
+        .prepare<[string], TasteCategoryRow>('SELECT * FROM taste_categories WHERE id = ?')
+        .get(id) ?? null
+    );
+  }
+
+  /** Appends: a new heading belongs at the end of the list, not the top of it. */
+  insertTasteCategory(id: string, name: string): TasteCategoryRow {
+    this.db
+      .prepare(
+        `INSERT INTO taste_categories (id, name, active, position, created_at)
+         VALUES (?, ?, 1, COALESCE((SELECT MAX(position) + 1 FROM taste_categories), 0), ?)`,
+      )
+      .run(id, name, Date.now());
+    return this.getTasteCategoryRow(id) as TasteCategoryRow;
+  }
+
+  updateTasteCategory(
+    id: string,
+    input: { name?: string; active?: boolean; position?: number },
+  ): void {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+
+    if (input.name !== undefined) {
+      sets.push('name = ?');
+      params.push(input.name);
+    }
+    if (input.active !== undefined) {
+      sets.push('active = ?');
+      params.push(input.active ? 1 : 0);
+    }
+    if (input.position !== undefined) {
+      sets.push('position = ?');
+      params.push(input.position);
+    }
+    if (sets.length === 0) return;
+
+    params.push(id);
+    this.db.prepare(`UPDATE taste_categories SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  /**
+   * Delete the heading, keep the notes.
+   *
+   * The foreign key says the same thing, but it is spelled out here as well:
+   * a database opened without `foreign_keys` on would otherwise orphan rows
+   * that the profile then cannot show at all.
+   */
+  deleteTasteCategory(id: string): void {
+    this.db.transaction(() => {
+      this.db.prepare('UPDATE taste_entries SET category_id = NULL WHERE category_id = ?').run(id);
+      this.db.prepare('DELETE FROM taste_categories WHERE id = ?').run(id);
+    })();
+  }
+
+  /**
+   * Write a whole order at once.
+   *
+   * One drag is one new sequence, not a series of moves — and a statement per
+   * category would leave the list half-reordered if the connection dropped in
+   * the middle of it.
+   */
+  reorderTasteCategories(ids: string[]): void {
+    const update = this.db.prepare('UPDATE taste_categories SET position = ? WHERE id = ?');
+    this.db.transaction(() => {
+      ids.forEach((id, index) => update.run(index, id));
+    })();
+  }
+
+  listTasteEntryRows(): TasteEntryRow[] {
+    return this.db
+      .prepare<[], TasteEntryRow>(
+        'SELECT * FROM taste_entries ORDER BY position ASC, created_at ASC',
+      )
+      .all();
+  }
+
+  getTasteEntryRow(id: string): TasteEntryRow | null {
+    return (
+      this.db
+        .prepare<[string], TasteEntryRow>('SELECT * FROM taste_entries WHERE id = ?')
+        .get(id) ?? null
+    );
+  }
+
+  insertTasteEntry(
+    id: string,
+    input: { categoryId: string | null; text: string; always?: boolean },
+  ): TasteEntryRow {
+    this.db
+      .prepare(
+        `INSERT INTO taste_entries (id, category_id, text, active, always_on, position, created_at)
+         VALUES (?, ?, ?, 1, ?, COALESCE((SELECT MAX(position) + 1 FROM taste_entries), 0), ?)`,
+      )
+      .run(id, input.categoryId, input.text, input.always ? 1 : 0, Date.now());
+    return this.getTasteEntryRow(id) as TasteEntryRow;
+  }
+
+  updateTasteEntry(
+    id: string,
+    input: {
+      categoryId?: string | null;
+      text?: string;
+      active?: boolean;
+      always?: boolean;
+      position?: number;
+    },
+  ): void {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+
+    if (input.categoryId !== undefined) {
+      sets.push('category_id = ?');
+      params.push(input.categoryId);
+    }
+    if (input.text !== undefined) {
+      sets.push('text = ?');
+      params.push(input.text);
+    }
+    if (input.active !== undefined) {
+      sets.push('active = ?');
+      params.push(input.active ? 1 : 0);
+    }
+    if (input.always !== undefined) {
+      sets.push('always_on = ?');
+      params.push(input.always ? 1 : 0);
+    }
+    if (input.position !== undefined) {
+      sets.push('position = ?');
+      params.push(input.position);
+    }
+    if (sets.length === 0) return;
+
+    params.push(id);
+    this.db.prepare(`UPDATE taste_entries SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  deleteTasteEntry(id: string): void {
+    this.db.prepare('DELETE FROM taste_entries WHERE id = ?').run(id);
+  }
+
+  /* ---------------------------------------------------------------- */
   /* System prompts                                                    */
   /* ---------------------------------------------------------------- */
 
@@ -1831,7 +2577,14 @@ export class Store {
         `INSERT INTO system_prompts (id, name, text, position, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, input.name.trim(), input.text, input.position ?? this.countSystemPrompts(), now, now);
+      .run(
+        id,
+        input.name.trim(),
+        input.text,
+        input.position ?? this.countSystemPrompts(),
+        now,
+        now,
+      );
     return this.getSystemPrompt(id) as SystemPrompt;
   }
 
@@ -1917,10 +2670,10 @@ export class Store {
 
     const result = this.db
       .prepare(
-        `INSERT INTO images (generation_id, node_id, filename, subfolder, type)
-         VALUES (?, 'import', ?, ?, 'import')`,
+        `INSERT INTO images (generation_id, node_id, filename, subfolder, type, kind)
+         VALUES (?, 'import', ?, ?, 'import', ?)`,
       )
-      .run(input.generationId, input.filename, input.subfolder);
+      .run(input.generationId, input.filename, input.subfolder, mediaKindOf(input.filename));
 
     return Number(result.lastInsertRowid);
   }
@@ -1932,7 +2685,9 @@ export class Store {
         "SELECT filename, subfolder FROM images WHERE type = 'import'",
       )
       .all();
-    return new Set(rows.map((row) => (row.subfolder ? `${row.subfolder}/${row.filename}` : row.filename)));
+    return new Set(
+      rows.map((row) => (row.subfolder ? `${row.subfolder}/${row.filename}` : row.filename)),
+    );
   }
 
   /**
@@ -1965,9 +2720,7 @@ export class Store {
   /** Archived images nobody rated, offered up for cleanup. */
   listUnratedArchived(): ImageRow[] {
     return this.db
-      .prepare<[], ImageRow>(
-        'SELECT * FROM images WHERE archived_path IS NOT NULL AND rating = 0',
-      )
+      .prepare<[], ImageRow>('SELECT * FROM images WHERE archived_path IS NOT NULL AND rating = 0')
       .all();
   }
 
@@ -2105,9 +2858,7 @@ export class Store {
             'SELECT COUNT(*) AS count FROM connections WHERE kind = ?',
           )
           .get(kind)
-      : this.db
-          .prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM connections')
-          .get();
+      : this.db.prepare<[], { count: number }>('SELECT COUNT(*) AS count FROM connections').get();
     return row?.count ?? 0;
   }
 
@@ -2242,8 +2993,85 @@ export class Store {
     this.db.prepare('DELETE FROM variation_presets WHERE id = ?').run(id);
   }
 
+  /* ---------------------------------------------------------------- */
+  /* The model library                                                  */
+  /* ---------------------------------------------------------------- */
+
+  listModelNotes(folder: ModelFolder): ModelNote[] {
+    const rows = this.db
+      .prepare<[string], ModelNoteRow>('SELECT * FROM model_notes WHERE folder = ?')
+      .all(folder);
+    return rows.map(toModelNote);
+  }
+
+  getModelNote(folder: ModelFolder, name: string): ModelNote | null {
+    const row = this.db
+      .prepare<[string, string], ModelNoteRow>(
+        'SELECT * FROM model_notes WHERE folder = ? AND name = ?',
+      )
+      .get(folder, name);
+    return row ? toModelNote(row) : null;
+  }
+
+  /**
+   * Write part of a model's note, leaving the rest.
+   *
+   * Patched a field at a time because two different things write here — you,
+   * typing trigger words, and a Civitai lookup filling in what the creator
+   * said — and a whole-row write from either would silently discard the other.
+   */
+  saveModelNote(
+    folder: ModelFolder,
+    name: string,
+    patch: Partial<Omit<ModelNote, 'folder' | 'name' | 'updatedAt'>>,
+  ): ModelNote {
+    const current = this.getModelNote(folder, name);
+    const next: ModelNote = {
+      folder,
+      name,
+      triggerWords: patch.triggerWords ?? current?.triggerWords ?? [],
+      notes: patch.notes ?? current?.notes ?? '',
+      strength: patch.strength !== undefined ? patch.strength : (current?.strength ?? null),
+      civitai: patch.civitai !== undefined ? patch.civitai : (current?.civitai ?? null),
+      sha256: patch.sha256 !== undefined ? patch.sha256 : (current?.sha256 ?? null),
+      updatedAt: Date.now(),
+    };
+
+    this.db
+      .prepare(
+        `INSERT INTO model_notes
+           (folder, name, trigger_words, notes, strength, civitai_json, sha256, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(folder, name) DO UPDATE SET
+           trigger_words = excluded.trigger_words,
+           notes         = excluded.notes,
+           strength      = excluded.strength,
+           civitai_json  = excluded.civitai_json,
+           sha256        = excluded.sha256,
+           updated_at    = excluded.updated_at`,
+      )
+      .run(
+        folder,
+        name,
+        JSON.stringify(next.triggerWords),
+        next.notes,
+        next.strength,
+        next.civitai ? JSON.stringify(next.civitai) : null,
+        next.sha256,
+        next.updatedAt,
+      );
+
+    return next;
+  }
+
+  deleteModelNote(folder: ModelFolder, name: string): void {
+    this.db.prepare('DELETE FROM model_notes WHERE folder = ? AND name = ?').run(folder, name);
+  }
+
   getSettings(): AppSettings {
-    const rows = this.db.prepare<[], { key: string; value: string }>('SELECT * FROM settings').all();
+    const rows = this.db
+      .prepare<[], { key: string; value: string }>('SELECT * FROM settings')
+      .all();
     const settings: Record<string, unknown> = { ...DEFAULT_SETTINGS };
     for (const row of rows) {
       if (!(row.key in DEFAULT_SETTINGS)) continue;
@@ -2255,11 +3083,15 @@ export class Store {
        * JSON under one key, merged over the defaults so a value added in a
        * later version appears rather than being undefined.
        */
+      if (isListSetting(row.key)) {
+        settings[row.key] = parseJson<unknown[]>(row.value, []);
+        continue;
+      }
       if (isObjectSetting(row.key)) {
-        settings[row.key] = {
-          ...((DEFAULT_SETTINGS as unknown as Record<string, object>)[row.key] ?? {}),
-          ...parseJson<object>(row.value, {}),
-        };
+        settings[row.key] = mergeSetting(
+          (DEFAULT_SETTINGS as unknown as Record<string, object>)[row.key] ?? {},
+          parseJson<object>(row.value, {}),
+        );
         continue;
       }
       settings[row.key] = row.value === '' ? null : row.value;
@@ -2278,17 +3110,20 @@ export class Store {
     );
     const current = this.getSettings() as unknown as Record<string, unknown>;
 
-
     for (const [key, value] of Object.entries(patch)) {
       if (!(key in DEFAULT_SETTINGS)) continue;
+
+      if (isListSetting(key)) {
+        upsert.run(key, JSON.stringify(Array.isArray(value) ? value : []));
+        continue;
+      }
 
       // Patched a field at a time, so setting the chat's model does not
       // silently reset which system prompt it uses.
       if (isObjectSetting(key)) {
-        upsert.run(
-          key,
-          JSON.stringify({ ...(current[key] as object), ...(value as object) }),
-        );
+        // One group deep, like the read side: patching the chat's review
+        // settings must not drop the fields of it the patch did not mention.
+        upsert.run(key, JSON.stringify(mergeSetting(current[key] as object, value as object)));
         continue;
       }
       upsert.run(key, value == null ? '' : String(value));
@@ -2416,10 +3251,17 @@ export class Store {
    */
   importUiState(state: UiState, makeId: () => string): void {
     const settings = this.getSettings();
+    /*
+     * "Not set" for a list is an empty one, not null — a setting stored as a
+     * list always comes back as an array, so the null test alone would call an
+     * install with no favourites yet "already has favourites" and never restore
+     * the ones in the file.
+     */
+    const unset = (value: unknown) => value == null || (Array.isArray(value) && value.length === 0);
     const missing = Object.fromEntries(
       Object.entries(state.settings ?? {}).filter(
         ([key, value]) =>
-          key in settings && value != null && settings[key as keyof AppSettings] == null,
+          key in settings && !unset(value) && unset(settings[key as keyof AppSettings]),
       ),
     ) as Partial<AppSettings>;
     if (Object.keys(missing).length > 0) this.updateSettings(missing);

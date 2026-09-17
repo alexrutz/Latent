@@ -5,8 +5,14 @@ import { join } from 'node:path';
 import { expect, request as apiRequest, test, type Page } from '@playwright/test';
 
 import {
+  editWithReference,
   img2img,
+  loadImageFromFolder,
+  ltxVideoGguf,
+  minimaxMusic,
   sd15Txt2Img,
+  sdxlBaseRefiner,
+  videoCombine,
   sd15Txt2ImgUi,
   sd15WithLoraInput,
   uiFormatWorkflow,
@@ -30,7 +36,9 @@ const BASE_URL = process.env.LATENT_E2E_URL ?? 'http://127.0.0.1:6173';
 const WORKFLOW_NAME = 'sd15 txt2img';
 const PASSWORD = 'e2e-password';
 
-async function withApi<T>(fn: (ctx: Awaited<ReturnType<typeof apiRequest.newContext>>) => Promise<T>) {
+async function withApi<T>(
+  fn: (ctx: Awaited<ReturnType<typeof apiRequest.newContext>>) => Promise<T>,
+) {
   const ctx = await apiRequest.newContext({ baseURL: BASE_URL });
   try {
     // Every API route needs a session now.
@@ -39,6 +47,45 @@ async function withApi<T>(fn: (ctx: Awaited<ReturnType<typeof apiRequest.newCont
   } finally {
     await ctx.dispose();
   }
+}
+
+/**
+ * The same, with a pass for the notes about what you like.
+ *
+ * Those routes want the password a second time — being signed in is
+ * deliberately not enough for that one screen — so a test that sets them up
+ * buys a pass the way the app does.
+ */
+/**
+ * Open the notes sheet, which asks for the password even though you are in.
+ *
+ * A helper because it is now two steps everywhere, and because the assertion
+ * that it *is* two steps belongs in one test rather than in all of them.
+ */
+async function openTasteSheet(page: Page) {
+  await page.getByRole('button', { name: 'What you like' }).click();
+  const sheet = page.getByRole('dialog', { name: 'What you like' });
+  const password = sheet.getByLabel('Password');
+  if (await password.isVisible().catch(() => false)) {
+    await password.fill(PASSWORD);
+    await sheet.getByRole('button', { name: 'Open' }).click();
+    await expect(password).toBeHidden();
+  }
+  return sheet;
+}
+
+async function withTaste<T>(
+  fn: (
+    ctx: Awaited<ReturnType<typeof apiRequest.newContext>>,
+    headers: Record<string, string>,
+  ) => Promise<T>,
+) {
+  return withApi(async (ctx) => {
+    const opened = (await (
+      await ctx.post('/api/taste/unlock', { data: { password: PASSWORD } })
+    ).json()) as { ticket: string };
+    return fn(ctx, { 'x-latent-taste': opened.ticket });
+  });
 }
 
 /**
@@ -98,7 +145,7 @@ async function dismissResult(page: Page) {
  * is two taps rather than one. In its own helper because every test that uses
  * those screens would otherwise repeat it.
  */
-async function openModule(page: Page, label: 'Blocks' | 'Random' | 'Monitor' | 'Study') {
+async function openModule(page: Page, label: 'Blocks' | 'Models' | 'Random' | 'Monitor' | 'Study') {
   await page.getByRole('button', { name: 'More modules' }).click();
   await page.getByTestId('more-menu').getByRole('button', { name: label }).click();
   await expect(page.getByTestId('more-menu')).toHaveCount(0);
@@ -111,6 +158,21 @@ async function openModule(page: Page, label: 'Blocks' | 'Random' | 'Monitor' | '
  */
 async function resetState() {
   await withApi(async (ctx) => {
+    /*
+     * The queue, first of all.
+     *
+     * It is state a test can observe — the Queue screen lists it — and it was
+     * the one collection this did not wipe, which is how a batch queued by one
+     * test turned up among another's cards and failed it on a value it never
+     * asked for. Two describes had grown their own copy of these two lines for
+     * exactly that reason; this is where they belong.
+     *
+     * Before the gallery is emptied, not after: a job that finishes during the
+     * reset would otherwise write its row in behind us.
+     */
+    await ctx.delete('/api/queue');
+    await ctx.post('/api/queue/interrupt');
+
     const workflows = (await (await ctx.get('/api/workflows')).json()) as { id: string }[];
     for (const workflow of workflows) await ctx.delete(`/api/workflows/${workflow.id}`);
 
@@ -126,12 +188,59 @@ async function resetState() {
     for (const block of blocks) await ctx.delete(`/api/prompt-blocks/${block.id}`);
 
     /*
+     * Notes about what the user likes go into the system prompt, so one left
+     * behind would quietly colour every later chat test's reply.
+     */
+    const opened = (await (
+      await ctx.post('/api/taste/unlock', { data: { password: PASSWORD } })
+    ).json()) as { ticket: string };
+    const pass = { 'x-latent-taste': opened.ticket };
+    const taste = (await (await ctx.get('/api/taste', { headers: pass })).json()) as {
+      categories: { id: string }[];
+      entries: { id: string }[];
+    };
+    for (const entry of taste.entries ?? []) {
+      await ctx.delete(`/api/taste/entries/${entry.id}`, { headers: pass });
+    }
+    for (const category of taste.categories ?? []) {
+      await ctx.delete(`/api/taste/categories/${category.id}`, { headers: pass });
+    }
+
+    /*
      * System prompts reach into every workflow with a field of the same name,
      * so one left behind would quietly rewrite a later test's text input. The
      * chat's choice of one goes with them.
      */
     const prompts = (await (await ctx.get('/api/system-prompts')).json()) as { id: string }[];
     for (const prompt of prompts) await ctx.delete(`/api/system-prompts/${prompt.id}`);
+
+    /*
+     * And for the same reason, the general arrangement: it reaches into every
+     * workflow's form by field name, so one left behind would move a later
+     * test's fields out from under it.
+     */
+    await ctx.patch('/api/settings', { data: { fieldArrangement: [] } });
+
+    /*
+     * Model notes are server state too, and the words in one are what the
+     * Models screen shows — a set left behind reads as the file's own metadata
+     * having changed, which is a confusing way to fail.
+     */
+    for (const folder of ['loras', 'checkpoints']) {
+      const listed = (await (await ctx.get(`/api/models?folder=${folder}`)).json()) as {
+        models: { name: string; note: unknown }[];
+      };
+      for (const model of listed.models ?? []) {
+        if (!model.note) continue;
+        /*
+         * Deleted, not blanked. Blanking the fields leaves the Civitai half of
+         * the note behind — it is patched, not replaced — and a description
+         * surviving into the next test reads as the file's own metadata having
+         * changed, which is a baffling way to fail.
+         */
+        await ctx.delete(`/api/models/${folder}/${encodeURIComponent(model.name)}/note`);
+      }
+    }
 
     /*
      * Model servers are connections now. The ComfyUI one is left alone — it is
@@ -175,11 +284,22 @@ async function resetState() {
      * waiting, which quietly breaks any later test that queues a batch.
      */
     await ctx.patch('/api/settings', {
-      data: { comfyRoot: null, importRoot: null, inputRoot: null, queuePolicy: 'append' },
+      data: {
+        comfyRoot: null,
+        importRoot: null,
+        inputRoot: null,
+        queuePolicy: 'append',
+        // Starred folders and pictures are settings too, and they survive the
+        // portable file being deleted — one test's stars would otherwise be
+        // sitting in the next test's browser.
+        browseFavorites: [],
+      },
     });
 
     // Endless generation is server-side and survives a reload, let alone a test.
-    await ctx.put('/api/generate/endless', { data: { workflowId: '', values: {}, enabled: false } });
+    await ctx.put('/api/generate/endless', {
+      data: { workflowId: '', values: {}, enabled: false },
+    });
   });
 
   /*
@@ -201,7 +321,7 @@ async function seedWorkflow(name = WORKFLOW_NAME) {
 }
 
 async function importViaUi(page: Page, name: string, graph: unknown) {
-  await open(page, '/settings');
+  await open(page, '/settings?in=workflows');
   // Exact: a configured import folder puts a "Show <path>" button on the same
   // screen, and those paths contain the word "import".
   await page.getByRole('button', { name: 'Import', exact: true }).click();
@@ -209,6 +329,29 @@ async function importViaUi(page: Page, name: string, graph: unknown) {
     name: `${name}.json`,
     mimeType: 'application/json',
     buffer: Buffer.from(JSON.stringify(graph)),
+  });
+}
+
+/**
+ * A `DataTransfer` carrying one small PNG, built inside the page.
+ *
+ * Playwright cannot start a drag from the operating system, so a drop is driven
+ * by dispatching the events with a transfer the page made for itself. The file
+ * is real bytes — the handler filters on `type`, and a stub with the wrong
+ * shape would pass a test the browser would not.
+ */
+async function fileTransfer(page: Page) {
+  return page.evaluateHandle(() => {
+    const transfer = new DataTransfer();
+    // A 1×1 PNG, which is all the drop path needs to see.
+    const bytes = Uint8Array.from(
+      atob(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      ),
+      (character) => character.charCodeAt(0),
+    );
+    transfer.items.add(new File([bytes], 'dropped.png', { type: 'image/png' }));
+    return transfer;
   });
 }
 
@@ -541,6 +684,20 @@ test.describe('gallery, favourites and the prompt builder', () => {
    */
   test('keeps a long grid cheap to scroll', async ({ page }) => {
     await generate(page, 'scroll load', 8);
+
+    /*
+     * Every size report this page makes, from the moment the gallery opens.
+     *
+     * Watched from before the first tile rather than from after it: a tile
+     * scrolled into view for the first time is *allowed* to report — that is
+     * the one measurement it exists to take — so what has to be proved is that
+     * nothing reports twice, and that can only be seen across the whole visit.
+     */
+    const reports: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().includes('/dimensions')) reports.push(request.postData() ?? '');
+    });
+
     await open(page, '/gallery');
     await expect(page.locator('img[alt*="scroll load"]').first()).toBeVisible({ timeout: 30_000 });
 
@@ -554,23 +711,102 @@ test.describe('gallery, favourites and the prompt builder', () => {
       });
     expect(contained).toBe('auto');
 
-    /*
-     * Each image reports its size at most once, ever. Before, this fired on every
-     * load and on every remount — the request storm that came with the re-render
-     * storm.
-     */
-    const reports: string[] = [];
-    page.on('request', (request) => {
-      if (request.url().includes('/dimensions')) reports.push(request.url());
-    });
-
     await page.locator('main').evaluate((element) => element.scrollTo(0, element.scrollHeight));
     await page.waitForTimeout(600);
     await page.locator('main').evaluate((element) => element.scrollTo(0, 0));
     await page.waitForTimeout(600);
 
-    // Scrolling back and forth must not re-report anything already reported.
-    expect(reports).toHaveLength(0);
+    /*
+     * Each image reports its size at most once, ever. Before, this fired on
+     * every load and on every remount — the request storm that came with the
+     * re-render storm — so scrolling a long grid up and down was a request per
+     * tile per pass.
+     */
+    expect(reports.length).toBeGreaterThan(0);
+    expect(new Set(reports).size).toBe(reports.length);
+  });
+
+  /**
+   * A tile is the shape of its picture, when its row agrees on a shape.
+   *
+   * The grid used to be squares, which crops a third off a 2:3 portrait — and
+   * a gallery of generated pictures is mostly not square, because the ratio was
+   * chosen on purpose when the picture was made. Rows are a twelfth of a column
+   * tall now, so any shape between 2:1 and 1:2 is drawable; the row decides,
+   * because a row with two heights in it leaves a hole under the shorter one.
+   *
+   * Measured in the browser rather than asserted on a style string: the height
+   * comes out of sub-row spans, a zero row gap and the tile's own padding, and
+   * the only thing worth checking is what all that arithmetic actually drew.
+   */
+  test('draws a row of portraits as portraits, not as squares', async ({ page }) => {
+    // The seeded workflow, told to make portraits. Through the stored values
+    // rather than a second workflow, so the picker is not part of this test.
+    await withApi(async (ctx) => {
+      const listed = (await (await ctx.get('/api/workflows')).json()) as { id: string }[];
+      await ctx.patch(`/api/workflows/${listed[0]!.id}`, {
+        data: { lastValues: { '5.width': 512, '5.height': 768 } },
+      });
+    });
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a portrait');
+    await page.getByRole('button', { name: '4', exact: true }).click();
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    await page.getByRole('button', { name: 'Grid layout' }).click();
+    await page.getByLabel('Columns').fill('2');
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    // The picture's own box: the tile minus its gutter padding, which is the
+    // thing whose shape this test is about.
+    const tiles = page.getByRole('img', { name: 'a portrait' });
+    await expect(tiles).toHaveCount(4, { timeout: 60_000 });
+
+    /*
+     * The shape is only known once the browser has loaded a picture and told
+     * the server how big it is, so the first paint is square and the tiles
+     * settle a moment later. Poll rather than race it.
+     */
+    await expect
+      .poll(
+        async () => {
+          const boxes = await tiles.evaluateAll((nodes) =>
+            nodes.map((node) => {
+              const box = node.getBoundingClientRect();
+              return { width: box.width, height: box.height, top: Math.round(box.top) };
+            }),
+          );
+          if (boxes.some((box) => box.width === 0)) return 0;
+          return boxes[0]!.height / boxes[0]!.width;
+        },
+        { timeout: 30_000 },
+      )
+      .toBeGreaterThan(1.3);
+
+    const boxes = await tiles.evaluateAll((nodes) =>
+      nodes.map((node) => {
+        const box = node.getBoundingClientRect();
+        return { width: box.width, height: box.height, top: Math.round(box.top) };
+      }),
+    );
+
+    // 512x768 is 1.5 tall for its width, within the half-unit the row grid
+    // rounds to.
+    for (const box of boxes) {
+      expect(box.height / box.width).toBeGreaterThan(1.4);
+      expect(box.height / box.width).toBeLessThan(1.6);
+    }
+
+    // And nothing is ragged: two columns, so the four tiles are two pairs, and
+    // each pair shares a top edge and a height.
+    expect(boxes[0]!.top).toBe(boxes[1]!.top);
+    expect(boxes[2]!.top).toBe(boxes[3]!.top);
+    expect(Math.round(boxes[0]!.height)).toBe(Math.round(boxes[1]!.height));
+    expect(boxes[2]!.top).toBeGreaterThan(boxes[0]!.top);
+
+    await page.screenshot({ path: 'test-results/93-portrait-tiles.png' });
   });
 
   test('lets the grid width be changed and remembers it', async ({ page }) => {
@@ -630,15 +866,121 @@ test.describe('gallery, favourites and the prompt builder', () => {
     const favorite = page.locator('img[alt="a keeper"]').first();
     await expect(favorite).toBeVisible({ timeout: 20_000 });
 
+    // One tap opens the picture itself, and re-running it is an action on it.
     await favorite.click();
-    await expect(page.getByRole('button', { name: 'Make more like this' })).toBeVisible();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Reseed', exact: true })).toBeVisible();
 
-    // Favourites carry their own rating, separate from the gallery's.
-    await page.getByRole('button', { name: '4 stars' }).click();
+    /*
+     * Favourites carry their own rating, separate from the gallery's: the
+     * stars on the picture say it came out well, these say you want more like
+     * it. It lives with the rest of what a favourite knows, behind Details.
+     */
+    await page.getByRole('button', { name: 'Details' }).click();
+    // Scoped to the sheet: the picture's own stars are on the panel behind it,
+    // and telling the two apart is the point of them being separate.
+    await page
+      .getByRole('group', { name: 'Want more like this' })
+      .getByRole('button', { name: '4 stars' })
+      .click();
     await page.screenshot({ path: 'test-results/12-favourites.png' });
 
     await page.getByRole('button', { name: 'Done' }).click();
+    await page.getByRole('button', { name: 'Close' }).click();
     await expect(page.getByText('★★★★').first()).toBeVisible();
+  });
+
+  /**
+   * A favourite opens in the viewer the gallery opens, in one tap.
+   *
+   * It used to get a stripped one with nothing on it, so the picture you had
+   * already said you cared about was the one you could do least with. Then it
+   * got a page of its own in front of the viewer, which was one tap too many
+   * for looking at a picture you are already looking at a thumbnail of.
+   */
+  test('opens a favourite in the gallery’s own viewer', async ({ page }) => {
+    await generate(page, 'the same viewer');
+
+    await open(page, '/gallery');
+    await page.locator('img[alt*="the same viewer"]').first().click();
+    await page.getByRole('button', { name: /Favourite/ }).click();
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    await page.getByRole('link', { name: 'Favourites' }).click();
+    const favorite = page.locator('img[alt="the same viewer"]').first();
+    await expect(favorite).toBeVisible({ timeout: 20_000 });
+    await favorite.click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+
+    // Every action the gallery's viewer carries, including the rating that
+    // stores the bytes on this device.
+    for (const name of ['Save', 'Keep', 'Reseed', 'Reuse', 'Upscale', 'Details']) {
+      await expect(page.getByRole('button', { name, exact: true })).toBeVisible();
+    }
+    await expect(page.getByRole('button', { name: 'Favourited' })).toBeVisible();
+    await page.screenshot({ path: 'test-results/83-favourite-viewer.png' });
+
+    // Rating from here writes to the run the favourite came from, which is only
+    // possible because the viewer is looking at that run rather than at a copy.
+    await page.getByRole('button', { name: '3 stars' }).click();
+    await expect
+      .poll(async () => {
+        const gallery = await withApi(async (ctx) => {
+          const response = await ctx.get('/api/gallery');
+          return (await response.json()) as { items: { images: { rating: number }[] }[] };
+        });
+        return gallery.items.flatMap((item) => item.images).map((image) => image.rating);
+      })
+      .toContain(3);
+
+    // And the settings behind the picture are readable, as they are anywhere else.
+    await page.getByRole('button', { name: 'Details' }).click();
+    await expect(page.getByText('the same viewer').first()).toBeVisible();
+  });
+
+  /**
+   * Swiping in Favourites moves through the favourites.
+   *
+   * The list you are looking at is the list you swipe: opening the third
+   * favourite and flicking gives the second, exactly as the gallery gives the
+   * next picture. It used to give the next image of the *batch* the favourite
+   * came out of — pictures you had not asked to see, from a list you were not
+   * in.
+   */
+  test('swipes from one favourite to the next', async ({ page }) => {
+    for (const title of ['first favourite', 'second favourite']) {
+      await generate(page, title);
+      await open(page, '/gallery');
+      await page.locator(`img[alt*="${title}"]`).first().click();
+      await page.getByRole('button', { name: /Favourite/ }).click();
+      await page.getByRole('button', { name: 'Close' }).click();
+    }
+
+    await page.getByRole('link', { name: 'Favourites' }).click();
+    await expect(page.locator('img[alt="first favourite"]').first()).toBeVisible({
+      timeout: 20_000,
+    });
+
+    await page.locator('main img').first().click();
+    const counter = page.getByText(/^\d+ \/ 2$/);
+    await expect(counter).toBeVisible();
+
+    const stage = page.locator('div.touch-none').first();
+    const box = (await stage.boundingBox()) as {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+    const midY = box.y + box.height / 2;
+    const base = { pointerId: 1, bubbles: true, isPrimary: true };
+    const from = box.x + box.width * 0.8;
+    const to = from - box.width * 0.6;
+    await stage.dispatchEvent('pointerdown', { ...base, clientX: from, clientY: midY });
+    await stage.dispatchEvent('pointermove', { ...base, clientX: to, clientY: midY });
+    await stage.dispatchEvent('pointerup', { ...base, clientX: to, clientY: midY });
+
+    await expect(counter).toHaveText('2 / 2');
   });
 
   test('switches favourites between thumbnails and a compact list', async ({ page }) => {
@@ -694,6 +1036,182 @@ test.describe('the phone ergonomics pass', () => {
       ctx.post('/api/prompt-blocks', { data: { name, text, group: 'Lighting' } }),
     );
   }
+
+  /**
+   * The library of models, and the one thing it exists to make quick.
+   *
+   * A LoRA does a fraction of what it can without its trigger words, and those
+   * words are on a web page rather than anywhere near the prompt box — so in
+   * practice they are typed from memory or not at all. The test worth having is
+   * therefore not "the list renders": it is that one button puts the LoRA tag
+   * in the LoRA field *and* its words in the prompt, because doing that by hand
+   * on a phone is the whole cost this screen removes.
+   */
+  test('lists what is installed and puts a LoRA into the form with its words', async ({ page }) => {
+    // A workflow with somewhere for the tag to go — the default one has no
+    // LoRA field, and then only the words would land.
+    await resetState();
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'with loras', graph: sd15WithLoraInput } }),
+    );
+
+    await open(page, '/');
+    await openModule(page, 'Models');
+
+    // Read out of the file itself, on the machine that has it.
+    const row = page.locator('[data-model="detail_tweaker_xl.safetensors"]');
+    await expect(row).toBeVisible({ timeout: 30_000 });
+    await expect(row).toContainText('trained on');
+    await expect(row).toContainText('a lighthouse');
+    await page.screenshot({ path: 'test-results/59-models.png' });
+
+    // A file whose header says nothing still appears, with a name to write
+    // against — which is most of the value, and the case that would be easiest
+    // to drop.
+    await expect(page.locator('[data-model="pixel_art_xl.safetensors"]')).toBeVisible();
+
+    // Yours win over everything the file or the creator says.
+    await row.getByRole('button').first().click();
+    const sheet = page.getByRole('dialog');
+    await sheet.getByLabel('Trigger words').fill('storm light, my own phrasing');
+    await sheet.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(row).toContainText('yours', { timeout: 20_000 });
+
+    /*
+     * And the button this screen is for, from the sheet that is still open —
+     * saving keeps it open, and the words it adds have to be the ones just
+     * saved rather than the ones the sheet was opened with.
+     */
+    await sheet.getByRole('button', { name: 'Add to the form' }).click();
+
+    await page.getByRole('link', { name: 'Generate' }).click();
+    const prompt = page.getByPlaceholder('Describe the image…');
+    await expect(prompt).toHaveValue(/storm light/);
+    await expect(prompt).toHaveValue(/my own phrasing/);
+
+    /*
+     * The tag lands in the LoRA field, not in the prompt beside the words —
+     * and it carries the extension, because that is what ComfyUI's `lora_name`
+     * resolves and what every tag already in the field looks like.
+     */
+    await expect(prompt).not.toHaveValue(/<lora:/);
+    // The editor shows a tidied name, so the full one is checked through the
+    // control it labels — which is the value that actually reaches ComfyUI.
+    await expect(
+      page.getByRole('textbox', { name: 'detail_tweaker_xl.safetensors strength' }),
+    ).toBeVisible();
+  });
+
+  /**
+   * The module is a source of information first.
+   *
+   * What a model *is* — the creator's explanation, the pictures they chose, the
+   * prompts behind them — is the reason to open it, and it is the half that
+   * needed a second request to a second endpoint to get at. The test that
+   * matters is that all of it reaches the screen, and that the picture arrives
+   * through Latent rather than from a CDN the phone talks to directly.
+   */
+  test('gathers what the creator wrote, and shows it above everything typed', async ({ page }) => {
+    await resetState();
+    await seedWorkflow();
+    await open(page, '/');
+    await openModule(page, 'Models');
+
+    const row = page.locator('[data-model="detail_tweaker_xl.safetensors"]');
+    await expect(row).toBeVisible({ timeout: 30_000 });
+
+    // Nothing is fetched on its own — hashing a checkpoint is not free.
+    await expect(page.getByText('not looked up yet')).toBeVisible();
+
+    await row.getByRole('button').first().click();
+    const sheet = page.getByRole('dialog');
+    await sheet.getByRole('button', { name: 'Look up' }).click();
+
+    /*
+     * The model-level description, which is the field creators actually write
+     * the usage notes in and which lives on the *other* endpoint.
+     */
+    await expect(sheet.getByText('Works best at 0.7.')).toBeVisible({ timeout: 30_000 });
+    // The version's own notes are kept, and kept apart.
+    await expect(sheet.getByText('Fixed the hands.')).toBeVisible();
+    await expect(sheet.getByText('somebody', { exact: false })).toBeVisible();
+
+    // An example, and the prompt behind it — which is what turns a mood board
+    // into something you can act on.
+    await sheet.getByRole('button', { name: 'Example 1' }).click();
+    await expect(page.getByText('a lighthouse in a storm, dusk')).toBeVisible();
+    await page.getByRole('button', { name: 'Close' }).click();
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    /*
+     * And back in the list, the picture sits behind the row — fetched through
+     * Latent, never from the CDN, because the phone talks to Latent and to
+     * nothing else.
+     */
+    const behind = row.locator('img');
+    await expect(behind).toHaveAttribute('src', /\/api\/models\/example\?url=/);
+    await page.screenshot({ path: 'test-results/60-model-info.png' });
+  });
+
+  /**
+   * One arrangement, applied to every workflow that has the field.
+   *
+   * The per-workflow editor answers "how should this form read"; this answers
+   * "where does `steps` go, in everything" — a question that previously had to
+   * be answered once per workflow, and again for every workflow imported after.
+   *
+   * The two halves worth proving are that an opinion reaches a workflow that
+   * was never opened, and that "no opinion" is a state you can get back to.
+   */
+  test('arranges a field once, for every workflow that has it', async ({ page }) => {
+    await open(page, '/settings?in=workflows');
+    await page.getByRole('button', { name: /^Arrange all/ }).click();
+
+    const sheet = page.getByRole('dialog', { name: 'General arrangement' });
+    await expect(sheet).toBeVisible();
+
+    // The pool is every field across the workflows in use, and says where each
+    // one turns up — which is what makes it worth an opinion.
+    const steps = sheet.getByRole('button', { name: 'Arrange Steps' });
+    await expect(steps).toContainText('in 1 workflow');
+    await steps.click();
+
+    // Placed, and now carrying an opinion: under Advanced, a whole row wide.
+    const row = sheet.locator('[data-arranged="steps"]');
+    await expect(row).toBeVisible();
+    await row.getByRole('button', { name: 'Steps Advanced' }).click();
+    await row.getByRole('button', { name: 'Steps Full row' }).click();
+    await page.screenshot({ path: 'test-results/58-arrangement.png' });
+
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    /*
+     * The workflow's own form editor was never opened, and Steps has moved.
+     * Read there rather than on the Generate screen because this is where the
+     * two groups are named, so "it went to Advanced" is a visible fact rather
+     * than an inference from something no longer being on screen.
+     */
+    await page.getByRole('button', { name: 'Edit form' }).click();
+    const editor = page.getByRole('dialog');
+    const advanced = editor.locator('div').filter({ hasText: /^Under Advanced/ });
+    await expect(advanced.locator('[data-field="3.steps"]')).toHaveCount(1);
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    // And "leave it to the workflow" is somewhere you can get back to.
+    await page.getByRole('button', { name: /^Arrange all/ }).click();
+    await sheet
+      .locator('[data-arranged="steps"]')
+      .getByRole('button', { name: 'Steps Where: leave it to the workflow' })
+      .click();
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    await page.getByRole('button', { name: 'Edit form' }).click();
+    const main = page
+      .getByRole('dialog')
+      .locator('div')
+      .filter({ hasText: /^On the main screen/ });
+    await expect(main.locator('[data-field="3.steps"]')).toHaveCount(1);
+  });
 
   /**
    * A block belongs in a prompt once or not at all, so the chip is a switch.
@@ -781,7 +1299,7 @@ test.describe('the phone ergonomics pass', () => {
    * three taps too many — so a field can be a line of pre-set points instead.
    */
   test('turns a number into a line of points you tap', async ({ page }) => {
-    await open(page, '/settings');
+    await open(page, '/settings?in=workflows');
     await page.getByRole('button', { name: 'Edit form' }).click();
 
     const row = page.locator('[data-field="3.steps"]');
@@ -862,7 +1380,7 @@ test.describe('the phone ergonomics pass', () => {
    * be able to keep the arrangement and come back to it.
    */
   test('saves a settings layout and restores it in one tap', async ({ page }) => {
-    await open(page, '/settings');
+    await open(page, '/settings?in=workflows');
     await page.getByRole('button', { name: 'Edit form' }).click();
 
     /** The editor card for a field, keyed by the id the schema gave it. */
@@ -883,7 +1401,9 @@ test.describe('the phone ergonomics pass', () => {
     await row('3.steps').getByRole('button', { name: '→ Main' }).click();
     await expect(row('3.steps').getByRole('button', { name: '→ Advanced' })).toBeVisible();
 
-    await page.getByRole('button', { name: 'Sparse' }).click();
+    // Anchored: the chat settings on this screen have a "Sparse" step of their
+    // own on the prompt-detail scale, whose label merely ends with the word.
+    await page.getByRole('button', { name: /^Sparse/ }).click();
     await expect(row('3.steps').getByRole('button', { name: '→ Main' })).toBeVisible();
     await page.screenshot({ path: 'test-results/15-layouts.png' });
 
@@ -900,7 +1420,9 @@ test.describe('the phone ergonomics pass', () => {
   test('crops a photo before it is uploaded', async ({ page }) => {
     // Only the img2img workflow, so it is the one the screen opens on.
     await resetState();
-    await withApi((ctx) => ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } }));
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } }),
+    );
 
     await open(page, '/');
     // The fixture already names an input image, so the button says "Replace".
@@ -921,7 +1443,9 @@ test.describe('the phone ergonomics pass', () => {
     await expect(page.getByTestId('editor-output-size')).toHaveText(/400×400/);
     await page.screenshot({ path: 'test-results/16-image-editor.png' });
 
-    await page.getByRole('button', { name: 'Use' }).click();
+    // Exact: the image field above now carries a "Use this picture" switch, and
+    // a loose match reaches both.
+    await page.getByRole('button', { name: 'Use', exact: true }).click();
 
     // The edited file lands in ComfyUI's input directory under its own name.
     await expect(page.getByText(/holiday_edited\.png/)).toBeVisible({ timeout: 20_000 });
@@ -1030,7 +1554,7 @@ test.describe('knowing what is happening', () => {
    * Queueing eight variations of one prompt is normal, and then the queue has to
    * let you find the one you regret.
    */
-  test('shows each queued job\'s settings so the right one can be removed', async ({ page }) => {
+  test("shows each queued job's settings so the right one can be removed", async ({ page }) => {
     await open(page, '/');
 
     // Slow enough that the queue does not drain while the test is reading it.
@@ -1114,9 +1638,7 @@ test.describe('knowing what is happening', () => {
   test('is not zoomable', async ({ page }) => {
     await open(page, '/');
 
-    const viewport = await page
-      .locator('meta[name="viewport"]')
-      .getAttribute('content');
+    const viewport = await page.locator('meta[name="viewport"]').getAttribute('content');
     expect(viewport).toContain('user-scalable=no');
     expect(viewport).toContain('maximum-scale=1');
 
@@ -1313,7 +1835,9 @@ test.describe('picking inputs and straightening them', () => {
     await expect(page.getByRole('heading', { name: 'Adjust photo' })).toBeVisible();
     await expect(page.getByTestId('editor-output-size')).toHaveText(/900×600/);
 
-    await page.getByRole('button', { name: 'Use' }).click();
+    // Exact, for the same reason as the other editor: the image field above
+    // carries a "Use this picture" switch, and a loose match reaches both.
+    await page.getByRole('button', { name: 'Use', exact: true }).click();
     await expect(page.getByText(/harbour_edited\.png/)).toBeVisible({ timeout: 20_000 });
   });
 
@@ -1323,7 +1847,9 @@ test.describe('picking inputs and straightening them', () => {
    */
   test('straightens by a free angle and crops the empty corners away', async ({ page }) => {
     await seedWorkflow();
-    await withApi((ctx) => ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } }));
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } }),
+    );
 
     await open(page, '/');
     await page.getByRole('button', { name: /Choose photo|Replace/ }).click();
@@ -1419,7 +1945,12 @@ test.describe('living in the gallery', () => {
      * across runs, not Chromium's gesture recognition.
      */
     const swipe = async (direction: -1 | 1) => {
-      const box = (await stage.boundingBox()) as { x: number; y: number; width: number; height: number };
+      const box = (await stage.boundingBox()) as {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      };
       const midY = box.y + box.height / 2;
       const from = box.x + box.width * (direction < 0 ? 0.8 : 0.2);
       const to = from + direction * box.width * 0.6;
@@ -1487,8 +2018,8 @@ test.describe('living in the gallery', () => {
     await page.getByRole('button', { name: 'Favourited' }).click();
     await expect(page.getByRole('button', { name: 'Favourite', exact: true })).toBeVisible();
 
-    const favourites = await withApi(async (ctx) =>
-      (await (await ctx.get('/api/favorites')).json()) as unknown[],
+    const favourites = await withApi(
+      async (ctx) => (await (await ctx.get('/api/favorites')).json()) as unknown[],
     );
     expect(favourites).toHaveLength(0);
   });
@@ -1565,9 +2096,13 @@ test.describe('varying the parameters too', () => {
     await seedWorkflow();
   });
 
-  test('sweeps a value across a batch and saves the setup with the prompt one', async ({ page }) => {
+  test('sweeps a value across a batch and saves the setup with the prompt one', async ({
+    page,
+  }) => {
     await withApi((ctx) =>
-      ctx.post('/api/prompt-blocks', { data: { name: 'Moody', category: 'Mood', text: 'heavy clouds' } }),
+      ctx.post('/api/prompt-blocks', {
+        data: { name: 'Moody', category: 'Mood', text: 'heavy clouds' },
+      }),
     );
 
     await open(page, '/');
@@ -1606,7 +2141,8 @@ test.describe('varying the parameters too', () => {
 
     const steps = await cards.locator('li', { hasText: 'Steps' }).allInnerTexts();
     expect(steps.length).toBeGreaterThan(2);
-    for (const text of steps) expect(['Steps20', 'Steps30', 'Steps40']).toContain(text.replace(/\s/g, ''));
+    for (const text of steps)
+      expect(['Steps20', 'Steps30', 'Steps40']).toContain(text.replace(/\s/g, ''));
 
     await withApi((ctx) => ctx.delete('/api/queue'));
     await withApi((ctx) => ctx.post('/api/queue/interrupt'));
@@ -1656,7 +2192,7 @@ test.describe('the fixes wave ten asked for', () => {
    * centred static position and the translate carried it off the right end.
    */
   test('draws the switch knob inside its own track', async ({ page }) => {
-    await open(page, '/settings');
+    await open(page, '/settings?in=pictures');
 
     const track = page.getByRole('switch', { name: 'Blur every image' });
     const knob = track.locator('span');
@@ -1689,9 +2225,7 @@ test.describe('the fixes wave ten asked for', () => {
     const scroller = page.locator('main');
     // A page that cannot scroll would pass the assertions below without
     // proving anything.
-    expect(
-      await scroller.evaluate((el) => el.scrollHeight - el.clientHeight),
-    ).toBeGreaterThan(50);
+    expect(await scroller.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(50);
 
     await scroller.evaluate((element) => element.scrollTo({ top: 400 }));
     await expect.poll(async () => scroller.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
@@ -1749,7 +2283,7 @@ test.describe('the fixes wave ten asked for', () => {
    * editor a layout tool rather than a list of switches.
    */
   test('rearranges the form by dragging, and the Generate screen follows', async ({ page }) => {
-    await open(page, '/settings');
+    await open(page, '/settings?in=workflows');
     await page.getByRole('button', { name: 'Edit form' }).click();
 
     // Width first: a full row is the layout choice the two-column grid needs.
@@ -1767,7 +2301,9 @@ test.describe('the fixes wave ten asked for', () => {
     const moved = before[2] as string;
     const above = before[1] as string;
 
-    const handle = page.locator(`[data-field="${moved}"]`).getByRole('button', { name: /^Reorder/ });
+    const handle = page
+      .locator(`[data-field="${moved}"]`)
+      .getByRole('button', { name: /^Reorder/ });
     const destination = page.locator(`[data-field="${above}"]`);
     await handle.scrollIntoViewIfNeeded();
 
@@ -1785,8 +2321,7 @@ test.describe('the fixes wave ten asked for', () => {
      * depends on how tall the rows happen to be, which is not a thing this
      * test is about.
      */
-    const delta =
-      toRow!.y + toRow!.height / 2 - (fromRow!.y + fromRow!.height / 2);
+    const delta = toRow!.y + toRow!.height / 2 - (fromRow!.y + fromRow!.height / 2);
     const x = grip!.x + grip!.width / 2;
     const y = grip!.y + grip!.height / 2;
 
@@ -1858,6 +2393,15 @@ test.describe('the fixes wave ten asked for', () => {
 
     // What core ComfyUI does not report is said, not drawn as a flat zero.
     await expect(page.getByText(/Not reported/).first()).toBeVisible();
+
+    /*
+     * And the reading that makes utilisation mean anything: watts against the
+     * card's own limit. Utilisation alone cannot tell a kernel stalled on
+     * memory from one doing arithmetic — both sit at 100% — so the pair is
+     * what is worth charting, and it comes from the machine with the GPU.
+     */
+    await expect(page.getByTestId('monitor-charts').getByText('GPU power')).toBeVisible();
+    await expect(page.getByText(/\d+ W of 450 W/)).toBeVisible({ timeout: 30_000 });
   });
 });
 
@@ -2028,6 +2572,10 @@ test.describe('the twelfth wave', () => {
       await page.getByRole('button', { name: 'Save' }).first().click();
       await page.getByRole('button', { name: 'Read workflows' }).click();
 
+      // The folder is set up under Servers; what it read is listed under
+      // Workflows, one page along.
+      await page.getByRole('button', { name: 'Workflows', exact: true }).click();
+
       // First: the same name is also in the two shortcut dropdowns.
       await expect(page.getByText('from-the-editor').first()).toBeVisible({ timeout: 20_000 });
       await expect(page.getByText('1 of 1 shown')).toHaveCount(0);
@@ -2039,6 +2587,7 @@ test.describe('the twelfth wave', () => {
       await expect(page.getByText('No workflows switched on')).toBeVisible();
 
       await page.getByRole('link', { name: 'Settings' }).click();
+      await page.getByRole('button', { name: 'Workflows', exact: true }).click();
       await page
         .getByRole('switch', { name: /Show from-the-editor in the generate picker/ })
         .click();
@@ -2055,7 +2604,49 @@ test.describe('the twelfth wave', () => {
     }
   });
 
-  /** Settings is a long page; it must not slide sideways out of the display. */
+  /**
+   * Updating Latent from inside Latent.
+   *
+   * The e2e server runs from the checkout, so this section reads the real
+   * repository. Everything asserted here is true of any checkout — that it says
+   * which commit is running, and that it will not install anything without the
+   * password — because the alternative is a test that passes or fails depending
+   * on what the working tree happened to look like when it ran.
+   *
+   * Nothing here presses through to an actual install: that would `git reset
+   * --hard` the tree the suite is running from. `server/src/update.test.ts`
+   * covers the run itself, with git and npm scripted.
+   */
+  test('says which version is running, and asks for the password before replacing it', async ({
+    page,
+  }) => {
+    await open(page, '/settings?in=system');
+
+    // Scoped to its own section: half these words appear on the queue controls
+    // further up the same page.
+    const software = page
+      .locator('section')
+      .filter({ has: page.getByRole('heading', { name: 'Software' }) });
+    await expect(software).toBeVisible();
+
+    // A commit, short-form. Not which one — that changes with every commit —
+    // only that the screen says what is running rather than nothing.
+    await expect(software.getByText(/^[0-9a-f]{7,40}$/)).toBeVisible();
+    await expect(software.getByRole('button', { name: 'Check for updates' })).toBeEnabled();
+
+    // Either label, depending on whether the checkout happens to be behind.
+    await software.getByRole('button', { name: /Install (update|anyway)/ }).click();
+
+    // The door, before anything is offered to press.
+    const sheet = page.getByRole('dialog');
+    await expect(sheet.getByRole('button', { name: 'Install now' })).toHaveCount(0);
+    await sheet.getByLabel('Password').fill('not the password');
+    await sheet.getByRole('button', { name: 'Continue' }).click();
+    await expect(sheet.getByText('That is not the password.')).toBeVisible();
+    await expect(sheet.getByRole('button', { name: 'Install now' })).toHaveCount(0);
+  });
+
+  /** Settings must not slide sideways out of the display. */
   test('does not pan sideways', async ({ page }) => {
     await open(page, '/settings');
     const widths = await page.evaluate(() => ({
@@ -2063,6 +2654,60 @@ test.describe('the twelfth wave', () => {
       client: document.documentElement.clientWidth,
     }));
     expect(widths.scroll).toBeLessThanOrEqual(widths.client);
+  });
+
+  /**
+   * Five pages, and the one you are on is in the address.
+   *
+   * The point of the split is that each page holds only its own errand, so the
+   * test worth having is the negative one: opening Servers must not also render
+   * the workflow list, the chat's opinions and the sign-out button below it.
+   */
+  test('splits into pages, and says in the URL which one is open', async ({ page }) => {
+    await open(page, '/settings');
+
+    const workflows = page.getByRole('heading', { name: 'Workflows' });
+    const session = page.getByRole('heading', { name: 'Session' });
+
+    await expect(page.getByRole('heading', { name: 'Connections' })).toBeVisible();
+    await expect(workflows).toHaveCount(0);
+    await expect(session).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Workflows', exact: true }).click();
+    await expect(workflows).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Connections' })).toHaveCount(0);
+    expect(new URL(page.url()).searchParams.get('in')).toBe('workflows');
+
+    // And the address is the way in, not just the record of where you went.
+    await open(page, '/settings?in=system');
+    await expect(session).toBeVisible();
+    await expect(workflows).toHaveCount(0);
+  });
+
+  /**
+   * The page goes back to the top edge once the keyboard has gone.
+   *
+   * A phone keyboard scrolls the document to lift the focused input clear of
+   * the keys — the document, not the app's own scrolling element, and hidden
+   * overflow does not stop it. Dismissing the keyboard by saving the form does
+   * not undo that, which used to leave the tab bar stranded in the middle of
+   * the screen with no way to scroll it back down.
+   *
+   * A real keyboard cannot be summoned here, so this does to the document
+   * exactly what one does to it, and checks that letting go puts it back.
+   */
+  test('puts the page back after the keyboard has gone', async ({ page }) => {
+    await open(page, '/settings');
+
+    const shifted = await page.evaluate(() => {
+      document.documentElement.style.height = '200vh';
+      window.scrollTo(0, 120);
+      return window.scrollY;
+    });
+    expect(shifted).toBeGreaterThan(0);
+
+    await page.evaluate(() => window.dispatchEvent(new Event('focusout')));
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
   });
 
   /**
@@ -2387,7 +3032,7 @@ test.describe('the fifteenth wave', () => {
     await resetState();
     await seedWorkflow();
 
-    await open(page, '/settings');
+    await open(page, '/settings?in=workflows');
     await page.getByRole('button', { name: 'Edit form' }).click();
 
     // Move the prompt below its neighbour and check the Generate screen agrees.
@@ -2398,7 +3043,9 @@ test.describe('the fifteenth wave', () => {
     const moved = before[0] as string;
     const target = before[1] as string;
 
-    const handle = page.locator(`[data-field="${moved}"]`).getByRole('button', { name: /^Reorder/ });
+    const handle = page
+      .locator(`[data-field="${moved}"]`)
+      .getByRole('button', { name: /^Reorder/ });
     await handle.scrollIntoViewIfNeeded();
     const grip = await handle.boundingBox();
     const fromRow = await page.locator(`[data-field="${moved}"]`).boundingBox();
@@ -2435,7 +3082,7 @@ test.describe('the fifteenth wave', () => {
   test('draws the point line as boxes under the Generate button', async ({ page }) => {
     await resetState();
     await seedWorkflow();
-    await open(page, '/settings');
+    await open(page, '/settings?in=workflows');
 
     await page.getByRole('button', { name: 'Edit form' }).click();
     const row = page.locator('[data-field="3.steps"]');
@@ -2507,7 +3154,7 @@ test.describe('the sixteenth wave', () => {
     await resetState();
     await seedWorkflow();
 
-    await open(page, '/settings');
+    await open(page, '/settings?in=pictures');
     await page.getByRole('button', { name: 'Clear what is waiting' }).click();
     await expect(page.getByRole('button', { name: 'Clear what is waiting' })).toHaveAttribute(
       'aria-pressed',
@@ -2555,9 +3202,14 @@ test.describe('the sixteenth wave', () => {
     await openModule(page, 'Monitor');
     await expect(page.getByTestId('monitor-picker')).toBeVisible({ timeout: 30_000 });
 
-    // Turn everything off but VRAM.
-    for (const name of ['GPU', 'CPU', 'System RAM', 'Sampler', 'Queue']) {
-      await page.getByRole('button', { name: `Show ${name}` }).click();
+    /*
+     * Turn everything off but VRAM. Exact names: "GPU" is a prefix of "GPU
+     * power", so a substring match here turns one of them off twice and leaves
+     * the other on, and the count below is then wrong for a reason that has
+     * nothing to do with what is being tested.
+     */
+    for (const name of ['GPU', 'GPU power', 'CPU', 'System RAM', 'Sampler', 'Queue']) {
+      await page.getByRole('button', { name: `Show ${name}`, exact: true }).click();
     }
     await expect(page.getByTestId('monitor-charts').locator('svg')).toHaveCount(1);
 
@@ -2586,14 +3238,95 @@ test.describe('the sixteenth wave', () => {
  * what these tests are about is the plumbing around the model — the stream, the
  * tool dialogs, and what accepting one actually does — rather than the model.
  */
-test.describe('the chat module', () => {
-  const LLAMA = 'http://127.0.0.1:8189';
+const LLAMA = 'http://127.0.0.1:8189';
 
-  /** Queue what the mock model will say next. */
-  const script = async (...replies: unknown[]) => {
+/** Queue what the mock model will say next. */
+const script = async (...replies: unknown[]) => {
+  const context = await apiRequest.newContext({ baseURL: LLAMA });
+  try {
+    await context.post('/__script', { data: replies });
+  } finally {
+    await context.dispose();
+  }
+};
+
+/**
+ * Throw away anything a previous test queued or sent.
+ *
+ * The scripted replies are a queue on the mock, so a test that ends before
+ * consuming what it scripted hands its leftovers to whichever test runs next
+ * — which then reads a reply meant for something else and fails for a reason
+ * that has nothing to do with it. One failure became fourteen that way.
+ *
+ * At the top level rather than inside the chat suite, because the tablet suite
+ * drives the chat too and a helper two suites need is not one suite's.
+ */
+const resetLlama = async () => {
+  const context = await apiRequest.newContext({ baseURL: LLAMA });
+  try {
+    await context.post('/__reset');
+  } finally {
+    await context.dispose();
+  }
+};
+
+/**
+ * Point the chat at the stand-in model server.
+ *
+ * A connection like any other now, in the same list as ComfyUI's — which is
+ * the whole point of the change: one list, one dialog, one way of saying
+ * "talk to this box".
+ */
+const useLlama = async (url = LLAMA): Promise<string> => {
+  return withApi(async (ctx) => {
+    const created = await ctx.post('/api/connections', {
+      data: { kind: 'llama', name: `Model server ${url}`, url },
+    });
+    const connection = (await created.json()) as { id: string };
+    await ctx.post(`/api/connections/${connection.id}/activate`);
+    return connection.id;
+  });
+};
+
+test.describe('the chat module', () => {
+  /** How many requests the model server has been sent so far. */
+  const requestCount = async (): Promise<number> => {
     const context = await apiRequest.newContext({ baseURL: LLAMA });
     try {
-      await context.post('/__script', { data: replies });
+      return ((await (await context.get('/__requests')).json()) as unknown[]).length;
+    } finally {
+      await context.dispose();
+    }
+  };
+
+  /**
+   * Press ✦ and take the first of its two options.
+   *
+   * The button offers rather than fires now — "generate now" and "fresh prompt,
+   * then generate" — so every test that used to press it goes through the same
+   * two taps a person does.
+   */
+  const pressPromptButton = async (page: Page) => {
+    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await page.getByRole('button', { name: 'Generate now' }).click();
+  };
+
+  /** Everything the model server has been sent, for "was this ever said". */
+  const allRequests = async (): Promise<string> => {
+    const context = await apiRequest.newContext({ baseURL: LLAMA });
+    try {
+      return JSON.stringify((await (await context.get('/__requests')).json()) as unknown[]);
+    } finally {
+      await context.dispose();
+    }
+  };
+
+  /** The whole of the last request, for asserting on what was sent. */
+  const lastRequest = async (): Promise<string> => {
+    const context = await apiRequest.newContext({ baseURL: LLAMA });
+    try {
+      const sent = (await (await context.get('/__requests')).json()) as unknown[];
+      return JSON.stringify(sent.at(-1) ?? {});
     } finally {
       await context.dispose();
     }
@@ -2612,26 +3345,9 @@ test.describe('the chat module', () => {
     }
   };
 
-  /**
-   * Point the chat at the stand-in model server.
-   *
-   * A connection like any other now, in the same list as ComfyUI's — which is
-   * the whole point of the change: one list, one dialog, one way of saying
-   * "talk to this box".
-   */
-  const useLlama = async (url = LLAMA): Promise<string> => {
-    return withApi(async (ctx) => {
-      const created = await ctx.post('/api/connections', {
-        data: { kind: 'llama', name: `Model server ${url}`, url },
-      });
-      const connection = (await created.json()) as { id: string };
-      await ctx.post(`/api/connections/${connection.id}/activate`);
-      return connection.id;
-    });
-  };
-
   test.beforeEach(async () => {
     await resetState();
+    await resetLlama();
     await useLlama();
     // The whole chat block, not a patch of it: settings merge, so a test that
     // switches a tool off would otherwise leave it off for everything after it.
@@ -2649,6 +3365,28 @@ test.describe('the chat module', () => {
               build_prompt: 'settled',
               prompt_blocks: 'settled',
               ask_user: 'settled',
+            },
+            // Off unless the test is about it: every render would otherwise be
+            // followed by a turn carrying a picture, which is a different reply
+            // from the one most of these are asserting on.
+            review: { enabled: false, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+            // Pinned for the same reason as everything else here: a run left on
+            // would accept the next test's proposals for it.
+            autonomous: { enabled: false, maxRounds: 4 },
+            // Pinned like the rest: a run left on would take over the next
+            // test, and so would its draw rules — settings merge one group
+            // deep, so a test that switches a heading off leaves it off.
+            wander: {
+              workflowId: '',
+              attributes: 3,
+              sampling: 'chat',
+              draw: {
+                categories: {},
+                perCategory: 0,
+                loose: 'draw',
+                pinned: 'draw',
+                avoidRepeats: 0,
+              },
             },
           },
         },
@@ -2772,6 +3510,915 @@ test.describe('the chat module', () => {
   });
 
   /**
+   * Looking at what came out, and saying so.
+   *
+   * The turn after a render used to be the model talking about a picture it had
+   * never seen. Shown the result and the prompt together, it can say which
+   * parts arrived — and, when they are far enough apart, offer a rewrite that
+   * is a proposal like any other.
+   */
+  test('shows the finished picture to the model and offers its rewrite', async ({ page }) => {
+    await seedWorkflow();
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', {
+        data: {
+          chat: {
+            review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+          },
+        },
+      }),
+    );
+
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a harbour at dawn, soft light', reason: 'Calm and blue.' },
+      },
+    });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('build me a prompt');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+
+    // What it says about the picture, and what it proposes instead.
+    await script({
+      content: 'The light is right, but there is no harbour in it.',
+      toolCall: {
+        name: 'revise_prompt',
+        arguments: {
+          prompt: 'a working harbour at dawn, boats at the quay, soft light',
+          reason: 'The harbour itself never appeared.',
+          score: 4,
+        },
+      },
+    });
+
+    await dialog.getByRole('button', { name: 'Generate' }).click();
+
+    /*
+     * The rewrite waits rather than covering the picture.
+     *
+     * The whole point of the review is that you see the result first, read what
+     * the model made of it, and then decide — so the proposal arrives folded
+     * away above the composer, and the transcript behind it stays readable.
+     */
+    const putAside = page.getByRole('button', { name: /Proposed a rewrite — waiting on you/ });
+    await expect(putAside).toBeVisible({ timeout: 90_000 });
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /Open picture/ }).first()).toBeVisible();
+    await page.screenshot({ path: 'test-results/88-prompt-review-aside.png' });
+
+    // And opens when you go to it.
+    await putAside.click();
+    const rewrite = page.getByRole('dialog');
+    await expect(rewrite.getByText('After looking at the picture')).toBeVisible();
+    await expect(rewrite.getByText('matched 4/10')).toBeVisible();
+    await expect(rewrite.getByRole('textbox', { name: 'The prompt' })).toHaveValue(
+      'a working harbour at dawn, boats at the quay, soft light',
+    );
+    await page.screenshot({ path: 'test-results/89-prompt-review.png' });
+
+    // The picture went over as a picture, and the only tool on that turn was
+    // the rewrite — not a fresh proposal on top of one nobody has looked at.
+    expect(await lastOffer()).toEqual(['revise_prompt']);
+    expect(await lastRequest()).toContain('image_url');
+
+    /*
+     * And it is a proposal: refusing it leaves the conversation where it was,
+     * with the rewrite still in the transcript as something to run later.
+     */
+    await script({ content: 'Fair enough.' });
+    await rewrite.getByRole('button', { name: 'Reject' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 30_000 });
+    await expect(
+      page.getByRole('button', { name: /a working harbour at dawn.*Again/ }),
+    ).toBeVisible({ timeout: 30_000 });
+
+    /*
+     * And the picture is still there for the next thing said about it.
+     *
+     * The point of keeping it in view: "make the sky darker" has to land on the
+     * render rather than on the model's own description of one it saw two turns
+     * ago, which every change after that would compound.
+     */
+    await script({ content: 'Darker it is.' });
+    await page.getByPlaceholder('Say something…').fill('make the sky darker');
+    // Rejecting is itself a turn — the model is told — so the composer is busy
+    // for a moment afterwards, and a Send pressed then does nothing at all.
+    const send = page.getByRole('button', { name: 'Send' });
+    await expect(send).toBeEnabled({ timeout: 30_000 });
+    await send.click();
+    await expect(page.getByText('Darker it is.')).toBeVisible({ timeout: 30_000 });
+    expect(await lastRequest()).toContain('image_url');
+  });
+
+  /**
+   * You see it first. The model gets it second.
+   *
+   * The run finishing is not the same as the render being visible — there is a
+   * refetch and a download between the two — and against a fast model the
+   * judgement of a picture used to arrive before the picture did. Nothing is
+   * sent to the model until the transcript has actually drawn it.
+   */
+  test('shows the picture before the model is given it', async ({ page }) => {
+    await seedWorkflow();
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', {
+        data: {
+          chat: {
+            review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+          },
+        },
+      }),
+    );
+
+    /*
+     * The picture is made slow to arrive, which is the only way to tell the two
+     * orders apart: with an instant image both sequences look identical.
+     */
+    await page.route('**/api/view**', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      await route.continue();
+    });
+
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+      },
+    });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('build me a prompt');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByRole('dialog')).toBeVisible({ timeout: 30_000 });
+
+    await script({ content: 'It came out well.' });
+    const before = await requestCount();
+    await page.getByRole('dialog').getByRole('button', { name: 'Generate' }).click();
+
+    // Wait for the render itself to finish, upstream of anything on screen.
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const gallery = (await (await ctx.get('/api/gallery')).json()) as {
+              items: { status: string; images: unknown[] }[];
+            };
+            const run = gallery.items[0];
+            return run?.status === 'completed' && run.images.length > 0;
+          }),
+        { timeout: 90_000 },
+      )
+      .toBe(true);
+
+    /*
+     * Finished, and still nothing said about it: the picture is on its way down
+     * a deliberately slow connection, and the model has not been handed
+     * anything. This is the assertion the whole change is about.
+     */
+    expect(await requestCount()).toBe(before);
+    await expect(page.getByText('It came out well.')).toHaveCount(0);
+
+    // Once it is there to look at, the turn happens.
+    await expect(page.getByRole('button', { name: /Open picture/ }).first()).toBeVisible({
+      timeout: 60_000,
+    });
+    await expect(page.getByText('It came out well.')).toBeVisible({ timeout: 60_000 });
+    expect(await requestCount()).toBeGreaterThan(before);
+    await page.screenshot({ path: 'test-results/92-picture-first.png' });
+  });
+
+  /**
+   * Carrying on is an answer.
+   *
+   * A rewrite waits folded away, and the honest reading of "talk about
+   * something else instead" is that you do not want it. Leaving it pending
+   * would put the next thing said into a conversation the model thinks is
+   * still waiting on a decision.
+   */
+  test('drops an undecided proposal when you say something else', async ({ page }) => {
+    await seedWorkflow();
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', {
+        data: {
+          chat: {
+            review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+          },
+        },
+      }),
+    );
+
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+      },
+    });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('build me a prompt');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByRole('dialog')).toBeVisible({ timeout: 30_000 });
+
+    await script({
+      content: 'The harbour is missing.',
+      toolCall: {
+        name: 'revise_prompt',
+        arguments: {
+          prompt: 'a working harbour at dawn',
+          reason: 'Put the harbour in.',
+          score: 4,
+        },
+      },
+    });
+    await page.getByRole('dialog').getByRole('button', { name: 'Generate' }).click();
+
+    const putAside = page.getByRole('button', { name: /Proposed a rewrite — waiting on you/ });
+    await expect(putAside).toBeVisible({ timeout: 90_000 });
+
+    // Say something else instead of deciding.
+    await script({ content: 'Right, something else then.' });
+    await page.getByPlaceholder('Say something…').fill('actually, make it a lighthouse');
+    const send = page.getByRole('button', { name: 'Send' });
+    await expect(send).toBeEnabled();
+    await send.click();
+
+    // The proposal is gone — refused, not left hanging — and the conversation
+    // carries on with what was said.
+    await expect(putAside).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByText('Right, something else then.')).toBeVisible({ timeout: 30_000 });
+
+    // Refused rather than left hanging — and the model was told so, which is
+    // what keeps the next turn from arriving in a conversation still waiting.
+    const decided = await withApi(async (ctx) => {
+      const chats = (await (await ctx.get('/api/chat/conversations')).json()) as { id: string }[];
+      const detail = (await (await ctx.get(`/api/chat/conversations/${chats[0]?.id}`)).json()) as {
+        messages: { toolCall?: { tool: string }; toolResult?: { decision: string } }[];
+      };
+      return detail.messages.find((message) => message.toolCall?.tool === 'revise_prompt')
+        ?.toolResult?.decision;
+    });
+    expect(decided).toBe('rejected');
+
+    // It stays reachable, like any other prompt in the transcript.
+    await expect(page.getByRole('button', { name: /a working harbour at dawn/ })).toBeVisible();
+    await page.screenshot({ path: 'test-results/90-proposal-dropped.png' });
+  });
+
+  /**
+   * Left to get on with it.
+   *
+   * Every piece of this existed already — the model writes a prompt, the render
+   * comes back, it is shown the picture and proposes a rewrite while the match
+   * falls short. The mode is the tap that accepted each of those, made
+   * automatic, and the thing worth proving end to end is that the loop actually
+   * closes: two renders from one sentence, with nobody touching a dialog, and a
+   * stop the moment the model says the picture is good.
+   */
+  test('accepts its own prompts and carries on until the picture is good', async ({ page }) => {
+    await seedWorkflow();
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', {
+        data: {
+          chat: {
+            review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+            autonomous: { enabled: true, maxRounds: 4 },
+          },
+        },
+      }),
+    );
+
+    // The whole run, scripted up front: a prompt, a rewrite after seeing the
+    // first render, and a verdict that ends it after the second.
+    await script(
+      {
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+        },
+      },
+      {
+        content: 'The light is right, but there is no harbour in it.',
+        toolCall: {
+          name: 'revise_prompt',
+          arguments: {
+            prompt: 'a working harbour at dawn, boats at the quay',
+            reason: 'The harbour never appeared.',
+            score: 4,
+          },
+        },
+      },
+      { content: 'That is the picture — the harbour is there and the light held.' },
+    );
+
+    await open(page, '/chat');
+    await expect(page.getByTestId('autonomous-strip')).toBeVisible();
+
+    await page.getByPlaceholder('Say something…').fill('make me something at dawn');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    // Both renders arrive without a single tap, and the verdict ends the run.
+    await expect(page.getByText('That is the picture')).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByRole('button', { name: /Open picture/ })).toHaveCount(2);
+    // Nothing was ever left waiting on a decision.
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /waiting on you/ })).toHaveCount(0);
+    // Two renders, and the strip says so as it signs off.
+    await expect(page.getByTestId('autonomous-strip')).toContainText(
+      'Cleared the mark after 2 of 4 rounds',
+    );
+    await page.screenshot({ path: 'test-results/92-autonomous.png' });
+
+    expect(
+      await withApi(async (ctx) => {
+        const gallery = (await (await ctx.get('/api/gallery?limit=10')).json()) as {
+          items: unknown[];
+        };
+        return gallery.items.length;
+      }),
+    ).toBe(2);
+  });
+
+  /**
+   * The brake.
+   *
+   * A model convinced its prompt is nearly right will rewrite it indefinitely,
+   * and by definition nobody is watching. At the limit the run stops with the
+   * last proposal waiting rather than throwing it away — so the work is there
+   * when you come back to it.
+   */
+  test('stops at the round limit with the proposal waiting', async ({ page }) => {
+    await seedWorkflow();
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', {
+        data: {
+          chat: {
+            review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+            autonomous: { enabled: true, maxRounds: 1 },
+          },
+        },
+      }),
+    );
+
+    await script(
+      {
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+        },
+      },
+      {
+        content: 'Still not there.',
+        toolCall: {
+          name: 'revise_prompt',
+          arguments: {
+            prompt: 'a working harbour at dawn, boats at the quay',
+            reason: 'The harbour never appeared.',
+            score: 4,
+          },
+        },
+      },
+    );
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('make me something at dawn');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    // One render, and then it stops — with the rewrite folded away, exactly as
+    // an unaccepted proposal always is.
+    const putAside = page.getByRole('button', { name: /Proposed a rewrite — waiting on you/ });
+    await expect(putAside).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByTestId('autonomous-strip')).toContainText('Stopped after 1 of 1 rounds');
+    await expect(page.getByRole('button', { name: /Open picture/ })).toHaveCount(1);
+
+    // And it is still a proposal: opening it gives the ordinary dialog.
+    await putAside.click();
+    await expect(page.getByRole('dialog').getByText('After looking at the picture')).toBeVisible();
+  });
+
+  /**
+   * Two ways to press the prompt button, in the space of one.
+   *
+   * The second exists for a conversation that has converged: every prompt is
+   * the last one with two words moved, because the last one is sitting in the
+   * history being treated as the thing to improve. Choosing it throws that
+   * prompt away — the model is told so — asks for a different composition, and
+   * generates it without a dialog in the middle.
+   */
+  test('offers a fresh composition beside generate now', async ({ page }) => {
+    await seedWorkflow();
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', { data: { chat: { promptButton: 'generate' } } }),
+    );
+
+    await script(
+      { content: 'A harbour, then.' },
+      {
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a different composition entirely', reason: 'Started over.' },
+        },
+      },
+    );
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('a harbour');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByText('A harbour, then.')).toBeVisible({ timeout: 30_000 });
+
+    // The button does not fire any more — it offers.
+    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await expect(page.getByRole('button', { name: 'Generate now' })).toBeVisible();
+    const fresh = page.getByRole('button', { name: 'Fresh prompt, then generate' });
+    await expect(fresh).toBeVisible();
+    await page.screenshot({ path: 'test-results/100-generate-choice.png' });
+
+    await fresh.click();
+
+    // It generated without asking, and the model was told to start over.
+    await expect(page.getByRole('button', { name: /Open picture/ }).first()).toBeVisible({
+      timeout: 90_000,
+    });
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    /*
+     * Across every request, not the last one: accepting the prompt starts a
+     * turn of its own, so by the time the picture is here the build turn is two
+     * requests back.
+     */
+    expect(await allRequests()).toContain('Throw the last prompt away');
+  });
+
+  /**
+   * The one screen that asks for the password twice.
+   *
+   * Everything else in the app is pictures and settings — what a phone on a
+   * table shows to whoever picks it up. This is a written description of
+   * somebody, so the door asks again, and nothing behind it is on screen until
+   * it has been answered: not the notes, not how many there are.
+   */
+  test('asks for the password before showing what you like', async ({ page }) => {
+    await withTaste(async (ctx, headers) => {
+      await ctx.post('/api/taste/entries', { data: { text: 'a private note' }, headers });
+    });
+
+    await open(page, '/chat');
+    await page.getByRole('button', { name: 'What you like' }).click();
+
+    const sheet = page.getByRole('dialog', { name: 'What you like' });
+    await expect(sheet.getByLabel('Password')).toBeVisible();
+    await expect(sheet.getByText('a private note')).toHaveCount(0);
+    await page.screenshot({ path: 'test-results/99-taste-locked.png' });
+
+    // The wrong one says so and shows nothing.
+    await sheet.getByLabel('Password').fill('not the password');
+    await sheet.getByRole('button', { name: 'Open' }).click();
+    await expect(sheet.getByRole('alert')).toBeVisible();
+    await expect(sheet.getByText('a private note')).toHaveCount(0);
+
+    await sheet.getByLabel('Password').fill(PASSWORD);
+    await sheet.getByRole('button', { name: 'Open' }).click();
+    await expect(sheet.getByText('a private note')).toBeVisible({ timeout: 30_000 });
+
+    /*
+     * And closing it locks again: the pass is held in the tab and handed back,
+     * so coming back is another password rather than a second look.
+     */
+    await sheet.getByRole('button', { name: 'Done' }).click();
+    await page.getByRole('button', { name: 'What you like' }).click();
+    await expect(sheet.getByLabel('Password')).toBeVisible();
+    await expect(sheet.getByText('a private note')).toHaveCount(0);
+  });
+
+  /**
+   * The headings, once there are enough of them to need managing.
+   *
+   * Folded away by default so a dozen fit on a phone screen, renamed in place
+   * because a heading is one word, and ordered with the two buttons rather than
+   * by dragging — a drag on a list of collapsed rows is a gesture that competes
+   * with scrolling it.
+   */
+  test('folds, renames and reorders what you like', async ({ page }) => {
+    await withTaste(async (ctx, headers) => {
+      for (const name of ['Colour', 'Places', 'Films']) {
+        await ctx.post('/api/taste/categories', { data: { name }, headers });
+      }
+    });
+
+    await open(page, '/chat');
+    const sheet = await openTasteSheet(page);
+
+    // All three are on screen at once, and none of them is open.
+    for (const name of ['Colour', 'Places', 'Films']) {
+      await expect(sheet.getByRole('button', { name: new RegExp(`^${name}`) })).toBeVisible();
+    }
+    await expect(sheet.getByRole('button', { name: /^Rename/ })).toHaveCount(0);
+    await page.screenshot({ path: 'test-results/98-taste-folded.png' });
+
+    // Opening one shows what is under it, and what can be done to it.
+    await sheet.getByRole('button', { name: /^Colour/ }).click();
+    await sheet.getByRole('button', { name: 'Rename Colour' }).click();
+    const field = sheet.getByRole('textbox', { name: 'Rename Colour' });
+    await field.fill('Colour and light');
+    await field.blur();
+    await expect(sheet.getByRole('button', { name: /^Colour and light/ })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    /*
+     * And the order is the order the model reads them in, so it is worth being
+     * able to change. Moving the first one down puts the second one first.
+     */
+    await sheet.getByRole('button', { name: 'Move Colour and light down' }).click();
+    await expect
+      .poll(async () =>
+        withTaste(async (ctx, headers) => {
+          const profile = (await (await ctx.get('/api/taste', { headers })).json()) as {
+            categories: { name: string }[];
+          };
+          return profile.categories.map((category) => category.name);
+        }),
+      )
+      .toEqual(['Places', 'Colour and light', 'Films']);
+  });
+
+  /**
+   * Wandering: picture after picture, out of the notes, until you stop it.
+   *
+   * Nothing about this is a conversation — no proposal to accept, no comment on
+   * what came out — so what is worth proving is that the loop actually turns:
+   * one tap produces a picture, and then another, with nobody touching
+   * anything. And that tapping one of them answers the only question an endless
+   * stream raises: what was that one?
+   */
+  test('wanders through what you like, picture after picture', async ({ page }) => {
+    await seedWorkflow();
+    await withTaste(async (ctx, headers) => {
+      await ctx.post('/api/taste/entries', { data: { text: 'low fog over water' }, headers });
+      await ctx.post('/api/taste/entries', { data: { text: 'brutalist stairwells' }, headers });
+      await ctx.patch('/api/settings', {
+        data: { chat: { wander: { attributes: 2, sampling: 'chat' } } },
+      });
+    });
+
+    // Two rounds of prompts, and a third in case the loop is quicker than the
+    // assertions — a queue that runs dry mid-test would fail for the wrong
+    // reason.
+    await script(
+      ...[1, 2, 3].map((round) => ({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: `wandering picture ${round}`, reason: 'From the notes.' },
+        },
+      })),
+    );
+
+    await open(page, '/chat');
+    await page.getByRole('button', { name: 'Wander through your notes' }).click();
+
+    // It says what it is doing, and offers the way out.
+    const strip = page.getByTestId('wander-strip');
+    await expect(strip).toBeVisible();
+
+    // Two pictures, with nothing tapped in between.
+    await expect(page.getByRole('button', { name: /^Open picture/ })).toHaveCount(2, {
+      timeout: 120_000,
+    });
+    await expect(strip).toContainText('Wandering');
+    await page.screenshot({ path: 'test-results/96-wandering.png' });
+
+    /*
+     * The notes were drawn on the server and never sent out: what the model was
+     * asked is the only place they appear, and the browser sees a prompt.
+     */
+    const asked = await lastRequest();
+    expect(asked).toContain('drawn at random');
+
+    await strip.getByRole('button', { name: 'Stop' }).click();
+    await expect(page.getByTestId('wander-strip')).toHaveCount(0);
+
+    /*
+     * A picture opens the viewer, here as everywhere else — and the viewer is
+     * over the whole conversation, so a swipe is the picture before it rather
+     * than the end of a batch of one.
+     */
+    await page
+      .getByRole('button', { name: /^Open picture/ })
+      .last()
+      .click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+    await expect(page.getByText(/^\d+ \/ 2$/)).toBeVisible();
+    await page.screenshot({ path: 'test-results/97-wander-viewer.png' });
+    await page.getByRole('button', { name: 'Close' }).click();
+
+    /*
+     * What made it is the corner button: in a wandering round the prompt is
+     * never written above the picture, so this is the only way to it.
+     */
+    await page
+      .getByRole('button', { name: /What made picture/ })
+      .first()
+      .click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByRole('textbox', { name: 'The prompt' })).toHaveValue(
+      /wandering picture/,
+    );
+
+    /*
+     * And what it was drawn from, which is the other half of "what was that
+     * one?". The notes are never written above the picture as it arrives — the
+     * mode is for being shown things — but a picture that comes out well has to
+     * be able to say why.
+     */
+    await expect(dialog.getByText('Drawn from what you like')).toBeVisible();
+    const drawn = dialog.locator('li', { hasText: /low fog over water|brutalist stairwells/ });
+    await expect(drawn).toHaveCount(2);
+    await page.screenshot({ path: 'test-results/97-wander-prompt.png' });
+  });
+
+  /**
+   * Choosing what a round is allowed to draw from.
+   *
+   * The mode began as a flat shuffle of everything switched on, which treats a
+   * heading of near-synonyms and a heading of settled decisions as the same
+   * thing. What is worth proving here is the whole path: the rules are set on
+   * the sheet, and the very next round obeys them — one heading in every
+   * picture, another out of it altogether.
+   */
+  test('sets what wandering draws from, and draws that way', async ({ page }) => {
+    await seedWorkflow();
+    await withTaste(async (ctx, headers) => {
+      const heading = async (name: string) => {
+        const made = (await (
+          await ctx.post('/api/taste/categories', { data: { name }, headers })
+        ).json()) as { id: string };
+        return made.id;
+      };
+      const format = await heading('Format');
+      const later = await heading('Ideas for later');
+      await ctx.post('/api/taste/entries', {
+        data: { text: 'shot on 6x6 film', categoryId: format },
+        headers,
+      });
+      await ctx.post('/api/taste/entries', {
+        data: { text: 'a lighthouse someday', categoryId: later },
+        headers,
+      });
+      await ctx.post('/api/taste/entries', { data: { text: 'low fog over water' }, headers });
+      await ctx.patch('/api/settings', {
+        data: { chat: { wander: { attributes: 2, sampling: 'chat' } } },
+      });
+    });
+
+    await open(page, '/settings?in=chat');
+    await page.getByRole('button', { name: 'Set up…' }).click();
+
+    const sheet = page.getByRole('dialog', { name: 'What wandering draws from' });
+    await expect(sheet).toBeVisible();
+
+    /*
+     * The rules about the draw itself need no password: "at most one from a
+     * heading" says nothing about who you are.
+     */
+    await sheet.getByRole('radio', { name: 'At most from one heading: 1' }).click();
+
+    // The headings do, because choosing between them means reading them — and
+    // a heading's name is part of the profile like anything else in it.
+    await expect(sheet.getByText('Format')).toHaveCount(0);
+    await sheet.getByLabel('Password').fill(PASSWORD);
+    await sheet.getByRole('button', { name: 'Show the headings' }).click();
+    await expect(sheet.getByText('Format')).toBeVisible({ timeout: 30_000 });
+
+    await sheet.getByRole('radio', { name: 'Format: Always' }).click();
+    await sheet.getByRole('radio', { name: 'Ideas for later: Never' }).click();
+    await page.screenshot({ path: 'test-results/95-wander-setup.png' });
+    await sheet.getByRole('button', { name: 'Done' }).click();
+
+    // Said back on the settings screen, so the rules are visible without
+    // opening anything or typing the password again.
+    await expect(page.getByText(/1 heading always in/)).toBeVisible();
+
+    // And the next round draws that way.
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a square photograph', reason: 'From the notes.' },
+      },
+    });
+    await open(page, '/chat');
+    await page.getByRole('button', { name: 'Wander through your notes' }).click();
+    await expect(page.getByRole('button', { name: /^Open picture/ })).toHaveCount(1, {
+      timeout: 120_000,
+    });
+    await page.getByTestId('wander-strip').getByRole('button', { name: 'Stop' }).click();
+
+    const asked = await lastRequest();
+    expect(asked).toContain('shot on 6x6 film');
+    expect(asked).not.toContain('a lighthouse someday');
+  });
+
+  /**
+   * Leaving the tab, which is the whole reason the module was rebuilt.
+   *
+   * A backgrounded page is frozen: its open streams are cut, its timers slow to
+   * a crawl, and any step between two awaits never runs. While the loop lived
+   * in the browser that meant a wandering run stopped the moment you looked at
+   * something else — and often stopped mid-step, with a proposal accepted and
+   * no render started, in a state the conversation could not continue from.
+   *
+   * The loop is the server's now. What this proves is the consequence: go
+   * somewhere else entirely, come back, and it has carried on without you.
+   */
+  test('carries on wandering while you are looking at something else', async ({ page }) => {
+    await seedWorkflow();
+    await withTaste(async (ctx, headers) => {
+      await ctx.post('/api/taste/entries', { data: { text: 'low fog over water' }, headers });
+      await ctx.patch('/api/settings', {
+        data: { chat: { wander: { attributes: 1, sampling: 'chat' } } },
+      });
+    });
+
+    await script(
+      ...[1, 2, 3, 4, 5].map((round) => ({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: `away picture ${round}`, reason: 'From the notes.' },
+        },
+      })),
+    );
+
+    await open(page, '/chat');
+    await page.getByRole('button', { name: 'Wander through your notes' }).click();
+    await expect(page.getByRole('button', { name: /^Open picture/ })).toHaveCount(1, {
+      timeout: 120_000,
+    });
+
+    /*
+     * Away. Not a hidden tab — a different screen entirely, which unmounts the
+     * chat and is exactly what used to kill the run.
+     */
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    await expect(page).toHaveURL(/\/gallery$/);
+
+    // It kept going, and the gallery is where the proof lands.
+    await expect
+      .poll(
+        async () =>
+          withApi(async (ctx) => {
+            const gallery = (await (await ctx.get('/api/gallery?limit=20')).json()) as {
+              items: { title: string }[];
+            };
+            return gallery.items.filter((item) => item.title.includes('away picture')).length;
+          }),
+        { timeout: 120_000 },
+      )
+      .toBeGreaterThanOrEqual(3);
+
+    /*
+     * And coming back shows what happened rather than what was last seen. The
+     * transcript is re-read from the server, and the strip is still counting.
+     */
+    await page.getByRole('link', { name: 'Chat' }).click();
+    await expect(page.getByTestId('wander-strip')).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Open picture/ }).nth(2)).toBeVisible({
+      timeout: 60_000,
+    });
+    await page.screenshot({ path: 'test-results/93-wander-away.png' });
+
+    await page.getByTestId('wander-strip').getByRole('button', { name: 'Stop' }).click();
+    await expect(page.getByTestId('wander-strip')).toHaveCount(0);
+  });
+
+  /**
+   * Notes about what you like, written from the chat and read by the model.
+   *
+   * The feature exists for the moment the composer is empty: "give me an idea"
+   * is a question nothing can answer well without knowing who is asking. What
+   * is worth proving end to end is the whole path — written on the sheet,
+   * encrypted on the way to disk, and back out again in the system prompt of
+   * the very next message — plus the switch, which is how you change your mind
+   * for an evening without deleting anything.
+   */
+  test('writes down what you like, and puts it in front of the model', async ({ page }) => {
+    await script({ content: 'How about a wet street at night?' });
+
+    await open(page, '/chat');
+    /*
+     * Next to the chat list, because it answers the same question: what now?
+     * And behind the password, because what is behind it is a description of a
+     * person rather than a setting.
+     */
+    const sheet = await openTasteSheet(page);
+    await expect(sheet).toBeVisible();
+
+    await sheet.getByLabel('Something you like').fill('low fog over water');
+    await sheet.getByRole('button', { name: 'Remember it' }).click();
+    await expect(sheet.getByText('low fog over water')).toBeVisible({ timeout: 30_000 });
+
+    // A heading, and a note filed under it.
+    // Pinned: it stops being a starting point and becomes a rule, so it holds
+    // even for a picture that has already been described.
+    await sheet.getByRole('button', { name: 'low fog over water always applies' }).click();
+    await expect(
+      sheet.getByRole('button', { name: 'low fog over water always applies' }),
+    ).toHaveAttribute('aria-pressed', 'true');
+
+    await sheet.getByLabel('New category').fill('Weather');
+    await sheet.getByRole('button', { name: 'Add category' }).click();
+
+    /*
+     * Headings arrive folded: a page of open cards is three of them on a phone,
+     * and a list long enough to be worth having is one whose shape you can see.
+     */
+    await sheet.getByRole('button', { name: /^Weather/ }).click();
+    await sheet.getByLabel('Add to Weather').fill('bright noon sun');
+    await sheet.getByRole('button', { name: 'Save to Weather' }).click();
+    await expect(sheet.getByText('bright noon sun')).toBeVisible({ timeout: 30_000 });
+
+    // Switched off is not deleted: the note stays, silenced.
+    await sheet.getByRole('switch', { name: 'bright noon sun feeds in' }).click();
+    await expect
+      .poll(async () =>
+        withTaste(async (ctx, headers) => {
+          const profile = (await (await ctx.get('/api/taste', { headers })).json()) as {
+            entries: { text: string; active: boolean }[];
+          };
+          return profile.entries.find((entry) => entry.text === 'bright noon sun')?.active;
+        }),
+      )
+      .toBe(false);
+
+    await sheet.getByRole('button', { name: 'Done' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await page.screenshot({ path: 'test-results/91-taste-sheet.png' });
+
+    await page.getByPlaceholder('Say something…').fill('give me an idea');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByText('How about a wet street at night?')).toBeVisible({
+      timeout: 30_000,
+    });
+
+    const sent = await lastRequest();
+    expect(sent).toContain('What this person likes');
+    expect(sent).toContain('low fog over water');
+    // Pinned, so it arrives as a rule that holds — with the limit that keeps it
+    // out of prompts it has nothing to do with.
+    expect(sent).toContain('Things that always hold');
+    expect(sent).toContain('only where it actually bears on the picture');
+    // Switched off, so it never left the database.
+    expect(sent).not.toContain('bright noon sun');
+  });
+
+  /**
+   * The picture in the conversation opens the viewer everything else opens.
+   *
+   * It is the one you are most likely to want to keep the moment you see it —
+   * you have just asked for it — and a cut-down viewer here meant going to the
+   * gallery to do anything with the result of the conversation you were having.
+   */
+  test('opens a chat picture in the gallery’s own viewer', async ({ page }) => {
+    await seedWorkflow();
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a harbour at dusk', reason: 'Warm.' },
+      },
+    });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('build me a prompt');
+    await page.getByRole('button', { name: 'Send' }).click();
+    await expect(page.getByRole('dialog')).toBeVisible({ timeout: 30_000 });
+
+    await script({ content: 'There it is.' });
+    await page.getByRole('dialog').getByRole('button', { name: 'Generate' }).click();
+
+    const picture = page.getByRole('button', { name: /Open picture/ }).first();
+    await expect(picture).toBeVisible({ timeout: 90_000 });
+    await picture.click();
+
+    // Every action the gallery gives a picture, on the one in the conversation.
+    for (const name of ['Favourite', 'Save', 'Keep', 'Details']) {
+      await expect(page.getByRole('button', { name, exact: true })).toBeVisible();
+    }
+    await page.getByRole('button', { name: '4 stars' }).click();
+    await expect
+      .poll(async () =>
+        withApi(async (ctx) => {
+          const gallery = (await (await ctx.get('/api/gallery')).json()) as {
+            items: { images: { rating: number }[] }[];
+          };
+          return gallery.items[0]?.images?.[0]?.rating ?? 0;
+        }),
+      )
+      .toBe(4);
+    await page.screenshot({ path: 'test-results/91-chat-viewer.png' });
+  });
+
+  /**
    * A question, with the answers already written.
    *
    * The tool that makes the rest of them worth having: the model stops instead
@@ -2800,10 +4447,14 @@ test.describe('the chat module', () => {
     await expect(dialog).toBeVisible({ timeout: 30_000 });
     await expect(dialog.getByText('Portrait or landscape?')).toBeVisible();
     await expect(dialog.getByText('It decides the composition.')).toBeVisible();
-    // The answer it did not think of is always available too.
-    await expect(
-      dialog.getByRole('textbox', { name: /Your own answer to/ }),
-    ).toBeVisible();
+    /*
+     * The answer it did not think of is always available too — folded behind
+     * the last chip, because it is reached for far less often than it costs in
+     * height when several questions are on screen at once.
+     */
+    await expect(dialog.getByRole('textbox', { name: /Your own answer to/ })).toHaveCount(0);
+    await dialog.getByRole('button', { name: /^Say it yourself/ }).click();
+    await expect(dialog.getByRole('textbox', { name: /Your own answer to/ })).toBeVisible();
     await page.screenshot({ path: 'test-results/61-ask-user.png' });
 
     // Tapping picks; Send confirms. Two taps rather than one, because a call
@@ -2819,6 +4470,69 @@ test.describe('the chat module', () => {
      * belongs to, so the result is written back as pairs.
      */
     await expect(page.getByText('Portrait or landscape? — Landscape')).toBeVisible();
+  });
+
+  /**
+   * Four questions at once, with answers long enough to be worth reading.
+   *
+   * Both halves of the same problem. An answer that says something useful —
+   * "warm, low sun through haze" rather than "warm" — used to be cut to one
+   * line with an ellipsis, so the button hid the very thing it was offering.
+   * And the row it sits in was tall enough that four questions did not fit on
+   * a phone, which defeats the point of asking them together.
+   */
+  test('fits several questions on the screen, answers unabridged', async ({ page }) => {
+    const questions = [
+      {
+        question: 'What light?',
+        options: [
+          'warm, low sun through haze, long shadows across the grass',
+          'flat overcast with no shadows',
+        ],
+      },
+      { question: 'How close?', options: ['a wide shot with room around it', 'tight on the face'] },
+      { question: 'What time of year?', options: ['deep winter, everything bare', 'high summer'] },
+      {
+        question: 'On film or digital?',
+        options: ['grainy 400-speed colour film', 'clean digital'],
+      },
+    ];
+
+    await script({
+      toolCall: { name: 'ask_user', arguments: { questions, reason: 'It decides the look.' } },
+    });
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('a house on a hill');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+
+    // Every question is on screen, without scrolling to find the last of them.
+    for (const entry of questions) {
+      await expect(dialog.getByText(entry.question)).toBeInViewport();
+    }
+    await page.screenshot({ path: 'test-results/61-ask-user-many.png' });
+
+    /*
+     * And the long answer is shown in full: it wraps onto a second line rather
+     * than being trimmed, so what the button says is what tapping it means.
+     */
+    const long = dialog.getByRole('button', {
+      name: 'warm, low sun through haze, long shadows across the grass',
+    });
+    await expect(long).toHaveCSS('text-overflow', 'clip');
+    const wrapped = await long.evaluate((node) => {
+      const style = getComputedStyle(node);
+      const lines = Math.round(
+        (node.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) /
+          parseFloat(style.lineHeight),
+      );
+      return { lines, full: node.scrollWidth <= node.clientWidth + 1 };
+    });
+    expect(wrapped.full).toBe(true);
+    expect(wrapped.lines).toBeGreaterThan(1);
   });
 
   /**
@@ -3035,7 +4749,10 @@ test.describe('the chat module', () => {
     await page.getByRole('dialog').getByRole('button', { name: 'Generate', exact: true }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0, { timeout: 30_000 });
 
-    // Say something else, so there is a tail to wind back over.
+    // The picture lands and the model says its piece about it…
+    await expect(page.getByText('Queued that one.')).toBeVisible({ timeout: 60_000 });
+
+    // …and then something else, so there is a tail to wind back over.
     await page.getByPlaceholder('Say something…').fill('never mind, tell me a joke');
     await page.getByRole('button', { name: 'Send' }).click();
     await expect(page.getByText('Talking about something else now.')).toBeVisible({
@@ -3104,7 +4821,7 @@ test.describe('the chat module', () => {
     });
 
     await open(page, '/chat');
-    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await pressPromptButton(page);
     // No dialog to decide: it queued.
     await expect
       .poll(
@@ -3142,7 +4859,7 @@ test.describe('the chat module', () => {
     });
 
     await open(page, '/chat');
-    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await pressPromptButton(page);
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible({ timeout: 30_000 });
@@ -3181,7 +4898,7 @@ test.describe('the chat module', () => {
     );
 
     await open(page, '/chat');
-    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await pressPromptButton(page);
     await expect(page.getByRole('button', { name: /Open picture/ }).first()).toBeVisible({
       timeout: 60_000,
     });
@@ -3189,7 +4906,7 @@ test.describe('the chat module', () => {
     // Second prompt, same conversation. The button is hidden while a reply is
     // still arriving, so wait for it rather than racing it.
     await expect(page.getByText('Queued the first.')).toBeVisible({ timeout: 30_000 });
-    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await pressPromptButton(page);
     await expect
       .poll(
         async () =>
@@ -3262,11 +4979,111 @@ test.describe('the chat module', () => {
     await dialog.getByRole('button', { name: 'Keep 2' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
 
-    const blocks = await withApi(async (ctx) =>
-      (await (await ctx.get('/api/prompt-blocks')).json()) as { name: string; text: string }[],
+    const blocks = await withApi(
+      async (ctx) =>
+        (await (await ctx.get('/api/prompt-blocks')).json()) as { name: string; text: string }[],
     );
     expect(blocks.map((block) => block.name).sort()).toEqual(['Golden hour', 'Overcast']);
     expect(blocks.find((block) => block.name === 'Overcast')?.text).toBe('flat grey daylight');
+  });
+
+  /**
+   * Throwing one out, which is the half that never worked.
+   *
+   * The model names a block and its group — no id, no text, because it has been
+   * shown the library and has no reason to quote a uuid back. Everything after
+   * that is the server's job: find the block, show the person the fragment that
+   * is actually going to go, and delete that one.
+   */
+  test('removes a block the model asks to remove', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/prompt-blocks', {
+        data: { name: 'Vague mood', category: 'Mood', text: 'nice vibes' },
+      }),
+    );
+    await script(
+      {
+        content: 'That one is doing no work.',
+        toolCall: {
+          name: 'prompt_blocks',
+          arguments: {
+            reason: 'Too vague to draw anything from.',
+            blocks: [{ action: 'remove', name: 'Vague mood', category: 'Mood' }],
+          },
+        },
+      },
+      { content: 'Gone.' },
+    );
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('anything worth throwing out?');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    // Said in words, not as the raw action name, and showing the block's own
+    // wording rather than whatever the model guessed it said.
+    await expect(dialog.getByText('remove', { exact: true })).toBeVisible();
+    await expect(dialog.getByText('nice vibes')).toBeVisible();
+    await page.screenshot({ path: 'test-results/72-block-removal.png' });
+
+    await dialog.getByRole('button', { name: 'Keep 1' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    const blocks = await withApi(
+      async (ctx) => (await (await ctx.get('/api/prompt-blocks')).json()) as { name: string }[],
+    );
+    expect(blocks.some((block) => block.name === 'Vague mood')).toBe(false);
+  });
+
+  /**
+   * Typing a whole word into a proposed block, which used to be impossible.
+   *
+   * The rows were keyed by the block's name while the name was the thing being
+   * edited, so every keystroke gave the row a new identity, React rebuilt it,
+   * and the field lost focus — one character went in and the rest went nowhere.
+   * `fill` would not have caught it; this types.
+   */
+  test('keeps the cursor in a block field while you type into it', async ({ page }) => {
+    await script(
+      {
+        toolCall: {
+          name: 'prompt_blocks',
+          arguments: {
+            reason: 'One idea.',
+            blocks: [
+              { action: 'add', name: 'Golden hour', category: 'Lighting', text: 'warm rim light' },
+            ],
+          },
+        },
+      },
+      { content: 'Saved.' },
+    );
+
+    await open(page, '/chat');
+    await page.getByPlaceholder('Say something…').fill('one block please');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    await dialog.getByRole('button', { name: 'Edit Golden hour' }).click();
+
+    const name = dialog.getByRole('textbox', { name: 'Block name' });
+    await name.fill('');
+    await name.pressSequentially('Dawn haze');
+    await expect(name).toHaveValue('Dawn haze');
+    await expect(name).toBeFocused();
+
+    // And the group field says "group", the same word the library screen uses.
+    await expect(dialog.getByRole('textbox', { name: 'Block group' })).toBeVisible();
+
+    await dialog.getByRole('button', { name: 'Keep 1' }).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+
+    const blocks = await withApi(
+      async (ctx) => (await (await ctx.get('/api/prompt-blocks')).json()) as { name: string }[],
+    );
+    expect(blocks.some((block) => block.name === 'Dawn haze')).toBe(true);
   });
 
   /**
@@ -3290,7 +5107,7 @@ test.describe('the chat module', () => {
     });
 
     await open(page, '/chat');
-    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await pressPromptButton(page);
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible({ timeout: 30_000 });
@@ -3332,7 +5149,9 @@ test.describe('the chat module', () => {
       { inputs: Record<string, unknown> }
     >;
     slow['3']!.inputs.steps = 60;
-    await withApi((ctx) => ctx.post('/api/workflows', { data: { name: WORKFLOW_NAME, graph: slow } }));
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: WORKFLOW_NAME, graph: slow } }),
+    );
 
     await withApi((ctx) =>
       ctx.patch('/api/settings', { data: { chat: { promptButton: 'dialog' } } }),
@@ -3348,7 +5167,7 @@ test.describe('the chat module', () => {
     );
 
     await open(page, '/chat');
-    await page.getByRole('button', { name: 'Build a prompt' }).click();
+    await pressPromptButton(page);
 
     const dialog = page.getByRole('dialog');
     await expect(dialog).toBeVisible({ timeout: 30_000 });
@@ -3527,10 +5346,7 @@ test.describe('the eighteenth wave', () => {
 
     await page.reload();
     await signIn(page);
-    await expect(page.getByTestId('image-fold').first()).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
+    await expect(page.getByTestId('image-fold').first()).toHaveAttribute('aria-expanded', 'false');
     await page.screenshot({ path: 'test-results/64-folded-input.png' });
   });
 });
@@ -3611,6 +5427,64 @@ test.describe('the twenty-third wave', () => {
     expect(borders).toEqual([]);
   });
 
+  /**
+   * Nothing pressable off the side of the screen.
+   *
+   * The gallery's toolbar grew a control at a time until the last two — the
+   * blur and the grid layout — sat past the right-hand edge, where a phone
+   * simply cannot reach them: the bar does not scroll, so they were not hidden,
+   * they were gone. Measured across every screen rather than asserted on the
+   * one that broke, because the way this happens is a control added to a row
+   * that already fitted.
+   */
+  /**
+   * The blur is the last button in every top row.
+   *
+   * It is the one control here reached for without looking — somebody has just
+   * sat down beside you — and a button that is third from the right on one
+   * screen and last on another is a button you have to find first.
+   */
+  test('keeps the blur in the same corner on every screen', async ({ page }) => {
+    for (const route of ['/gallery', '/chat']) {
+      await open(page, route);
+      const blur = page.getByRole('button', { name: 'Blur every image' });
+      await expect(blur).toBeVisible();
+
+      const box = (await blur.boundingBox())!;
+      const others = await page.locator('header, .safe-t').first().getByRole('button').all();
+
+      for (const other of others) {
+        const at = await other.boundingBox();
+        // Same row, and nothing to the right of it.
+        if (!at || Math.abs(at.y - box.y) > 8) continue;
+        expect(at.x, `a button right of the blur on ${route}`).toBeLessThanOrEqual(box.x + 1);
+      }
+    }
+  });
+
+  test('keeps every control on the screen', async ({ page }) => {
+    for (const route of ['/gallery', '/favorites', '/queue', '/generate', '/chat', '/settings']) {
+      await open(page, route);
+      // The bar renders with the screen; the pictures under it can take longer.
+      await expect(page.locator('nav').first()).toBeVisible();
+
+      const escaped = await page.evaluate(() => {
+        const width = window.innerWidth;
+        return Array.from(document.querySelectorAll<HTMLElement>('button, a, input'))
+          .filter((node) => {
+            const box = node.getBoundingClientRect();
+            if (box.width === 0 && box.height === 0) return false;
+            // Half a pixel of slack for sub-pixel layout, and only horizontally:
+            // a long screen scrolls, a wide one is broken.
+            return box.right > width + 0.5 || box.left < -0.5;
+          })
+          .map((node) => `${node.getAttribute('aria-label') ?? node.textContent?.trim() ?? ''}`);
+      });
+
+      expect(escaped, `controls off the side of ${route}`).toEqual([]);
+    }
+  });
+
   /*
    * The drag that took the whole interface with it.
    *
@@ -3688,10 +5562,7 @@ test.describe('the twenty-third wave', () => {
     await makePicture(page, 'the newer one', 2);
 
     await open(page, '/gallery');
-    await expect(page.getByTestId('day-divider').nth(0)).toHaveAttribute(
-      'aria-label',
-      /^Today/,
-    );
+    await expect(page.getByTestId('day-divider').nth(0)).toHaveAttribute('aria-label', /^Today/);
 
     await page.getByRole('button', { name: 'Sort and filter' }).click();
     await page.getByRole('button', { name: /Oldest first/ }).click();
@@ -3716,9 +5587,7 @@ test.describe('the twenty-third wave', () => {
     await expect(page.locator('img[alt*="one"]').first()).toBeVisible();
     await page.screenshot({ path: 'test-results/66-gallery-sorted.png' });
   });
-
 });
-
 
 /**
  * Wave 24: the parameter study module.
@@ -3785,7 +5654,13 @@ test.describe('parameter studies', () => {
      */
     const zones = ['rate-3', 'rate-1', 'rate-2', 'rate-3'];
     for (const zone of zones) {
-      if (await page.getByText('Everything is rated').isVisible().catch(() => false)) break;
+      if (
+        await page
+          .getByText('Everything is rated')
+          .isVisible()
+          .catch(() => false)
+      )
+        break;
       await page.getByTestId(zone).click();
       await page.waitForTimeout(500);
     }
@@ -3908,7 +5783,7 @@ test.describe('workflow folders', () => {
       }
     });
 
-    await open(page, '/settings');
+    await open(page, '/settings?in=workflows');
 
     /*
      * Scoped to the workflow list. The names appear again further down the
@@ -3974,9 +5849,10 @@ test.describe('the twenty-fifth wave', () => {
 
     // The kind is pre-chosen from the button that opened it, and the rest of
     // the form is the one ComfyUI uses.
-    await expect(
-      sheet.getByRole('button', { name: 'Model server', exact: true }),
-    ).toHaveAttribute('aria-pressed', 'true');
+    await expect(sheet.getByRole('button', { name: 'Model server', exact: true })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     await sheet.getByPlaceholder('Rented GPU').fill('Downstairs box');
     await sheet.getByPlaceholder('http://127.0.0.1:8080').fill('http://127.0.0.1:8189');
     await sheet.getByRole('button', { name: 'None', exact: true }).click();
@@ -3984,12 +5860,13 @@ test.describe('the twenty-fifth wave', () => {
     await expect(sheet).toHaveCount(0);
 
     // Added, in use, and it has not stood ComfyUI down.
-    const stored = await withApi(async (ctx) =>
-      (await (await ctx.get('/api/connections')).json()) as {
-        kind: string;
-        name: string;
-        isActive: boolean;
-      }[],
+    const stored = await withApi(
+      async (ctx) =>
+        (await (await ctx.get('/api/connections')).json()) as {
+          kind: string;
+          name: string;
+          isActive: boolean;
+        }[],
     );
     expect(stored.find((entry) => entry.name === 'Downstairs box')?.isActive).toBe(true);
     expect(stored.some((entry) => entry.kind === 'comfy' && entry.isActive)).toBe(true);
@@ -4004,11 +5881,9 @@ test.describe('the twenty-fifth wave', () => {
     // The negative prompt node, titled after the prompt we are about to write.
     const graph = JSON.parse(JSON.stringify(sd15Txt2Img)) as Record<string, unknown>;
     (graph['7'] as { _meta?: unknown })._meta = { title: 'House rules' };
-    await withApi((ctx) =>
-      ctx.post('/api/workflows', { data: { name: 'Named field', graph } }),
-    );
+    await withApi((ctx) => ctx.post('/api/workflows', { data: { name: 'Named field', graph } }));
 
-    await open(page, '/settings');
+    await open(page, '/settings?in=chat');
     const prompts = page.locator('section', {
       has: page.getByRole('heading', { name: 'System prompts' }),
     });
@@ -4084,12 +5959,8 @@ test.describe('the twenty-fifth wave', () => {
 
       await expect(page.getByText('A harbour at dawn, then.')).toBeVisible();
       // The paragraph in the transcript, not the heading the title also became.
-      await expect(
-        page.getByRole('paragraph').filter({ hasText: 'something calm' }),
-      ).toBeVisible();
-      await expect(page.getByPlaceholder('Say something…')).toHaveValue(
-        'and maybe a lighthouse',
-      );
+      await expect(page.getByRole('paragraph').filter({ hasText: 'something calm' })).toBeVisible();
+      await expect(page.getByPlaceholder('Say something…')).toHaveValue('and maybe a lighthouse');
       await page.screenshot({ path: 'test-results/74-chat-return.png' });
     } finally {
       await llama.dispose();
@@ -4156,12 +6027,48 @@ test.describe('the twenty-fifth wave', () => {
     await expect(page.getByText('Name 5', { exact: true })).toHaveCount(0);
     await page.screenshot({ path: 'test-results/76-preset-chat-slots.png' });
 
-    // And the picker offers those same names rather than the declared ones.
+    // And the picker offers those same names rather than the declared ones —
+    // presets only, since turning the model off is the switch's job now and not
+    // a disguised entry in the list of presets.
     await page.getByRole('button', { name: /^Active/ }).click();
-    await expect(page.getByRole('button', { name: 'passthrough', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'passthrough', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Rewrite', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Preset 3', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Preset 4', exact: true })).toHaveCount(0);
+  });
+
+  /**
+   * The switch that used to be an entry in the picker.
+   *
+   * Handing the prompt straight through was picked from the same dropdown as
+   * the presets, which put "do not run the model at all" in a list of ways to
+   * run it and took two taps to find. It is its own control now, and while it
+   * is off the picker has nothing left to choose, so it goes away.
+   */
+  test('turns the preset model off with a switch, not a dropdown entry', async ({ page }) => {
+    await withApi(async (ctx) => {
+      await ctx.post('/api/workflows', {
+        data: { name: 'Preset chat', graph: withPresetChat },
+      });
+    });
+
+    await open(page, '/');
+    await page.getByRole('button', { name: 'Advanced' }).click();
+
+    const useModel = page.getByRole('button', { name: /^Use model/ });
+    await expect(useModel).toBeVisible();
+    await expect(useModel).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('button', { name: /^Active/ })).toBeVisible();
+
+    await useModel.click();
+    await expect(useModel).toHaveAttribute('aria-pressed', 'false');
+    // Nothing to pick between when the model is not being asked.
+    await expect(page.getByRole('button', { name: /^Active/ })).toHaveCount(0);
+    await page.screenshot({ path: 'test-results/86-preset-passthrough-switch.png' });
+
+    // And back, without having to remember which preset it was on.
+    await useModel.click();
+    await expect(page.getByRole('button', { name: /^Active/ })).toBeVisible();
   });
 });
 
@@ -4288,7 +6195,9 @@ test.describe('the twenty-sixth wave', () => {
     requested.length = 0;
     await page.locator('main img').first().click();
     await expect(page.getByTestId('viewer-image')).toBeVisible();
-    await expect.poll(() => requested.filter((url) => url.includes('fit=')).length).toBeGreaterThan(0);
+    await expect
+      .poll(() => requested.filter((url) => url.includes('fit=')).length)
+      .toBeGreaterThan(0);
     const halved = new URL(requested.find((url) => url.includes('fit='))!).searchParams.get('fit')!;
     expect(halved).toBe(
       `${Math.round((viewport.width * ratio) / 2)}x${Math.round((viewport.height * ratio) / 2)}`,
@@ -4304,7 +6213,9 @@ test.describe('the twenty-sixth wave', () => {
     await page.locator('main img').first().click();
     await expect(page.getByTestId('viewer-image')).toBeVisible();
     await expect
-      .poll(() => requested.filter((url) => !url.includes('fit=') && !url.includes('preview=')).length)
+      .poll(
+        () => requested.filter((url) => !url.includes('fit=') && !url.includes('preview=')).length,
+      )
       .toBeGreaterThan(0);
   });
 
@@ -4425,7 +6336,7 @@ test.describe('the twenty-seventh wave', () => {
       });
     });
 
-    await open(page, '/settings');
+    await open(page, '/settings?in=chat');
 
     // The summary says what is happening before the dialog is opened at all.
     await expect(
@@ -4449,14 +6360,14 @@ test.describe('the twenty-seventh wave', () => {
     await page.screenshot({ path: 'test-results/82-sampling.png' });
 
     await page.getByRole('button', { name: 'Done' }).click();
-    await expect(
-      page.getByText('1 parameter overriding the server’s own.'),
-    ).toBeVisible();
+    await expect(page.getByText('1 parameter overriding the server’s own.')).toBeVisible();
 
     // It survives a reload, which is the only proof it reached the server.
-    await open(page, '/settings');
+    await open(page, '/settings?in=chat');
     await page.getByRole('button', { name: 'Adjust…' }).click();
-    await expect(page.getByRole('textbox', { name: 'Temperature', exact: true })).toHaveValue('0.35');
+    await expect(page.getByRole('textbox', { name: 'Temperature', exact: true })).toHaveValue(
+      '0.35',
+    );
 
     // And one button hands the whole lot back.
     await page.getByRole('button', { name: 'Hand all of it back to the server' }).click();
@@ -4465,5 +6376,1455 @@ test.describe('the twenty-seventh wave', () => {
     await expect(
       page.getByText('The model server’s own, from the flags it was started with.'),
     ).toBeVisible();
+  });
+});
+
+/**
+ * Before and after, in one frame.
+ *
+ * An edit workflow's result only means anything next to the picture it was made
+ * from, and two thumbnails side by side is the wrong way to show that — the eye
+ * cannot hold one still enough to subtract the other. A seam dragged across a
+ * single frame can: everything on one side is before and everything on the
+ * other is after.
+ *
+ * Which of a graph's inputs *is* the origin is not something the graph says, so
+ * the node's title does: `Input Image [Reference]`. This drives that end to
+ * end — through a real submit, so the origin is resolved and recorded the way
+ * it is in use rather than poked into the database.
+ */
+test.describe('comparing an edit with what it was made from', () => {
+  test.beforeEach(async () => {
+    await resetState();
+  });
+
+  test('wipes the edited picture away to show the original underneath', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'edit', graph: editWithReference } }),
+    );
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a red coat');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await expect
+      .poll(
+        async () => {
+          const gallery = await withApi(
+            async (ctx) =>
+              (await (await ctx.get('/api/gallery')).json()) as {
+                items: { images: unknown[] }[];
+              },
+          );
+          return gallery.items.reduce((total, item) => total + item.images.length, 0);
+        },
+        { timeout: 40_000 },
+      )
+      .toBeGreaterThanOrEqual(1);
+
+    await open(page, '/gallery');
+    await page.locator('img[alt*="a red coat"]').first().click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+
+    // Both handles are there, both parked, revealing nothing.
+    const across = page.getByTestId('compare-handle-vertical');
+    const down = page.getByTestId('compare-handle-horizontal');
+    await expect(across).toBeVisible();
+    await expect(down).toBeVisible();
+    await expect(across).toHaveAttribute('aria-valuenow', '0');
+    await expect(down).toHaveAttribute('aria-valuenow', '0');
+    await page.screenshot({ path: 'test-results/95-compare-parked.png' });
+
+    /*
+     * Parked is still a target you can hit, and not one sitting on top of a
+     * button that does something else. Centring the tab on the seam put half of
+     * it off the screen and the other half over the viewer's own controls.
+     */
+    const viewportAtRest = page.viewportSize()!;
+    for (const handle of [across, down]) {
+      const box = (await handle.boundingBox())!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewportAtRest.width);
+      expect(box.y + box.height).toBeLessThanOrEqual(viewportAtRest.height);
+    }
+    // Clear of the close button, which is where a top-parked tab used to land.
+    const close = (await page.getByRole('button', { name: 'Close' }).boundingBox())!;
+    const downBox = (await down.boundingBox())!;
+    expect(downBox.y).toBeGreaterThan(close.y + close.height);
+
+    /*
+     * Dragged across the screen. The assertion is on the seam's position
+     * rather than on pixels: what a wipe reveals is a clip, and reading a clip
+     * back out of the compositor is not something a browser will tell you.
+     */
+    const viewport = page.viewportSize()!;
+    const start = (await across.boundingBox())!;
+    await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(viewport.width * 0.6, start.y + start.height / 2, { steps: 8 });
+    await page.mouse.up();
+
+    await expect
+      .poll(async () => Number(await across.getAttribute('aria-valuenow')))
+      .toBeGreaterThan(40);
+    // And the other one has not moved with it: two seams, two answers.
+    await expect(down).toHaveAttribute('aria-valuenow', '0');
+    await page.screenshot({ path: 'test-results/96-compare-wipe.png' });
+
+    // A tap on the parked one shows all of the original at once, and puts it
+    // back — which is the thing wanted most often and should not need a drag.
+    await down.click();
+    await expect(down).toHaveAttribute('aria-valuenow', '100');
+    await down.click();
+    await expect(down).toHaveAttribute('aria-valuenow', '0');
+    // The viewer is still open: a tap on a handle is not a tap on the picture.
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+  });
+
+  /**
+   * The handles are for edits, and only for edits.
+   *
+   * A workflow that draws from nothing has no before, and one whose image
+   * inputs are untitled has not said which of its pictures is the origin —
+   * guessing there would put a pose reference under a portrait and label it
+   * "before".
+   */
+  test('leaves an ordinary render alone', async ({ page }) => {
+    await seedWorkflow();
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('no before to show');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    const thumb = page.locator('img[alt*="no before to show"]').first();
+    await expect(thumb).toBeVisible({ timeout: 40_000 });
+    await thumb.click();
+
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+    await expect(page.getByTestId('compare-handle-vertical')).toHaveCount(0);
+    await expect(page.getByTestId('compare-handle-horizontal')).toHaveCount(0);
+  });
+
+  /**
+   * Which edge a handle rests on is a question about the hand holding the
+   * phone, so it is a setting — and one whose whole point is that the handle
+   * moves when it changes.
+   */
+  test('parks the handles on the edges the settings name', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'edit', graph: editWithReference } }),
+    );
+
+    await open(page, '/gallery');
+    await page.getByRole('button', { name: 'Grid layout' }).click();
+    await page
+      .getByRole('radiogroup', { name: 'Across' })
+      .getByRole('radio', { name: 'right' })
+      .click();
+    await page
+      .getByRole('radiogroup', { name: 'Down' })
+      .getByRole('radio', { name: 'bottom' })
+      .click();
+    await page.getByRole('button', { name: 'Done' }).click();
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('parked the other way');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    const thumb = page.locator('img[alt*="parked the other way"]').first();
+    await expect(thumb).toBeVisible({ timeout: 40_000 });
+    await thumb.click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+
+    const viewport = page.viewportSize()!;
+    const across = (await page.getByTestId('compare-handle-vertical').boundingBox())!;
+    const down = (await page.getByTestId('compare-handle-horizontal').boundingBox())!;
+
+    // Against the far edges, not the near ones.
+    expect(across.x).toBeGreaterThan(viewport.width / 2);
+    expect(down.y).toBeGreaterThan(viewport.height / 2);
+  });
+
+  /**
+   * The tabs belong to the window, not to the picture.
+   *
+   * Inset from the edge they sit *on* the image and take a bite out of the one
+   * thing this screen exists to show. Flush against it they read as furniture
+   * on the frame, and on a phone the edge is where a thumb already rests.
+   */
+  test('puts the wipe tabs flush against the edge of the screen', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'edit', graph: editWithReference } }),
+    );
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('tabs on the edge');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    const thumb = page.locator('img[alt*="tabs on the edge"]').first();
+    await expect(thumb).toBeVisible({ timeout: 40_000 });
+    await thumb.click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+
+    const across = (await page.getByTestId('compare-handle-vertical').boundingBox())!;
+    // Parked left, and touching it — no gap for the picture to show through.
+    expect(across.x).toBe(0);
+    // Small: every pixel it takes is a pixel of the picture.
+    expect(across.width).toBeLessThan(44);
+    expect(across.height).toBeLessThan(44);
+  });
+
+  /**
+   * The third way to see the difference, and the only one that is not a seam.
+   *
+   * A seam answers "what changed *here*". Laying one picture over the other at
+   * half strength answers "did anything move at all" — a shift of a few pixels
+   * that no seam will find is obvious the moment the two are superimposed.
+   */
+  test('fades between the result and the original', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'edit', graph: editWithReference } }),
+    );
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('fade between them');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    const thumb = page.locator('img[alt*="fade between them"]').first();
+    await expect(thumb).toBeVisible({ timeout: 40_000 });
+    await thumb.click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+
+    // It starts on the result: opening a picture shows that picture.
+    const fade = page.getByTestId('compare-blend');
+    await expect(fade).toBeVisible();
+    await expect(fade).toHaveValue('0');
+    const layer = page.getByTestId('compare-origin-blend');
+    expect(await layer.evaluate((node) => getComputedStyle(node).opacity)).toBe('0');
+
+    // Half way, and the original is laid over the result at half strength.
+    await fade.fill('50');
+    await expect
+      .poll(async () => layer.evaluate((node) => Number(getComputedStyle(node).opacity)))
+      .toBeGreaterThan(0.4);
+    await page.screenshot({ path: 'test-results/97-compare-fade.png' });
+
+    // And all the way is the original alone.
+    await fade.fill('100');
+    await expect
+      .poll(async () => layer.evaluate((node) => Number(getComputedStyle(node).opacity)))
+      .toBe(1);
+
+    // The viewer is still open: dragging the slider is not a tap on the picture.
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+  });
+});
+
+/**
+ * Getting the controls out of the way of the picture.
+ *
+ * Every one of them floats over the image, and on some images that is exactly
+ * where the thing you are looking at is — a face behind the close button, a
+ * horizon under the action row. No arrangement avoids it on every picture, so
+ * the answer is to be able to take them all away.
+ */
+test.describe('the viewer with nothing in front of the picture', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+  });
+
+  test('hides every control, and a tap brings them back', async ({ page }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('nothing in the way');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    const thumb = page.locator('img[alt*="nothing in the way"]').first();
+    await expect(thumb).toBeVisible({ timeout: 40_000 });
+    await thumb.click();
+
+    const picture = page.getByTestId('viewer-image');
+    await expect(picture).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Close' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Hide the controls' }).click();
+
+    /*
+     * Everything, not just the header. The footer's actions cover as much of a
+     * picture as the header does, and "show me only the picture" has to mean
+     * only the picture or it is not worth having.
+     */
+    // Scoped to the viewer: the gallery is still mounted behind it and has a
+    // blur button of its own, which is not the one under test.
+    const viewer = page.locator('div.z-60');
+    await expect(viewer.getByRole('button', { name: 'Close' })).toHaveCount(0);
+    await expect(viewer.getByRole('button', { name: 'Hide the controls' })).toHaveCount(0);
+    await expect(viewer.getByRole('button', { name: 'Blur every image' })).toHaveCount(0);
+    await expect(viewer.getByRole('button', { name: 'Favourite' })).toBeHidden();
+    await expect(viewer.getByRole('button', { name: 'Delete' })).toBeHidden();
+    await expect(picture).toBeVisible();
+    await page.screenshot({ path: 'test-results/98-viewer-bare.png' });
+
+    /*
+     * And back with a tap — the only way back, since the button that would undo
+     * it went with everything else. Standing in for a missing control is what
+     * this gesture does in every photo viewer, so it is the one people try.
+     */
+    const viewport = page.viewportSize()!;
+    await page.mouse.click(viewport.width / 2, viewport.height / 2);
+    await expect(viewer.getByRole('button', { name: 'Close' })).toBeVisible();
+    // That tap must not have closed the viewer on the way past.
+    await expect(picture).toBeVisible();
+  });
+
+  /*
+   * Hiding them is a decision about how you want to look at things, not about
+   * one picture — and having it undone by every swipe would make it useless for
+   * the case it exists for: a run of pictures the buttons are in the way of.
+   */
+  test('stays hidden while you swipe through the run', async ({ page }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a run of them');
+    await page.getByRole('button', { name: '2', exact: true }).click();
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    const thumbs = page.locator('img[alt*="a run of them"]');
+    await expect(thumbs).toHaveCount(2, { timeout: 60_000 });
+    await thumbs.first().click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+
+    const viewer = page.locator('div.z-60');
+    await page.getByRole('button', { name: 'Hide the controls' }).click();
+    await expect(viewer.getByRole('button', { name: 'Close' })).toHaveCount(0);
+
+    const viewport = page.viewportSize()!;
+    const y = viewport.height / 2;
+    await page.mouse.move(viewport.width * 0.8, y);
+    await page.mouse.down();
+    await page.mouse.move(viewport.width * 0.1, y, { steps: 10 });
+    await page.mouse.up();
+
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+    await expect(viewer.getByRole('button', { name: 'Close' })).toHaveCount(0);
+  });
+});
+
+/**
+ * Sound, from the picker to the player.
+ *
+ * A music or speech workflow is queued and watched exactly like one that draws
+ * a picture. What differs is the far end: there is no frame at all — not a
+ * missing one, none — so the tile is a card rather than a thumbnail waiting for
+ * a poster, and the viewer is a player rather than something to zoom.
+ */
+test.describe('generating audio', () => {
+  test.beforeEach(async () => {
+    await resetState();
+  });
+
+  test('marks a sound workflow in the picker and plays what it produced', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'MiniMax Music', graph: minimaxMusic } }),
+    );
+
+    await open(page, '/');
+    await page.getByRole('button', { name: 'Choose workflow' }).click();
+    const picker = page.getByRole('dialog', { name: 'Workflow' });
+    // Which of these makes a sound is worth knowing before you open the form.
+    await expect(
+      picker.getByRole('button', { name: /MiniMax Music/ }).getByText('sound'),
+    ).toBeVisible();
+    await picker.getByRole('button', { name: /MiniMax Music/ }).click();
+
+    // How long the track runs is a control on the main screen, in seconds —
+    // the audio equivalent of a video's frame count.
+    await expect(page.getByText('Seconds', { exact: true }).first()).toBeVisible();
+    await page.screenshot({ path: 'test-results/93-audio-form.png' });
+
+    await page.getByPlaceholder('Describe the image…').first().fill('slow shoegaze instrumental');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await expect
+      .poll(
+        async () => {
+          const gallery = await withApi(async (ctx) => {
+            const response = await ctx.get('/api/gallery');
+            return (await response.json()) as {
+              items: { title: string; images: { kind: string }[] }[];
+            };
+          });
+          return gallery.items.find((item) => item.title === 'slow shoegaze instrumental')
+            ?.images?.[0]?.kind;
+        },
+        { timeout: 60_000 },
+      )
+      .toBe('audio');
+
+    await open(page, '/gallery');
+
+    // A card, not a thumbnail that never arrives.
+    const placeholder = page.getByTestId('audio-placeholder').first();
+    await expect(placeholder).toBeVisible({ timeout: 30_000 });
+    await page.screenshot({ path: 'test-results/94-audio-grid.png' });
+
+    await placeholder.click();
+
+    const player = page.getByTestId('viewer-audio').locator('audio');
+    await expect(player).toBeVisible();
+    await expect(player).toHaveAttribute('src', /\/api\/view\?.*\.wav/);
+    await expect(player).toHaveAttribute('controls', '');
+
+    /*
+     * It really plays. The mock writes a real WAV precisely so this assertion
+     * can exist: `duration` is only a number once something has decoded the
+     * file, so this is the browser saying it can play what Latent served.
+     */
+    await expect
+      .poll(async () => player.evaluate((node: HTMLAudioElement) => node.duration), {
+        timeout: 30_000,
+      })
+      .toBeGreaterThan(0);
+    await page.screenshot({ path: 'test-results/95-audio-viewer.png' });
+
+    // The actions that hand a picture to another graph are not offered.
+    await expect(page.getByRole('button', { name: 'img2img' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Upscale' })).toBeDisabled();
+
+    // Rating stores it here, exactly as it does for a picture.
+    await page.getByRole('button', { name: '4 stars' }).click();
+    await expect
+      .poll(async () => {
+        const gallery = await withApi(async (ctx) => {
+          const response = await ctx.get('/api/gallery');
+          return (await response.json()) as { items: { images: { archived: boolean }[] }[] };
+        });
+        return gallery.items[0]?.images?.[0]?.archived;
+      })
+      .toBe(true);
+
+    /*
+     * And how long it runs reaches the server from the only thing that can
+     * read it — the browser that just played it — so the tile can say.
+     */
+    await expect
+      .poll(
+        async () => {
+          const gallery = await withApi(async (ctx) => {
+            const response = await ctx.get('/api/gallery');
+            return (await response.json()) as {
+              items: { images: { durationMs: number | null }[] }[];
+            };
+          });
+          return gallery.items[0]?.images?.[0]?.durationMs ?? 0;
+        },
+        { timeout: 30_000 },
+      )
+      .toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Video, from the picker to the player.
+ *
+ * A workflow that ends in a clip is queued and watched exactly like one that
+ * draws a picture — what differs is everything about the result: the tile has
+ * no still until something makes one, the viewer plays rather than zooms, and
+ * the actions that hand a picture to another graph are not offered.
+ */
+test.describe('generating video', () => {
+  test.beforeEach(async () => {
+    await resetState();
+  });
+
+  /** Queue one run of `graph` and wait for its clip to land in the gallery. */
+  async function renderClip(page: Page, name: string, graph: unknown, prompt: string) {
+    await withApi((ctx) => ctx.post('/api/workflows', { data: { name, graph } }));
+
+    await open(page, '/');
+    await page.getByRole('button', { name: 'Choose workflow' }).click();
+    const picker = page.getByRole('dialog', { name: 'Workflow' });
+    await picker.getByRole('button', { name: new RegExp(name) }).click();
+
+    await page.getByPlaceholder('Describe the image…').first().fill(prompt);
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await expect
+      .poll(
+        async () => {
+          const gallery = await withApi(async (ctx) => {
+            const response = await ctx.get('/api/gallery');
+            return (await response.json()) as {
+              items: { title: string; images: { filename: string; kind: string }[] }[];
+            };
+          });
+          return gallery.items.find((item) => item.title === prompt)?.images ?? [];
+        },
+        { timeout: 60_000 },
+      )
+      .not.toHaveLength(0);
+  }
+
+  test('marks a video workflow in the picker and plays what it produced', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'LTXV', graph: ltxVideoGguf } }),
+    );
+
+    await open(page, '/');
+    await page.getByRole('button', { name: 'Choose workflow' }).click();
+    // Which of these makes a clip is the first thing worth knowing about a list
+    // of workflows, and the name does not reliably say.
+    const picker = page.getByRole('dialog', { name: 'Workflow' });
+    await expect(picker.getByRole('button', { name: /LTXV/ }).getByText('video')).toBeVisible();
+    await picker.getByRole('button', { name: /LTXV/ }).click();
+
+    // The frame count is a control on the main screen, not one integer among
+    // twenty behind Advanced.
+    await expect(page.getByText('Frames', { exact: true }).first()).toBeVisible();
+    await page.screenshot({ path: 'test-results/84-video-form.png' });
+
+    await page.getByPlaceholder('Describe the image…').first().fill('a paper boat');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await expect
+      .poll(
+        async () => {
+          const gallery = await withApi(async (ctx) => {
+            const response = await ctx.get('/api/gallery');
+            return (await response.json()) as {
+              items: { title: string; images: { kind: string }[] }[];
+            };
+          });
+          return gallery.items.find((item) => item.title === 'a paper boat')?.images?.[0]?.kind;
+        },
+        { timeout: 60_000 },
+      )
+      .toBe('video');
+
+    await open(page, '/gallery');
+
+    /*
+     * No still yet, and the tile says so rather than quietly loading the clip:
+     * a grid that autoplays videos pulls tens of megabytes over mobile data,
+     * which is the exact thing thumbnails exist to prevent.
+     */
+    const placeholder = page.getByTestId('video-placeholder').first();
+    await expect(placeholder).toBeVisible({ timeout: 30_000 });
+    await page.screenshot({ path: 'test-results/85-video-grid.png' });
+
+    await placeholder.click();
+
+    // A player, with the browser's own controls, pointed at this clip.
+    const video = page.getByTestId('viewer-video');
+    await expect(video).toBeVisible();
+    await expect(video).toHaveAttribute('src', /\/api\/view\?.*\.webm/);
+    await expect(video).toHaveAttribute('controls', '');
+
+    /*
+     * And it does not own the whole screen.
+     *
+     * Fitted to the clip's own shape, so the margins around it stay part of the
+     * layer that handles a swipe to the next output and a tap to close — the
+     * two gestures a picture has, which a full-bleed element would swallow.
+     */
+    const viewport = page.viewportSize()!;
+    const box = (await video.boundingBox())!;
+    expect(box.width).toBeLessThanOrEqual(viewport.width);
+    expect(box.height).toBeLessThan(viewport.height);
+
+    // Rating a clip stores it here, exactly as it does for a picture.
+    await page.getByRole('button', { name: '4 stars' }).click();
+    await expect
+      .poll(async () => {
+        const gallery = await withApi(async (ctx) => {
+          const response = await ctx.get('/api/gallery');
+          return (await response.json()) as {
+            items: { images: { archived: boolean }[] }[];
+          };
+        });
+        return gallery.items[0]?.images?.[0]?.archived;
+      })
+      .toBe(true);
+
+    // And the two actions that hand a picture to another graph are refused,
+    // because a clip is not an input image.
+    await expect(page.getByRole('button', { name: 'img2img' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Upscale' })).toBeDisabled();
+    await page.screenshot({ path: 'test-results/86-video-viewer.png' });
+
+    /*
+     * The speed control, in the row rather than floating over the clip.
+     *
+     * It used to sit just above the bottom of the video, which is where the
+     * browser draws its own scrubber and where this action row is — so it was
+     * covered by the buttons it stood among. It takes Keep's cell on a clip
+     * now, shows the rate it is on, and opens the rest upward, over the
+     * picture, which is the one direction with nothing in it.
+     */
+    await expect(page.getByRole('button', { name: 'Keep', exact: true })).toHaveCount(0);
+    const speed = page.getByRole('button', { name: '1×', exact: true });
+    await expect(speed).toBeVisible();
+    // Closed until asked: six speeds do not fit in a tenth of a phone.
+    await expect(page.getByRole('button', { name: 'Play at 2×' })).toHaveCount(0);
+
+    await speed.click();
+    await page.screenshot({ path: 'test-results/87-video-speed.png' });
+    await page.getByRole('button', { name: 'Play at 2×' }).click();
+
+    // The popup closes, the cell says where it landed, and — the only part
+    // that matters — the element is actually playing at that rate.
+    await expect(page.getByRole('button', { name: 'Play at 2×' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '2×', exact: true })).toBeVisible();
+    expect(await video.evaluate((element: HTMLVideoElement) => element.playbackRate)).toBe(2);
+  });
+
+  /**
+   * The other half: VideoHelperSuite files its result under `gifs`, and what it
+   * made here is a real animated GIF — which the browser draws as a picture.
+   */
+  test('shows a clip that a browser draws as an image', async ({ page }) => {
+    await renderClip(page, 'Combine', videoCombine, 'a sweeping band');
+
+    await open(page, '/gallery');
+    const tile = page.getByTestId('video-placeholder').first();
+    await expect(tile).toBeVisible({ timeout: 30_000 });
+    await tile.click();
+
+    // Drawn by an `<img>`, so this is the one video the viewer does not play —
+    // and the frame it shows is the poster the clip did not have.
+    const image = page.getByTestId('viewer-image');
+    await expect(image).toBeVisible();
+    await expect
+      .poll(async () => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
+      .toBeGreaterThan(0);
+
+    // Having decoded it, the browser hands a still back, and the gallery has a
+    // thumbnail for a file this server cannot open.
+    await expect
+      .poll(
+        async () => {
+          const gallery = await withApi(async (ctx) => {
+            const response = await ctx.get('/api/gallery');
+            return (await response.json()) as {
+              items: { images: { hasThumbnail: boolean }[] }[];
+            };
+          });
+          return gallery.items[0]?.images?.[0]?.hasThumbnail;
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(true);
+
+    await page.getByRole('button', { name: 'Close' }).click();
+    await expect(page.getByTestId('video-placeholder')).toHaveCount(0);
+    await page.screenshot({ path: 'test-results/87-video-poster.png' });
+  });
+});
+
+/**
+ * The tablet layout.
+ *
+ * Only run on the `iPad` project — 1024×768, a nine-and-a-half-inch screen on
+ * its side — which is what `@tablet` in every name here selects. What is worth
+ * asserting is not that things look different: it is the three claims tablet
+ * mode actually makes. Every destination is reachable without a menu; the two
+ * halves of the loop this app is built around are on screen together; and
+ * nothing that was a full-width phone control is now a full-width tablet one.
+ */
+test.describe('on a tablet', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await resetLlama();
+    await seedWorkflow();
+  });
+
+  /**
+   * Navigation down the side, with nothing behind a menu.
+   *
+   * The four modules that live behind "More" on a phone are only there because
+   * six labelled tabs is as many as a phone's width can carry. A rail has room
+   * for all ten, so the menu should not exist at all — asserting its absence is
+   * the point, since keeping it would be the easy way to ship this and would
+   * leave the tablet with a phone's compromise for no reason.
+   */
+  test('@tablet puts every module on a rail instead of behind a menu', async ({ page }) => {
+    await open(page, '/');
+
+    const rail = page.getByTestId('side-rail');
+    await expect(rail).toBeVisible();
+    await expect(page.getByRole('button', { name: 'More modules' })).toHaveCount(0);
+
+    for (const label of [
+      'Generate',
+      'Gallery',
+      'Favourites',
+      'Chat',
+      'Queue',
+      'Settings',
+      'Blocks',
+      'Random',
+      'Monitor',
+      'Study',
+    ]) {
+      await expect(rail.getByRole('link', { name: label })).toBeVisible();
+    }
+
+    // And it navigates, rather than merely listing.
+    await rail.getByRole('link', { name: 'Monitor' }).click();
+    await expect(page).toHaveURL(/\/monitor$/);
+    await page.screenshot({ path: 'test-results/99-tablet-rail.png' });
+  });
+
+  /**
+   * The prompt and the picture, on screen at once.
+   *
+   * This is the whole argument for tablet mode. On a phone, changing one word
+   * of a prompt and seeing what it did means Generate → a bar → a viewer → back
+   * → back, and the previous attempt is never visible at the same time as the
+   * words that made it. Here the form keeps its column and the render lives
+   * beside it.
+   */
+  test('@tablet generates with the result beside the form', async ({ page }) => {
+    await open(page, '/');
+
+    const workbench = page.getByTestId('workbench');
+    await expect(workbench).toBeVisible();
+    // Nothing made yet, and it says so rather than showing an empty box.
+    await expect(workbench.getByText(/Nothing rendered yet/)).toBeVisible();
+
+    await page.getByPlaceholder('Describe the image…').fill('a pier at dawn');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    // The picture lands in the pane, and the form is still there beside it —
+    // still filled in, still the thing you would edit next.
+    await expect(workbench.getByTestId('workbench-still')).toBeVisible({ timeout: 40_000 });
+    await expect(page.getByPlaceholder('Describe the image…')).toHaveValue('a pier at dawn');
+    await page.screenshot({ path: 'test-results/99-tablet-generate.png' });
+
+    /*
+     * And it opens the gallery's own viewer, over this workflow's runs — the
+     * pane is a way into the pictures, not a dead end showing one of them.
+     */
+    await workbench.getByRole('button', { name: /^Open / }).click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+    await page.getByRole('button', { name: 'Close' }).click();
+  });
+
+  /**
+   * The conversation and what it made, side by side.
+   *
+   * The chat's pictures are strung out through the transcript, which is the
+   * wrong shape for comparing them — most obviously in a wandering run, which
+   * is nothing but one picture after another with a few words in between.
+   */
+  test('@tablet shows the chat’s pictures beside the conversation', async ({ page }) => {
+    await useLlama();
+    // Only what this test depends on: a prompt proposal that arrives as a
+    // dialog, and no review turn afterwards to script a second reply for.
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', {
+        data: {
+          chat: {
+            promptButton: 'dialog',
+            generation: { workflowId: '', values: {} },
+            tools: { build_prompt: 'settled', prompt_blocks: 'off', ask_user: 'off' },
+            review: { enabled: false, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+            autonomous: { enabled: false, maxRounds: 4 },
+          },
+        },
+      }),
+    );
+    await script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'a harbour at night', reason: 'Asked for.' },
+      },
+    });
+
+    await open(page, '/chat');
+    const pictures = page.getByTestId('chat-pictures');
+    await expect(pictures).toBeVisible();
+    await expect(pictures.getByText(/Nothing yet/)).toBeVisible();
+
+    await page.getByPlaceholder('Say something…').fill('a harbour');
+    await page.getByRole('button', { name: 'Send' }).click();
+
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 30_000 });
+    await dialog.getByRole('button', { name: /^Generate/ }).click();
+
+    // It arrives in the panel, numbered by where it sits rather than named by
+    // a title every picture in the conversation would share.
+    const first = pictures.getByRole('button', { name: 'Picture 1 in this conversation' });
+    await expect(first).toBeVisible({ timeout: 60_000 });
+    await page.screenshot({ path: 'test-results/99-tablet-chat.png' });
+
+    // And it is a way into the viewer, like every other picture in the app.
+    await first.click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+    await page.getByRole('button', { name: 'Close' }).click();
+  });
+
+  /**
+   * Turned upright, it is still a tablet — but not a wide one.
+   *
+   * 768 across is the 9.7-inch screen in portrait, and the two-pane screens do
+   * not fit in it: a form beside a picture there is 340 points each, which is
+   * narrower than the phone the form was drawn for. So the rail and the
+   * proportions stay and the second pane goes, which is the whole reason there
+   * are two thresholds rather than one.
+   */
+  test('@tablet keeps the rail but drops the second pane in portrait', async ({ page }) => {
+    await page.setViewportSize({ width: 768, height: 1024 });
+    await open(page, '/');
+
+    await expect(page.getByTestId('side-rail')).toBeVisible();
+    await expect(page.getByTestId('workbench')).toHaveCount(0);
+
+    // And the form does not stretch to the full width just because it can.
+    const form = page.getByPlaceholder('Describe the image…');
+    const box = (await form.boundingBox())!;
+    expect(box.width).toBeLessThan(768 - 84 - 40);
+    await page.screenshot({ path: 'test-results/99-tablet-portrait.png' });
+
+    /*
+     * Turning it back brings the pane with it. Nothing here is decided once at
+     * startup — it is two media queries, so a rotation is a re-layout.
+     */
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await expect(page.getByTestId('workbench')).toBeVisible();
+  });
+
+  /**
+   * Sheets stop being sheets.
+   *
+   * A bottom sheet is a shape for a phone: it comes up from the edge the hand
+   * is at, and it is full width because there is no width to spare. Left alone
+   * on a tablet it is a band of controls a foot wide, hanging off an edge
+   * nobody is holding.
+   */
+  test('@tablet opens sheets as panels in the middle, not bands along the bottom', async ({
+    page,
+  }) => {
+    await open(page, '/gallery');
+    await page.getByRole('button', { name: 'Layout' }).click();
+
+    const panel = page.getByRole('dialog', { name: 'Layout' });
+    await expect(panel).toBeVisible();
+
+    const box = (await panel.boundingBox())!;
+    const viewport = page.viewportSize()!;
+
+    // Narrower than the screen, and clear of the bottom edge rather than sitting
+    // on it — the two things that make it a panel rather than a sheet.
+    expect(box.width).toBeLessThan(viewport.width * 0.7);
+    expect(box.y + box.height).toBeLessThan(viewport.height - 16);
+    expect(box.y).toBeGreaterThan(16);
+    await page.screenshot({ path: 'test-results/99-tablet-sheet.png' });
+  });
+
+  /**
+   * Nothing stretched to a hundred and forty characters a line.
+   *
+   * The failure this guards against is the one that makes a phone app on a
+   * tablet look unfinished: rows whose label is at one edge of the screen and
+   * whose control is at the other. Measured rather than read off a class list,
+   * because the complaint is about what is on the screen.
+   */
+  /**
+   * Arranging the phone's form from a desktop, and seeing the phone.
+   *
+   * The editor is a list of rows with handles — good for changing things and
+   * useless for judging them. On a wide screen the phone goes beside it, drawn
+   * from the same `planFormRuns` the generate screen lays itself out with, so
+   * the two cannot disagree about the thing the preview exists to show.
+   */
+  test('@tablet shows the phone form beside the editor', async ({ page }) => {
+    await resetState();
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'Layout demo', graph: sd15Txt2Img } }),
+    );
+    await open(page, '/settings?in=workflows');
+
+    await page
+      .getByRole('button', { name: /Edit form/ })
+      .first()
+      .click();
+
+    const preview = page.getByLabel('Preview of the form on a phone');
+    await expect(preview).toBeVisible();
+
+    // The real fields, in the real arrangement — not a picture of a phone.
+    await expect(preview.getByText('Prompt', { exact: true })).toBeVisible();
+    await expect(preview.getByText('Steps', { exact: true })).toBeVisible();
+
+    // Narrower than the pane beside it: the point is the phone's rhythm.
+    const box = await preview.boundingBox();
+    const viewport = page.viewportSize()!;
+    expect(box!.width).toBeLessThan(viewport.width / 2);
+
+    await page.screenshot({ path: 'test-results/99-tablet-form-editor.png' });
+  });
+
+  test('@tablet holds the settings to a readable column', async ({ page }) => {
+    await open(page, '/settings');
+    await expect(page.getByRole('heading', { name: 'ComfyUI', exact: true })).toBeVisible();
+
+    const width = await page
+      .locator('main .readable')
+      .first()
+      .evaluate((node) => node.getBoundingClientRect().width);
+    const viewport = page.viewportSize()!;
+
+    expect(width).toBeLessThan(viewport.width * 0.85);
+    await page.screenshot({ path: 'test-results/99-tablet-settings.png' });
+  });
+
+  /**
+   * The grid uses the width it has been given.
+   *
+   * A tablet opening on two columns is two postcards and a scroll for the
+   * third, which is the same picture count as a phone on twice the glass.
+   */
+  test('@tablet starts the gallery on more columns than a phone would', async ({ page }) => {
+    await open(page, '/gallery');
+    await page.getByRole('button', { name: 'Layout' }).click();
+    const slider = page.getByRole('dialog').getByLabel('Columns');
+    await expect(slider).toHaveValue('4');
+    // And it can go further than a phone's five, which is where a phone runs
+    // out of picture rather than out of room.
+    await expect(slider).toHaveAttribute('max', '8');
+  });
+});
+
+test.describe('running without the picture', () => {
+  /**
+   * A graph is a fixed set of links.
+   *
+   * Once a loader is wired in, every run through the workflow sends a picture —
+   * there is no value you can type that means "not this time", because the
+   * filename is a string and every string is a filename. In the editor you drag
+   * the link off; from a phone there was nothing to do at all.
+   */
+  test('switches a reference image off and leaves it out of the graph', async ({ page }) => {
+    await resetState();
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'With a picture', graph: img2img } }),
+    );
+    await open(page, '/');
+
+    const workflowPicker = page.getByRole('button', { name: /With a picture/ });
+    if (await workflowPicker.isVisible().catch(() => false)) await workflowPicker.click();
+
+    // The switch sits beside the picture it governs, on by default: a workflow
+    // with an image wired in was built to use it.
+    const toggle = page.getByRole('button', { name: /Use this picture/ });
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await page.screenshot({ path: 'test-results/99-picture-off.png' });
+
+    // And it survives leaving the screen, because it is an ordinary form value.
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    await page.getByRole('link', { name: 'Generate' }).click();
+    await expect(page.getByRole('button', { name: /Use this picture/ })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+});
+
+/**
+ * The folder browser, and the favourites inside it.
+ *
+ * Everything here comes from the ComfyUI machine through Latent's proxy —
+ * which is why none of it had ever been driven through a browser: without a far
+ * end that answers the browse routes there is nothing to open. The mock answers
+ * them now, and what is worth proving is the part that shipped invisible: the
+ * category the starred entries live in has to be *there* before anything is
+ * starred, or nobody ever learns where a star puts things.
+ */
+test.describe('picking a picture out of a folder', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'From a folder', graph: loadImageFromFolder } }),
+    );
+  });
+
+  test('stars a picture and finds it beside the roots', async ({ page }) => {
+    await open(page, '/');
+
+    const picker = page.getByRole('button', { name: 'Browse folders' });
+    await expect(picker).toBeVisible();
+    await picker.click();
+
+    const sheet = page.getByRole('dialog', { name: 'Pick a picture' });
+    await expect(sheet).toBeVisible();
+    // The chip row, which is not the breadcrumb: both name the root.
+    const categories = sheet.getByTestId('browse-categories');
+
+    /*
+     * The roots the far end offers, and the category beside them — before
+     * anything has been starred.
+     *
+     * This is the bug: it used to appear only once it had something in it, so
+     * the star on every row put pictures somewhere that did not visibly exist
+     * and the whole feature read as broken. Empty, it says what a star does.
+     */
+    for (const root of ['output', 'input', 'temp']) {
+      await expect(categories.getByRole('button', { name: root, exact: true })).toBeVisible();
+    }
+    const favourites = categories.getByRole('button', { name: '★ Favourites' });
+    await expect(favourites).toBeVisible();
+    await favourites.click();
+    await expect(sheet.getByText(/Nothing starred yet/)).toBeVisible();
+
+    // Back to output, and down into a folder — the browser's actual job.
+    await categories.getByRole('button', { name: 'output', exact: true }).click();
+    await sheet
+      .getByRole('button', { name: /^Keep monday in favourites$/ })
+      .first()
+      .click();
+
+    await sheet.getByRole('button', { name: 'monday', exact: true }).click();
+    const render = sheet.getByRole('button', { name: 'Keep render_0007.png in favourites' });
+    await expect(render).toBeVisible();
+    await render.click();
+    await page.screenshot({ path: 'test-results/100-folder-browser.png' });
+
+    /*
+     * Both of them are in the category, and each is what it was starred as: the
+     * folder as a row you can open, the picture as a thumbnail you can pick.
+     */
+    await favourites.click();
+    await expect(sheet.getByRole('button', { name: 'output/monday', exact: true })).toBeVisible();
+    const starred = sheet.getByRole('button', { name: 'Keep render_0007.png in favourites' });
+    await expect(starred).toHaveAttribute('aria-pressed', 'true');
+
+    // And picking one out of the category fills the field with its whole
+    // reference — the root included, because the same path exists under three.
+    await sheet.locator('img[alt="render_0007.png"]').click();
+    await expect(page.getByText('output/monday/render_0007.png')).toBeVisible();
+  });
+});
+
+/**
+ * Advanced, and the way back out of a form that has got into a state.
+ *
+ * Two complaints about the top and the bottom of the same screen. Advanced is
+ * where a big workflow puts everything that is not a prompt, and as a flat run
+ * of chips it is a heap: `start_at_step` twice, `add_noise` twice, and nothing
+ * saying which sampler either belongs to. And a form that has ended up somewhere
+ * wrong had no way back short of editing every field by hand.
+ */
+test.describe('finding things under Advanced, and starting over', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    // Two KSamplerAdvanced nodes, so several settings share a label — which is
+    // the case that makes the grouping worth having rather than tidy.
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'Base and refiner', graph: sdxlBaseRefiner } }),
+    );
+  });
+
+  test('groups the advanced settings under the node each came from', async ({ page }) => {
+    await open(page, '/');
+
+    const picker = page.getByRole('button', { name: /Base and refiner/ });
+    if (await picker.isVisible().catch(() => false)) await picker.click();
+
+    await page.getByRole('button', { name: 'Advanced' }).click();
+    const sheet = page.getByRole('dialog', { name: 'Advanced' });
+    await expect(sheet).toBeVisible();
+
+    /*
+     * The headings are the node titles, and the same setting appears under
+     * each — which is the whole point. Read as sections rather than as a list
+     * of chips: "which of these two is the refiner's" is the question that had
+     * no answer on screen.
+     */
+    const base = sheet.locator('section').filter({ hasText: 'Base sampler' });
+    const refiner = sheet.locator('section').filter({ hasText: 'Refiner sampler' });
+    await expect(base).toHaveCount(1);
+    await expect(refiner).toHaveCount(1);
+
+    await expect(base.getByRole('button', { name: /Start at step/i })).toHaveCount(1);
+    await expect(refiner.getByRole('button', { name: /Start at step/i })).toHaveCount(1);
+    await page.screenshot({ path: 'test-results/101-advanced-by-node.png' });
+
+    // And a heading belongs to one node: the base sampler's section does not
+    // carry the refiner's settings, which a flat list could not have told you.
+    await expect(base.getByText('Refiner sampler')).toHaveCount(0);
+  });
+
+  test('resets the form back to the workflow’s own values', async ({ page }) => {
+    await open(page, '/');
+
+    const picker = page.getByRole('button', { name: /Base and refiner/ });
+    if (await picker.isVisible().catch(() => false)) await picker.click();
+
+    // Two positive prompts in this graph, one per checkpoint; the first will do.
+    const prompt = page.getByPlaceholder('Describe the image…').first();
+    await expect(prompt).toHaveValue(/astronaut/);
+    await prompt.fill('something else entirely');
+    await expect(prompt).toHaveValue('something else entirely');
+
+    /*
+     * Two taps, because it throws away a prompt somebody wrote and it sits at
+     * the top of the screen where a thumb reaching for the workflow picker
+     * passes over it.
+     */
+    const reset = page.getByRole('button', { name: 'Reset this workflow' });
+    await expect(reset).toBeVisible();
+    await reset.click();
+    await expect(prompt).toHaveValue('something else entirely');
+
+    await page.getByRole('button', { name: 'Reset this workflow — sure?' }).click();
+    await expect(prompt).toHaveValue(/astronaut/);
+    await page.screenshot({ path: 'test-results/102-reset-workflow.png' });
+  });
+});
+
+/**
+ * Wave 30: the desk.
+ *
+ * The third layout, and a different kind of step from the second. Phone to
+ * tablet is "there is room for a second thing" — the render beside the form,
+ * the pictures beside the conversation, both of them a second pane *of the
+ * screen you are on*. This is the step where there is room for something that
+ * is not the screen at all: what the machine is doing, in view while you read
+ * the model library or edit a block.
+ *
+ * These run at 1600×1000 rather than on a monitor, because the layout has to be
+ * right at the bottom of its range. Three columns at 2560 proves nothing.
+ */
+test.describe('at a desk', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+  });
+
+  test('@desk names every destination instead of abbreviating it', async ({ page }) => {
+    await open(page, '/');
+
+    /*
+     * The rail is the same rail — the same rows, the same links — turned on its
+     * side and given the width to say what each one is. Five rems is a column
+     * of glyphs you learn the position of; thirteen is a list you read.
+     */
+    const rail = page.getByTestId('side-rail');
+    await expect(rail).toBeVisible();
+    expect((await rail.boundingBox())!.width).toBeGreaterThan(180);
+
+    // And the groups are named rather than merely ruled apart.
+    await expect(rail.getByText('Every day')).toBeVisible();
+    await expect(rail.getByText('Set up once')).toBeVisible();
+  });
+
+  test('@desk keeps the run in view while you are somewhere else', async ({ page }) => {
+    await open(page, '/');
+
+    /*
+     * The whole argument for the panel. Queue something, walk away to another
+     * screen entirely, and the run is still in front of you — where on a phone
+     * it is a strip above the tab bar, and on a tablet it is a pane of the
+     * Generate screen you have just left.
+     */
+    const dock = page.getByTestId('dock');
+    await expect(dock).toBeVisible();
+    await expect(dock.getByText('Nothing running.')).toBeVisible();
+
+    await page.getByPlaceholder('Describe the image…').fill('a lighthouse at dusk');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    // Away to a screen that has nothing to do with generating.
+    await page.getByRole('link', { name: 'Models' }).click();
+    await expect(page).toHaveURL(/\/models$/);
+    await expect(dock.getByRole('button', { name: 'Stop' })).toBeVisible({ timeout: 30_000 });
+    await page.screenshot({ path: 'test-results/103-desk-dock.png' });
+
+    /*
+     * And what came out lands in it — from anywhere, not only from the workflow
+     * whose form happens to be open, which is the Generate pane's question
+     * rather than this one's.
+     */
+    await expect(dock.getByTestId('dock-latest').locator('img').first()).toBeVisible({
+      timeout: 60_000,
+    });
+  });
+
+  test('@desk puts the panel away, and remembers', async ({ page }) => {
+    await open(page, '/');
+    const dock = page.getByTestId('dock');
+    await expect(dock).toBeVisible();
+
+    // By the key, because that is the point of having one.
+    await page.keyboard.press('[');
+    await expect(dock).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Show the run panel' })).toBeVisible();
+
+    /*
+     * A decision about the room you have, not about the thing you are doing —
+     * so it survives a reload rather than being re-applied every morning.
+     */
+    await page.reload();
+    await expect(page.getByTestId('dock')).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Show the run panel' }).click();
+    await expect(page.getByTestId('dock')).toBeVisible();
+  });
+
+  test('@desk gets about on the keyboard, and stands down while you type', async ({ page }) => {
+    await open(page, '/');
+
+    // `g` then the destination's initial, the chord every mail client settled on.
+    await page.keyboard.press('g');
+    await page.keyboard.press('l');
+    await expect(page).toHaveURL(/\/gallery$/);
+
+    await page.keyboard.press('g');
+    await page.keyboard.press('m');
+    await expect(page).toHaveURL(/\/models$/);
+
+    await page.keyboard.press('g');
+    await page.keyboard.press('g');
+    await expect(page).toHaveURL(/\/$/);
+
+    /*
+     * The rule that makes the rest of them safe: a prompt with the word
+     * "gallery" in it is a prompt. Without this every `g` in it is a navigation
+     * and the text you typed is on a screen you have left.
+     */
+    const prompt = page.getByPlaceholder('Describe the image…');
+    await prompt.fill('');
+    await prompt.type('a gallery of lighthouses');
+    await expect(page).toHaveURL(/\/$/);
+    await expect(prompt).toHaveValue('a gallery of lighthouses');
+
+    // And the map of them is on the key every program has used for it —
+    // once the text box has let go of the keyboard again.
+    await prompt.blur();
+    await page.keyboard.press('?');
+    const map = page.getByRole('dialog', { name: 'Keyboard' });
+    await expect(map).toBeVisible();
+    await expect(map.getByText('Go to', { exact: true })).toBeVisible();
+    await expect(map.getByText('g l')).toBeVisible();
+    await page.screenshot({ path: 'test-results/104-desk-keys.png' });
+  });
+
+  /**
+   * The viewer, which was the last thing in here still shaped like a phone.
+   *
+   * Ten forty-pixel cells in a strip along the bottom of a sixteen-hundred-point
+   * window, with everything worth knowing about the picture behind a button
+   * marked Details. The picture is still the point and still gets nearly all of
+   * the screen; what changes is that the controls stand beside it in a column
+   * wide enough to name them, and the settings that made it are simply there.
+   */
+  test('@desk opens a picture with its settings beside it, not behind a button', async ({
+    page,
+  }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a pier at dawn');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await open(page, '/gallery');
+    const tile = page.locator('main img').first();
+    await expect(tile).toBeVisible({ timeout: 60_000 });
+    await tile.click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+
+    const aside = page.getByTestId('viewer-aside');
+    await expect(aside).toBeVisible();
+
+    /*
+     * No Details button, because there is nothing behind it: the prompt, the
+     * workflow, how long it took and every parameter are in the column.
+     */
+    await expect(page.getByRole('button', { name: 'Details', exact: true })).toHaveCount(0);
+    await expect(aside.getByText('All parameters')).toBeVisible();
+    await expect(aside.getByText('a pier at dawn').first()).toBeVisible();
+    await expect(aside.getByRole('button', { name: 'Favourite' })).toBeVisible();
+
+    // And the picture keeps the rest of the window rather than being letterboxed
+    // into what is left over — which is the trade the column has to earn.
+    const stage = (await page.getByTestId('viewer-image').boundingBox())!;
+    const panel = (await aside.boundingBox())!;
+    expect(stage.width).toBeGreaterThan(panel.width);
+    await page.screenshot({ path: 'test-results/105-desk-viewer.png' });
+
+    // Escape still closes it, and the arrows still walk the run.
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('viewer-image')).toHaveCount(0);
+  });
+
+  /**
+   * The pointer exists here, and until now nothing answered it.
+   *
+   * Every control said what a *press* looked like, because the app was written
+   * for a device with no pointer. A surface where nothing responds to the mouse
+   * reads as a picture of an interface rather than an interface.
+   */
+  /**
+   * The same component, on the two other screens that had a list and a sheet.
+   *
+   * `DetailPane` exists so that "what happens to a record on a big screen" is
+   * answered once. These prove it is actually answered once — that adopting it
+   * is a two-line change and the behaviour that comes with it is the same.
+   */
+  test('@desk edits a block beside the library rather than over it', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/prompt-blocks', {
+        data: { name: 'Golden hour', text: 'warm low sun, long shadows', category: 'Light' },
+      }),
+    );
+    await open(page, '/blocks');
+
+    // Nothing picked: the column says what it is for rather than being a hole.
+    await expect(page.getByText(/Pick a block to edit it/)).toBeVisible();
+
+    // Anchored: the drag handle beside it is a button named "Reorder Golden hour".
+    await page.getByRole('button', { name: /^Golden hour/ }).click();
+    const pane = page.getByTestId('detail-pane');
+    await expect(pane).toBeVisible();
+    await expect(pane.getByRole('textbox', { name: 'Block text' })).toHaveValue(
+      'warm low sun, long shadows',
+    );
+
+    // The library is still there beside it — which is the whole point, since
+    // wording a block means reading the ones you already have.
+    await expect(page.getByRole('button', { name: /^Golden hour/ })).toBeVisible();
+    await page.screenshot({ path: 'test-results/106-desk-blocks.png' });
+
+    // Escape puts it away, as it does for a sheet.
+    await page.keyboard.press('Escape');
+    await expect(pane).toHaveCount(0);
+  });
+
+  test('@desk lists the settings pages down the side', async ({ page }) => {
+    await open(page, '/settings');
+
+    /*
+     * A row of five short words above a column of settings is a navigation you
+     * keep re-reading to find out where you are. Down the side it says it once
+     * — which is the arrangement every settings window has had for decades.
+     */
+    const pages = page.getByRole('navigation', { name: 'Settings pages' });
+    await expect(pages).toBeVisible();
+    for (const label of ['Servers', 'Workflows', 'Chat', 'Pictures', 'System']) {
+      await expect(pages.getByRole('button', { name: label })).toBeVisible();
+    }
+
+    await pages.getByRole('button', { name: 'System' }).click();
+    await expect(page).toHaveURL(/in=system/);
+    await page.screenshot({ path: 'test-results/107-desk-settings.png' });
+  });
+
+  /**
+   * Getting a picture in, the way a desk gets one in.
+   *
+   * The gesture a desktop has and a phone does not, and its absence is the kind
+   * of gap you find by trying: the reference is in a folder open beside the
+   * browser, you drag it across, and nothing happens. Driven through the DOM
+   * rather than the OS — Playwright cannot start a real drag from the desktop —
+   * so what this proves is the app's half: that the target says it is one, that
+   * a dropped file reaches the editor, and that a stray drop is refused rather
+   * than replacing the app with a PNG in a tab.
+   */
+  test('@desk takes a picture dropped onto the field that wants one', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } }),
+    );
+    await open(page, '/');
+
+    const picker = page.getByRole('button', { name: /img2img/ });
+    if (await picker.isVisible().catch(() => false)) await picker.click();
+
+    const field = page.getByTestId('image-drop').first();
+    await expect(field).toBeVisible();
+
+    /*
+     * A drag carrying a file says so before it lands. Without that there is
+     * nothing to tell you the drop will be caught, and a drag with no feedback
+     * is a drag people abort.
+     */
+    await field.dispatchEvent('dragenter', { dataTransfer: await fileTransfer(page) });
+    await expect(field).toHaveClass(/outline-dashed/);
+
+    await field.dispatchEvent('drop', { dataTransfer: await fileTransfer(page) });
+
+    /*
+     * And it lands in the editor rather than being uploaded on the spot — the
+     * same road a file chosen from the picker takes, because a dropped
+     * photograph is as likely to be the wrong shape as a browsed one.
+     */
+    await expect(page.getByRole('dialog', { name: /Adjust|Edit/ })).toBeVisible();
+    await page.screenshot({ path: 'test-results/108-desk-drop.png' });
+  });
+
+  /**
+   * The monitor is the one screen that wants the width itself.
+   *
+   * A chart's width *is* how much time is on screen at once, which is the
+   * opposite of a settings row — so this is the one place the reading cap comes
+   * off. Not all the way: past about a hundred rems the labels on the line are
+   * further apart than they are informative.
+   */
+  test('@desk gives the charts more than the reading width', async ({ page }) => {
+    await open(page, '/monitor');
+    await expect(page.getByRole('heading', { name: 'Monitor' })).toBeVisible();
+
+    const column = page.getByTestId('monitor-picker');
+    const width = (await column.boundingBox())!.width;
+    // 46rem is the cap every other screen keeps; this one is past it.
+    expect(width).toBeGreaterThan(46 * 16);
+  });
+
+  /**
+   * What the panel defers to, when the panel is not there.
+   *
+   * The live bar is suppressed at a desk because the bench says the same thing
+   * in full, one column over — which stops being true the moment the bench is
+   * put away, and that is remembered. Without this a run had no progress, no
+   * ETA and no way to stop it anywhere outside Generate.
+   */
+  test('@desk brings the progress bar back when the bench is put away', async ({ page }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a pier at dusk');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    const dock = page.getByTestId('dock');
+    await expect(dock.getByRole('button', { name: 'Stop' })).toBeVisible({ timeout: 30_000 });
+
+    // With the bench open the bar would be saying it twice.
+    await expect(page.getByTestId('live-bar')).toHaveCount(0);
+
+    await page.keyboard.press('[');
+    await expect(dock).toHaveCount(0);
+    await expect(page.getByTestId('live-bar')).toBeVisible();
+
+    await page.keyboard.press('[');
+    await expect(page.getByTestId('dock')).toBeVisible();
+  });
+
+  test('@desk answers the pointer before it is pressed', async ({ page }) => {
+    await open(page, '/gallery');
+
+    const link = page.getByTestId('side-rail').getByRole('link', { name: 'Models' });
+    const before = await link.evaluate((el) => getComputedStyle(el).backgroundColor);
+    await link.hover();
+    await expect
+      .poll(async () => link.evaluate((el) => getComputedStyle(el).backgroundColor))
+      .not.toBe(before);
   });
 });

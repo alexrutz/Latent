@@ -14,6 +14,9 @@ import { objectInfoFixture } from './fixtures/objectInfo.js';
 import {
   combinedConditioning,
   img2img,
+  loadImageFromFolder,
+  ltxVideoGguf,
+  minimaxReferences,
   sd15Txt2Img,
   sdxlBaseRefiner,
   uiFormatWorkflow,
@@ -135,7 +138,12 @@ describe('buildParamSchema — SD1.5 txt2img', () => {
 
   it('finds the output node and reports capabilities', () => {
     expect(schema.outputNodeIds).toEqual(['9']);
-    expect(schema.capabilities).toEqual({ img2img: false, seeded: true });
+    expect(schema.capabilities).toEqual({
+      img2img: false,
+      seeded: true,
+      video: false,
+      audio: false,
+    });
     expect(schema.missingNodeTypes).toEqual([]);
   });
 });
@@ -157,12 +165,17 @@ describe('buildParamSchema — SDXL base + refiner', () => {
     expect(byId(schema.fields, '11.noise_seed')?.role).toBe('seed');
   });
 
-  it('classifies both samplers\' prompts', () => {
-    expect(byRole(schema.fields, 'prompt').map((f) => f.id).sort()).toEqual(['15.text', '6.text']);
-    expect(byRole(schema.fields, 'negative_prompt').map((f) => f.id).sort()).toEqual([
-      '16.text',
-      '7.text',
-    ]);
+  it("classifies both samplers' prompts", () => {
+    expect(
+      byRole(schema.fields, 'prompt')
+        .map((f) => f.id)
+        .sort(),
+    ).toEqual(['15.text', '6.text']);
+    expect(
+      byRole(schema.fields, 'negative_prompt')
+        .map((f) => f.id)
+        .sort(),
+    ).toEqual(['16.text', '7.text']);
   });
 });
 
@@ -177,7 +190,12 @@ describe('buildParamSchema — img2img and upscale', () => {
   it('handles a prompt-free, sampler-free upscale graph', () => {
     const schema = build(upscale);
     expect(byRole(schema.fields, 'prompt')).toHaveLength(0);
-    expect(schema.capabilities).toEqual({ img2img: true, seeded: false });
+    expect(schema.capabilities).toEqual({
+      img2img: true,
+      seeded: false,
+      video: false,
+      audio: false,
+    });
     expect(byId(schema.fields, '2.model_name')?.role).toBe('model');
     expect(schema.outputNodeIds).toEqual(['4']);
   });
@@ -186,7 +204,11 @@ describe('buildParamSchema — img2img and upscale', () => {
 describe('buildParamSchema — prompts behind ConditioningCombine', () => {
   it('walks backwards through conditioning nodes to find both prompt texts', () => {
     const schema = build(combinedConditioning);
-    expect(byRole(schema.fields, 'prompt').map((f) => f.id).sort()).toEqual(['2.text', '3.text']);
+    expect(
+      byRole(schema.fields, 'prompt')
+        .map((f) => f.id)
+        .sort(),
+    ).toEqual(['2.text', '3.text']);
     expect(byRole(schema.fields, 'negative_prompt').map((f) => f.id)).toEqual(['5.text']);
   });
 });
@@ -226,8 +248,18 @@ describe('soft slider ranges', () => {
    * spanning it moves ~40 steps per pixel on a phone and cannot select 25.
    */
   it('narrows steps and cfg to the range people actually work in', () => {
-    expect(byId(schema.fields, '3.steps')).toMatchObject({ min: 1, max: 10000, softMin: 1, softMax: 60 });
-    expect(byId(schema.fields, '3.cfg')).toMatchObject({ min: 0, max: 100, softMin: 1, softMax: 20 });
+    expect(byId(schema.fields, '3.steps')).toMatchObject({
+      min: 1,
+      max: 10000,
+      softMin: 1,
+      softMax: 60,
+    });
+    expect(byId(schema.fields, '3.cfg')).toMatchObject({
+      min: 0,
+      max: 100,
+      softMin: 1,
+      softMax: 20,
+    });
   });
 
   it('keeps the hard limits available alongside the soft ones', () => {
@@ -579,5 +611,148 @@ describe('nodes named by convention', () => {
     // exists to settle.
     expect(byId(schema.fields, '2.text')).toMatchObject({ role: 'prompt' });
     expect(byId(schema.fields, '3.text')?.role).not.toBe('prompt');
+  });
+});
+
+/**
+ * A video workflow on quantised weights, which is how these models are
+ * actually run: a GGUF repack loaded by its own node, a latent with a frame
+ * count, and a frame rate on the conditioning.
+ */
+describe('a video workflow', () => {
+  const schema = build(ltxVideoGguf);
+
+  it('knows it makes a clip before anything has run', () => {
+    expect(schema.capabilities.video).toBe(true);
+    expect(schema.outputNodeIds).toEqual(['10']);
+  });
+
+  /*
+   * The frame count is the length of the clip and most of the render time. As
+   * one more integer in the advanced group it was the single most consequential
+   * number in the graph, three taps away.
+   */
+  it('gives the frame count and the frame rate roles of their own', () => {
+    const length = byId(schema.fields, '6.length');
+    expect(length?.role).toBe('length');
+    expect(length?.label).toBe('Frames');
+    expect(length?.group).toBe('main');
+    // The model quantises it — LTX wants 8n+1 — and the node says so.
+    expect(length?.step).toBe(8);
+    // The slider spans what one pass on one card renders, not what the node
+    // will tolerate.
+    expect(length?.softMax).toBe(257);
+
+    const rate = byId(schema.fields, '7.frame_rate');
+    expect(rate?.role).toBe('frame_rate');
+    expect(rate?.group).toBe('main');
+
+    // And they come after the size, where the rest of "how big is this" sits.
+    const main = schema.fields.filter((field) => field.group === 'main').map((field) => field.role);
+    expect(main.indexOf('length')).toBeGreaterThan(main.indexOf('height'));
+    expect(main.indexOf('frame_rate')).toBeGreaterThan(main.indexOf('length'));
+  });
+
+  it('treats a quantised loader as the model picker', () => {
+    const model = byId(schema.fields, '1.unet_name');
+    expect(model?.role).toBe('model');
+    expect(model?.control).toBe('combo');
+    expect(model?.options).toContain('ltx-2.5-video-Q4_K_M.gguf');
+  });
+
+  it('still finds the prompts through the video conditioning node', () => {
+    expect(byRole(schema.fields, 'prompt').map((field) => field.id)).toEqual(['4.text']);
+    expect(byRole(schema.fields, 'negative_prompt').map((field) => field.id)).toEqual(['5.text']);
+  });
+});
+
+describe('the MiniMax H3 reference slots', () => {
+  /**
+   * Forty-eight optional inputs, of which a shot uses three.
+   *
+   * The node offers every reference slot as a fixed input so that an API-format
+   * prompt can reach it at all — which is the whole reason it exists — and the
+   * cost of that is a form nobody could read if it were shown whole.
+   */
+  const field = (id: string) => byId(build(minimaxReferences).fields, id);
+
+  it('shows the switch and the tag for a slot that has a picture', () => {
+    expect(field('4.image_1_on')?.hidden).toBeFalsy();
+    expect(field('4.image_1_tag')?.hidden).toBeFalsy();
+  });
+
+  it('keeps the switch but drops the tag when a wired slot is off', () => {
+    // The tag only ever writes a number the prompt will not contain now.
+    expect(field('4.image_2_tag')?.hidden).toBe(true);
+    // The switch stays: it is the only thing that turns the slot back on.
+    expect(field('4.image_2_on')?.hidden).toBeFalsy();
+  });
+
+  it('drops both controls for a slot the graph carries but nothing is wired to', () => {
+    expect(field('4.image_3_on')?.hidden).toBe(true);
+    expect(field('4.image_3_tag')?.hidden).toBe(true);
+  });
+
+  it('has no field at all for a slot the graph never mentions', () => {
+    // The other half of why the form stays short: a saved workflow only
+    // carries the widgets it was saved with, so the forty-odd untouched slots
+    // never reach the form to be hidden in the first place.
+    expect(field('4.image_9_on')).toBeUndefined();
+    expect(field('4.video_1_tag')).toBeUndefined();
+    expect(field('4.audio_3_on')).toBeUndefined();
+  });
+
+  it('leaves the settings that always apply alone', () => {
+    for (const name of ['prompt', 'width', 'height', 'length', 'ref_image_size']) {
+      expect(field(`4.${name}`)?.hidden).toBeFalsy();
+    }
+  });
+
+  it('hides nothing on a node that is not this one', () => {
+    // The rule is keyed to the class, so an `image_1_on` somewhere else is
+    // somebody else's business.
+    const other = build({
+      '1': { class_type: 'LoadImage', inputs: { image: 'a.png' } },
+    });
+    expect(other.fields.every((f) => !f.hidden || f.inputName === 'control_after_generate')).toBe(
+      true,
+    );
+  });
+});
+
+describe('the folder browser is not an upload', () => {
+  /**
+   * The bug this pins.
+   *
+   * `isImageLoaderInput` tested the class name by *prefix*, and `LoadImage` is
+   * a prefix of `LoadImageFromFolder`. So the browser's `image` — which holds
+   * `output/monday/render.png` — was classified as an upload, given the
+   * ordinary picker, and written with a bare input-folder filename. ComfyUI
+   * then refused the prompt: "names a folder but no file".
+   */
+  const schema = build(loadImageFromFolder);
+  const image = byId(schema.fields, '1.image');
+
+  it('gives it its own role and control, not the upload one', () => {
+    expect(image?.role).toBe('folder_image');
+    expect(image?.control).toBe('folderImage');
+    expect(image?.label).toBe('Picture from a folder');
+  });
+
+  it('keeps the path it was given rather than a bare filename', () => {
+    expect(image?.defaultValue).toBe('output/monday/render_0007.png');
+  });
+
+  it('does not claim the workflow can take a photo from this device', () => {
+    // img2img means "this phone can supply the picture". It cannot: the file
+    // already exists on the ComfyUI machine and is chosen, not sent.
+    expect(schema.capabilities.img2img).toBe(false);
+    expect(findFieldByRole(schema, 'image_input')).toBeUndefined();
+  });
+
+  it('still recognises the stock loaders it was meant to catch', () => {
+    const stock = build(img2img);
+    expect(findFieldByRole(stock, 'image_input')?.id).toBe('1.image');
+    expect(stock.capabilities.img2img).toBe(true);
   });
 });

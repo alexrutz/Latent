@@ -4,7 +4,7 @@ import { overlayChoices, shortLabels, TEXT_OVERLAY_PREFIX } from '@latent/shared
 import type { GenerationRecord, ParamSummaryItem } from '@latent/shared';
 
 import { Toggle } from './ParamControl';
-import { cn, Sheet } from './ui';
+import { cn, CONTROL_FACE, CONTROL_FACE_SET, Sheet } from './ui';
 
 /**
  * Showing a run's settings on top of the picture itself.
@@ -183,8 +183,9 @@ export function ParamOverlayPicker({
         onClick={() => setOpen(true)}
         aria-label={label}
         className={cn(
-          'flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] leading-none',
-          selected.length > 0 ? 'bg-accent/20 text-accent' : 'bg-surface text-muted',
+          'flex h-9 shrink-0 items-center gap-1 rounded-full px-2.5 text-[11px] leading-none',
+          // Visible as a control, not only as a glyph: see `CONTROL_FACE`.
+          selected.length > 0 ? CONTROL_FACE_SET : CONTROL_FACE,
           className,
         )}
       >

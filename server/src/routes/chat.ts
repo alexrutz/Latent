@@ -3,68 +3,57 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 
 import type {
   ChatAttachment,
-  ChatMessage,
-  ChatStreamEvent,
-  ChatToolName,
+  ChatConversationDetail,
+  ChatEvent,
   ChatToolResult,
   ProposedBlock,
 } from '@latent/shared';
 
-import {
-  DEFAULT_SYSTEM_PROMPT,
-  LlamaClient,
-  LlamaError,
-  looksLikeAQuestionWithOptions,
-} from '../chat/llama.js';
-import type { ConnectionConfig } from '../comfy/connection.js';
+import { ChatEngine, type IntentResult } from '../chat/engine.js';
+import { DEFAULT_SYSTEM_PROMPT, LlamaClient } from '../chat/llama.js';
+import { llamaClient } from '../chat/turn.js';
 import { toConfig } from './connections.js';
 import type { AppContext } from './context.js';
 
 /**
- * The chat module's routes.
+ * The chat module's routes — a door onto the engine, and nothing else.
  *
- * One thing here is unlike the rest of the server: the reply is streamed. A
- * local model on a modest box produces a few tokens a second, and a chat that
- * shows nothing for forty seconds and then everything at once is a chat nobody
- * waits for. The stream is server-sent events, which survive a proxy and a
- * flaky phone connection in a way a second WebSocket would not.
+ * There used to be far more here, and it was the wrong more. A conversation's
+ * multi-step behaviours were spread across four routes the browser called in
+ * order — post a message, record a decision, ask it to continue, ask for
+ * another wandering round — which meant the *sequence* lived in a tab. Every
+ * gap between two of those calls was somewhere a frozen page could leave the
+ * conversation stuck, and it regularly did.
+ *
+ * So these routes say what somebody wants and stop there. What follows is
+ * `chat/engine.ts`'s business, and it happens whether or not anyone is still
+ * watching. The one long-lived route is the event stream, which is how a client
+ * finds out what happened while it was away.
  */
 
 /** Ceiling on one attachment, before base64 expansion. */
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENTS = 4;
 
-/** The model server in use, or nothing when none has been added yet. */
-function llamaConnection(ctx: AppContext): ConnectionConfig | null {
-  const active = ctx.store.getActiveConnection('llama');
-  return active ? toConfig(active) : null;
-}
-
 /**
- * The instructions in force, resolved from the collection.
+ * How often to write a comment down an idle event stream.
  *
- * By id, and empty when that id no longer exists: deleting the prompt the chat
- * was using falls back to Latent's own wording rather than sending an empty
- * system message, which some templates take as an instruction to say nothing.
+ * A conversation can sit quiet for an hour, and a proxy that sees nothing on a
+ * connection for sixty seconds closes it. `EventSource` reconnects on its own,
+ * so the cost of not doing this is a reconnect a minute rather than a broken
+ * app — but a reconnect means a fresh `sync`, and doing that for ever in the
+ * background is exactly the sort of waste nobody notices until the battery is
+ * flat.
  */
-function systemPrompt(ctx: AppContext): string {
-  const id = ctx.store.getSettings().chat.systemPromptId;
-  if (!id) return '';
-  return ctx.store.getSystemPrompt(id)?.text ?? '';
-}
+const KEEPALIVE_MS = 25_000;
 
-/** A client for the model server in use, or nothing when none is configured. */
-function llamaClient(ctx: AppContext): LlamaClient | null {
-  const connection = llamaConnection(ctx);
-  if (!connection) return null;
-  return new LlamaClient(connection, ctx.store.getSettings().chat, systemPrompt(ctx));
-}
+export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): ChatEngine {
+  const engine = new ChatEngine(ctx);
 
-export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void {
   /** Whether the model server is there, and what it has loaded. */
   app.get('/api/chat/status', async () => {
-    const connection = llamaConnection(ctx);
-    if (!connection) {
+    const active = ctx.store.getActiveConnection('llama');
+    if (!active) {
       return {
         ok: false,
         baseUrl: '',
@@ -73,6 +62,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       };
     }
 
+    const connection = toConfig(active);
     const client = new LlamaClient(connection, ctx.store.getSettings().chat);
     try {
       const models = await client.models();
@@ -107,27 +97,77 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
     reply.code(201).send(ctx.store.createChat(randomUUID())),
   );
 
+  /**
+   * A conversation, and what it is doing.
+   *
+   * Both together because they are read together: a screen that had the
+   * transcript but not the run state would have to guess whether the last
+   * proposal in it is waiting on somebody, which is precisely the guessing this
+   * rebuild removed.
+   */
   app.get<{ Params: { id: string } }>('/api/chat/conversations/:id', async (request, reply) => {
     const chat = ctx.store.getChat(request.params.id);
-    return chat ?? reply.code(404).send({ error: 'No such conversation' });
+    if (!chat) return reply.code(404).send({ error: 'No such conversation' });
+    return { ...withWanderNotes(ctx, chat), run: ctx.store.getChatRun(chat.id) };
   });
 
   app.delete<{ Params: { id: string } }>('/api/chat/conversations/:id', async (request, reply) => {
     ctx.store.deleteChat(request.params.id);
+    engine.forget(request.params.id);
     return reply.code(204).send();
   });
 
   /**
-   * Say something, and stream the reply.
+   * What this conversation is doing, for as long as you care to watch.
    *
-   * The user's message is stored before the model is asked, so a reply that
-   * fails halfway leaves the conversation intact rather than losing what was
-   * typed.
+   * One stream per open conversation rather than one per turn, and it opens
+   * with everything that is true rather than with whatever happens next. That
+   * is the whole difference: a client coming back from a suspended tab used to
+   * have no way of learning that three pictures had been made while it was
+   * asleep, because the only stream it had ever had was the reply to a request
+   * it made an hour ago.
    */
+  app.get<{ Params: { id: string } }>(
+    '/api/chat/conversations/:id/events',
+    async (request, reply) => {
+      const chat = ctx.store.getChat(request.params.id);
+      if (!chat) return reply.code(404).send({ error: 'No such conversation' });
+
+      reply.raw.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive',
+        // Nginx and friends buffer event streams into uselessness otherwise.
+        'x-accel-buffering': 'no',
+      });
+
+      const send = (event: ChatEvent) => {
+        reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
+      };
+      const unsubscribe = engine.runner(chat.id).subscribe({ send });
+
+      const keepalive = setInterval(() => reply.raw.write(': ping\n\n'), KEEPALIVE_MS);
+      keepalive.unref?.();
+
+      reply.raw.on('close', () => {
+        clearInterval(keepalive);
+        unsubscribe();
+      });
+
+      // Deliberately never resolved: the handler's life is the stream's life.
+      return new Promise<void>(() => undefined);
+    },
+  );
+
+  /* ---------------------------------------------------------------- */
+  /* Intents                                                           */
+  /* ---------------------------------------------------------------- */
+
+  /** Say something. The reply, and anything it leads to, is the engine's. */
   app.post<{
     Params: { id: string };
     Body: { content?: string; attachments?: ChatAttachment[] };
-  }>('/api/chat/conversations/:id/messages', async (request, reply) => {
+  }>('/api/chat/conversations/:id/say', async (request, reply) => {
     const chat = ctx.store.getChat(request.params.id);
     if (!chat) return reply.code(404).send({ error: 'No such conversation' });
 
@@ -147,30 +187,80 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       return reply.code(400).send({ error: 'Nothing to send.' });
     }
 
-    ctx.store.insertChatMessage(chat.id, {
-      id: randomUUID(),
-      role: 'user',
-      content,
-      ...(attachments.length > 0 ? { attachments } : {}),
-      createdAt: Date.now(),
-    });
-
-    // The first thing said names the conversation, so a list of them is
-    // scannable without opening each one.
-    if (chat.title === '') {
-      ctx.store.renameChat(chat.id, content || 'Picture');
-    }
-
-    return streamReply(app, ctx, reply, chat.id);
+    return settle(
+      reply,
+      engine.runner(chat.id).accept({
+        type: 'say',
+        content,
+        ...(attachments.length > 0 ? { attachments } : {}),
+      }),
+    );
   });
 
   /**
-   * What the user decided about a tool call.
+   * Ask for a prompt, because a button was pressed.
    *
-   * Doing the work here rather than in the browser: the decision has to be
-   * recorded, the blocks have to be written, and the model has to be told — and
-   * a client that did two of those and then lost its connection would leave the
-   * conversation unable to continue.
+   * The tool is forced rather than suggested: pressing the button is not the
+   * model's initiative to weigh up, it is an instruction. `fresh` asks for a
+   * different one rather than the same one again; `instant` queues whatever
+   * comes back without stopping to show it.
+   */
+  app.post<{ Params: { id: string }; Body: { fresh?: boolean; instant?: boolean } }>(
+    '/api/chat/conversations/:id/prompt',
+    async (request, reply) => {
+      const chat = ctx.store.getChat(request.params.id);
+      if (!chat) return reply.code(404).send({ error: 'No such conversation' });
+      return settle(
+        reply,
+        engine.runner(chat.id).accept({
+          type: 'prompt',
+          fresh: request.body?.fresh === true,
+          instant: request.body?.instant === true,
+        }),
+      );
+    },
+  );
+
+  /** Start or stop wandering: picture after picture out of your own notes. */
+  app.post<{ Params: { id: string }; Body: { on?: boolean } }>(
+    '/api/chat/conversations/:id/wander',
+    async (request, reply) => {
+      const chat = ctx.store.getChat(request.params.id);
+      if (!chat) return reply.code(404).send({ error: 'No such conversation' });
+      return settle(
+        reply,
+        engine.runner(chat.id).accept({ type: 'wander', on: request.body?.on !== false }),
+      );
+    },
+  );
+
+  /**
+   * Carry on by itself, from here.
+   *
+   * A route rather than a settings patch because it has to reach the run as
+   * well as the setting: turning it on while a proposal is waiting has to take
+   * that proposal, or the switch does nothing visible and the strip above it
+   * starts describing a loop that is not running.
+   */
+  app.post<{ Params: { id: string }; Body: { on?: boolean } }>(
+    '/api/chat/conversations/:id/autonomous',
+    async (request, reply) => {
+      const chat = ctx.store.getChat(request.params.id);
+      if (!chat) return reply.code(404).send({ error: 'No such conversation' });
+      return settle(
+        reply,
+        engine.runner(chat.id).accept({ type: 'autonomous', on: request.body?.on !== false }),
+      );
+    },
+  );
+
+  /**
+   * What the user decided about a proposal.
+   *
+   * Accepting a prompt queues it here, in the same act that records the
+   * decision. It used to be the browser's job to do both, in that order, over
+   * two requests — and a page that died between them left a proposal with no
+   * answer in a conversation that could not continue.
    */
   app.post<{
     Params: { id: string };
@@ -179,65 +269,63 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       decision?: ChatToolResult['decision'];
       /** For `prompt_blocks`: the blocks the user kept, as edited. */
       blocks?: ProposedBlock[];
-      /** For `build_prompt` and `ask_user`: what the client did, or the answer. */
+      /** For `ask_user`: the answer. For the rest: what was done, in a line. */
       note?: string;
-      /** For `build_prompt`: the run the accepted prompt started. */
-      generationId?: string;
-      /** The prompt as it was actually queued, after any editing in the dialog. */
+      /** The prompt as edited in the dialog, when it was edited. */
       prompt?: string;
+      /** The workflow the dialog's picker chose, for this prompt only. */
+      workflowId?: string;
     };
-  }>('/api/chat/conversations/:id/tool', async (request, reply) => {
+  }>('/api/chat/conversations/:id/decide', async (request, reply) => {
     const chat = ctx.store.getChat(request.params.id);
     if (!chat) return reply.code(404).send({ error: 'No such conversation' });
 
-    const {
-      messageId,
-      decision = 'rejected',
-      blocks,
-      note,
-      generationId,
-      prompt,
-    } = request.body ?? {};
-    const message = chat.messages.find((candidate) => candidate.id === messageId);
-    if (!message?.toolCall) return reply.code(404).send({ error: 'No such tool call' });
-    if (message.toolResult) {
-      return reply.code(409).send({ error: 'That has already been decided.' });
-    }
+    const body = request.body ?? {};
+    if (!body.messageId) return reply.code(400).send({ error: 'Which proposal?' });
 
-    let summary: string;
-    if (decision === 'rejected') {
-      summary = note?.trim() || 'The user declined.';
-    } else if (message.toolCall.tool === 'prompt_blocks') {
-      summary = applyBlocks(ctx, blocks ?? message.toolCall.blocks);
-    } else if (message.toolCall.tool === 'ask_user') {
-      // The answer *is* the result. Quoted so the model reads it as theirs.
-      summary = note?.trim() || 'The user did not answer.';
-    } else {
-      summary = note?.trim() || 'The user accepted the prompt and is generating it.';
-    }
-
-    const result: ChatToolResult = { decision, summary };
-    ctx.store.setChatToolResult(message.id, result);
-
-    /*
-     * The model is told what happened, as a `tool` message. Without it the next
-     * turn has an assistant message asking for a tool and no answer to it,
-     * which most templates refuse outright.
-     */
-    ctx.store.insertChatMessage(chat.id, {
-      id: randomUUID(),
-      role: 'tool',
-      content: summary,
-      toolCall: message.toolCall,
-      // The run this decision started, so its pictures land in the transcript
-      // at the point they were asked for rather than only in the gallery.
-      ...(typeof generationId === 'string' && generationId !== '' ? { generationId } : {}),
-      ...(typeof prompt === 'string' && prompt !== '' ? { prompt } : {}),
-      createdAt: Date.now(),
-    });
-
-    return reply.send({ ok: true, summary });
+    return settle(
+      reply,
+      engine.runner(chat.id).accept({
+        type: 'decide',
+        messageId: body.messageId,
+        decision: body.decision ?? 'rejected',
+        ...(body.blocks ? { blocks: body.blocks } : {}),
+        ...(body.note ? { note: body.note } : {}),
+        ...(body.prompt ? { prompt: body.prompt } : {}),
+        ...(body.workflowId ? { workflowId: body.workflowId } : {}),
+      }),
+    );
   });
+
+  /** Stop whatever is happening — the turn in flight, and any loop around it. */
+  app.post<{ Params: { id: string } }>(
+    '/api/chat/conversations/:id/stop',
+    async (request, reply) => {
+      const chat = ctx.store.getChat(request.params.id);
+      if (!chat) return reply.code(404).send({ error: 'No such conversation' });
+      return settle(reply, engine.runner(chat.id).accept({ type: 'stop' }));
+    },
+  );
+
+  /**
+   * A render has been drawn on somebody's screen.
+   *
+   * The one thing in the module that still waits for a browser, and it is worth
+   * it: the point of the sequence is that you see the picture before the model
+   * says anything about it, and only the browser knows when that happened.
+   * Advisory — the engine carries on after a timeout, and skips the wait
+   * entirely when nobody is watching.
+   */
+  app.post<{ Params: { id: string }; Body: { generationId?: string } }>(
+    '/api/chat/conversations/:id/shown',
+    async (request, reply) => {
+      const generationId = request.body?.generationId;
+      if (typeof generationId === 'string' && generationId !== '') {
+        engine.runner(request.params.id).noteShown(generationId);
+      }
+      return reply.code(204).send();
+    },
+  );
 
   /**
    * Note that a prompt from further up was generated again.
@@ -249,15 +337,23 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
    */
   app.post<{
     Params: { id: string };
-    Body: { messageId?: string; generationId?: string; prompt?: string };
+    Body: { messageId?: string; prompt?: string; workflowId?: string };
   }>('/api/chat/conversations/:id/rerun', async (request, reply) => {
     const chat = ctx.store.getChat(request.params.id);
     if (!chat) return reply.code(404).send({ error: 'No such conversation' });
 
-    const { messageId, generationId, prompt } = request.body ?? {};
+    const { messageId, prompt, workflowId } = request.body ?? {};
     const message = chat.messages.find((candidate) => candidate.id === messageId);
-    if (message?.toolCall?.tool !== 'build_prompt') {
+    const tool = message?.toolCall?.tool;
+    // A rewrite is a prompt too, and the commonest one to want again.
+    if (tool !== 'build_prompt' && tool !== 'revise_prompt') {
       return reply.code(404).send({ error: 'No such prompt' });
+    }
+
+    const text = prompt?.trim() || (message?.toolCall as { prompt: string }).prompt;
+    const queued = await engine.queueAgain(text, workflowId);
+    if (queued.error && !queued.generationId) {
+      return reply.code(502).send({ error: queued.error });
     }
 
     const id = randomUUID();
@@ -265,13 +361,11 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       id,
       role: 'note',
       content: 'Generated again',
-      ...(typeof generationId === 'string' && generationId !== ''
-        ? { generationId }
-        : {}),
-      ...(typeof prompt === 'string' && prompt !== '' ? { prompt } : {}),
+      ...(queued.generationId ? { generationId: queued.generationId } : {}),
+      prompt: text,
       createdAt: Date.now(),
     });
-    return reply.send({ ok: true, messageId: id });
+    return reply.send({ ok: true, messageId: id, generationId: queued.generationId });
   });
 
   /**
@@ -289,288 +383,57 @@ export function registerChatRoutes(app: FastifyInstance, ctx: AppContext): void 
       const chat = ctx.store.getChat(request.params.id);
       if (!chat) return reply.code(404).send({ error: 'No such conversation' });
 
-      const at = chat.messages.findIndex(
-        (candidate) => candidate.id === request.body?.messageId,
-      );
+      const at = chat.messages.findIndex((candidate) => candidate.id === request.body?.messageId);
       if (at < 0) return reply.code(404).send({ error: 'No such message' });
 
       const removed = ctx.store.truncateChat(chat.id, chat.messages[at]!.id);
+      // Anything the dropped tail was waiting on is gone with it, so the run
+      // has to stop pointing at it.
+      await engine.runner(chat.id).accept({ type: 'stop' });
       return reply.send({ ok: true, removed });
     },
   );
 
-  /**
-   * Ask for a prompt, because a button was pressed.
-   *
-   * The tool is forced rather than suggested: pressing the button is not the
-   * model's initiative to weigh up, it is an instruction. Its own route so the
-   * pace settings stay about what the model does *on its own* — which is what
-   * they are for.
-   */
-  app.post<{ Params: { id: string } }>(
-    '/api/chat/conversations/:id/build',
-    async (request, reply) => {
-      const chat = ctx.store.getChat(request.params.id);
-      if (!chat) return reply.code(404).send({ error: 'No such conversation' });
-      return streamReply(app, ctx, reply, chat.id, 'build_prompt');
-    },
-  );
-
-  /**
-   * Carry on after a tool call, without the user saying anything.
-   *
-   * Separate from answering, because after a decision the model usually has
-   * something short to say about it — and sometimes nothing, in which case this
-   * is never called.
-   */
-  app.post<{ Params: { id: string } }>(
-    '/api/chat/conversations/:id/continue',
-    async (request, reply) => {
-      const chat = ctx.store.getChat(request.params.id);
-      if (!chat) return reply.code(404).send({ error: 'No such conversation' });
-      return streamReply(app, ctx, reply, chat.id);
-    },
-  );
+  return engine;
 }
 
-/**
- * Ask the model and forward what it says, frame by frame.
- *
- * The assistant's message is written once the stream ends, with everything it
- * produced: content, reasoning and any tool call. Writing it incrementally
- * would mean a database write per token for a record nobody reads until it is
- * finished.
- */
-async function streamReply(
-  app: FastifyInstance,
-  ctx: AppContext,
+/** One shape for every intent's answer, so the client has one thing to check. */
+async function settle(
   reply: FastifyReply,
-  chatId: string,
-  force?: ChatToolName,
-): Promise<void> {
-  const chat = ctx.store.getChat(chatId);
-  if (!chat) {
-    await reply.code(404).send({ error: 'No such conversation' });
-    return;
-  }
-
-  reply.raw.writeHead(200, {
-    'content-type': 'text/event-stream',
-    'cache-control': 'no-cache, no-transform',
-    connection: 'keep-alive',
-    // Nginx and friends buffer event streams into uselessness otherwise.
-    'x-accel-buffering': 'no',
-  });
-
-  const send = (event: ChatStreamEvent) => {
-    reply.raw.write(`data: ${JSON.stringify(event)}\n\n`);
-  };
-
-  const controller = new AbortController();
-  reply.raw.on('close', () => controller.abort());
-
-  const message: ChatMessage = {
-    id: randomUUID(),
-    role: 'assistant',
-    content: '',
-    createdAt: Date.now(),
-  };
-  let thinking = '';
-
-  const client = llamaClient(ctx);
-  if (!client) {
-    // Inside the stream rather than as a status code: the chat screen already
-    // knows how to show an error frame, and a 4xx here would have to be
-    // translated separately at every call site.
-    send({
-      type: 'error',
-      message: 'No model server chosen yet. Add one under Connections in Settings.',
-    });
-    reply.raw.end();
-    return;
-  }
-
-  /*
-   * The turn straight after a picture says something; it does not ask for
-   * another one.
-   *
-   * A model handed its tools back the moment a render was accepted would open
-   * a second proposal on top of the first — before anyone has seen what the
-   * first one made, and therefore before there is anything to say about it.
-   * What is wanted there is a sentence, so the tools are simply not offered
-   * for that one turn. Decided from the transcript rather than from a flag on
-   * the request, so a reload lands on the same answer.
-   */
-  const last = chat.messages[chat.messages.length - 1];
-  const afterGeneration = last?.role === 'tool' && Boolean(last.generationId);
-
-  try {
-    for await (const event of client.stream(chat.messages, {
-      signal: controller.signal,
-      ...(force ? { force } : {}),
-      ...(!force && afterGeneration ? { withoutTools: true } : {}),
-    })) {
-      if (event.type === 'content') message.content += event.text;
-      if (event.type === 'thinking') thinking += event.text;
-      if (event.type === 'tool') message.toolCall = event.call;
-      send(event);
-    }
-
-    if (thinking !== '') message.thinking = thinking;
-    // An empty reply with no tool call is nothing worth keeping in the history.
-    if (message.content.trim() !== '' || message.toolCall) {
-      ctx.store.insertChatMessage(chatId, message);
-    }
-
-    /*
-     * The one place a pace setting is enforced rather than requested.
-     *
-     * At `always`, a question asked in prose is not a question the user can
-     * answer with a tap — so if the reply asked one and no tool was called, the
-     * model is asked again with the tool forced. Every other level is a
-     * sentence in the system prompt, which a small model talks itself out of
-     * constantly; this one does not depend on it agreeing.
-     *
-     * Conservative on purpose: it costs a second wait, so it only fires when
-     * the reply both asks something and enumerates the answers.
-     */
-    const settings = ctx.store.getSettings().chat;
-    if (
-      !force &&
-      !message.toolCall &&
-      settings.tools.ask_user === 'always' &&
-      looksLikeAQuestionWithOptions(message.content)
-    ) {
-      const asked = await runTurn(ctx, chatId, send, controller.signal, 'ask_user');
-      if (asked) {
-        send({ type: 'done', messageId: asked });
-        return;
-      }
-    }
-
-    send({ type: 'done', messageId: message.id });
-  } catch (error) {
-    /*
-     * The user pressed stop, or walked away.
-     *
-     * What the model had already said is kept. Stopping a model that has got
-     * stuck repeating itself usually means the first paragraph was the good
-     * one, and throwing the whole turn away to punish the last one is not what
-     * anybody wants — nor is leaving the conversation with a user message and
-     * no answer, which most chat templates then refuse to continue from.
-     */
-    if (controller.signal.aborted) {
-      if (thinking !== '') message.thinking = thinking;
-      if (message.content.trim() !== '' || message.toolCall) {
-        ctx.store.insertChatMessage(chatId, message);
-      }
-      return;
-    }
-
-    const text =
-      error instanceof LlamaError
-        ? error.message
-        : error instanceof Error
-          ? error.message
-          : 'The model server could not be reached.';
-    app.log.warn({ err: error }, 'Chat stream failed');
-    send({ type: 'error', message: text });
-  } finally {
-    await client.close();
-    reply.raw.end();
-  }
+  result: Promise<IntentResult>,
+): Promise<FastifyReply> {
+  const { error, conflict } = await result;
+  // A proposal decided twice is a double tap or a second phone, not a fault:
+  // 409 says "that already happened" and the client re-reads rather than
+  // showing a failure for something that worked.
+  if (conflict) return reply.code(409).send({ error });
+  if (error) return reply.code(400).send({ error });
+  return reply.send({ ok: true });
 }
 
 /**
- * One more turn on the same stream, and the id of what it stored.
+ * A conversation with the wandering notes put back into words.
  *
- * Used only to force a tool the model should have called. Returns null when
- * nothing came of it, so the caller can fall back to the reply it already has
- * rather than leaving the conversation with a turn that says nothing.
+ * The ids are what is stored; the words live in the vault. Done here rather
+ * than in the store because it needs the vault, and because a locked server
+ * should still be able to hand over the conversation — just without this part
+ * of it, which is exactly what `textFor` does when it cannot read.
  */
-async function runTurn(
-  ctx: AppContext,
-  chatId: string,
-  send: (event: ChatStreamEvent) => void,
-  signal: AbortSignal,
-  force: ChatToolName,
-): Promise<string | null> {
-  const chat = ctx.store.getChat(chatId);
-  if (!chat) return null;
+function withWanderNotes(ctx: AppContext, chat: ChatConversationDetail): ChatConversationDetail {
+  if (!chat.messages.some((message) => message.toolCall?.tool === 'build_prompt')) return chat;
 
-  const client = llamaClient(ctx);
-  if (!client) return null;
-
-  const message: ChatMessage = {
-    id: randomUUID(),
-    role: 'assistant',
-    content: '',
-    createdAt: Date.now(),
+  return {
+    ...chat,
+    messages: chat.messages.map((message) => {
+      const call = message.toolCall;
+      if (call?.tool !== 'build_prompt' || !call.wanderNoteIds?.length) return message;
+      const notes = ctx.taste.textFor(call.wanderNoteIds);
+      if (notes.length === 0) return message;
+      return { ...message, toolCall: { ...call, wanderNotes: notes } };
+    }),
   };
-
-  try {
-    for await (const event of client.stream(chat.messages, { signal, force })) {
-      if (event.type === 'content') message.content += event.text;
-      if (event.type === 'tool') message.toolCall = event.call;
-      // The reasoning of a forced turn is not worth showing: it is the model
-      // restating what it already said, in a box the user has to open.
-      if (event.type !== 'thinking') send(event);
-    }
-  } finally {
-    await client.close();
-  }
-
-  if (!message.toolCall) return null;
-  ctx.store.insertChatMessage(chatId, message);
-  return message.id;
 }
 
-/**
- * Write the blocks the user kept.
- *
- * The list is the *edited* one from the client, not what the model proposed:
- * the point of the dialog is that a block can be corrected before it is saved,
- * and taking the model's version afterwards would throw that away.
- */
-function applyBlocks(ctx: AppContext, blocks: ProposedBlock[]): string {
-  let added = 0;
-  let updated = 0;
-  let removed = 0;
-
-  for (const block of blocks) {
-    if (block.action === 'remove') {
-      if (block.id) {
-        ctx.store.deletePromptBlock(block.id);
-        removed += 1;
-      }
-      continue;
-    }
-
-    if (block.action === 'update' && block.id) {
-      ctx.store.updatePromptBlock(block.id, {
-        name: block.name,
-        category: block.category,
-        text: block.text,
-      });
-      updated += 1;
-      continue;
-    }
-
-    ctx.store.insertPromptBlock(randomUUID(), {
-      name: block.name,
-      category: block.category,
-      text: block.text,
-    });
-    added += 1;
-  }
-
-  const parts = [
-    added > 0 ? `${added} added` : '',
-    updated > 0 ? `${updated} changed` : '',
-    removed > 0 ? `${removed} removed` : '',
-  ].filter(Boolean);
-
-  return parts.length > 0
-    ? `The user kept ${parts.join(', ')}.`
-    : 'The user kept none of them.';
-}
+// Re-exported for the tests, which drive a turn without a conversation around
+// it. Nothing in the app calls it directly.
+export { llamaClient };

@@ -10,6 +10,10 @@ numbers, tap generate, look at the picture.
 Latent is that. You import a workflow once, and it becomes a clean, thumb-sized
 form. Nothing about your ComfyUI setup changes.
 
+On a tablet it becomes a different layout rather than a bigger one — navigation
+down the side, and the render on screen beside the form that made it. See
+[On a tablet](#on-a-tablet).
+
 <p align="center">
   <img src="docs/screenshots/generate.png" width="240" alt="The generate screen">
   <img src="docs/screenshots/progress.png" width="240" alt="Live progress">
@@ -41,6 +45,19 @@ form. Nothing about your ComfyUI setup changes.
 - **Gallery.** Every result, with the exact settings that produced it. Swipe
   through the whole gallery, pinch to zoom, tap to close, save to your camera
   roll, re-run, or send a result straight to img2img or an upscale pass.
+- **Sound, too.** A workflow ending in music or speech — MiniMax-Music3, a Qwen
+  TTS graph, whatever you run — is queued, played, rated, kept and favourited
+  like everything else. The picker says which workflows make sound, the length
+  in seconds gets a control of its own, and a track plays in the viewer with its
+  own card rather than a thumbnail that never arrives. See [Audio
+  workflows](#audio-workflows).
+- **Video, not just pictures.** A workflow ending in a clip — LTX-2.5,
+  MiniMax-H3, Wan, whatever you run, in whatever quantisation loads on your card
+  — is queued, watched, rated, kept and favourited exactly like a render that
+  draws a still. The picker says which workflows make video, the frame count and
+  frame rate get controls of their own, and clips play in the viewer and stream
+  in pieces so a phone is not asked to download one before it starts. See
+  [Video workflows](#video-workflows).
 - **Divided into days, sorted how you like.** The grid is cut at midnight and
   each day folds away when you tap its divider, so a few days back is a tap
   rather than a minute of scrolling. Order by newest, oldest, or the best
@@ -54,11 +71,46 @@ form. Nothing about your ComfyUI setup changes.
 - **Keep, delete, and a cleanup that runs itself.** Keeping stores a picture
   without passing judgement on it; anything nobody rated, kept or favourited is
   deleted after a period you choose, so the gallery stays worth scrolling.
+- **A mode that finishes the picture on its own.** Switch it on and the model's
+  own prompts and rewrites are accepted for you, render after render, until one
+  clears the perfectionism threshold — with a round limit, a stop, and a strip
+  saying which round it is on. See [Letting it carry on by
+  itself](#letting-it-carry-on-by-itself).
+- **The model looks at what it made.** With a multimodal model server, the
+  finished picture goes back to the chat with the prompt beside it: it says how
+  much of the prompt actually came through and — below a perfectionism threshold
+  you set, next to the other tool settings — either proposes a rewritten prompt
+  to fix what did not, or asks you which way to go when the fix is a matter of
+  taste. The proposal waits folded away rather than covering the picture, and
+  carrying on talking refuses it. See [The model sees what it
+  made](#the-model-sees-what-it-made). The last couple of renders stay in the
+  conversation, so “make the sky darker” lands on the picture rather than on its
+  own description of it.
+- **A mode that just shows you things.** Switch on wandering and the model makes
+  picture after picture out of a few of your notes, until you stop it — and it
+  keeps going while you are looking at something else. Which notes, and how they
+  are spread, is yours to set in detail: headings that must be in every picture,
+  headings left out of it, at most one thing from any of them, and how long
+  before a note may come round again. Tapping a picture opens the viewer; ✦ in
+  its corner opens the prompt and the notes behind it. See
+  [Wandering](#wandering).
+- **Somewhere to start when you do not know what to make.** Write down what you
+  like — concepts, aesthetics, places, films — under headings you make up or
+  under none, and the chat draws on it to fill in whatever you left open. How far
+  it reaches runs from off to house style, and at every step what you actually
+  asked for wins. Notes you have settled on can be **pinned** past the scale, so
+  they apply even to a picture you have described — wherever they are relevant to
+  it, and nowhere else. **Encrypted with your password**, because it is never on
+  screen and is a fairly complete description of you. See [What you
+  like](#what-you-like).
 - **Favourites.** Keep an image together with the settings that made it, rate
-  those separately, and generate more like it in one tap.
-- **A grid that fits the pictures.** Adjustable column count; each tile takes its
-  shape from the image's aspect ratio so nothing is cropped square, with a
-  per-image override. Only thumbnails are ever downloaded.
+  those separately, and generate more like it in one tap. Opening one gives the
+  gallery's own viewer — the same rating, keep, save, reuse and details actions,
+  and a swipe through the rest of the run it came from.
+- **A grid that fits the pictures.** Adjustable column count; a tile is the
+  shape of its picture — 2:3, 4:3, 16:9 and anything between 2:1 and 1:2 — so
+  nothing is cropped to a square, with a per-image override. Only thumbnails are
+  ever downloaded.
 - **Import an existing output folder.** Point Latent at a ComfyUI output
   directory and walk it a folder at a time — a day, a project, a model — with
   image counts on each. Import a picture, a selection, or a whole folder tree in
@@ -114,6 +166,10 @@ form. Nothing about your ComfyUI setup changes.
 - **Installable.** Add it to your home screen and it runs full-screen like an app.
 - **Password protected.** The first person to open a new install chooses the
   password.
+- **Settings in five pages.** *Servers*, *Workflows*, *Chat*, *Pictures* and
+  *System* — grouped by the errand you came to do rather than in the order they
+  were written, so none of them is more than a screen or two. The page you are
+  on is in the address, so a link can point straight at one.
 - **Settings that outlive the project folder.** Everything you arrange is
   mirrored to two files one directory above the checkout, and the database and
   image archive live there too — so a clean reinstall keeps your gallery, your
@@ -156,6 +212,7 @@ All optional, set as environment variables:
 | `LATENT_DATA_DIR` | `../latent-data` | SQLite database and the image archive |
 | `LATENT_STATE_DIR` | `..` | Where the portable settings files are written |
 | `LATENT_TERMINAL` | *unset* | Set to `1` to enable the built-in shell |
+| `LATENT_UPDATE` | `1` | Set to `0` to remove the in-app update button |
 | `LOG_LEVEL` | `info` | `trace`…`silent` |
 
 After the first run, connections are managed in the app — `COMFY_URL` only
@@ -170,6 +227,72 @@ chooses the password, and that window closes permanently once they do.
 immediately, or set `LATENT_PASSWORD` and skip the window entirely — which is
 the right choice for anything unattended or reachable from outside your network.
 
+### Signing in from something else
+
+The web app is served by the same process it talks to, so it holds an
+`httpOnly` cookie and can assume the two agree about everything. Anything
+else — a native app, a script, a shortcut — has no cookie jar worth keeping in
+sync and no guarantee it is the same age as the server it reached. Two things
+exist for that case.
+
+**Ask what you have reached.** `GET /api/app` needs no credential and answers
+with the name of the software, the version of the HTTP contract this build
+speaks, and how to sign in:
+
+```json
+{
+  "app": "latent",
+  "api": { "version": 1 },
+  "auth": {
+    "schemes": ["cookie", "bearer"],
+    "login": "/api/auth/login",
+    "setupRequired": false,
+    "tokenLifetime": "until the password changes"
+  }
+}
+```
+
+It deliberately says nothing about the machine — no ComfyUI address, no device
+list, nothing about what is stored. That is all behind `/api/status`, which
+wants the password. This is the one route a stranger can reach, so what it does
+*not* say is the point.
+
+The version is bumped when something a client depends on changes in a way that
+would break one written against the previous number: a route removed, a field
+that stops being sent, a meaning that changes under an unchanged name. Adding a
+route or a field is not a bump — a client that has never heard of it carries on
+working, which is the whole reason to distinguish the two.
+
+**Ask for a token.** `POST /api/auth/login` with `issueToken: true` returns one
+alongside the cookie:
+
+```
+POST /api/auth/login
+{ "password": "…", "issueToken": true }
+
+→ { "ok": true, "token": "…" }
+```
+
+Send it as `Authorization: Bearer <token>` on every request after that,
+including the WebSocket handshake for live progress. It works on every route the
+cookie works on, and on no others.
+
+**Only when asked**, which is the reason for the flag. The cookie is `httpOnly`
+precisely so that script on the page cannot read it, and returning the same
+secret in the body to every caller would hand it straight back to the thing it
+was arranged to be hidden from. The web app never asks; a client that has to
+hold the credential itself says so.
+
+There is no refresh and no expiry to track. The token is derived from the stored
+password hash, so it stays good until the password changes and then stops
+working everywhere at once — cookies included. A client that gets a `401` signs
+in again, and that is the whole of the lifecycle.
+
+**It is a way in, not a level of access.** A bearer token can do exactly what a
+cookie can and nothing more. [What you like](#what-you-like) still wants the
+password a second time on top of either, because that screen is locked
+separately and being signed in was never enough for it.
+
 ## Connecting to vast.ai
 
 vast.ai puts ComfyUI behind a proxy that requires a token, and — if the instance
@@ -179,7 +302,7 @@ was started with `ENABLE_HTTPS=true` — a self-signed certificate.
 value replaces the auto-generated `OPEN_BUTTON_TOKEN`, which you otherwise
 cannot read without SSHing into the box.
 
-Then in Latent, **Settings → Connections → Add**:
+Then in Latent, **Settings → Servers → Connections → Add**:
 
 | Field | Value |
 | --- | --- |
@@ -217,7 +340,7 @@ everything in known places under it, so the rest follows —
 <ComfyUI>/user/default/workflows    every workflow you have ever saved
 ```
 
-Enter it under **Settings → ComfyUI folder** and tap **Read workflows**. That
+Enter it under **Settings → Servers → ComfyUI folder** and tap **Read workflows**. That
 converts the editor's own save format on the way in: the positional widget lists
 those files use are walked against `/object_info`, so `20` is understood to be
 `steps` without anybody re-exporting anything.
@@ -241,7 +364,7 @@ real subfolder shows up as `portraits/closeup` and a naming scheme as
 `SDXL_fast`; both are treated as folders you can fold shut. A folder of one is
 not a folder — those stay in the flat list.
 
-An *Export (API)* file still imports one at a time through **Settings → Import**,
+An *Export (API)* file still imports one at a time through **Settings → Workflows → Import**,
 and so does an editor file if you would rather pick it by hand.
 
 If a workflow uses a node this ComfyUI does not have, or has nothing in it that
@@ -253,9 +376,31 @@ time.
 Latent identifies fields by node class and input name. That covers the usual
 workflows, but no heuristic handles every custom node — anything it doesn't
 recognise goes to **Advanced** rather than being dropped. Use
-**Settings → Edit form** to show, hide, rename or promote any field. Those
+**Settings → Workflows → Edit form** to show, hide, rename or promote any field. Those
 edits are stored separately from the derived form, so **Refresh models** (which
 re-reads node definitions after you install something new) never overwrites them.
+
+**Advanced is grouped by node**, with the node's title as the heading. A chip
+carries its own label, but a label is only half the name: `denoise`, `strength`
+and `end_at_step` mean nothing until you know which node they belong to, and a
+graph with two samplers has the same word twice with nothing telling them apart.
+Where two nodes share a title the heading carries the node id as well — only
+where it clashes, since `#7` on every heading in a graph with no clashes would
+be noise. The groups appear in the order their first field does, so dragging a
+field in the editor still moves it, and moving one past the last field of its
+node moves its whole group.
+
+**Reset**, under the connection light at the top of Generate, is the way back
+out of a form that has got into a state. It does two things that are really one
+thought — put this workflow back the way it comes: the values go to the graph's
+own defaults (not the last run's, which is history rather than the workflow),
+seeds are unlocked, the batch count goes back to one, and the schema is re-read
+from ComfyUI, so a model installed since or a custom node that was missing turns
+up in the dropdowns without a trip to Settings. It asks twice, because it throws
+away a prompt somebody wrote and it sits where a thumb reaching for the workflow
+picker passes over it. The values reset even if ComfyUI cannot be reached — that
+half is local, and an unreachable server must not be the reason a form stays
+stuck.
 
 Rearranging a form on a phone is fiddly enough that you should only do it once.
 **Save current** at the top of that sheet stores the arrangement under a name,
@@ -266,7 +411,7 @@ are looking at.
 
 ### Building the form
 
-**Settings → Edit form** is a layout tool, not a list of switches:
+**Settings → Workflows → Edit form** is a layout tool, not a list of switches:
 
 - **Drag the handle** on any field to reorder it. The order here is the order on
   the Generate screen.
@@ -280,7 +425,7 @@ are looking at.
 ### Sliders, or a line of points
 
 Every numeric field has two ways of being edited, chosen per field under
-**Settings → Edit form**:
+**Settings → Workflows → Edit form**:
 
 - **Slider** — the chip opens a sheet with a slider and a keyboard. Right for a
   value that could be anything.
@@ -298,6 +443,156 @@ rounding itself.
 Everything that stays a chip is laid out in **two even columns**, so a sampler
 block reads as a list you can scan down instead of a wrapped heap of
 differently-sized bubbles.
+
+### One arrangement for every workflow
+
+The form editor arranges *a* workflow, which is the right tool for the one that
+needs something unusual and the wrong one for everything else. The same handful
+of fields turn up in every workflow anybody writes — steps, cfg, the sampler,
+the size, a duration — and an opinion about them is an opinion about all of
+them. "Duration matters, keep it under Advanced and half a row wide" is one
+sentence, and it used to have to be repeated per workflow and repeated again for
+every workflow imported afterwards.
+
+**Settings → Workflows → Arrange all** is that sentence, once. Two areas side by
+side where there is room:
+
+- **The pool** — every distinct field across the workflows you have switched on,
+  most widespread first, because the ones worth an opinion are the ones that
+  keep turning up. It says how many workflows have each, so `duration · in 4
+  workflows` is a fact rather than a guess. In as many columns as the width
+  allows: forty short names one to a row is a screen and a half of scrolling
+  past empty space.
+- **The arrangement** — what you have placed, in the order it will take, each
+  with where it goes, how wide it is, whether it is shown at all, and — for
+  numbers — whether it is edited with a slider or a line of points, with the
+  range spelled out. Where, width and shown sit **abreast on one line**, so an
+  arranged field is two rows rather than five and a dozen of them can be read
+  without scrolling. The range has to be stated rather than derived: the same
+  `steps` is 1–150 in one workflow and 1–10000 in another, and a line built
+  from either would be wrong in the other. Stating it is also what makes one
+  line of points mean the same thing everywhere, which is the point of
+  arranging it generally at all. The choice is offered only where every
+  workflow agrees the field is a number.
+
+It is keyed by the field's **input name** — `steps`, `duration`, `cfg` — which
+is what the same field is called wherever it appears, whatever node it hangs off
+and whatever id that node was given. Two different nodes that both take a
+`duration` are, for this purpose, the same field: that is the assumption the
+feature is, and the reason it is useful.
+
+**Nothing here is a requirement.** A workflow without the field ignores the
+entry for it. A workflow with its own setting keeps it — the arrangement is
+applied *underneath* the per-workflow overrides, so nothing arranged generally
+can quietly undo work done by hand. Every attribute has a third state,
+**Leave it**, which is not the same as either answer: without it, arranging one
+attribute of a field would take over the other two from every workflow that had
+settled them itself — drawn as a dash beside the two real answers, which is what
+fits in a third of a phone's width and still reads as "leave it to the workflow"
+to anything that speaks the labels rather than the pixels.
+
+**Gaps close.** An arrangement written against every workflow will always be
+missing pieces in any one of them, and what must not happen is a hole where the
+absent field would have been. Half-width fields are laid out by merging
+*adjacent* ones into a row, so a workflow missing the second half of a pair has
+the next half-width field move up into the space.
+
+The order is the one exception to "the workflow wins" being invisible. Dragging
+anything in the per-workflow editor writes a position for every field in that
+group, and those beat the arrangement — so a workflow you have dragged in
+ignores the general order. The editor says so when it happens, with the one
+button that hands it back.
+
+## The models you have, and the words they want
+
+A LoRA does a fraction of what it can without its trigger words. Those words are
+on the page you downloaded it from — which is not open, on a phone, at the moment
+you are writing a prompt — so in practice they get typed from memory or not at
+all, and the LoRA quietly underperforms in a way that looks like the LoRA being
+disappointing.
+
+**More → Models** is a library of what is installed, each row carrying the words
+it needs. It is deliberately not a gallery of cards: the thing that is actually
+tedious is smaller than choosing between files, and the screen is shaped around
+removing it.
+
+It covers **LoRAs, checkpoints and diffusion models** — the unet-only weights
+Flux and WAN ship as, which people have as many opinions about as their LoRAs.
+There is deliberately no separate *UNET* category: ComfyUI aliases that key to
+the same folder entry as `diffusion_models`, so offering both listed the same
+files twice under two names.
+
+**Three sources, ranked rather than merged.**
+
+1. **Yours**, typed here, and always right — you wrote them after using the thing.
+2. **The creator's**, from Civitai, looked up by the file's SHA256.
+3. **The file's own header.** A `.safetensors` file begins with a JSON header,
+   and the kohya trainers that produce most LoRAs write what they trained on
+   into it — `ss_tag_frequency` is literally the tag list with counts. It costs
+   one seek, works with no network at all, and is what everything falls back to.
+
+Ranked, because a merge produces a fragment nobody wrote: two creator words plus
+thirty training tags is not a prompt, it is a word cloud. One source wins, the
+others stay visible, and each row says which one it is using — "from the creator"
+and "trained on" are different degrees of confidence and you should be able to
+see which you are trusting.
+
+**One tap uses it.** *Add to the form* puts `<lora:name:0.8>` in the workflow's
+LoRA field *and* the trigger words in its prompt, on top of whatever is already
+set up rather than replacing it. Words already in the prompt are not repeated,
+matched on whole words — so "cat" is not found inside "delicate". That pair of
+edits, in two different fields, is the work this screen exists to remove.
+
+**What a lookup actually brings back.** Two requests, and the split is not where
+you would guess. The by-hash endpoint identifies the *version* — trigger words,
+base model, changelog, and the creator's example pictures. The thing people
+actually read, the explanation of what the model is for and what weight it
+likes, hangs off the **model** one level up, so that is fetched too. A library
+with only the first would have been missing the paragraph the creator wrote to
+explain their own model. The second request is allowed to fail: the trigger
+words are already in hand by then, and losing the prose is a smaller library
+rather than a failed lookup.
+
+All of it is shown **above** the fields you can type in, because the question
+somebody opens a model to answer is "what is this and what can it do". The
+example pictures come with the prompts behind them where the creator left the
+metadata on — "what can this do" is the picture, "how do I get that" is the
+prompt — and the first one sits behind that model's row in the list, because an
+image is the fastest answer to "which one is this" that exists.
+
+**The pictures come through Latent**, never from Civitai directly: the phone may
+have no route to the internet while the server does, and a page fetching from a
+third-party CDN tells that CDN which models somebody has installed. The proxy
+takes only an allowlisted image host — without that it would be a machine that
+fetches whatever anybody names, from inside the network Latent runs in.
+
+**Civitai is a button, not a background job.** It needs the file's hash, and
+hashing a 7 GB checkpoint is tens of seconds of pure I/O on the ComfyUI machine.
+So it is asked for per model, the hash is kept afterwards, and a lookup that
+fails still keeps the hash — that is the expensive half and it does not change.
+A file trained at home is simply not there, which the screen says plainly rather
+than reporting as a failure.
+
+**Or look up the lot.** One button walks everything not yet fetched, one at a
+time, with the count on screen and a stop. Sequential rather than parallel
+because the far end rate-limits and the hashing is disk-bound on one machine —
+eight at once would be eight times the seeking for the same throughput — and on
+the client rather than in one long request because watching it stop at 12 of 40
+is information, where a request that times out is not.
+
+The reading happens in **comfyllama**, on the machine with the files, for the
+same reason as the folder browser: Latent is routinely somewhere else. Without
+it the library still lists what `/object_info` names, and says why there is
+nothing behind the names — a screen showing nothing at all would be worse.
+
+**A stored lookup is completed on the way out of the database.** A note written
+before a field existed simply does not have it, and reading `tags.length` off a
+row like that threw during render — which took the whole app down to a black
+rectangle, because React unmounts the tree when nothing catches it. The blob is
+normalised field by field on read now, so an old row comes back looking like a
+new one. And every screen sits inside a boundary: the next bug of that shape
+costs a screen and a "This screen stopped" message with the tabs still working,
+rather than the app.
 
 ## Where your data lives
 
@@ -345,7 +640,7 @@ only ever held in memory, so restarting the Latent server takes it. The *session
 survives — the cookie is signed against the stored password hash, so it keeps
 verifying — which leaves the app signed in, generating perfectly well, and unable
 to import or keep an image. When that happens a bar appears across the top and
-Settings → Session offers **Unlock the archive**; both ask for the same password
+Settings → System → Session offers **Unlock the archive**; both ask for the same password
 you sign in with, and anything that fails because the archive is shut opens the
 same dialog on the spot. Signing out is not needed and never was the point.
 Setting `LATENT_PASSWORD` skips all of this: the archive is unsealed at boot.
@@ -388,11 +683,156 @@ rather than drawing a flat line at zero. Install the widely used **Crystools**
 extension on the ComfyUI box and Latent picks up its broadcasts over the socket
 it already holds — no extra configuration, and no polling of a second endpoint.
 
+**GPU power is what makes utilisation mean anything.** "GPU at 100%" says only
+that the scheduler had work resident every sampling interval, which a kernel
+stalled on memory satisfies exactly as well as one doing arithmetic — so a
+bandwidth-bound run and a compute-bound one read the same. The watts separate
+them: a 450 W card sitting at 160 W is waiting for VRAM, and the same card at
+430 W is working. The chart is drawn against the card's own power limit rather
+than against the peak in the window, so the headroom above the curve is on
+screen; auto-scaling it would draw an idling card as a full chart, which is the
+exact mistake the reading exists to correct.
+
+That figure comes from **comfyllama**, because it has to be read on the machine
+with the GPU in it. Latent is routinely somewhere else — a NAS at home talking
+to a rented box — and `nvidia-smi` run there would report the wrong card, or
+none, with no way to tell which had happened. comfyllama asks NVML through
+`pynvml` (which torch's CUDA builds already depend on), falls back to
+`nvidia-smi` where the bindings are missing but the driver is not, and reports
+nothing at all on anything else. An absent reading is a fact the chart can
+state; a zero is a lie it would draw.
+
 Readings are taken every two seconds while something is running and every twenty
 when the box is idle, and kept **in memory**: this is the recent past, the window
 in which you are still asking why something just happened, and writing a row
 every two seconds to answer that is a poor trade against an SD card. Switching
 connection clears it, because a different endpoint is a different machine.
+
+## On a phone, a tablet, and at a desk
+
+Three layouts, and each step adds something the one before it could not have.
+
+**A phone** shows one thing at a time, which is not a compromise — it is the
+shape of the device. Navigation is a bar along the bottom, because the bottom of
+a phone is the part a thumb reaches; the four modules you set up once live
+behind *More*, because six tabs is as many as a phone's width can label legibly.
+
+**A tablet** (600 points in *both* directions — a width test alone calls a phone
+in landscape a tablet) turns the bar into a rail down the left, where all ten
+destinations fit and the scarce axis, height, is given back to the pictures. Past
+900 points there is room for a second pane *of the screen you are on*: the render
+beside the form that made it, the chat's pictures beside the conversation. That
+is the whole argument for the tablet layout — on a phone, changing one word of a
+prompt and seeing what it did is Generate → a bar → a viewer → back → back, and
+the previous attempt is never on screen at the same time as the words that made
+it.
+
+**A desk** (1280 × 700) is where the app changes shape rather than proportions.
+Three things happen:
+
+- **The rail is named.** Icon and label side by side at a size you read without
+  meaning to, in two groups with headings — *Every day*, *Set up once* — instead
+  of a rule standing in for the sentence.
+- **The bench appears**, down the right, and it belongs to no screen. What is
+  running, with its preview frame and its ETA and a Stop; what is queued; and
+  what came out, newest first across every workflow. This is the answer to what
+  a large screen is actually for. Everything this app does orbits one loop —
+  queue something, watch it, look at what came out — and on a phone that loop is
+  three tabs, walked in order. Here you can read the model library, edit a block
+  or hold a conversation with the run you started ten minutes ago still in front
+  of you. Nothing in it is new: it is the live bar's progress, the queue's list
+  and the gallery's newest, reading the same state those tabs read. `[` puts it
+  away, and it stays away — that is a decision about the room you have, not
+  about the thing you are doing, so it is remembered per machine rather than
+  synced from your phone.
+- **A record opens beside its list, not over it.** The model library is a list
+  you compare across, and covering it to show one row is what a modal is for on
+  a device that can only show one thing. At a desk the detail is a pane and the
+  row it belongs to is ringed in the list. `DetailPane` is the one component
+  that knows which of the two it should be, so the screens that adopt it cannot
+  drift apart — **Models** and **Blocks** do, and **Settings** puts its five
+  pages down the side instead of across the top, which is the arrangement every
+  settings window has had for thirty years.
+- **The viewer stands its controls beside the picture.** Ten forty-pixel cells
+  in a strip along the bottom of a 1600-point window is a phone's answer scaled
+  up: the labels are unreadable, the row is marooned in the middle of a black
+  field, and everything worth knowing is behind a button marked *Details*. In
+  the column there is room to name each action, and the prompt, the workflow,
+  how long it took and every parameter are simply *there*. The picture keeps
+  everything else — and is fetched at the size of the stage rather than the
+  window, so the panel costs no bandwidth.
+- **The pointer gets an answer.** Every control said what a press looked like,
+  because the app was written for a device with no pointer; a surface where
+  nothing responds to the mouse reads as a picture of an interface. Thumbnails
+  are the exception that proves the rule: they get a ring at the edge rather
+  than a tint, because tinting a photograph in an app built for judging
+  photographs is exactly the wrong answer.
+- **The gallery starts on six columns** rather than a tablet's four. It has a
+  sidebar and a panel beside it and still more width than a tablet has in total.
+- **The monitor is the one screen that wants the width itself**, and the only
+  one where the reading cap comes off. A chart's width *is* how much time is on
+  screen at once, which is the opposite of a settings row. Not all the way — past
+  about a hundred rems the labels on the line are further apart than they are
+  informative.
+
+### Dragging a picture in
+
+The gesture a desktop has and a phone does not, and its absence is the kind of
+gap you find by *trying*: the reference is in a folder open beside the browser,
+you drag it across, and nothing happens.
+
+**Drop it on the field that wants it.** On the field rather than on the page,
+because a workflow can have two image inputs and a page-level drop would have to
+guess which one — and dropping on the thing is the gesture anyway. The field
+says it is a target before you let go, since a drag with no feedback is a drag
+people abort.
+
+**Or paste it into the chat**, which is where a picture most often arrives at a
+desk: you crop something, or a chat client hands you one, and the alternative is
+saving it to disk purely so a file picker has something to point at. The chat is
+also one whole drop target — it has exactly one place a picture can go, so
+"onto the app" and "onto the thing that wants it" are the same gesture there.
+Pasting *text* while writing stays text; only an image on the clipboard is
+intercepted.
+
+Everything dropped or pasted goes through the same road a file chosen from the
+picker takes — into the editor first, then the upload. A dropped photograph is
+as likely to be the wrong way up as a browsed one, and a second route to the
+same place is a second thing to keep right.
+
+**A file dropped anywhere else is refused.** A browser's default for that is to
+*navigate to it*, so missing an image field by twenty pixels would replace the
+app with a PNG in a tab and take the form you had set up with it.
+
+**What does not change is the reading width.** A stack of settings rows is
+capped at 46rem however much monitor there is, because a row a foot wide is a
+label at one end and its switch at the other. Filling the space is not the same
+as using it — which is why the space left over goes to the bench and to a detail
+pane rather than to stretching a form.
+
+### The keyboard
+
+Not only at a desk — a tablet with a keyboard attached is a machine with a
+keyboard — but it is what a desk is for.
+
+| Key | What it does |
+| --- | --- |
+| `⌘↵` / `Ctrl+↵` | Generate, from anywhere on the form |
+| `/` | Jump to the prompt |
+| `[` | Show or hide the bench |
+| `g` then a letter | Go to a screen — `g l` gallery, `g m` models, `g c` chat, `g g` generate… |
+| `?` | The list of all of them |
+| `Esc` | Close whatever is in front |
+
+Three rules they obey, and the third is the one that matters. **Nothing fires
+while you are typing** — a prompt with the word "gallery" in it must not
+navigate five times on the way in — with one deliberate exception, `⌘↵`, which
+exists precisely for the moment your hands are still on the keys. **Nothing
+claims a key the browser already means**, so tab, space and the arrows stay
+where they are. And **every binding has a visible way to do the same thing**:
+these are a faster route to buttons, never the only route to a behaviour. An app
+you can only fully use once you have read a list of shortcuts is an app that
+does not work on the phone it was written for.
 
 ## Coming back to the app
 
@@ -445,6 +885,15 @@ So a stolen disk, a backup, or someone sitting at the machine gets nothing but
 ciphertext. Changing your password re-wraps the master key, which takes
 milliseconds — no image is ever re-encrypted.
 
+**Videos and sounds are the exception**, and deliberately so: see [Video
+workflows](#video-workflows) and [Audio workflows](#audio-workflows) for why a
+clip and a track are stored as themselves.
+
+**Your notes about what you like** are encrypted with the same master key —
+see [What you like](#what-you-like). They are text rather than files, so they
+live in the database, but the words in them are ciphertext exactly as the
+pictures are.
+
 **Metadata stays readable.** Prompts, seeds and settings remain in the database
 in the clear, which is what lets the server sort and filter by rating without
 decrypting everything first — and what means the settings behind an image are
@@ -453,6 +902,103 @@ still there years later.
 > **If you forget the password, the images are gone.** There is no recovery key
 > and no back door; that is what makes the encryption worth anything. The
 > database, and the settings in it, survive — the pictures do not.
+
+## Video workflows
+
+A workflow whose last node writes a video rather than a picture works
+everywhere a normal one does. Latent reads the save node when the workflow is
+imported, so it knows before anything has run: the workflow picker marks those
+entries **video**, and the form puts the two settings that only a video has —
+**Frames** and **Frames per second** — on the main screen beside width and
+height rather than in the advanced list, because the frame count is the length
+of the clip and most of the render time.
+
+Nothing about the models is special-cased. What the graph loads is up to the
+graph: the published weights for these models are tens of gigabytes that nobody
+runs on one consumer card, so what people actually load is a GGUF or fp8 repack
+through `UnetLoaderGGUF` or `Load Diffusion Model` — and those are model
+pickers like any other, filled from your own server's file list.
+
+**Which save nodes are recognised.** Core's `SaveVideo` and `SaveWEBM`, the
+animated-image savers, and VideoHelperSuite's `Video Combine`. That matters
+because the node packs disagree about how they report a finished file — core
+files an `.mp4` under `images`, VideoHelperSuite files everything under `gifs` —
+and reading only one of those is how a run finishes successfully and leaves an
+empty gallery row.
+
+**Watching them.** A clip opens in the same viewer as a picture, with the
+browser's own controls; swiping the area around it still moves to the next
+output and the actions underneath are the ones that make sense — rate,
+favourite, save, reuse the settings, delete. img2img and upscaling are shown
+disabled, because those nodes read one frame from a picture and handing them a
+clip fails inside ComfyUI with an error about nothing you did.
+
+**How fast it plays.** A video model renders a fixed number of frames and the
+container is written at whatever rate the workflow chose, so a clip meant to run
+for five seconds often plays at half speed — the frames are all there, the
+header is simply wrong. The cell that says `1×` changes that, and opens the
+other speeds above itself. It takes **Keep**'s place on a clip, because Keep is
+the one action on that row a video does not need — rating or favouriting it
+protects it from the cleanup just as well, and both are a thumb's width away.
+Still pictures keep Keep.
+
+**Thumbnails.** Latent's own image renderer cannot open an mp4 — there is no
+ffmpeg here and no reason to add one — so a video has no still until something
+makes one. Rather than let the grid load whole clips to show tiles, a video
+appears as a plate with a ▶ on it until the first time you open it; the browser
+that plays it hands one frame back, and from then on it has a thumbnail like
+everything else, with its length on the badge.
+
+**Streaming.** Clips are served in byte ranges, both from ComfyUI and from the
+local archive, so playback starts at once and dragging the scrubber fetches the
+part you asked for rather than the whole file.
+
+**Storage.** Rating or keeping a video copies it onto the machine running Latent
+exactly like a picture — and stores it **unencrypted**, which is the one
+deliberate exception to [the encrypted archive](#the-archive-is-encrypted). The
+encryption is whole-file AES-GCM, which cannot be read from the middle, and a
+video is watched by asking for the middle; encrypting it would mean holding an
+entire clip in memory to answer every seek. Posters, prompts and settings are
+handled as they always were, and every still image stays encrypted.
+
+## Audio workflows
+
+A workflow whose last node writes a sound rather than a picture works the same
+way, and for the same reason: everything between the prompt and the save node is
+a graph like any other. Latent reads the save node at import, so the picker
+marks those entries **sound**, and the form puts **Seconds** — how long the
+track runs, which is the audio equivalent of a video's frame count — on the main
+screen rather than in the advanced list.
+
+The models are not special-cased any more than the video ones are.
+[MiniMax-Music3](https://huggingface.co/MiniMaxAI/MiniMax-Music3) for music,
+[Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice) for
+speech, or anything else your ComfyUI can load — in whatever quantisation fits
+your card. For a speech graph the prompt field is the words to say, which is
+what makes everything built around prompts work for it without knowing anything
+about speech.
+
+**Which save nodes are recognised.** Core's `SaveAudio`, `SaveAudioMP3`,
+`SaveAudioOpus` and `PreviewAudio`, and the packs that suffix those names. They
+file their result under an `audio` key, which nothing was reading before — the
+symptom is a run that finishes successfully and leaves an empty gallery row.
+
+**Listening to them.** A track opens in the same viewer as everything else, as
+a card with the prompt and the browser's own player. The actions underneath are
+the ones that make sense — rate, keep, favourite, save, reuse the settings,
+delete — and img2img and upscaling are disabled, because those read a still
+picture.
+
+**Tiles.** A sound has no frame, so its tile is a card with a ♪ and the length
+on it rather than a thumbnail that never arrives. Nothing invents a picture for
+it, and nothing waits for one. The length itself comes from the browser the
+first time you play it — the one thing here that can read the file — exactly as
+a video's poster does.
+
+**Streaming and storage.** Served in byte ranges like a clip, so a scrubber
+works, and stored **unencrypted** for the same reason: whole-file AES-GCM cannot
+be read from the middle, and seeking is asking for the middle. See [the
+encrypted archive](#the-archive-is-encrypted), whose one exception this shares.
 
 ## An input folder
 
@@ -490,11 +1036,16 @@ input, and survives a reload.
 
 **A folder at a time.** `<ComfyUI>/output` is routinely tens of thousands of
 files in dozens of dated folders, and a flat list of all of them is something
-nobody can find anything in. Settings → *Import from a folder* walks the tree
+nobody can find anything in. Settings → Pictures → *Import from a folder* walks the tree
 one level at a time, with the image count on each folder, and imports
 a single picture, a selection, or a whole folder and everything under it in one
 request — the expansion happens on the server, so a phone never sends ten
 thousand paths.
+
+**Clips come too.** `.mp4`, `.webm`, `.mkv` and friends are listed and imported
+alongside the pictures, streamed straight to disk rather than read into memory,
+and stored as themselves — see [Video workflows](#video-workflows). They carry
+no settings: the metadata ComfyUI hides in a PNG has no equivalent in an mp4.
 
 **Imported pictures remember how they were made.** ComfyUI writes the graph it
 ran into every PNG it saves. Latent reads it back, matches it against the
@@ -505,7 +1056,7 @@ Latent existed. Pictures with no metadata, or from a workflow you do not have,
 come in as before.
 
 
-**Settings → Import from a folder.** Give it a path, and Latent walks it
+**Settings → Pictures → Import from a folder.** Give it a path, and Latent walks it
 recursively, lists every image, and marks the ones already in your library.
 Select what you want and import — the files are copied into the same encrypted
 archive as generated work and can be rated, favourited and browsed identically.
@@ -534,7 +1085,7 @@ and text that is already there is never doubled.
 
 ## What Generate does about the queue
 
-**Settings → Generating.** Three choices, because which one is right depends
+**Settings → Pictures → Generating.** Three choices, because which one is right depends
 entirely on how you are working:
 
 | | |
@@ -693,7 +1244,7 @@ keyboard is worst at. The **Chat** tab connects Latent to a local
 anything else speaking its OpenAI-compatible API — so you can describe what you
 are after in prose, be talked out of it, and end up with a prompt.
 
-Add it under **Settings → Connections** — the same list ComfyUI's own address
+Add it under **Settings → Servers → Connections** — the same list ComfyUI's own address
 lives in, with the same dialog — as a **Model server**, and press Test; it
 reports the models it found. Nothing else is required: no key, no account, and
 the conversation never leaves your network. Several can be kept and switched
@@ -754,15 +1305,26 @@ an `active` dropdown — but what the slots are called, and how many of them
 exist, are decided by the node's own values rather than by its definition. In
 ComfyUI a small web extension rewrites the dropdown; Latent never loads
 extensions, so it does the same reshaping from the values it already has. The
-picker offers `passthrough` and the slot names as they have been typed, the
-slots above `slot_count` are left off the form rather than shown as twelve dead
-text boxes, and each system prompt is headed by its own slot's name — which
-means a [saved system prompt](#system-prompts-out-of-the-workflows) called
-*Rewrite* fills the slot
-called *Rewrite*, through the same name matching every other text field uses. A
+picker offers the slot names as they have been typed, the slots above
+`slot_count` are left off the form rather than shown as twelve dead text boxes,
+and each system prompt is headed by its own slot's name — which means a
+[saved system prompt](#system-prompts-out-of-the-workflows) called *Rewrite*
+fills the slot called *Rewrite*, through the same name matching every other
+text field uses. A
 picker left on a slot that has since been renamed or put out of reach is settled
 back to `passthrough` on the way to the graph, because the alternative is a node
 that raises an error after the job has been queued.
+
+**Running a preset, or not.** The node has a `use_model` switch: on, it runs the
+preset the picker names; off, the prompt goes straight through and nothing on
+the LLM side of the graph runs at all. Latent follows it — with the model off
+there is no preset to pick, so the picker goes, and the switch that brings it
+back never does.
+
+That switch replaced a `passthrough` entry sitting at the top of the picker,
+among six system prompts it was not one of. A workflow exported before the
+switch existed has no other way to say it, so for *that* one the entry is still
+offered; a workflow that carries the switch gets a picker holding presets only.
 
 Each slot's `model_N` box is hidden and shown with the rest of its slot, but it
 is deliberately *not* headed by the slot's name: it is a text field like the
@@ -781,6 +1343,19 @@ Ratio)* declares `divisible_by` as `[8, 16, 32, 64]` — numbers, not strings �
 and expects a number back. `aspect_ratio` and `megapixels` are read as the size
 of the picture, so they sit with width and height on the form and on a gallery
 card.
+
+**And they go when a picture decides instead.** That node can take its size from
+a connected image rather than from its widgets — `from_image` set to *aspect
+ratio* borrows the shape and keeps your megapixel budget, *resolution* takes the
+picture's own size outright. Whichever it takes stops being something the form
+can decide, so the ratio goes in both modes and the megapixel budget goes only
+under *resolution*, where it is not consulted. The mode itself is never hidden:
+it is what brings the others back, and hiding the only control that undoes a
+state is how a form traps somebody in it.
+
+That is the third instance of the same rule — the image encoding controls, the
+sampler's two halves, and now this. A form that offers a setting which cannot
+affect the result is worse than one that offers nothing.
 
 **Thinking is on by default.** Reasoning models are what this is worth doing
 with, and a model that thinks before answering gives noticeably better prompts.
@@ -836,8 +1411,11 @@ to use a tool the reply stops, the conversation behind it goes out of focus, and
 accept or you refuse, and refusing is an ordinary turn in the conversation —
 the model is told, and you carry on refining.
 
-**A dialog can be put aside** with the − in its corner, and comes back from a
-line above the composer. Deciding is often not the next thing you want to do:
+**A dialog can be put aside** with **Put aside** in its own strip along the top,
+and comes back from a line above the composer. It has a row to itself rather
+than a corner: it used to float over the row holding Reject and Generate, close
+enough to Generate that folding the dialog away and queueing a render were one
+slip apart. Deciding is often not the next thing you want to do:
 the answer is in the gallery, or five messages up, and both are behind the very
 thing asking. Folding it away leaves the call exactly as it was — the model is
 still waiting, nothing has been accepted or refused — and the transcript
@@ -846,11 +1424,134 @@ becomes readable again in the meantime.
 **Nothing is said about a picture until there is one.** Accepting a prompt used
 to be followed immediately by the model's next turn, which meant it described,
 and often proposed changing, a render that was still being sampled. Now that
-turn waits for the run to finish, with a line in the transcript saying so, and
-when it comes it is offered **no tools** — so the reply after a picture is a
-sentence about it rather than another proposal on top of it. Both hold while
-you are elsewhere in the app; the conversation lives outside the screen that
-shows it.
+turn waits for the run to finish, with a line in the transcript saying so. Both
+hold while you are elsewhere in the app; the conversation lives outside the
+screen that shows it.
+
+### The model sees what it made
+
+That turn used to be the model talking about a render it had never seen —
+confidently, because that is what these models do. Most model servers worth
+running are multimodal, so **the finished picture is handed back to it**, with
+the prompt beside it, and the reply becomes a judgement it is in a position to
+make: what came through, what did not.
+
+**You see it first; the model gets it second.** The order is deliberate and
+enforced: the render appears in the transcript, and only once it is actually on
+screen is it handed to the model. A finished run is not the same as a visible
+picture — there is a refetch and a download in between — and against a fast
+model the judgement of a picture used to arrive before the picture did.
+
+**The picture comes first, the proposal waits.** A rewrite is not thrown over
+the render the moment it appears: it arrives folded away on a line above the
+composer, so you see the result, read what the model made of it, and open the
+proposal when you are ready. Saying something else instead is an answer —
+the proposal is refused, the model is told, and the conversation carries on with
+what you said rather than with a decision nobody made.
+
+**When it is not sure, it asks.** A picture can miss for several reasons at
+once, and which of them to chase is a matter of taste; guessing produces a
+confident rewrite of the wrong thing. **Ask rather than guess** in Settings →
+Chat sets how readily it stops instead — from never through *when it cannot
+tell* and *when unsure* to *always first* — and what arrives is the ordinary
+question dialog, with two to four concrete ways to close the gap. Answering it
+keeps the review open: the turn after your answer is still about that picture,
+with the same rewrite on offer.
+
+**And it stays in front of it.** The picture is not shown once and taken away:
+the last couple of renders go back with every turn, in the place they happened.
+That is what makes the next sentence work — *make the sky darker*, *keep this
+one but move the boat* — because otherwise the model is changing its own
+description of a picture it saw two turns ago, and every change after that
+compounds the description rather than the result. **Pictures it keeps in view**
+in Settings → Chat sets how many: none, the last one, up to the last four. Two
+by default, because each one is prefill on every turn from then on and a long
+session should not spend its time re-reading its own back catalogue.
+
+On by default, and switchable off in Settings → Chat for a text-only server or
+when the extra wait per picture is not worth it. A server that cannot take an
+image is not an error either: the turn is asked again without any pictures,
+which is exactly what it was before this existed.
+
+**How picky it is, is yours to set.** Under the same tool settings — because it
+is the same kind of decision, how much the model does on its own — a line of
+points runs from **Never** through *plainly wrong*, *something missing*,
+*noticeably off* and *any part off* to **not exact**. Below the threshold you
+choose, the model proposes a rewritten prompt; above it, it says how it went and
+stops there. Each step is a sentence *and* a score out of ten the picture has to
+beat, because a number alone is not something a model applies consistently and a
+sentence alone leaves "too far apart" to be decided fresh every time.
+
+A rewrite arrives as an ordinary tool dialog — the same editing, the same
+workflow picker, the same **Generate** — headed by what the last attempt scored
+and what it got wrong. Accepting it renders again, and that picture is checked
+in its turn, so "not quite, try again" is a loop you drive one tap at a time.
+Refusing is a normal turn in the conversation.
+
+### Letting it carry on by itself
+
+That loop is already complete apart from the tap. **Carry on by itself**, in
+Settings → Chat or under the **∞** in the chat header, is that tap made
+automatic: the model's own prompts and rewrites are accepted for you and the
+next render starts, again and again, **until a picture clears the perfectionism
+threshold you set above**. The stopping rule is not a new judgement — it is the
+threshold that was already there, so raising it makes the run try harder and
+lowering it makes it settle sooner.
+
+Off by default, because every round is a render nobody watched being started.
+
+**It engages wherever the loop happens to be.** Switching it on mid-conversation
+is not a preference for next time: if a proposal is sitting on the table waiting
+for you, that proposal is taken and the run carries on from there. Pressing it
+again on a run that stopped at the round limit is fresh permission and picks it
+back up. This used to be the mode's worst fault — whether it engaged depended on
+whether the switch happened to be on at the moment you last spoke, so it
+sometimes iterated and sometimes waited to be tapped, with a strip above the
+composer announcing a run that carried on by itself either way.
+
+While a run is going, a strip above the composer says which round it is on and
+stops it on a tap. It ends by itself in four ways:
+
+- **It cleared the mark.** The model was shown the render, marked it against the
+  prompt, and did not reach for a rewrite. That is the run finishing.
+- **The round limit.** Two to twelve renders, four by default — a model
+  convinced its prompt is nearly right will rewrite it indefinitely, and nobody
+  is watching. The last proposal is left waiting rather than thrown away.
+- **You decided something.** Accepting, refusing or folding away a proposal
+  yourself hands the run back to you; so does **Stop** on the reply.
+- **You said something.** Which also releases a stopped run and starts the count
+  again, because a run is what happens between two things you say.
+
+It asks you nothing while it runs — the question tool is withheld and the model
+is told plainly that nobody is answering, so it decides for itself or says the
+picture is good. Switching the mode on switches the check on with it, since a
+run with nothing looking at the pictures has no way to end.
+
+What is shown is a copy scaled to 768 pixels, not the original: prefilling an
+image costs real time on a local model, and a 4000² output is minutes of it for
+nothing a vision encoder can use. From a batch it is the first picture — the
+transcript still shows the whole run — and from a video workflow it is the
+poster frame, once something has captured one.
+
+The **✦** button next to Send offers two ways to press it, as two icons in a
+small strip above it:
+
+- **✦ Generate now** — a prompt from what you have been discussing, queued or
+  shown first depending on the setting. What the button always did.
+- **⟳ Fresh prompt, then generate** — throws the current prompt away and asks
+  for *a different composition of the same idea*: another subject, another
+  angle, another way in. It generates straight away, without a dialog.
+
+The second is for a conversation that has converged. Ask for another prompt
+normally and you get the last one with two words moved, because the last one is
+sitting in the history being treated as the thing to improve; this one tells the
+model to start over, and refuses the proposal on screen first so it knows the
+last attempt was thrown away rather than accepted.
+
+Whichever you press, the button spins until there is an answer. Against a local
+model the gap before the first frame is a second or two, and a button that
+visibly does nothing in it reads as a tap that missed — which is how you end up
+queueing two prompts.
 
 **Build a prompt** is the one this module exists for. Ask for a prompt from what
 you have been discussing and you get it in an editable box — with **Reject** and
@@ -871,10 +1572,16 @@ applies to that dialog only, and the default stays whatever Settings says.
 
 **You stay in the conversation, and the picture arrives in it.** Being sent to
 the Generate screen threw away the thread at the moment it had paid off. The run
-appears where you asked for it, with a progress bar while it renders — the same
-numbers the live bar shows, in the place you are already looking. Its size is a
-step on a five-point scale in Settings, centred in the conversation. Tapping one
-opens it full-screen with pinch-zoom and pan; tapping again puts it away.
+appears where you asked for it, and while it renders you get **the same bar the
+rest of the app shows**: the live preview frame it is up to, how much longer,
+which node is running, the step count and the queue behind it. Its size is a
+step on a five-point scale in Settings, centred in the conversation. Tapping a
+finished picture opens **the gallery's own viewer** — the same rating, keep,
+favourite, save, reuse and details actions — because the picture you have just
+asked for is the one you are most likely to want to keep, and going to the
+gallery to do it loses the conversation it came out of. The viewer holds **every
+picture in the conversation**, in the order they were made, so a swipe is the
+previous attempt rather than the end of a batch of one.
 
 The size is a share of the *width*, not of the window's height. Height sounds
 tidier and is not: the chat window gets shorter when the keyboard opens, so one
@@ -913,17 +1620,278 @@ landscape, photograph or illustration — the model stops and asks, with two to
 four ready answers and a box for the one it did not think of. Skipping tells it
 to decide for itself.
 
+Several questions come in one call, so they are laid out to be answered in one
+go: the answers **wrap onto as many lines as they need** rather than being cut
+off with an ellipsis — an answer worth tapping is often a phrase, not a word —
+and the box for your own answer is **folded behind the last chip** until you
+reach for it, which is the difference between four questions on a phone screen
+and seven.
+
 **Edit the prompt blocks** is the other. Writing a block library by hand is the
 tedious part of [random prompt mode](#random-prompt-mode), so the model can
 propose them: a list arrives with a checkbox each, an **Edit** on every row, and
 a count on the accept button. What gets written is the list *as you edited it* —
 not what was proposed — and anything you unchecked is never touched. It adds,
-updates and removes, so "these four are near-duplicates" is a thing it can fix.
+changes and removes, so "these four are near-duplicates" is a thing it can fix.
+
+Changing and removing need the model to know what is already there, so **the
+library goes into the system prompt** whenever this tool is switched on —
+grouped the way the library screen groups it, with the wording of each block, so
+the model can tell a genuinely new fragment from a fourth phrasing of one you
+already have. A block is named rather than addressed: the model says "Vague
+mood, under Mood", the server matches that against the real library before you
+are shown anything, and the row you see carries the block's own text rather than
+the model's description of it. A name matching two blocks is left unresolved
+instead of guessed at — a wrong deletion has no undo — and a row that matches
+nothing says so on its face and cannot be accepted.
 
 **Saved conversations** are a side effect rather than a feature: every chat is
 kept, listed by its first line, and renameable — but the model has no memory
 across them, and the point of the module is the prompt at the end, not the
 transcript.
+
+**Propose a rewrite** is the fourth, and the one you never set a pace for: it is
+offered on exactly one turn — the one where the model has just been shown the
+picture its prompt produced — so "how readily does it reach for this" is not a
+question that arises. What it *is* governed by is the threshold above.
+
+### How much a prompt spells out
+
+The same picture can be described in a sentence or in a paragraph, and which is
+right is not a fact about prompting — it is a fact about what you are doing. A
+sparse prompt leaves the model room and varies wildly between seeds; an
+elaborate one pins the picture down, which is what you want once you know
+exactly what you are after.
+
+Settings → Chat → **How much a prompt spells out** runs from **Sparse** through
+*plain*, *balanced* and *detailed* to **Elaborate**. It is instructions rather
+than a length limit — "two sentences" is a rule a model follows by truncating
+the wrong half — so what changes is how much of the scene the prompt settles and
+how much is left to the sampler. It is a section of the system prompt, which
+means it applies to instructions you wrote yourself as well as to Latent's own,
+and none of the levels reintroduce the keyword pile the rest of the prompt
+spends its length arguing against.
+
+### Wandering
+
+The other endless mode, and the opposite of the one above: it never converges
+on anything. **❋** in the chat header starts it, and from then on it makes a
+picture, then another, then another, until you stop it. Each one is built from
+**a few of your notes drawn at random** — not by asking the model to pick, which
+gets you the same three every time, but drawn on the server before the model is
+asked anything.
+
+Nothing is proposed and nothing is judged. There is no dialog to accept, no
+comment on how it went, no threshold to clear; the transcript is a column of
+pictures with a counter and a **Stop** above the composer. It is for the evening
+when you would rather be shown things than decide any.
+
+Three things are settable, under Settings → Chat → **Wandering**:
+
+| | |
+| --- | --- |
+| **Notes in each picture** | **One from each heading** by default, then one to six. The first setting is not a number at all: it means *no ceiling* — take as many as the rules allow, which under the default cap of one per heading is one note from each. The fixed numbers are a ceiling rather than a promise — see *what it draws from* below. One is a variation on a theme; six is a collage where every picture contains everything and they all start to rhyme. |
+| **What it draws from** | Which notes are eligible and how they are spread. Its own sheet, because it is the setting this mode lives or dies by; see [Choosing what it draws from](#choosing-what-it-draws-from). |
+| **Rendered with** | Whatever the chat uses, or a workflow of its own — worth setting, because the graph you iterate with is often the slow one and a run that goes all evening wants the fast one. |
+| **Sampling for these** | The chat's, or its own. |
+
+That last one exists because this is not a conversation: nobody is reading the
+words, the same few notes come round again, and a model at its careful settings
+writes the same prompt from them every time. Choosing *its own* opens the same
+sampling dialog the chat has, with its own copy of every parameter, and starts
+you at a warm temperature rather than handing back an identical copy of what you
+just rejected.
+
+**Tapping a picture opens the viewer**, the same one the gallery uses, over
+every picture in the conversation — so a swipe is the one before it, which in a
+wandering run is exactly the last thing you were shown. **✦ in the corner opens
+what made it**: the prompt, the settings, and the button to run it again,
+because "what was that one?" is the only question an endless stream raises and
+in this mode the prompt is never written above the picture.
+
+**It keeps going while you are elsewhere.** The loop runs on the server, so
+switching to the gallery — or to another app, or closing the tab — does not stop
+it; the pictures are simply there when you come back, and the counter above the
+composer has kept counting. A restart does not stop it either: where a run has
+got to is written down, and a fresh process picks it up. See
+[How it works](#how-it-works) for why none of that could be true while the loop
+lived in the browser.
+
+**Only those notes, and nothing else about you.** The section of the system
+prompt that normally lists everything you like is left out of these turns
+entirely. Having both at once was the mode asking for three things and being
+handed the whole profile underneath, which is how every round ended up
+containing everything.
+
+**Every round starts from nothing.** A wandering turn goes to the model with the
+system prompt and its own drawn notes, and no transcript at all — none of the
+prompts the run has already written. It used to be sent all of them, and that is
+a different mode than the one intended: a model handed twenty variations on a
+theme continues the theme, so round twenty was really about round nineteen, and
+the notes it was supposedly drawn from were a footnote under a page of its own
+work. The quality falls off and the pictures get wilder in a direction nobody
+chose. There was an instruction telling it not to do that, which is asking a
+model to overlook the largest thing in front of it.
+
+Nothing is forgotten by starting fresh. The round is written into the
+conversation like any other, so it is on screen, in the gallery, and behind ✦.
+And the **draw** still reads the run's history — it is the server that picks the
+notes, and it deliberately avoids the ones the last couple of rounds used. It is
+the model that starts each round with a clean slate, not Latent.
+
+Which is also where the variety now comes from: different notes each round, and
+the **sampling** below. Two rounds that draw the same notes at a cold
+temperature will land close together — that is the honest trade for rounds that
+do not drift, and it is what *Its own* sampling and **Before a note may come
+round again** are for.
+
+**And it says what each picture was drawn from.** The notes are never written
+above a picture as it arrives — being shown things is the point, and a caption
+listing your own taste back at you is not being shown anything — but ✦ in the
+corner opens the prompt *and* the handful of notes behind it. The mode used to
+say nothing at all about this, which held right up until a picture came out well
+and there was no way to find out why.
+
+What is stored on the message is the notes' **ids**, not their words. A chat
+message goes into the database in the clear and these notes are encrypted on
+purpose; writing the text there would have put the profile in plaintext one
+round at a time. The words are put back from the vault when the conversation is
+read, so a locked server simply has none to give.
+
+Saying anything in the chat stops the run — you have taken over, which is what
+the composer is for.
+
+### Choosing what it draws from
+
+A flat shuffle of every note you have switched on is the obvious way to run this
+mode, and it is not good enough for a list anyone has actually kept. Notes are
+not interchangeable: a heading called *Format* holds things that belong in every
+picture, one called *Films* holds a dozen near-synonyms of which you want
+exactly one, and one called *Ideas for later* is not something you want turning
+up tonight at all. Nothing but you knows which is which, so Settings → Chat →
+Wandering → **Set up…** is where you say.
+
+**Each heading is one of three things.**
+
+| | |
+| --- | --- |
+| **Sometimes** | The default. Its notes join the pool and may or may not come up. |
+| **Always** | Guaranteed a place in every round, however few notes are being drawn. This is the one the mode needed most: the heading that decides what kind of picture this is at all should not be left to a coin toss. |
+| **Never** | Out of wandering — *without* being switched off for the chat, which is the difference between "not tonight" and "not any more". |
+
+**And each has a cap**, the **≤** beside it, on top of a general one. The
+general cap is **one by default**, so a round takes at most one thing from each
+heading — which is what stops it being four ways of saying the same thing
+because one heading happened to win the shuffle four times. A heading can
+override it in either direction, and *No limit* puts the flat shuffle back.
+
+Together with **Notes in each picture** left at *one from each heading*, that
+default is the whole shape of the mode out of the box: your headings are the
+things you actually curated, so a picture built from one of each is a picture
+made of your list rather than of whichever corner of it came up. Notes filed
+under no heading count as one heading between them for this — the unsorted pile
+contributes one note, not all of them.
+
+**The caps are hard.** A round would rather come up short than break one: three
+notes wanted, a cap of one, and two headings in play means two notes, not two
+notes plus a repeat to make up the number. Quietly doubling up is exactly the
+fault the rule was set to prevent — so the sheet tells you, in a line at the
+bottom, how many a round can actually reach under the rules as they stand.
+
+Three more, for the cases headings do not cover:
+
+| | |
+| --- | --- |
+| **Notes under no heading** | In the draw or left out. They have no heading to switch off, so they get their own switch — for a profile where the loose notes are the unsorted inbox and the filed ones the considered list. |
+| **Pinned notes** | *In the draw* (the default — a pin means "this holds even when I have asked for something specific", and here nobody has asked for anything, so it buys nothing), *always in* (the other reading: a pinned note is part of everything you make), or *left out*. |
+| **Before a note may come round again** | Off, or one to five rounds. The fault of a long run is not repeated pictures, it is repeated notes: a short list will show you the same one twice within a minute and by the fourth picture it reads as the model being stuck. Dropped the moment it would leave nothing to draw — "don't repeat yourself" cannot mean "stop". |
+
+That last one reads the previous rounds back out of the conversation rather than
+remembering them in memory, so it survives a restart — which is the machine it
+matters on.
+
+**Half of the sheet asks for your password and half does not,** which is the
+same line drawn everywhere else: *at most one from a heading* is a fact about
+the draw and says nothing about you, while choosing between headings means
+reading what they are called, and what they are called is part of the profile.
+So the general rules are open and the list of headings is behind the door.
+Deleting a heading takes its rule with it, so the summary on the settings screen
+never counts a heading that has not existed for weeks.
+
+### What you like
+
+The hardest part of making pictures is deciding what to make, and "give me an
+idea" is a question nothing can answer well without knowing who is asking. The
+♥ button in the chat header — next to the chat list, because it answers the same
+question — opens a page for writing that down: concepts, aesthetics, places,
+films, whatever you keep coming back to.
+
+Notes can be filed under headings you make up, and they can sit under no heading
+at all; being made to file everything is how a list like this ends up empty.
+Everything has its own switch, and switching a heading off silences everything
+under it, so changing your mind for an evening is a tap rather than a deletion.
+
+**Headings arrive folded**, showing their name, how many of their notes are
+switched on, and that switch — so a dozen fit on a phone screen and you can see
+the shape of the list rather than one card of it. Opening one shows the notes
+under it and the three things you occasionally do to a heading: rename it in
+place, move it up or down, delete it. Notes themselves are edited by tapping the
+words; "nearly right" is a note's normal state, and retyping it as a new one was
+the workaround that removes.
+
+**It asks for your password, even though you are signed in.** Everything else in
+the app is pictures and settings — what a phone left on a table shows to whoever
+picks it up, which is a risk people accept. This is a written description of
+you, so the door asks again, and nothing behind it appears until it has been
+answered: not the notes, not how many there are. Closing the page hands the pass
+back, and so does signing out; it expires on its own after fifteen minutes. The
+check is the server's, not the screen's — the routes behind it refuse a session
+that has not given the password, so it is a lock rather than a page that looks
+locked.
+
+**It is encrypted with your password**, like the archive and for the same
+reason: it is never on screen, so nobody would notice it sitting readable in a
+database file or a backup. The model reads it — that is what it is for — but
+only while somebody is signed in, and it never leaves the machines you already
+trust with the pictures. What stays in the clear is the shape of the list: the
+order, the switches, and which heading a note is under, so the page still works
+before you have signed in.
+
+Settings → Chat → **How much it draws on them** runs from **Off** through
+*sparingly*, *hints* and *guiding* to **house style**, and every step is a
+statement about empty space rather than about authority:
+
+| | |
+| --- | --- |
+| **Off** | The model is never told any of it. |
+| **Sparingly** | Only when you have said nothing at all — "surprise me". |
+| **Hints** | A vague idea gets coloured by it; a clear one is left alone. |
+| **Guiding** | Shapes what it offers first, wherever that does not contradict you. |
+| **House style** | Everything starts from it unless you say otherwise. |
+
+The default is *hints*. The rule every level shares, and one the model is told
+at each of them: **what you actually asked for wins.** The notes fill in what
+you left open; they never overrule what you said. The model is also told never
+to read the list back to you — you wrote it, and it shows in what it suggests
+rather than in what it says.
+
+**Some notes are not starting points.** A format you always want, a thing you
+never want in a picture, a treatment you have settled on — those matter most in
+exactly the case the scale silences them, which is when you *have* said what you
+want. Tapping **Only when it fits** on a note pins it: it then applies whatever
+the scale says, even to a picture you have already described.
+
+A pin is bounded by relevance instead, and the model is told so in as many
+words: apply it where it bears on the picture in hand, and where it has no part
+in what is being made — a note about colour in a line drawing, one about framing
+in a question about wording — leave it out entirely rather than bending the
+picture to give it something to do. Pinned notes are listed once, as rules,
+rather than again among the rest.
+
+The pin and the switch are different things. The switch says whether a note is
+in play at all, so switching one off — or switching off the heading over it —
+still silences a pinned note. **Off** on the scale is the master switch: nothing
+is sent, pinned notes included.
 
 ### How eagerly it reaches for each one
 
@@ -1147,10 +2115,12 @@ mark inside a ring so it is findable without reading anything. It is the middle
 because it is the easiest place on a phone to hit one-handed and because it is
 increasingly where a session starts.
 
-Blocks, Random and Monitor sit behind the **⋯** tab, which opens a small menu
-above the bar. They are screens you *set up* and then leave alone for weeks;
+Blocks, Random, Monitor and Study sit behind the **⋯** tab, which opens a small
+menu above the bar. They are screens you *set up* and then leave alone for weeks;
 spending an eighth of the bar's width on each of them permanently, and shrinking
 the labels on the ones you use every minute to pay for it, was the wrong trade.
+(On a tablet there is no menu — the rail lists all ten. See
+[On a tablet](#on-a-tablet).)
 
 **Tapping the tab you are already on goes back to the top**, the way every other
 phone app behaves. Without it a long gallery scroll is a one-way trip.
@@ -1172,6 +2142,78 @@ event for "the keyboard is up", so it is inferred from `visualViewport` — the
 part of the page you can actually see — and the bar hides while that is short.
 Nothing on it is reachable mid-sentence anyway.
 
+## On a tablet
+
+A tablet is not a big phone. It is held in two hands or stood on a table,
+nothing about its bottom edge is privileged, and it has room to show two things
+at once — which changes what the app should be, not just how big it should be.
+So on a screen that size the layout is a different one. Nothing is configured
+and nothing is detected at startup: it is two media queries, so rotating the
+thing re-lays it out, and so does dragging a split-screen divider.
+
+**The line is drawn on the shorter side.** A screen counts as a tablet when it
+is at least 600 points in *both* directions. A width test alone calls a phone in
+landscape a tablet — a Pro Max is 932 points across that way — and hands 430
+points of height to a layout built on having plenty of it. Six hundred is the
+gap: the widest phone is 430 across its short side and the narrowest tablet is
+600, so nothing real is near the threshold.
+
+**Navigation runs down the left, with every module on it.** Ten destinations,
+labels you read rather than shapes you learn the position of, and no **⋯** menu
+— Blocks, Random, Monitor and Study were only ever behind one because six
+labelled tabs is as many as a phone's width carries. A rule separates the four
+you set up and leave alone from the six you use daily, which is the same
+distinction the menu was making, at no cost. It also gives back the sixty points
+of height the bottom bar was taking, and height is the scarce axis on a
+nine-inch screen turned sideways.
+
+**Generate puts the render beside the form.** This is the argument for the whole
+thing. On a phone, changing one word of a prompt and seeing what it did is
+Generate → a bar → a viewer → back → back, and the previous attempt is never on
+screen at the same time as the words that made it. Here the form keeps a column
+of its own and the rest of the width is the picture: the live preview while it
+samples, with the progress, the elapsed time and the ETA under it; the finished
+render when it lands; and this workflow's recent output as a strip along the
+bottom, any of which opens the gallery's own viewer. The form does not stretch
+to fill half a screen — it is a column of labelled rows whose ideal width is
+about a phone's — so what it does not need goes to the render.
+
+**The chat gets a contact sheet.** The transcript is held to a readable column
+and every picture the conversation has made collects in a panel beside it, in
+the order it was made, each one a way into the viewer. That is worth most in a
+[wandering](#wandering) run, which is nothing but one picture after another with
+a few words in between — the wrong shape for a transcript and the right one for
+a grid.
+
+**Sheets become panels.** A bottom sheet is a phone shape: it arrives from the
+edge your hand is at and spans the full width because there is no width to
+spare. On a tablet the same content is centred, capped, and clear of every edge,
+with a lift instead of a slide and no grab handle — that handle means "push me
+back down", which is a small lie in the middle of a screen.
+
+**Nothing is stretched to a hundred and forty characters a line.** Settings, the
+queue, the blocks, the monitor and the studies all sit in a column that stops
+growing once it is wide enough to read. Filling the space is not the same as
+using it: a row whose label is at one edge and whose switch is at the other is
+worse than one you can take in at a glance. The same goes for the smaller
+things — the gallery's filter pills, the favourites' thumbnail switch, and the
+viewer's action row, which becomes one row of ten instead of two rows of five
+and hands the second row back to the picture.
+
+**The grid opens on four columns rather than two,** and can be set as high as
+eight. Two columns of a nine-inch screen is two postcards and a scroll for the
+third — the same picture count as a phone, on twice the glass. Like the rest of
+the grid settings this is per device, so a phone and a tablet signed in to the
+same server each keep their own.
+
+**Upright, it is a tablet but not a wide one.** A 9.7-inch screen in portrait is
+768 points across, and a form beside a picture there is 340 points each — which
+is narrower than the phone the form was drawn for. So the second pane is only
+for the wider layout, at 900 points and up, and portrait keeps the rail, the
+panels and the proportions with a single column. In practice that means the
+9.7-inch tablet has one layout upright and the other on its side, which is the
+distinction already in your hands.
+
 ## In the gallery
 
 **Cut into days.** A month of heavy use is thousands of tiles, and "the ones
@@ -1183,6 +2225,31 @@ one of them gone. Folded days leave the viewer's swipe list too, or putting a
 day away would be a lie about what you are browsing. Which days are folded is
 kept on the device: that is a fact about this screen and this phone, not about
 the pictures.
+
+**A tile is the shape of its picture.** A grid of squares crops a third off a
+2:3 portrait, and a gallery of generated pictures is mostly not square — the
+ratio was chosen on purpose when the picture was made. So the rows are a twelfth
+of a column tall rather than a whole cell, which is what lets a tile be 2:3 or
+4:3 rather than only 1:1, 2:1 or 1:2.
+
+The shape is decided a **row at a time**, and that is the part that makes it
+work. A row with two tile heights in it leaves a hole under the shorter one —
+which is the reason galleries square everything off in the first place. So a row
+of pictures that agree on a shape is drawn at that shape, flush on both edges,
+and a row that disagrees is squared. Nearly agreeing counts: 3:2 and 4:3 are the
+same sort of picture and share a shape between them, a portrait and a landscape
+are not and do not. Either way every tile in a row is the same height by
+construction, so nothing is ever ragged.
+
+Holding a tile offers the shapes by name — 2:1, 16:9, 3:2, 4:3, 1:1, 3:4, 2:3,
+9:16, 1:2, plus **Wide** and **Big** for a picture worth featuring. A shape
+chosen by hand is used exactly, and sets its row's height so the row stays
+flush. **Uniform tiles** in the grid-layout sheet turns the whole thing off and
+squares everything, which is what it always did.
+
+The sizes come from the pictures themselves, and the browser learns them by
+loading one. That measurement is kept locally as well as reported, so the run
+you just made is the right shape immediately rather than after the next refresh.
 
 **Sorting.** The ⇅ button holds the order — **newest**, **oldest**, or **best
 rated** — and the workflow filter, rather than three more chips across a row
@@ -1200,9 +2267,11 @@ offset would skip or repeat rows as it does. A cursor is only meaningful in the
 direction its ordering runs, so the comparison flips with the sort and the
 cursor carries the rating alongside the time.
 
-**The blur.** The ◌ button in the gallery header — and the same switch under
-Settings → Display — puts every image in the app heavily out of focus: the grid,
-the viewer, the live preview, the queue's thumbnails. It is one attribute on the
+**The blur.** The ◍ button — **always the last one in the top row**, on the
+gallery and in the chat, so it is in the same corner wherever you are when
+somebody sits down beside you — and the same switch under Settings → Display,
+puts every image in the app heavily out of focus: the grid, the viewer, the live
+preview, the queue's thumbnails, the pictures in a conversation. It is one attribute on the
 root element rather than something each component opts into, because a privacy
 feature that only covers what somebody remembered to wire up is not one. Kept on
 the device, applied before the first paint, so a reload does not flash the
@@ -1295,6 +2364,66 @@ rather than asking for something absurd.
 zooms back out instead, because closing on a stray tap while inspecting detail
 would be maddening. Double tap still toggles zoom; the single tap waits out the
 double-tap window before acting.
+
+**Nothing in front of the picture.** ⛶ in the header takes *every* control away
+— the close button, the counter, the action rows, the comparison tabs — and
+leaves the image alone on a black screen. Some pictures put the thing you are
+looking at exactly where a button is: a face behind the close, a horizon under
+the action row. No arrangement avoids that on every image, so the answer is to
+be able to clear the screen.
+
+A tap brings them back. That is the only way back, since the button that would
+undo it went with everything else — which is also why it is the right gesture:
+standing in for a missing control is what a tap does in every photo viewer, so
+it is the one people try first. Hiding them survives a swipe to the next
+picture, because it is a decision about how you want to look at things rather
+than about one image.
+
+**Before and after, in one frame.** A picture made by an edit workflow opens
+with two tabs flush against the edges of the screen — one across, one down.
+Drag either one and the picture the edit was made from appears behind the seam:
+everything on one side is before, everything on the other is after, and moving
+the seam sweeps the difference under your thumb. Tap a tab for all of it,
+tap again to put it back. Two of them, one per axis, because an edit does not
+change a picture evenly — a new coat is somewhere in the middle, a replaced sky
+is along the top, and only one of those can be dragged through by a vertical
+seam.
+
+The tabs sit *on the edge of the window*, not on the image. Inset by even a few
+pixels they float over the picture and take a bite out of the one thing this
+screen exists to show; against the edge they read as furniture belonging to the
+frame, and on a phone the edge is where a thumb already rests. They are small
+for the same reason.
+
+**And a fade, for the change no seam will find.** The slider in the header runs
+from the result at one end to the original at the other, laying the two over
+each other in between. A seam answers "what changed *here*"; superimposing the
+two answers "did anything move at all" — a shift of a few pixels that no seam
+crosses is obvious the instant one picture is laid over the other. It takes the
+counter's place while it is on offer, because which of forty pictures you are on
+is not the question you are asking at that moment.
+
+All three are independent. The fade is painted over both wipe bands, so inside a
+band you still see the original whole and everywhere else you see as much of it
+as the slider asks for.
+
+Which edge each tab rests on is under **Grid layout → Before/after handles**.
+It is a question about the hand holding the phone rather than about the picture:
+a right thumb reaches the right edge and a left one does not.
+
+The handles appear only when the workflow said which of its inputs was the
+original, and it says so in a node's title: `Input Image [Reference]` is the
+picture being edited, and `Input Image [Context]` is the other kind — a pose to
+follow, a style to borrow. From the graph the two are indistinguishable, both
+`LoadImage` nodes feeding the same sampler, so guessing would put a pose
+reference under a portrait and label it "before". An untagged workflow simply
+gets no handles.
+
+Which input was the origin is settled when the job is queued and stored with the
+run, for the same reason the parameter summary is: the workflow can be re-titled
+or deleted long before you open the result. The picture itself is not copied —
+it stays in ComfyUI's input directory — so when that instance is torn down the
+handles go quietly rather than dragging a blank across the screen.
 
 **Values on the pictures.** The ⓘ button in the gallery header chooses what is
 drawn over each *thumbnail*; the one in the viewer's action row chooses what is
@@ -1416,6 +2545,249 @@ widget. A workflow saying `127.0.0.1` means "the Ollama next to ComfyUI", so
 when ComfyUI is somewhere else that host is substituted; if nothing answers, the
 field says so and stays typeable.
 
+## The llama.cpp nodes, in this repo
+
+`comfyllama/` is a copy of [comfyllama](https://github.com/alexrutz/comfyllama)
+— llama.cpp nodes for ComfyUI — kept here rather than referenced, because the
+two are changed together often enough that a submodule was two commits and a
+pointer update for what should be one edit. Copy the folder into
+`ComfyUI/custom_nodes/` and it is a normal custom-node install; nothing in it
+depends on Latent, and Latent runs perfectly well without it.
+
+What the nodes are for is in `comfyllama/README.md`. What matters from this
+side is that Latent already knows about three of them:
+
+- **`LlamaServerConnect`** has its address, token and model filled in from the
+  connection Latent is already using for chat, so a workflow that asks a model
+  for something on the way through does not carry a second copy of your setup.
+  See `shared/src/modelServer.ts`.
+- **`LlamaServerPresetChat`** carries six system prompts and switches between
+  them by name. Those names live in *values*, not in the node definition, so a
+  form built from `/object_info` alone would offer `Preset 1…6` and choosing one
+  would fail. `shared/src/presetChat.ts` reshapes the form against the values in
+  hand and settles the choice on the way to the graph.
+- **`EmptyLatentByAspectRatio`** gives a ratio and a megapixel budget instead of
+  a width and a height, and its `divisible_by` is a combo whose options are
+  numbers rather than strings. It also takes an optional picture to borrow a
+  shape or a size from — `from_image` says which — and the form drops whichever
+  control that has taken over.
+
+Every chat node also takes an optional picture, with a `use_image` switch in
+front of it. Latent's form follows that switch: the two encoding controls
+disappear when there is no picture wired in *or* when the switch is off, and the
+switch itself only appears once something is actually connected to it — but
+never disappears while it is off, because it is the thing that turns the picture
+back on.
+
+**Sampler Settings** reaches temperature, top_p and top_k two ways: three fields
+with a switch each, or one `intensity` slider that sets all three across ranges
+you give it. In ComfyUI a web extension keeps the two halves in step live — move
+the slider and the fields follow, type a temperature and the slider snaps to it.
+There is no extension here, and a two-way binding in a form that submits values
+rather than editing a graph would be a second copy of the arithmetic to keep
+honest. So Latent shows whichever half is deciding, which the node itself is
+quite clear about: with the slider on it computes all three and the fields
+cannot affect the result, so they go; with it off they are the whole story and
+the slider and its six bounds are inert, so those go. The switch between them is
+never hidden. The slider still works from a phone — the node does the same
+arithmetic when it runs, so it does not depend on the extension being loaded.
+
+**MiniMax H3 Reference to Video (Slots)** exists because the stock
+`MiniMaxH3ReferenceToVideo` cannot be driven from Latent at all. Its reference
+slots are *autogrow* inputs, which have no representation in an API-format
+prompt: sent nested they are accepted and silently ignored, sent flat they raise
+a `TypeError`, and the upstream issue was closed as not planned. Latent submits
+API format, so the stock node would produce a video that ignores every reference
+and report nothing wrong. The comfyllama node takes the same references through
+ordinary fixed inputs and calls upstream's own `execute`, so nothing about the
+conditioning is reimplemented — only how the references arrive.
+
+Its forty-eight optional inputs are a slot each, and `idleReferenceSlot` in
+`shared/src/paramSchema.ts` is what keeps that readable: a slot with nothing
+wired loses both its controls, and a wired slot that is switched off loses its
+tag but keeps its switch — the same rule as `use_image`, for the same reason.
+The rest never reach the form, because a saved workflow only carries the widgets
+it was saved with.
+
+**Arranging the form from a desktop.** Latent is a web app, so open it on a PC
+and the form editor works there with a mouse — the drag handles use pointer
+events, which cover mouse and touch alike. On a wide window the editor puts a
+**phone-shaped preview beside it**, live as you drag: the order, which fields
+share a row, which take the whole width, and what sits behind *Advanced*.
+
+The preview and the real form share one function, `planFormRuns` in
+`shared/src/formRuns.ts`. That arrangement used to live inline in the generate
+screen; a preview with its own copy of it would drift, and a preview that is
+almost right is worse than none — the whole reason to look at one is to avoid
+picking the phone up.
+
+### Running without the picture
+
+A graph is a fixed set of links, so once an image loader is wired into a
+workflow every run through it sends a picture — there is no value you can type
+that means "not this time", because the loader's filename is a string and every
+string is a filename. In the editor you would drag the link off; from a phone
+there was nothing to do at all, so a reference image, once chosen, was
+permanent.
+
+Every picture a workflow loads now gets a **Use this picture** switch beside it.
+Switched off, the *link* is removed on the way to ComfyUI: the node that would
+have read the picture sees an input that is simply not there, which is exactly
+what it would see if nothing had ever been connected, and the loader — now
+feeding nothing — is unreachable, so ComfyUI never runs it.
+
+The link is removed rather than the node deleted. A deleted node leaves every
+link that pointed at it dangling, and ComfyUI answers that with a validation
+error about a node id nobody recognises.
+
+If the picture is *required* where it lands — `VAEEncode.pixels`, say — the
+switch is refused with a sentence naming the node that needs it, rather than
+letting ComfyUI answer with an error about an input and not about the switch
+that caused it. The switch is a normal form field, so it can be renamed,
+rearranged or hidden in the form editor like any other, and it is saved in
+presets and drafts. Absent means on: a preset from before this existed keeps
+sending the picture it was built around.
+
+**Load Image (Folder Browser)** uses the *same* control as any other image
+input — the folded header, the square preview, the filename, **Replace** and a
+second button beside it — with one difference: that second button says **Browse
+folders** and opens comfyllama's browser instead of the input-folder list. Same
+field, different folder behind it; two components alike in all but one dialog is
+how the two of them drift apart.
+
+The folder it opens is the point. The stock list is ComfyUI's **input**
+directory, where photos sent from the phone land. This one starts at **output**,
+because the commonest thing anybody wants is to feed a finished render back in,
+and it carries a path — `output/monday/render_0007.png` — shown under the
+filename, because the same name exists under several roots.
+
+**Favourites, as another category.** Every folder and every file in the browser
+has a star beside it, and starring one puts it in a **★ Favourites** chip that
+stands beside `output`, `input` and `temp` — always, whether or not anything has
+been starred yet. It used to appear only once it had something in it, which
+meant the star on every row put pictures into a place that did not visibly
+exist; empty, the category says what a star does instead. Reference material is
+reused and the same handful of it is reused most — the sketch a series is built
+on, the folder of masks, the one photograph every portrait starts from — and
+finding those by walking down from `output` is a cost paid per picture. A
+starred folder opens where it actually lives, so the category is a shortcut into
+the browser rather than a copy of it.
+
+The list is kept with the settings, not on the device: what you reference is a
+property of the installation, not of the phone you picked it from. A slot only
+offers what it can load — a starred clip does not appear in a picture slot, and
+the category says how many it is holding back rather than dropping them without
+a word — but starring is against the whole list, so a picture slot never loses
+the clips it is not showing.
+
+*Replace* still uploads from the camera roll, editor and all. The upload lands
+in ComfyUI's input directory, which the browser also serves, so it is stored as
+`input/<name>` — one kind of value in the field rather than two that look alike
+and resolve differently. The workflow is *not* marked img2img-capable by this
+field, though: the picture it names lives on the far machine.
+
+Latent proxies the browse routes rather than scanning the output folder itself,
+which it could easily do — it already reads the input folder off disk. Which
+folders may be read is decided on the ComfyUI machine, by the environment it was
+started with, and the node refuses anything outside them. A second
+implementation here would be a second answer to that question, and the way it
+would fail is by offering a picture that then declines to load. It holds a path — `output/monday/render_0007.png` — and a ComfyUI web
+extension turns that field into a file browser over the folders the server
+allows: subfolders, thumbnails, search, sorting. In Latent it is a text field,
+because the browser is a dialog inside ComfyUI's graph editor and there is
+nothing to mirror. Which folders it may read is an environment variable
+(`COMFYLLAMA_IMAGE_ROOTS`) rather than a widget, so it is not a value that
+travels inside a shared workflow — `comfyllama/README.md` has the reasoning.
+
+The node definitions and the fixture Latent's tests build forms from are checked
+against each other by `shared/src/fixtures/comfyllama.test.ts`, which asks the
+vendored Python what it actually declares. Two copies of a definition drift, and
+this one would drift silently — the tests would go on passing against a node
+nobody has any more. It skips itself where there is no Python, so `npm test`
+still runs on a machine that only has Node.
+
+### Updating it
+
+It is a plain copy, so replacing it is a plain copy:
+
+```bash
+git clone https://github.com/alexrutz/comfyllama /tmp/comfyllama
+rm -rf comfyllama && mkdir comfyllama
+(cd /tmp/comfyllama && tar -c --exclude=.git .) | tar -x -C comfyllama
+npm test   # the fixture check says whether anything Latent depends on moved
+```
+
+Changes made here go back the other way by copying the folder into a checkout of
+comfyllama and committing there. Latent's own tooling is kept out of it —
+`eslint.config.js`, `.prettierignore` and `.dockerignore` all exclude it, since
+it lives by ComfyUI's conventions rather than this repo's, and its own tests are
+Python:
+
+```bash
+cd comfyllama && python3 -m unittest discover -s tests
+```
+
+## Updating from inside Latent
+
+**Settings → Software** says which commit is running, checks the remote for
+newer ones, and installs them — from a phone, without an SSH session.
+
+Pressing *Install* asks for the password again (being signed in is not enough to
+replace the running code) and then runs four steps, streaming their output:
+
+```
+git fetch  <remote> <branch>
+git reset --hard <upstream>
+npm install --include=dev
+npm run build
+```
+
+Then it offers a restart — and that restart is not optional. The server matches
+URLs against the files it found in `web/dist` when it started, so once the build
+has written new hashed bundles it still serves the page but not the script the
+page asks for. Anything loading Latent fresh gets a blank screen until the
+process is replaced. The tab that ran the update keeps working throughout, which
+is why the screen asks you to leave it open.
+
+**It resets rather than re-cloning.** Deleting the project directory and cloning
+it again is the obvious design and is the one thing this deliberately does not
+do: the server's own working directory *is* that directory, so deleting it
+leaves the updater with nowhere to stand and no way to clone back into it — and
+a clone that fails halfway leaves a machine with no Latent on it at all, which
+is a poor thing to discover from a phone. A reset reaches the same commit,
+never removes the directory it is standing in, and can be undone.
+
+**A failed update goes back.** If the install or the build fails, the checkout is
+reset to the commit it started from and rebuilt, and the screen shows the
+command that failed so you can finish it by hand if you want to. Nothing offers
+a restart after a failure: the rollback leaves exactly the code that is already
+running.
+
+**Your data is never in the way.** The database, the image archive and the
+settings files all live *outside* the project directory by default
+(`LATENT_DATA_DIR`, `LATENT_STATE_DIR`) — decided long before there was a
+button, for this exact reason.
+
+It refuses, with a reason, when it cannot do the job safely:
+
+| Situation | What it says |
+| --- | --- |
+| Uncommitted changes in the tree | Refuses — a reset would destroy them; commit or stash first |
+| Not a git checkout (a Docker image, an unpacked tarball) | Refuses, and points at `docker compose pull` |
+| Detached HEAD, or a branch tracking no remote | Refuses — there is nowhere to update *towards* |
+| Local commits the remote does not have | Installs, but warns that the reset makes them unreachable |
+
+**The restart is checked, not assumed.** Latent cannot start itself, so before
+offering a restart it looks for something that would bring it back — pm2,
+systemd, or a container. On a machine where `npm start` was simply typed into a
+shell it says so plainly, and the button reads *Stop Latent anyway*.
+
+Unlike the terminal this is on by default. The terminal runs whatever you type;
+this runs `git` and `npm` against the remote the checkout already points at and
+cannot be aimed anywhere else from outside — anyone who could push to that
+remote already owned the machine the next time you updated by hand. Set
+`LATENT_UPDATE=0` to remove the routes anyway.
+
 ## The terminal
 
 Set `LATENT_TERMINAL=1` and Settings gains a shell on the machine running
@@ -1445,6 +2817,40 @@ receives a full snapshot and is instantly correct. It also means several devices
 stay in sync, and that ComfyUI needs no CORS configuration and need not be
 exposed to the network at all.
 
+**The chat works the same way, and for the same reason.** A conversation here is
+rarely one request: a prompt is proposed, accepted, rendered, judged, and often
+rewritten — and a wandering run does that indefinitely. All of that used to be a
+sequence the *browser* drove, one call at a time, and a browser is the one part
+of this system you cannot rely on to still be there in ten seconds. A
+backgrounded tab is frozen: its open streams are cut, its timers slow to a crawl,
+and the step between two `await`s never runs. So a run stopped the moment you
+looked at something else, and could stop mid-step — a proposal accepted with no
+render started, which is a state most chat templates then refuse to continue
+from at all.
+
+So the loop is the server's. A client sends an **intent** — say this, ask for a
+prompt, accept that, start wandering, stop — and has no further part in it. What
+a conversation is doing is a state machine with its state written down at every
+transition (`chat_runs`), so it survives a restart as well as a tab switch, and
+so two devices watching one conversation cannot disagree about what is going on.
+Each open conversation has **one long-lived event stream** that opens with the
+present tense rather than replaying a request, which is what makes arriving
+late, reconnecting, and waking from a freeze all the same path.
+
+One thing still waits for a browser, deliberately: the turn that judges a render
+holds until the picture is actually on your screen, because a verdict that
+arrives before the picture is a verdict on nothing. It is a courtesy with a
+deadline — twenty seconds — and it is skipped outright when nobody is watching.
+
+| Where it lives | What it is |
+| --- | --- |
+| `server/src/chat/engine.ts` | The loop: one runner per conversation, a persisted state machine, and the event bus clients subscribe to |
+| `server/src/chat/turn.ts` | One turn — what it is for, what it carries, what it stores. No HTTP in it |
+| `server/src/chat/queue.ts` | Queueing an accepted prompt, in the same act that records the decision |
+| `server/src/chat/blocks.ts` | The block library as the model sees it, and how a proposal is matched back to it |
+| `server/src/routes/chat.ts` | The intents, and the event stream. Nothing else |
+| `web/src/state/chat.ts` | A view: the transcript, what the server says is happening, and the half-written message |
+
 ## Development
 
 ```bash
@@ -1459,14 +2865,23 @@ against a real ComfyUI.
 
 ```bash
 npm test           # unit + server integration tests (Vitest)
-npm run test:e2e   # mobile browser tests (Playwright, iPhone viewport)
+npm run test:e2e   # browser tests (Playwright, iPhone and iPad viewports)
 npm run typecheck
 npm run build
 ```
 
-`npm run test:e2e` needs `npm run build` first. If your environment ships a
-pre-installed browser that doesn't match Playwright's expected build, point at
-it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
+`npm run test:e2e` needs `npm run build` first — it serves the production bundle
+from the real server, so a stale `dist/` means you are testing the last change
+rather than this one. If your environment ships a pre-installed browser that
+doesn't match Playwright's expected build, point at it:
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
+
+Two projects. **iPhone 14** runs everything about behaviour; **iPad** is 1024×768
+and runs only the tests named `@tablet`, which are the ones about the
+[tablet layout](#on-a-tablet). The split is deliberate: the rest of the suite is
+about what the app does rather than how it is arranged, and running four hundred
+assertions twice to prove a button still exists buys nothing.
+Use `--project=iPad` to run just those.
 
 ### Layout
 
@@ -1477,8 +2892,12 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 | `server/src/monitor.ts` | The resource and event history behind the Monitor tab |
 | `server/src/chat/llama.ts` | The llama.cpp client: streaming, reasoning tags, tool schemas, and the instructions and pace policy |
 | `shared/src/markdown.ts` | The Markdown subset a chat reply is rendered from |
-| `server/src/routes/chat.ts` | Conversations, the SSE reply stream, and tool decisions |
-| `web/src/state/chat.ts` | The conversation, held outside the screen so a tab switch cannot destroy it |
+| `server/src/chat/engine.ts` | The conversation loop: a persisted state machine per chat, so a run survives a tab switch and a restart |
+| `server/src/chat/turn.ts` | One turn against the model — what it is for, what it carries, what it stores |
+| `server/src/chat/queue.ts` | Queueing an accepted prompt and recording the decision as one act |
+| `server/src/chat/blocks.ts` | The block library in the system prompt, and matching a proposed change to a real block |
+| `server/src/routes/chat.ts` | The intents a client can send, and the event stream it watches |
+| `web/src/state/chat.ts` | The conversation as this device sees it — a view over the engine, with no loop of its own |
 | `shared/src/systemPrompts.ts` | Matching a named system prompt to the workflow field it belongs in |
 | `shared/src/modelServer.ts` | Putting the model server in use into a workflow's llama-server nodes |
 | `shared/src/presetChat.ts` | Reshaping the preset-chat node's form against its own slot names |
@@ -1486,13 +2905,32 @@ it: `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chromium npm run test:e2e`.
 | `server/src/sweeper.ts` | Deletes runs nobody kept, once they are old enough |
 | `shared/src/promptMatch.ts` | Matches an image's embedded graph to a stored workflow |
 | `server/src/vault.ts` | Archive encryption: master key, wrapping, unlock on sign-in |
+| `server/src/taste.ts` | The notes about what you like, sealed and unsealed with the same key |
 | `server/src/images/` | A dependency-free PNG decoder/resizer, and the thumbnail cache the gallery is served from |
 | `server/src/mock/` | The mock ComfyUI — and a scriptable stand-in for `llama-server` — used for development and tests |
+| `web/src/state/layout.ts` | Where a tablet and a desk begin, for the layout decisions CSS cannot make — the `tablet:`, `wide:` and `desk:` variants in `index.css` are the same three queries |
+| `web/src/components/SideRail.tsx` | The tablet's navigation, and the four modules a phone hides behind a menu — named and grouped once there is width for it |
+| `web/src/components/GenerateWorkbench.tsx` | The render, beside the form that made it |
+| `web/src/components/Dock.tsx` | The bench: what is running, what is queued and what came out, in view on every screen at a desk |
+| `web/src/state/hotkeys.ts` | The keyboard bindings, and the rule that keeps them out of the way while you type |
+| `web/src/state/dropFiles.ts` | Dropping and pasting a picture in, and the refusal that stops a stray drop replacing the app |
+| `web/src/components/ui.tsx` | `DetailPane` — one record, as a sheet where there is no room and a pane where there is |
 | `web/` | React + Vite PWA |
 | `e2e/` | Playwright tests |
+| `comfyllama/` | The ComfyUI custom nodes, vendored so the two can change together — see [its own README](comfyllama/README.md) |
+| `ios/` | A small native front end, talking to the same API over a bearer token — see [its own README](ios/README.md). Written here but never compiled |
 
 Schema changes go in `server/src/db.ts` as a new entry in `MIGRATIONS` — never by
 editing one that has shipped.
+
+**The e2e suite retries once, and says when it did.** A hundred and seventy-five
+tests drive three servers in one container for nine minutes, and about one run in
+three had a single `await` miss its timeout — a different test each time, always
+a wait rather than an assertion about a value, and every one of them passing on
+its own and in its own describe. That is the shape of contention, not of a bug.
+Playwright reports a test that needed the retry as **flaky** rather than passed,
+with its own count at the end of the run, so nothing is hidden: a genuine break
+still fails twice and still fails the run.
 
 ## Limitations
 

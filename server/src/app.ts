@@ -13,9 +13,12 @@ import { Auth } from './auth.js';
 import { ThumbnailCache, ViewRenderer } from './images/thumbnails.js';
 import { Importer } from './importer.js';
 import { InputLibrary } from './inputLibrary.js';
+import { PasswordGate } from './gate.js';
+import { Taste } from './taste.js';
+import { Updater } from './update.js';
 import { Vault } from './vault.js';
 import { plainConnection, type ConnectionConfig } from './comfy/connection.js';
-import { loadConfig, type Config } from './config.js';
+import { loadConfig, projectRoot, type Config } from './config.js';
 import { Store } from './db.js';
 import { Orchestrator } from './orchestrator.js';
 import { StateFiles } from './statefile.js';
@@ -23,6 +26,7 @@ import { Endless } from './endless.js';
 import { StudyRunner } from './study.js';
 import { Sweeper } from './sweeper.js';
 import { WorkflowScanner } from './workflowScan.js';
+import { registerBrowseRoutes } from './routes/browse.js';
 import { registerChatRoutes } from './routes/chat.js';
 import { registerConnectionRoutes, toConfig } from './routes/connections.js';
 import type { AppContext } from './routes/context.js';
@@ -34,17 +38,23 @@ import { registerInputImageRoutes } from './routes/inputImages.js';
 import { registerLayoutRoutes } from './routes/layouts.js';
 import { registerMediaRoutes } from './routes/media.js';
 import { registerStudyRoutes } from './routes/studies.js';
+import { registerUpdateRoutes } from './routes/update.js';
 import { registerPromptBlockRoutes } from './routes/promptBlocks.js';
 import { registerPresetRoutes } from './routes/presets.js';
 import { registerQueueRoutes } from './routes/queue.js';
+import { registerModelRoutes } from './routes/models.js';
 import { registerSystemRoutes } from './routes/system.js';
 import { registerSystemPromptRoutes } from './routes/systemPrompts.js';
+import { registerTasteRoutes } from './routes/taste.js';
 import { registerWorkflowRoutes } from './routes/workflows.js';
 import { attachTerminal } from './terminal.js';
 
 /** Routes reachable before logging in. */
 const PUBLIC_API_PATHS = new Set([
   '/api/status',
+  // What this server is and how to sign in. A client that has no credential
+  // yet has to be able to ask, and the answer says nothing about the machine.
+  '/api/app',
   '/api/auth/login',
   '/api/auth/logout',
   // The claim endpoint has to be reachable by definition; it refuses once a
@@ -126,6 +136,18 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   const vault = new Vault(store);
   const archive = new Archive(config.archiveDir, store, vault);
   const importer = new Importer(store, archive);
+  const taste = new Taste(store, vault);
+  /*
+   * A book of passes each, rather than one shared between them.
+   *
+   * Closing the notes revokes every pass in that book, which is right for the
+   * notes and would be the wrong thing entirely for an update three minutes
+   * into `npm install` — it would lock the screen out of watching the thing it
+   * started.
+   */
+  const tasteGate = new PasswordGate();
+  const updateGate = new PasswordGate();
+  const updater = new Updater({ cwd: projectRoot, log: app.log });
   const inputs = new InputLibrary(store);
   const sweeper = new Sweeper(store, archive, app.log);
   /*
@@ -161,8 +183,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
    * turns the study over to its rating phase. Filtering to study runs happens
    * inside, where the shot lookup already is.
    */
-  orchestrator.onSettled = (generationId, ok) =>
-    studyRunner.onGenerationSettled(generationId, ok);
+  orchestrator.onSettled((generationId, ok) => studyRunner.onGenerationSettled(generationId, ok));
 
   // With the password fixed in the environment there is nobody to wait for, so
   // the archive can be unsealed at boot. Otherwise it stays locked until the
@@ -176,6 +197,10 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     auth,
     archive,
     vault,
+    taste,
+    tasteGate,
+    updater,
+    updateGate,
     importer,
     inputs,
     stateFiles,
@@ -224,8 +249,9 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     await auth.guard(request, reply);
   });
 
-  registerChatRoutes(app, ctx);
+  const chatEngine = registerChatRoutes(app, ctx);
   registerSystemRoutes(app, ctx);
+  registerModelRoutes(app, ctx);
   registerConnectionRoutes(app, ctx);
   registerWorkflowRoutes(app, ctx);
   registerPresetRoutes(app, ctx);
@@ -235,20 +261,30 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   registerGalleryRoutes(app, ctx);
   registerFavoriteRoutes(app, ctx);
   registerPromptBlockRoutes(app, ctx);
+  registerTasteRoutes(app, ctx);
   registerSystemPromptRoutes(app, ctx);
   registerImportRoutes(app, ctx);
   registerInputImageRoutes(app, ctx);
+  registerBrowseRoutes(app, ctx);
   registerMediaRoutes(app, ctx);
   registerStudyRoutes(app, ctx);
+
+  /**
+   * Installing a new version, when the routes are wanted at all.
+   *
+   * On by default, unlike the terminal: this runs `git` and `npm` against the
+   * remote the checkout already points at and cannot be aimed anywhere else
+   * from outside, and running it needs the password a second time regardless.
+   * `LATENT_UPDATE=0` removes it for anyone who would rather it did not exist.
+   */
+  if (config.updateEnabled) registerUpdateRoutes(app, ctx);
 
   /**
    * The shell. Registered only when explicitly enabled — a route that does not
    * exist cannot be reached by a stolen session cookie.
    */
   if (config.terminalEnabled) {
-    app.log.warn(
-      'LATENT_TERMINAL is on: anyone who logs in gets a shell on this machine.',
-    );
+    app.log.warn('LATENT_TERMINAL is on: anyone who logs in gets a shell on this machine.');
     app.get('/api/terminal/ws', { websocket: true }, (socket, request) => {
       if (!auth.isAuthenticated(request)) {
         socket.close(4401, 'Authentication required');
@@ -287,13 +323,27 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     endless.stop();
     studyRunner.pause();
     sweeper.stop();
+    // Before the store closes: a run mid-step would otherwise reach for a
+    // database that has gone. Its state stays as it is, so the next process
+    // picks it up where this one left it.
+    chatEngine.close();
     vault.lock();
+    tasteGate.revokeAll();
+    updateGate.revokeAll();
     store.close();
   });
 
   orchestrator.start();
   stateFiles.start();
   sweeper.start();
+  /*
+   * Pick up any conversation that was mid-something when this process stopped.
+   *
+   * A restart is indistinguishable from a crash from the database's side, and a
+   * wandering run that quietly ends because the server was updated is exactly
+   * the kind of unreliability this module was rebuilt to remove.
+   */
+  chatEngine.resume();
 
   return { app, ctx, config };
 }

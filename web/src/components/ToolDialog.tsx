@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { findFieldByRole } from '@latent/shared';
 import type { AppSettings, ChatToolCall, ProposedBlock } from '@latent/shared';
 
-import { api } from '../api/client';
 import { useVisibleWorkflows, useWorkflow } from '../api/queries';
 import { PromptDiff, promptChanged } from './PromptDiff';
 import { useFormDrafts } from '../state/formDraft';
@@ -28,10 +27,17 @@ export interface ToolDecision {
   decision: 'accepted' | 'rejected';
   blocks?: ProposedBlock[];
   note?: string;
-  /** The run an accepted prompt started, so the transcript can show it. */
-  generationId?: string;
-  /** The prompt as it was queued, so the next one can be marked against it. */
+  /** The prompt as edited here, which is what the server queues. */
   prompt?: string;
+  /**
+   * The workflow this one prompt runs through.
+   *
+   * Only when the picker was used. The dialog no longer queues anything itself
+   * — it used to, and a page that died between queueing and recording left the
+   * conversation holding a proposal nothing would ever answer — so the override
+   * travels with the decision instead of being applied here.
+   */
+  workflowId?: string;
 }
 
 /**
@@ -42,8 +48,8 @@ export interface ToolDecision {
  * and winding the conversation back to it.
  */
 export interface RevisitActions {
-  /** Queued again; the run's id, so the transcript can show what it made. */
-  onRerun: (generationId: string | null, prompt: string) => void | Promise<void>;
+  /** Run it again, with the prompt as edited and any workflow chosen here. */
+  onRerun: (prompt: string, workflowId?: string) => void | Promise<void>;
   /** Drop everything said after this prompt and carry on from here. */
   onRewind: () => void | Promise<void>;
   onClose: () => void;
@@ -56,7 +62,7 @@ export function ToolDialog({
   revisit,
   onMinimize,
   previousPrompt = '',
-  autoAccept = false,
+  workflowId,
 }: {
   call: ChatToolCall;
   settings: AppSettings | null;
@@ -81,7 +87,8 @@ export function ToolDialog({
    * than through a copy of its logic, so "generate straight away" and "show me
    * first" cannot drift apart in which workflow or which values they use.
    */
-  autoAccept?: boolean;
+  /** Forces which workflow an accepted prompt is queued with. */
+  workflowId?: string;
 }) {
   return createPortal(
     <div className="fixed inset-0 z-70 flex items-center justify-center p-4" role="dialog" aria-modal="true">
@@ -92,32 +99,54 @@ export function ToolDialog({
       */}
       <div className="absolute inset-0 bg-ink/50 backdrop-blur-sm" role="presentation" />
 
-      <div className="animate-rise relative flex max-h-[85svh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl">
+      {/*
+        Wider on a tablet, because what is in it is a paragraph.
+
+        A prompt is a long sentence and a set of questions is several; at a
+        phone's width both are a narrow ribbon of text scrolling past a fixed
+        pair of buttons. The cap is still a cap — a dialog as wide as a
+        nine-inch screen would put Reject and Generate a hand's width apart —
+        but it is the width of a page rather than of a phone.
+      */}
+      <div className="animate-rise relative flex max-h-[85svh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-2xl tablet:max-h-[80svh] tablet:max-w-xl">
         {/*
-          Floating over whichever body is rendered rather than living in three
-          headers. It is the same action whatever the call is about, and none
-          of the bodies has a header shaped to hold it.
+          A strip of its own, above everything the dialog decides.
+
+          It used to float in the top-right corner, which put it over the row
+          holding Reject and Generate — not flush with either, and close enough
+          to Generate that putting the dialog aside and queueing a render were
+          one slip apart. Two actions that different should not share an edge.
+          Here it is a row nothing else lives in, aligned to the left because
+          the buttons that commit to something are on the right.
         */}
         {onMinimize && (
-          <button
-            type="button"
-            onClick={onMinimize}
-            aria-label="Put this aside"
-            title="Put this aside and come back to it"
-            className="absolute top-2 right-2 z-10 grid size-8 place-items-center rounded-full bg-surface-2/80 text-lg leading-none text-muted backdrop-blur-sm active:bg-surface-3"
-          >
-            −
-          </button>
+          <div className="flex shrink-0 items-center border-b border-line/60 px-2 py-1">
+            <button
+              type="button"
+              onClick={onMinimize}
+              aria-label="Put this aside"
+              title="Put this aside and come back to it"
+              className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] text-muted active:bg-surface-2"
+            >
+              <span aria-hidden className="text-sm leading-none">
+                −
+              </span>
+              Put aside
+            </button>
+          </div>
         )}
 
-        {call.tool === 'build_prompt' ? (
+        {/* A revision is a prompt like any other, and the dialog it opens is
+            the same one: the same editing, the same workflow picker, the same
+            Generate. What differs is what it says about itself. */}
+        {call.tool === 'build_prompt' || call.tool === 'revise_prompt' ? (
           <BuildPromptBody
             call={call}
             settings={settings}
             onResolve={onResolve}
             revisit={revisit}
             previousPrompt={previousPrompt}
-            autoAccept={autoAccept}
+            workflowId={workflowId}
           />
         ) : call.tool === 'ask_user' ? (
           <AskUserBody call={call} onResolve={onResolve} />
@@ -175,10 +204,16 @@ function AskUserBody({
         {call.reason !== '' && <p className="mt-0.5 text-xs text-muted">{call.reason}</p>}
       </div>
 
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 py-3">
-        {/* Several at once, because that is how the decisions arrive: two
-            related choices are one moment's thinking and two taps, and asking
-            them a turn apart is two waits for a local model to reply. */}
+      {/*
+       * Several at once, because that is how the decisions arrive: two related
+       * choices are one moment's thinking and two taps, and asking them a turn
+       * apart is two waits for a local model to reply.
+       *
+       * Which only works if they are on screen together. Divided by hairlines
+       * rather than by whitespace, so the rows can sit close without running
+       * into each other — four questions used to be a scroll on a phone.
+       */}
+      <div className="min-h-0 flex-1 divide-y divide-line overflow-y-auto px-3">
         {call.questions.map((entry, index) => (
           <QuestionRow
             key={`${entry.question}-${index}`}
@@ -222,7 +257,20 @@ function AskUserBody({
   );
 }
 
-/** One question: its ready answers, and a box for the one it did not think of. */
+/**
+ * One question: its ready answers, and a box for the one it did not think of.
+ *
+ * The answers wrap rather than being cut off. They used to be one line each
+ * with an ellipsis, which is fine for "Portrait" and useless for the answers
+ * worth reading — a model that has thought about the question writes "warm,
+ * low sun through haze" and the button showed "warm, low sun…". A tall button
+ * is a readable one, and there are rarely more than four.
+ *
+ * The typed answer is folded behind the last chip. It is the least-used part of
+ * the row by a distance, and left open it cost every question a field's worth
+ * of height — which is the difference between four questions on a phone screen
+ * and seven.
+ */
 function QuestionRow({
   entry,
   answer,
@@ -234,14 +282,15 @@ function QuestionRow({
   disabled: boolean;
   onAnswer: (text: string) => void;
 }) {
-  const [own, setOwn] = useState('');
   const chosen = entry.options.includes(answer);
+  const [typing, setTyping] = useState(false);
+  const own = chosen ? '' : answer;
 
   return (
-    <div className="space-y-1.5">
-      <p className="text-sm leading-relaxed">{entry.question}</p>
+    <div className="space-y-1.5 py-2.5">
+      <p className="text-sm leading-snug">{entry.question}</p>
 
-      <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-wrap items-stretch gap-1.5">
         {entry.options.map((option) => (
           <button
             key={option}
@@ -249,30 +298,47 @@ function QuestionRow({
             disabled={disabled}
             aria-pressed={answer === option}
             onClick={() => {
-              setOwn('');
+              setTyping(false);
               onAnswer(answer === option ? '' : option);
             }}
             className={cn(
-              'max-w-full truncate rounded-xl px-3 py-2 text-left text-sm disabled:opacity-50',
+              'max-w-full whitespace-normal break-words rounded-xl px-2.5 py-1.5 text-left text-[0.8125rem] leading-snug disabled:opacity-50',
               answer === option ? 'bg-accent text-white' : 'bg-surface-2 active:bg-surface-3',
             )}
           >
             {option}
           </button>
         ))}
+
+        {/* One more chip, in the same row: the answer it did not think of is
+            often the real one, but it is not worth a field of its own until
+            somebody reaches for it. Once opened it stays — closing a field
+            because you looked away from it is how a half-typed answer is
+            lost — and tapping a ready answer instead is what folds it back. */}
+        {!typing && own === '' && (
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => setTyping(true)}
+            aria-label={`Say it yourself: ${entry.question}`}
+            className="rounded-xl border border-dashed border-line px-2.5 py-1.5 text-[0.8125rem] leading-snug text-muted active:bg-surface-2 disabled:opacity-50"
+          >
+            Say it yourself…
+          </button>
+        )}
       </div>
 
-      <input
-        value={chosen ? '' : (own || answer)}
-        onChange={(event) => {
-          setOwn(event.target.value);
-          onAnswer(event.target.value);
-        }}
-        disabled={disabled}
-        aria-label={`Your own answer to: ${entry.question}`}
-        placeholder="Or say it yourself…"
-        className="w-full rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-xs focus:border-accent focus:outline-none"
-      />
+      {(typing || own !== '') && (
+        <input
+          value={own}
+          autoFocus={typing}
+          onChange={(event) => onAnswer(event.target.value)}
+          disabled={disabled}
+          aria-label={`Your own answer to: ${entry.question}`}
+          placeholder="Or say it yourself…"
+          className="w-full rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-xs focus:border-accent focus:outline-none"
+        />
+      )}
     </div>
   );
 }
@@ -292,15 +358,23 @@ function BuildPromptBody({
   onResolve,
   revisit,
   previousPrompt,
-  autoAccept,
+  workflowId: forced,
 }: {
-  call: Extract<ChatToolCall, { tool: 'build_prompt' }>;
+  call: Extract<ChatToolCall, { tool: 'build_prompt' | 'revise_prompt' }>;
   settings: AppSettings | null;
   onResolve: (decision: ToolDecision) => void | Promise<void>;
   revisit?: RevisitActions;
   previousPrompt: string;
-  autoAccept: boolean;
+  /**
+   * The workflow this one must use, whatever the settings say.
+   *
+   * Set by a wandering run, which has a workflow of its own: the graph you are
+   * iterating with is often the slow one, and an endless run wants the fast one.
+   */
+  workflowId?: string;
 }) {
+  /** A second attempt at a prompt whose picture missed, rather than a first. */
+  const revised = call.tool === 'revise_prompt';
   const workflows = useVisibleWorkflows();
 
   /**
@@ -314,7 +388,7 @@ function BuildPromptBody({
    */
   const [override, setOverride] = useState<string | null>(null);
 
-  const preferred = settings?.chat.generation.workflowId ?? '';
+  const preferred = forced || (settings?.chat.generation.workflowId ?? '');
   const fallback =
     localStorage.getItem('latent.lastWorkflowId') ?? workflows.data?.[0]?.id ?? null;
   const wanted = override ?? (preferred !== '' ? preferred : fallback);
@@ -331,7 +405,9 @@ function BuildPromptBody({
    * Overriding to another workflow means its values are the honest starting
    * point — the chat's stored values describe a different graph's fields.
    */
-  const ownSettings = preferred !== '' && workflowId === preferred;
+  // Not for a forced workflow: the chat's stored values describe the graph it
+  // was set up for, and this is a different one.
+  const ownSettings = !forced && preferred !== '' && workflowId === preferred;
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -348,57 +424,33 @@ function BuildPromptBody({
     : formDraft;
 
   /**
-   * Queue it exactly as the Generate screen would.
+   * Hand it over to be queued.
    *
-   * The same workflow, the same values, the same seed handling — the whole
-   * point is that accepting here is not a different way of generating with
-   * different results. Only the prompt fields are replaced.
+   * The dialog used to queue the render itself and then tell the conversation
+   * about it, which was two requests with the whole point of the thing in
+   * between: a page frozen in the gap left a proposal with no answer and a
+   * render nobody was waiting for. Now it says "accepted, this prompt, this
+   * workflow" and the server does both in one act.
    */
   const generate = async () => {
-    if (!detail) return;
     setBusy(true);
     setError(null);
 
     try {
-      const values = { ...draft?.values };
-      for (const field of detail.schema.fields) {
-        if (field.hidden) continue;
-        if (field.role === 'prompt') values[field.id] = prompt;
-        if (field.role === 'negative_prompt' && call.negativePrompt) {
-          values[field.id] = call.negativePrompt;
-        }
-      }
-
-      const lockedSeeds = draft?.lockedSeeds ?? [];
-      const queued = await api.generate({
-        workflowId: detail.id,
-        values,
-        randomizeSeeds: detail.schema.fields.some(
-          (field) => field.role === 'seed' && !lockedSeeds.includes(field.id),
-        ),
-        lockedSeedFields: lockedSeeds,
-        batchCount: draft?.batchCount ?? 1,
-      });
-
-      // Only when the form is what ran. Writing the chat's own values into the
-      // form would change what Generate does next, which is not what was asked.
-      if (!ownSettings) useFormDrafts.getState().patch(detail.id, { values });
-
-      // The first of the batch. The transcript shows the whole run from it.
-      const generationId = queued.generationIds[0] ?? null;
-
       if (revisit) {
         // Decided long ago; there is no decision left to record, only a run.
-        await revisit.onRerun(generationId, prompt);
+        await revisit.onRerun(prompt, override ?? undefined);
         return;
       }
 
       await onResolve({
         decision: 'accepted',
-        note: `The user accepted the prompt and queued it: "${prompt.slice(0, 200)}"`,
-        ...(generationId ? { generationId } : {}),
+        note:
+          `The user accepted the ${revised ? 'revised ' : ''}prompt and queued it: ` +
+          `"${prompt.slice(0, 200)}"`,
         // As edited, not as proposed: the transcript shows what actually ran.
         prompt,
+        ...(override ? { workflowId: override } : {}),
       });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not queue that');
@@ -406,36 +458,16 @@ function BuildPromptBody({
     }
   };
 
-  /*
-   * Queue it as soon as there is something to queue with.
-   *
-   * `detail` arrives a tick after the dialog mounts, so this waits for it
-   * rather than firing on mount and finding no workflow. The ref is what keeps
-   * a re-render from queueing the same prompt twice.
-   */
-  const fired = useRef(false);
-  useEffect(() => {
-    if (!autoAccept || fired.current || !detail || busy) return;
-    fired.current = true;
-    void generate();
-  }, [autoAccept, detail, busy, generate]);
-
   const imageField = detail ? findFieldByRole(detail.schema, 'image_input') : undefined;
 
   /*
-   * Nothing to read while it queues itself.
+   * The notes this round drew, when it was a wandering one.
    *
-   * Showing the whole dialog for the half-second before it closes would be a
-   * flash of buttons nobody is meant to press.
+   * Only on a `build_prompt` — a rewrite is a second look at a picture that
+   * already exists, and what it was originally drawn from is on the proposal
+   * further up rather than on this one.
    */
-  if (autoAccept && error === null) {
-    return (
-      <div className="flex items-center gap-3 px-4 py-5">
-        <Spinner className="size-4 text-muted" />
-        <p className="min-w-0 flex-1 truncate text-sm text-muted">Generating that prompt…</p>
-      </div>
-    );
-  }
+  const drawnFrom = call.tool === 'build_prompt' ? (call.wanderNotes ?? []) : [];
 
   return (
     <>
@@ -462,7 +494,56 @@ function BuildPromptBody({
       </div>
 
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
+        {/*
+          What this is, when it is not the usual thing.
+
+          A rewrite arrives looking exactly like a first prompt, and the
+          difference matters: it exists because the last picture missed, and the
+          mark it was given is the reason there is a dialog here at all.
+        */}
+        {revised && (
+          <div className="flex items-baseline justify-between gap-2">
+            <p className="text-xs font-medium">After looking at the picture</p>
+            {typeof call.score === 'number' && (
+              <span className="shrink-0 rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted tabular-nums">
+                matched {call.score}/10
+              </span>
+            )}
+          </div>
+        )}
+
         {call.reason !== '' && <p className="text-xs text-muted">{call.reason}</p>}
+
+        {/*
+          What this one was made of.
+
+          The mode used to say nothing about this, on the argument that being
+          surprised by your own taste is the point and reading a list of it is
+          not. Half right: that holds *while you are being shown things*, and
+          the moment one comes out well the only question is why. So it is here,
+          in the dialog you have to go and open, rather than written above every
+          picture as it arrives.
+
+          Only what this round drew — never the whole profile, which stays
+          behind the password where it belongs.
+        */}
+        {drawnFrom.length > 0 && (
+          <div className="rounded-lg border border-accent/25 bg-accent/5 px-2.5 py-2">
+            <p className="mb-1 text-[10px] tracking-wide text-accent/80 uppercase">
+              Drawn from what you like
+            </p>
+            <ul className="space-y-0.5">
+              {drawnFrom.map((drawn, index) => (
+                <li key={`${drawn}-${index}`} className="text-xs leading-snug">
+                  <span aria-hidden className="mr-1.5 text-muted">
+                    ❋
+                  </span>
+                  {drawn}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/*
           What changed, above the box rather than inside it.
@@ -605,6 +686,12 @@ function summarise(
     .slice(0, 5);
 }
 
+/** What a row does, said in words rather than as the raw enum value. */
+const ACTION_LABELS: Record<Exclude<ProposedBlock['action'], 'add'>, string> = {
+  update: 'change',
+  remove: 'remove',
+};
+
 /**
  * Proposed blocks, one row at a time.
  *
@@ -621,7 +708,14 @@ function PromptBlocksBody({
   onResolve: (decision: ToolDecision) => void | Promise<void>;
 }) {
   const [blocks, setBlocks] = useState(call.blocks);
-  const [kept, setKept] = useState<boolean[]>(() => call.blocks.map(() => true));
+  /*
+   * A proposal that names nothing in the library starts off, and stays off.
+   *
+   * The server has already tried to find it. Leaving the row switched on would
+   * put a tick next to something that cannot happen, which is the whole of the
+   * fault this dialog used to have: it agreed, and then nothing was removed.
+   */
+  const [kept, setKept] = useState<boolean[]>(() => call.blocks.map((block) => !block.missing));
   const [editing, setEditing] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -668,16 +762,29 @@ function PromptBlocksBody({
         <ul className="space-y-1.5">
           {blocks.map((block, index) => (
             <li
-              key={`${block.name}-${index}`}
+              /*
+               * By position, not by name.
+               *
+               * The name is edited in place in this very list, so keying on it
+               * gave every row a new identity on each keystroke: React threw the
+               * row away, built a new one, and the input lost focus after every
+               * single character typed into it.
+               */
+              key={index}
               className={cn(
                 'rounded-lg border px-2.5 py-2',
-                kept[index] ? 'border-accent/40 bg-accent/10' : 'border-line bg-surface-2 opacity-60',
+                block.missing
+                  ? 'border-warn/40 bg-warn/5'
+                  : kept[index]
+                    ? 'border-accent/40 bg-accent/10'
+                    : 'border-line bg-surface-2 opacity-60',
               )}
             >
               <div className="flex items-start gap-2">
                 <button
                   type="button"
                   aria-pressed={kept[index]}
+                  disabled={block.missing}
                   aria-label={`Keep ${block.name}`}
                   onClick={() =>
                     setKept((current) => current.map((on, at) => (at === index ? !on : on)))
@@ -687,6 +794,7 @@ function PromptBlocksBody({
                     kept[index]
                       ? 'border-accent bg-accent text-white'
                       : 'border-line text-transparent',
+                    block.missing && 'opacity-40',
                   )}
                 >
                   ✓
@@ -704,8 +812,11 @@ function PromptBlocksBody({
                       <input
                         value={block.category}
                         onChange={(event) => patch(index, { category: event.target.value })}
-                        aria-label="Block category"
-                        placeholder="Category"
+                        // "Group" everywhere it is read, `category` everywhere it
+                        // is stored. The library screen has always called it a
+                        // group; this dialog was the one place saying otherwise.
+                        aria-label="Block group"
+                        placeholder="Group"
                         className="w-full rounded-md border border-line bg-surface px-2 py-1 text-xs focus:border-accent focus:outline-none"
                       />
                       <textarea
@@ -718,16 +829,32 @@ function PromptBlocksBody({
                     </div>
                   ) : (
                     <>
-                      <p className="truncate text-xs font-medium">
-                        {block.name}
-                        {block.category !== '' && (
-                          <span className="ml-1.5 font-normal text-muted">{block.category}</span>
-                        )}
+                      <p className="flex min-w-0 items-baseline gap-1.5 text-xs font-medium">
                         {block.action !== 'add' && (
-                          <span className="ml-1.5 font-normal text-warn">{block.action}</span>
+                          <span
+                            className={cn(
+                              'shrink-0 rounded px-1 py-px text-[10px] font-normal',
+                              block.action === 'remove'
+                                ? 'bg-warn/15 text-warn'
+                                : 'bg-accent/15 text-accent',
+                            )}
+                          >
+                            {ACTION_LABELS[block.action]}
+                          </span>
+                        )}
+                        <span className="truncate">{block.name}</span>
+                        {block.category !== '' && (
+                          <span className="shrink-0 font-normal text-muted">{block.category}</span>
                         )}
                       </p>
-                      <p className="text-[11px] break-words text-muted">{block.text}</p>
+                      {block.missing ? (
+                        <p className="text-[11px] text-warn">
+                          Nothing in your library is called this, so it cannot be{' '}
+                          {block.action === 'remove' ? 'removed' : 'changed'}.
+                        </p>
+                      ) : (
+                        <p className="text-[11px] break-words text-muted">{block.text}</p>
+                      )}
                     </>
                   )}
                 </div>

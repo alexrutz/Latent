@@ -9,11 +9,19 @@ import type {
   ChatToolName,
   ChatToolSettings,
   ProposedBlock,
+  PromptBlock,
+  PromptDetail,
+  ReviewAsk,
+  ReviewThreshold,
+  TasteInfluence,
+  TasteProfile,
   ToolEagerness,
 } from '@latent/shared';
 import { samplingOverrides } from '@latent/shared';
 
 import { authHeaders, type ConnectionConfig } from '../comfy/connection.js';
+import { activeTaste } from '../taste.js';
+import { blockLibrary } from './blocks.js';
 
 /**
  * Talking to a local llama.cpp server.
@@ -102,11 +110,26 @@ so write like a person describing a photograph:
 
 Depict people clothed and with dignity.
 
+## Looking at a picture that came out
+
+When you are shown a render made from one of your prompts, judge it. Describe
+what is actually in the frame — including the parts that are not what the prompt
+asked for — rather than what the prompt led you to expect. A compliment about a
+picture that missed is worse than useless, because the next prompt gets built on
+it. If you propose a rewrite, change what did not work and keep the wording that
+did.
+
 ## Prompt blocks
 
 They keep a library of reusable fragments — lighting, mood, camera, subject —
 that a random-prompt mode draws from. Blocks are fragments, not sentences, and
 each belongs to a group.
+
+The library as it stands is listed below when you can edit it. Adding, changing
+and removing are all the same call: to change or remove one, name it and its
+group exactly as they appear in that list. Removing is a real option — a
+fragment that is vague, duplicated, or never worth drawing makes every random
+prompt worse, and saying so is more use than adding a fourth one like it.
 
 Nothing you propose takes effect on its own: every tool call is shown to them
 first and they accept, edit or refuse it. So propose things properly rather than
@@ -135,21 +158,35 @@ export const TOOLS = [
               type: 'object',
               properties: {
                 action: { type: 'string', enum: ['add', 'update', 'remove'] },
-                id: {
+                name: {
                   type: 'string',
-                  description: 'Required for update and remove; the existing block’s id.',
+                  description:
+                    'Short label, e.g. "Golden hour". For update and remove, the name of the ' +
+                    'existing block exactly as it is listed.',
                 },
-                name: { type: 'string', description: 'Short label, e.g. "Golden hour".' },
                 category: {
                   type: 'string',
-                  description: 'Group it belongs to, e.g. "Lighting".',
+                  description:
+                    'The group it belongs to, e.g. "Lighting". For update and remove, the group ' +
+                    'the existing block is listed under.',
                 },
                 text: {
                   type: 'string',
-                  description: 'The prompt fragment itself, not a sentence about it.',
+                  description:
+                    'The prompt fragment itself, not a sentence about it. Required for add and ' +
+                    'update. Leave it out for remove — the block’s own wording is used.',
                 },
               },
-              required: ['action', 'name', 'category', 'text'],
+              /*
+               * Only what every action genuinely needs.
+               *
+               * `text` was required, which meant a removal had to invent a
+               * fragment for a block it wanted gone before the call would
+               * validate — and under grammar-constrained decoding that is not a
+               * suggestion the model can decline. It invented one, the invention
+               * did not match anything, and the removal went nowhere.
+               */
+              required: ['action', 'name'],
             },
           },
         },
@@ -225,6 +262,51 @@ export const TOOLS = [
     },
   },
 ] as const;
+
+/**
+ * The tool that only exists on the turn after a picture.
+ *
+ * Kept out of `TOOLS` deliberately. Everything in that list is offered on every
+ * turn and governed by a pace setting; this one is offered on exactly one turn
+ * — the one where the model has just been shown what the last prompt produced —
+ * and offering it any earlier would invite a rewrite of a prompt whose result
+ * nobody has seen.
+ */
+export const REVIEW_TOOL = {
+  type: 'function',
+  function: {
+    name: 'revise_prompt',
+    description:
+      'Propose a rewritten prompt, after looking at the picture the last one produced. ' +
+      'Only for what the picture actually got wrong: name the difference, then fix it in ' +
+      'the prompt. The user can generate it straight away or refuse it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description:
+            'The rewritten positive prompt, whole rather than a fragment: one paragraph ' +
+            'of plain English prose. Keep everything that worked and change what did not.',
+        },
+        negativePrompt: {
+          type: 'string',
+          description: 'What to avoid, also in English. Omit unless there is a reason for one.',
+        },
+        reason: {
+          type: 'string',
+          description:
+            'What the picture got wrong and what the change is meant to fix, in a sentence.',
+        },
+        score: {
+          type: 'number',
+          description: 'How well the picture matched the prompt it came from, from 0 to 10.',
+        },
+      },
+      required: ['prompt', 'reason', 'score'],
+    },
+  },
+} as const;
 
 /**
  * How readily each tool is reached for, as instructions the model can follow.
@@ -351,6 +433,164 @@ export function toolPolicy(tools: ChatToolSettings): string {
 
 const TOOL_ORDER: ChatToolName[] = ['build_prompt', 'prompt_blocks', 'ask_user'];
 
+/**
+ * How far a prompt goes in settling the picture.
+ *
+ * Instructions rather than a word count. "Two sentences" is a rule a model
+ * follows by truncating the wrong half; what is actually being chosen is how
+ * much of the scene is decided in the prompt and how much is left to the
+ * sampler — which is a different picture at each end, not a longer one.
+ */
+const PROMPT_DETAIL: Record<PromptDetail, string> = {
+  sparse:
+    'Keep prompts short — a sentence or two naming the subject, the medium and one or two ' +
+    'things about how it looks. Leave everything else open; the model fills it in differently ' +
+    'every seed, which is the point.',
+  plain:
+    'Keep prompts brief: the subject, the medium, the light and the framing, and little else. ' +
+    'Say what the picture is, not everything that is in it.',
+  balanced:
+    'Write a prompt that settles the picture without exhausting it: subject, setting, light, ' +
+    'framing, medium, and the two or three details that make it that picture rather than a ' +
+    'generic one. Leave the rest open.',
+  detailed:
+    'Work the scene out properly: subject and what it is doing, the setting and its details, ' +
+    'the light and its direction, the framing and lens, the medium and its texture, colour and ' +
+    'mood. Every clause should be doing work — length is fine, padding is not.',
+  elaborate:
+    'Describe the picture exhaustively, as a paragraph that leaves nothing important to chance: ' +
+    'the subject in detail, everything else in the frame and where it sits, the quality and ' +
+    'direction of the light, the colour palette, the lens and the distance, the medium and its ' +
+    'surface, the atmosphere. Say what is in the background as well as the foreground. Still no ' +
+    'keyword piles and no "masterpiece" — this is more description, not more adjectives.',
+};
+
+/**
+ * The section that says how much a prompt spells out.
+ *
+ * Appended like the tool policy, and for the same reason: it belongs to the app
+ * rather than to the wording of the instructions, so replacing those does not
+ * silently lose it.
+ */
+export function detailPolicy(detail: PromptDetail): string {
+  return `\n\n## How much detail a prompt goes into\n\n${PROMPT_DETAIL[detail] ?? PROMPT_DETAIL.balanced}`;
+}
+
+/**
+ * How far the user's own notes are allowed to reach.
+ *
+ * Every level is a statement about *empty space*, not about authority. The user
+ * asked for this to shape things when they have not said what they want and to
+ * keep its hands off when they have, so each wording says which of the two
+ * situations it applies in rather than how strongly to push.
+ */
+const TASTE_REACH: Record<Exclude<TasteInfluence, 'off'>, string> = {
+  sparingly:
+    'Use it only when they have given you nothing to go on — "surprise me", "I don\'t know what ' +
+    'I want", or a request for an idea with no subject in it. The moment they name something, ' +
+    'work on that instead and leave the notes alone.',
+  hints:
+    'Use it to fill in what they have left open. If they have only a vague idea — a mood, a word, ' +
+    '"something quiet" — let the notes colour the details you choose around it. If they have ' +
+    'named the picture they want, build that picture; the notes may inform small choices nobody ' +
+    'specified, and nothing more.',
+  guiding:
+    'Let it shape what you suggest wherever it does not contradict them: the settings you reach ' +
+    'for first, the light, the treatment, what you offer when they ask for options. Anything ' +
+    'they actually asked for still wins outright.',
+  strong:
+    'Treat it as the house style. Start from it for every idea and every prompt, and only step ' +
+    'outside it where they have asked for something else — which they then get, exactly as ' +
+    'asked, without argument.',
+};
+
+/**
+ * The section that tells the model what the user likes.
+ *
+ * Absent entirely at `off`, when nothing is switched on, and when the vault is
+ * locked so the notes cannot be read — in all three cases the model is told
+ * nothing rather than told about an empty list, because a heading with nothing
+ * under it invites a small model to invent the contents. `off` silences the
+ * standing notes too: it is the master switch, and a setting called Off that
+ * still sends something would be worth nothing.
+ *
+ * Two sections rather than one, because they are two different instructions.
+ * The ordinary notes fill the space the user left and step aside when they say
+ * what they want. The standing ones do not step aside — but they are bounded by
+ * relevance instead, which is the part that needs saying out loud: a note about
+ * colour has no business in a request for a line drawing, and a model handed
+ * "this always applies" without that limit will work every one of them into
+ * every prompt.
+ *
+ * The notes go in as plain lines of the user's own words. No instruction to
+ * quote them, and one not to: they are never shown in the chat, so reciting
+ * them back would be both strange and a small leak of something written down
+ * privately.
+ */
+export function tastePolicy(profile: TasteProfile | null, level: TasteInfluence): string {
+  if (!profile || level === 'off') return '';
+
+  const { groups, standing } = activeTaste(profile);
+  if (groups.length === 0 && standing.length === 0) return '';
+
+  const sections: string[] = [];
+
+  if (groups.length > 0) {
+    const body = groups
+      .map((group) => {
+        const notes = group.notes.map((note) => `- ${note}`).join('\n');
+        return group.heading ? `**${group.heading}**\n${notes}` : notes;
+      })
+      .join('\n\n');
+
+    sections.push(
+      'Notes they have written about their own taste — concepts, aesthetics, things they keep ' +
+        `coming back to.\n\n${body}\n\n${TASTE_REACH[level]}`,
+    );
+  }
+
+  if (standing.length > 0) {
+    sections.push(
+      '### Things that always hold\n\n' +
+        'These are settled preferences rather than starting points, so they apply even when they ' +
+        'have told you exactly what they want:\n\n' +
+        standing.map((note) => `- ${note}`).join('\n') +
+        '\n\n' +
+        /*
+         * The limit that makes the override usable.
+         *
+         * Without it, "this always applies" is read as "put this in every
+         * prompt", and a standing note about colour turns up in a request for
+         * a line drawing. Relevance is the whole of the constraint: apply it
+         * where it bears on the picture, and say nothing where it does not.
+         */
+        'Apply each one only where it actually bears on the picture in hand. If a note has no ' +
+        'part in what is being made — a note about colour in a line drawing, a note about ' +
+        'framing in a question about wording — leave it out entirely. Do not bend the picture to ' +
+        'give a note something to do, and do not list them.',
+    );
+  }
+
+  return (
+    '\n\n## What this person likes\n\n' +
+    sections.join('\n\n') +
+    '\n\n' +
+    /*
+     * The one rule that does not move with the setting.
+     *
+     * Spelled out at every level rather than only at the gentle ones: the
+     * failure this feature could cause is a picture nobody asked for, and a
+     * model reading "house style" without this line is exactly the model that
+     * would produce one. It holds for the standing notes as well — those
+     * override the *scale*, not the person.
+     */
+    'Whatever they have actually asked for is what they get. These notes fill in what they left ' +
+    'open; they never overrule what was said.\n\n' +
+    'Never read the list back to them, quote it, or say that you are using it. They wrote it; ' +
+    'they know what is in it. It shows in what you suggest, not in what you say.'
+  );
+}
+
 /** The tools this configuration offers at all. `off` means genuinely absent. */
 export function enabledTools(tools: ChatToolSettings) {
   return TOOLS.filter((tool) => tools[tool.function.name as ChatToolName] !== 'off');
@@ -374,12 +614,56 @@ interface OpenAiMessage {
  * it asks for it not to be fed back — it is working, not record — and including
  * it wastes the context window on a phone-sized conversation.
  */
-export function toApiMessages(messages: ChatMessage[], systemPrompt: string): OpenAiMessage[] {
+export function toApiMessages(
+  messages: ChatMessage[],
+  systemPrompt: string,
+  /**
+   * Renders to put back into the conversation, by the message that made them.
+   *
+   * Empty for a text-only server, and for the setting that keeps none in view.
+   * See `loadConversationPictures`: a model that saw a picture once, three
+   * turns ago, is working from its own description of it by the time anybody
+   * asks for a change.
+   */
+  pictures: Map<string, string> = new Map(),
+): OpenAiMessage[] {
   const out: OpenAiMessage[] = [{ role: 'system', content: systemPrompt }];
 
+  /**
+   * The picture that message produced, as a turn of its own.
+   *
+   * A user turn, because that is the only role every chat template renders an
+   * image in — and because it is true: here is what came out, look at it. It
+   * goes immediately after the message that started the run, so the order of
+   * the conversation is the order things actually happened in.
+   */
+  const showPicture = (message: ChatMessage): void => {
+    const dataUrl = pictures.get(message.id);
+    if (!dataUrl) return;
+    out.push({
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: dataUrl } },
+        {
+          type: 'text',
+          text: message.prompt
+            ? `This is what that prompt produced: "${message.prompt}"`
+            : 'This is the picture that produced.',
+        },
+      ],
+    });
+  };
+
   for (const message of messages) {
-    // Latent's own. See `ChatRole`: it is transcript, not conversation.
-    if (message.role === 'note') continue;
+    /*
+     * Latent's own. See `ChatRole`: it is transcript, not conversation — but
+     * the picture it points at is not, and a re-run the model is never told
+     * about is a picture it will be asked to change without knowing it exists.
+     */
+    if (message.role === 'note') {
+      showPicture(message);
+      continue;
+    }
 
     if (message.role === 'tool') {
       out.push({
@@ -387,6 +671,7 @@ export function toApiMessages(messages: ChatMessage[], systemPrompt: string): Op
         tool_call_id: message.toolCall?.callId ?? 'unknown',
         content: message.content,
       });
+      showPicture(message);
       continue;
     }
 
@@ -428,6 +713,11 @@ function toolArguments(call: ChatToolCall): Record<string, unknown> {
   const args: Record<string, unknown> = { ...call };
   delete args.callId;
   delete args.tool;
+  // Which turn the question was asked on, and which mode wrote the prompt, are
+  // Latent's notes to itself. A field the tool never declared teaches the model
+  // to send it back.
+  delete args.fromReview;
+  delete args.fromWander;
   return args;
 }
 
@@ -450,6 +740,209 @@ const FORCED_INSTRUCTIONS: Record<ChatToolName, string> = {
 };
 
 /**
+ * What each level of perfectionism means, said as a standard to hold to.
+ *
+ * A number *and* a sentence. The number alone is not something a model applies
+ * consistently — "is this a 6 or a 7" is exactly the judgement it is bad at —
+ * and the sentence alone leaves "too far apart" to be decided fresh every time.
+ * Together they are reproducible enough that moving the setting one step
+ * visibly changes what comes back.
+ */
+const REVIEW_THRESHOLDS: Record<ReviewThreshold, { score: number; standard: string }> = {
+  never: {
+    score: 0,
+    standard:
+      'Do NOT propose a new prompt, whatever you find. Say how well it turned out and leave ' +
+      'it there; they will ask if they want a change.',
+  },
+  wrong: {
+    score: 3,
+    standard:
+      'Only propose a rewrite if the picture is plainly not what was asked for — the wrong ' +
+      'subject, the wrong medium, something central missing. Anything that is recognisably ' +
+      'the picture described stands.',
+  },
+  loose: {
+    score: 5,
+    standard:
+      'Propose a rewrite when something the prompt actually called for is missing or wrong. ' +
+      'Differences of degree — a little darker, a slightly different angle — are not worth one.',
+  },
+  balanced: {
+    score: 7,
+    standard:
+      'Propose a rewrite when a noticeable part of the prompt did not come through. Small ' +
+      'imperfections that do not change what the picture is are not worth one.',
+  },
+  strict: {
+    score: 8,
+    standard:
+      'Propose a rewrite whenever any part of the prompt is not there or not as described, ' +
+      'including details of light, framing and material.',
+  },
+  exacting: {
+    score: 10,
+    standard:
+      'Propose a rewrite unless the picture is exactly what the prompt describes, in every ' +
+      'detail it names. Near enough is not enough here.',
+  },
+};
+
+/**
+ * When it stops and asks rather than deciding for you.
+ *
+ * The failure this exists for is a confident rewrite of the wrong thing. A
+ * picture can miss for several reasons at once, and which of them to chase is
+ * often a matter of taste — so the useful move is to say what is off and offer
+ * two or three ways to go at it, which is one tap to answer.
+ */
+const REVIEW_ASKS: Record<ReviewAsk, string> = {
+  never: '',
+  unclear:
+    'If you genuinely cannot tell what went wrong — the picture is off but not in a way you ' +
+    'can name — call `ask_user` instead, with what you suspect as the options.',
+  unsure:
+    'If you are not sure which of several fixes they would want, call `ask_user` instead of ' +
+    'guessing: name what is off, and offer two to four concrete ways to improve how closely ' +
+    'the picture follows the prompt. Rewrite it yourself only when the fix is obvious.',
+  often:
+    'Whenever there is more than one sensible way to improve the match, call `ask_user` rather ' +
+    'than choosing for them: two to four concrete options, each a different way of closing the ' +
+    'gap. Rewrite it yourself only when there is exactly one thing to change.',
+  always:
+    'Always call `ask_user` before rewriting anything: say what came through and what did not, ' +
+    'and offer two to four concrete ways to improve the match for them to choose from. Do not ' +
+    'call `revise_prompt` until they have answered.',
+};
+
+/**
+ * The turn that shows the model what its prompt produced.
+ *
+ * Phrased as the user handing over a picture, because that is the only turn a
+ * chat template is guaranteed to render with an image in it — and because it is
+ * true: this is the result, and the question is whether it is what was asked
+ * for. The prompt is repeated in full rather than pointed at, since it may be
+ * twenty messages back and half of it was written by a tool call.
+ */
+export function reviewInstruction(
+  prompt: string,
+  threshold: ReviewThreshold,
+  askWhen: ReviewAsk = 'never',
+  /** True while the run is accepting its own proposals; see `AutonomousRun`. */
+  autonomous = false,
+): string {
+  const { score, standard } = REVIEW_THRESHOLDS[threshold];
+
+  const lines = [
+    'Look at the picture that prompt produced. Compare it with the prompt and say how well ' +
+      'it was carried out.',
+    '',
+    'The prompt was:',
+    '',
+    prompt.trim(),
+    '',
+    'Say in two or three sentences what came through and what did not. Be concrete: name ' +
+      'what you can see, not what you would expect to see. Score the match out of 10.',
+  ];
+
+  if (threshold !== 'never') {
+    lines.push(
+      '',
+      `If it scores below ${score} out of 10, call \`revise_prompt\` with a rewritten prompt ` +
+        'that keeps everything which worked and fixes what did not. ' +
+        standard,
+    );
+    /*
+     * Nobody is at the other end of a question right now.
+     *
+     * The ask tool is withheld from the request as well — see `reviewTools` —
+     * but a model that has been told it may ask will write the question into
+     * its answer instead, and an unattended loop then stops on a question
+     * nobody reads. Better to say plainly that the choice is its to make.
+     */
+    if (autonomous) {
+      lines.push(
+        '',
+        'The user has left this running and is not answering questions. Do not ask which way ' +
+          'to go: either rewrite the prompt yourself, or say it is good enough and stop. ' +
+          `Once it clears ${score} out of 10, say so and call nothing.`,
+      );
+    } else if (REVIEW_ASKS[askWhen] !== '') {
+      lines.push('', REVIEW_ASKS[askWhen]);
+    }
+    // One or the other, never both: two dialogs about one picture is two
+    // decisions where the user asked for one.
+    lines.push('', 'Call at most one tool. Say your judgement in words either way.');
+  } else {
+    lines.push('', standard);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Throw the last prompt away and write a different one.
+ *
+ * The failure this answers is a conversation that has converged: every rewrite
+ * is the last prompt with two words moved, because the last prompt is sitting
+ * right there in the history being treated as the thing to improve. Saying
+ * "again" is not enough — what has to be said is that the previous composition
+ * is not the starting point, and that a *different picture of the same idea* is
+ * what is wanted.
+ */
+export const START_OVER_INSTRUCTION =
+  'Throw the last prompt away and write a different one. Not a revision of it: a different ' +
+  'composition of the same idea — another subject, another angle, another time of day, ' +
+  'another way in. Keep only what they actually asked for in words. Call `build_prompt` ' +
+  'with it; do not answer in words and do not ask anything first.';
+
+/**
+ * The turn that sets a wandering round going.
+ *
+ * Deliberately not a conversation. The notes arrive already drawn — the model
+ * does not choose them, because a model choosing "at random" from a list picks
+ * the first three and the same three next time — and the answer wanted is one
+ * tool call and nothing else.
+ *
+ * And deliberately not a continuation either. The turn goes out with no
+ * transcript at all — see `runTurn` — so there is nothing above this for the
+ * model to be influenced by and nothing to tell it to ignore. What used to be
+ * here was a line asking it not to repeat the rounds it could see, which is
+ * asking a model to overlook the largest thing in front of it; the rounds are
+ * simply not sent now.
+ *
+ * That leaves *only these* as the one thing the mode insists on, because a
+ * round that quietly adds the user's whole profile back in is the same picture
+ * every time. What keeps two rounds apart is the draw rather than the prose:
+ * different notes come out each time (see `drawTaste` and its `avoidRepeats`),
+ * and the mode can be given sampling of its own.
+ */
+export function wanderInstruction(notes: string[]): string {
+  if (notes.length === 0) {
+    return (
+      'Make one picture. They have written nothing about what they like yet, so it is entirely ' +
+      'yours: choose something worth looking at, and call `build_prompt` with it. Do not ask ' +
+      'anything and do not answer in words.'
+    );
+  }
+
+  return [
+    'Make one picture out of these, and only these. They are drawn at random from their own ' +
+      'notes about what they like:',
+    '',
+    ...notes.map((note) => `- ${note}`),
+    '',
+    'Find the one scene that holds them together rather than listing them side by side — a ' +
+      'picture that happens to contain three things is not the same as a picture *about* them. ' +
+      'Anything not on that list is yours to choose, so choose boldly; nobody is waiting to ' +
+      'approve it.',
+    '',
+    'Call `build_prompt` with the finished prompt. Do not answer in words and do not ask ' +
+      'anything first.',
+  ].join('\n');
+}
+
+/**
  * Add that turn, folding it into the last one when that is already the user's.
  *
  * Two user messages in a row is something several chat templates refuse
@@ -459,8 +952,10 @@ const FORCED_INSTRUCTIONS: Record<ChatToolName, string> = {
 export function withForcedInstruction(
   messages: OpenAiMessage[],
   force: ChatToolName,
+  /** Said instead of the standard one, when the caller has something to add. */
+  instruction?: string,
 ): OpenAiMessage[] {
-  const text = FORCED_INSTRUCTIONS[force];
+  const text = instruction ?? FORCED_INSTRUCTIONS[force];
   const last = messages[messages.length - 1];
   if (last?.role !== 'user') return [...messages, { role: 'user', content: text }];
 
@@ -469,6 +964,79 @@ export function withForcedInstruction(
       ? { ...last, content: `${last.content}\n\n${text}` }
       : { ...last, content: [...last.content, { type: 'text', text }] };
   return [...messages.slice(0, -1), merged];
+}
+
+/** The tools a review turn offers: a rewrite, a question, or neither. */
+function reviewTools(review: ReviewTurn): unknown[] {
+  const tools: unknown[] = [];
+  if (review.threshold !== 'never') tools.push(REVIEW_TOOL);
+  // A question is a dialog waiting for a tap, and the point of an autonomous
+  // run is that there is nobody to tap it. Offering the tool anyway is how a
+  // loop ends parked on a question nobody sees for an hour.
+  if (review.askWhen !== 'never' && !review.autonomous) {
+    const ask = TOOLS.find((tool) => tool.function.name === 'ask_user');
+    if (ask) tools.push(ask);
+  }
+  return tools;
+}
+
+/** What the model is shown, and how picky it is asked to be, after a render. */
+export interface ReviewTurn {
+  /** The finished picture, small enough to be worth prefilling. */
+  dataUrl: string;
+  /** The prompt it was made from, repeated so it need not be hunted for. */
+  prompt: string;
+  threshold: ReviewThreshold;
+  /** How readily it asks rather than rewriting the prompt itself. */
+  askWhen: ReviewAsk;
+  /**
+   * True while the run accepts its own proposals and carries on by itself.
+   *
+   * Changes two things about this turn: no question tool, and the instruction
+   * says why. Everything else — the threshold, the standard, the rewrite — is
+   * exactly what it is when somebody is watching, because the judgement being
+   * asked for is the same one.
+   */
+  autonomous: boolean;
+  /** True when the history already carries it, so it is not sent twice. */
+  inHistory: boolean;
+}
+
+/**
+ * The picture, handed over as a turn.
+ *
+ * A user turn rather than an assistant one: an image inside an assistant
+ * message is not something every chat template renders, and this genuinely is
+ * the user's side of the exchange — here is what your prompt made, what do you
+ * make of it.
+ */
+function reviewTurn(review: ReviewTurn): OpenAiMessage {
+  const instruction = reviewInstruction(
+    review.prompt,
+    review.threshold,
+    review.askWhen,
+    review.autonomous,
+  );
+
+  /*
+   * The picture only when it is not already there.
+   *
+   * With renders kept in view it is the message immediately above this one, and
+   * sending it twice is a second thousand tokens of prefill for a model that is
+   * looking at the same thing. With none kept — the setting that says "only
+   * while you judge it" — this turn is the one place it appears.
+   */
+  if (!review.inHistory) {
+    return {
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: review.dataUrl } },
+        { type: 'text', text: instruction },
+      ],
+    };
+  }
+
+  return { role: 'user', content: instruction };
 }
 
 /** Plain text when there are no pictures, so a text-only model is unbothered. */
@@ -509,6 +1077,22 @@ export class LlamaClient {
     private readonly settings: ChatSettings,
     /** The instructions in force, already resolved. Empty uses Latent's own. */
     private readonly systemPrompt: string = '',
+    /**
+     * What the user likes, if it could be read.
+     *
+     * Passed in rather than fetched: reading it needs the vault, which belongs
+     * to the server rather than to a client that talks to a model. `null` for
+     * a locked server, and the section is then simply absent.
+     */
+    private readonly taste: TasteProfile | null = null,
+    /**
+     * The prompt blocks as they stand, for the tool that edits them.
+     *
+     * Passed in for the same reason the notes are: reading the library is the
+     * store's business, not a model client's. Empty when the tool is off, and
+     * the section is then simply absent.
+     */
+    private readonly library: readonly PromptBlock[] = [],
   ) {
     this.dispatcher = connection.allowSelfSigned
       ? new Agent({ connect: { rejectUnauthorized: false } })
@@ -564,7 +1148,28 @@ export class LlamaClient {
    */
   async *stream(
     messages: ChatMessage[],
-    options: { signal?: AbortSignal; force?: ChatToolName; withoutTools?: boolean } = {},
+    options: {
+      signal?: AbortSignal;
+      force?: ChatToolName;
+      withoutTools?: boolean;
+      /**
+       * Show it the picture that came out, and have it marked against the
+       * prompt. Only ever set for the turn straight after a render.
+       */
+      review?: ReviewTurn;
+      /** Renders to keep in the conversation; see `toApiMessages`. */
+      pictures?: Map<string, string>;
+      /**
+       * Said in place of the standard "call the tool now" line.
+       *
+       * Only meaningful with `force`. A wandering round is a forced
+       * `build_prompt` whose whole content is the notes it was given, and
+       * those belong in the turn rather than in the system prompt: they change
+       * every round, and a system prompt that changes every round throws away
+       * the server's prefix cache.
+       */
+      instruction?: string;
+    } = {},
   ): AsyncGenerator<ChatStreamEvent> {
     /*
      * A forced tool is offered even when its setting is `off`.
@@ -575,18 +1180,42 @@ export class LlamaClient {
      */
     const tools = options.force
       ? TOOLS.filter((tool) => tool.function.name === options.force)
-      : options.withoutTools
-        ? []
-        : enabledTools(this.settings.tools);
+      : options.review
+        ? /*
+           * Two at most, and both about the picture in front of it.
+           *
+           * A rewrite when it knows what to change, and a question when it does
+           * not — which is the difference between a useful proposal and a
+           * confident one that fixes the wrong thing. Everything else is
+           * withheld on this turn exactly as it was before the review existed:
+           * what is wanted here is a judgement, not a fresh proposal on top of
+           * a picture nobody has looked at yet.
+           */
+          reviewTools(options.review)
+        : options.withoutTools
+          ? []
+          : enabledTools(this.settings.tools);
 
     const history = toApiMessages(
       messages,
-      (this.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT) + toolPolicy(this.settings.tools),
+      (this.systemPrompt.trim() || DEFAULT_SYSTEM_PROMPT) +
+        toolPolicy(this.settings.tools) +
+        detailPolicy(this.settings.promptDetail) +
+        tastePolicy(this.taste, this.settings.taste) +
+        // Only when there is a tool that can act on it, and never on the turn
+        // that judges a picture — a review has no business rewriting a library,
+        // and the section is pure cost on a turn that cannot use it.
+        (this.settings.tools.prompt_blocks !== 'off' && tools.length > 0 && !options.review
+          ? blockLibrary(this.library)
+          : ''),
+      options.pictures,
     );
     // A forced call needs a turn of its own to answer; see the comment there.
     const conversation = options.force
-      ? withForcedInstruction(history, options.force)
-      : history;
+      ? withForcedInstruction(history, options.force, options.instruction)
+      : options.review
+        ? [...history, reviewTurn(options.review)]
+        : history;
 
     const body = {
       ...(this.settings.model ? { model: this.settings.model } : {}),
@@ -892,6 +1521,26 @@ export function parseCall(call: PartialCall): ChatToolCall | null {
     };
   }
 
+  /*
+   * A rewrite is a `build_prompt` with a mark out of ten attached, so it is
+   * read the same way and kept apart by its name alone.
+   */
+  if (call.name === 'revise_prompt') {
+    const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : '';
+    if (prompt === '') return null;
+    const score = Number(args.score);
+    return {
+      callId,
+      tool: 'revise_prompt',
+      prompt,
+      ...(typeof args.negativePrompt === 'string' && args.negativePrompt.trim() !== ''
+        ? { negativePrompt: args.negativePrompt.trim() }
+        : {}),
+      reason: typeof args.reason === 'string' ? args.reason : '',
+      ...(Number.isFinite(score) ? { score: Math.max(0, Math.min(10, score)) } : {}),
+    };
+  }
+
   if (call.name === 'ask_user') {
     /*
      * Both shapes. `questions` is what the tool asks for; a single `question`
@@ -937,13 +1586,23 @@ export function parseCall(call: PartialCall): ChatToolCall | null {
           block.action === 'update' || block.action === 'remove' ? block.action : 'add';
         const name = typeof block.name === 'string' ? block.name.trim() : '';
         const text = typeof block.text === 'string' ? block.text.trim() : '';
-        if (name === '' || (action !== 'remove' && text === '')) return null;
+        const id = typeof block.id === 'string' && block.id !== '' ? block.id : '';
+        /*
+         * What each action cannot do without.
+         *
+         * Only an addition needs wording: a removal is identified rather than
+         * described, and a change that leaves a field out means "leave that one
+         * alone" — both are filled in from the block itself once it has been
+         * found. See `resolveProposedBlocks`.
+         */
+        if (name === '' && id === '') return null;
+        if (action === 'add' && text === '') return null;
         return {
           action,
           name,
           text,
           category: typeof block.category === 'string' ? block.category.trim() : '',
-          ...(typeof block.id === 'string' && block.id !== '' ? { id: block.id } : {}),
+          ...(id === '' ? {} : { id }),
         };
       })
       .filter((block): block is NonNullable<typeof block> => block !== null);

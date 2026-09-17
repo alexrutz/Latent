@@ -49,6 +49,17 @@ export interface Config {
    * an authenticated web terminal is still remote code execution.
    */
   terminalEnabled: boolean;
+  /**
+   * Whether the update routes exist. On by default, unlike the terminal.
+   *
+   * The terminal runs whatever you type; this runs `git` and `npm` against the
+   * remote the checkout already points at, and cannot be pointed anywhere else
+   * from the outside. Anyone who could push to that remote already owned this
+   * machine the next time it was updated by hand — so the button adds no reach
+   * that the install did not already have, and running it needs the password
+   * again regardless. Set `LATENT_UPDATE=0` to remove it anyway.
+   */
+  updateEnabled: boolean;
   logLevel: string;
 }
 
@@ -85,6 +96,7 @@ export function loadConfig(): Config {
     archiveDir: resolve(dataDir, 'archive'),
     webDir: resolve(projectRoot, 'web/dist'),
     terminalEnabled: flag('LATENT_TERMINAL'),
+    updateEnabled: flag('LATENT_UPDATE', true),
     logLevel: env('LOG_LEVEL', 'info'),
   };
 }

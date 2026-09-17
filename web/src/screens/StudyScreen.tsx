@@ -6,6 +6,8 @@ import {
   describeSignificance,
   factorLevels,
   levelLabel,
+  playsInAudioElement,
+  playsInVideoElement,
 } from '@latent/shared';
 import type {
   CategoricalFactor,
@@ -673,14 +675,45 @@ function RatingViewer({ study }: { study: StudyDetail }) {
   return (
     <div className="space-y-2">
       <div className="relative overflow-hidden rounded-xl bg-black">
-        <img
-          src={imageUrl(shot.image)}
-          alt=""
-          className={cn(
-            'block max-h-[62svh] w-full object-contain',
-            blurred && 'blur-2xl',
-          )}
-        />
+        {/*
+          A clip plays itself here, without controls.
+
+          Rating is three tap zones laid over the picture, and a scrubber
+          underneath them would be a control you cannot reach. A study shot is
+          something you glance at and judge, so it loops silently and the
+          judgement stays one tap wherever you touch it.
+        */}
+        {playsInAudioElement(shot.image.filename) ? (
+          /*
+            A sound is judged by listening to it, which needs a control the
+            rating zones would otherwise swallow. So it gets the player, and
+            the rating buttons underneath do the judging.
+          */
+          <div className="flex min-h-40 items-center justify-center p-6">
+            <audio src={imageUrl(shot.image)} controls preload="metadata" className="w-full" />
+          </div>
+        ) : playsInVideoElement(shot.image.filename) ? (
+          <video
+            src={imageUrl(shot.image)}
+            autoPlay
+            loop
+            muted
+            playsInline
+            className={cn(
+              'block max-h-[62svh] w-full object-contain',
+              blurred && 'blur-2xl',
+            )}
+          />
+        ) : (
+          <img
+            src={imageUrl(shot.image)}
+            alt=""
+            className={cn(
+              'block max-h-[62svh] w-full object-contain',
+              blurred && 'blur-2xl',
+            )}
+          />
+        )}
 
         {/* The three targets, invisible until one is hit. */}
         <div className="absolute inset-0 flex flex-col">
@@ -955,7 +988,7 @@ export function StudyScreen() {
 
   if (openId === null || !study.data) {
     return (
-      <div className="safe-t px-4 pt-3 pb-6">
+      <div className="readable safe-t px-4 pt-3 pb-6">
         <StudyList onOpen={setOpenId} />
       </div>
     );
@@ -965,7 +998,7 @@ export function StudyScreen() {
   const phase = detail.status;
 
   return (
-    <div className="safe-t space-y-4 px-4 pt-3 pb-6">
+    <div className="readable safe-t space-y-4 px-4 pt-3 pb-6">
       <div className="flex items-center gap-2">
         <button
           type="button"

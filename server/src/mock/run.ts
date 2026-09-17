@@ -38,6 +38,18 @@ llama.app.post('/__script', async (request) => {
 // What was actually sent, so a test can assert on the request rather than only
 // on the reply — which is the only way to see that a tool was withheld.
 llama.app.get('/__requests', async () => llama.requests);
+/*
+ * Back to nothing queued and nothing seen.
+ *
+ * Scripted replies are a queue, so a test that ends before consuming what it
+ * scripted leaves it for whichever test runs next — which then reads a reply
+ * meant for something else. One test failing became fourteen that way, none of
+ * them for their own reasons.
+ */
+llama.app.post('/__reset', async () => {
+  llama.reset();
+  return { ok: true };
+});
 const llamaAddress = await llama.listen(Number(process.env.MOCK_LLAMA_PORT ?? 8189));
 console.log(`Mock model server listening on ${llamaAddress}`);
 

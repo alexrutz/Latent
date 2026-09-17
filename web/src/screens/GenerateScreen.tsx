@@ -5,8 +5,10 @@ import {
   applyPresetChat,
   defaultValues,
   findFieldByRole,
+  groupByNode,
   isLlamaServerField,
   matchSystemPrompt,
+  planFormRuns,
   usesPointLine,
 } from '@latent/shared';
 import type {
@@ -15,6 +17,7 @@ import type {
   ParamValues,
   SystemPrompt,
   WidgetValue,
+  WorkflowSummary,
 } from '@latent/shared';
 
 import {
@@ -25,6 +28,7 @@ import {
   useGenerate,
   usePresets,
   usePromptMode,
+  useRescanWorkflow,
   useSavePreset,
   useSetEndless,
   useWorkflow,
@@ -32,6 +36,7 @@ import {
   useWorkflows,
 } from '../api/queries';
 import { AlwaysBlocks } from '../components/AlwaysBlocks';
+import { GenerateWorkbench } from '../components/GenerateWorkbench';
 import { LiveBar } from '../components/LiveBar';
 import { LoraEditor } from '../components/LoraEditor';
 import { PointLine } from '../components/PointLine';
@@ -45,20 +50,12 @@ import {
 } from '../components/ParamControl';
 import { Button, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
 import { pruneDrafts, useFormDrafts } from '../state/formDraft';
+import { useWide } from '../state/layout';
 import { useLiveStore } from '../state/live';
 import { usePendingStore } from '../state/pending';
 import { savePromptDraft } from '../state/promptDraft';
 
 const LAST_WORKFLOW_KEY = 'latent.lastWorkflowId';
-
-/** Roles that get a control of their own rather than a chip in the grid. */
-const DEDICATED_ROLES = new Set<ParamField['role']>([
-  'prompt',
-  'negative_prompt',
-  'image_input',
-  'seed',
-  'lora_text',
-]);
 
 /**
  * One field on the main screen, rendered as whatever it is.
@@ -151,7 +148,10 @@ function MainField({
         />
       );
 
+    // The folder browser draws the same control; only the second button's
+    // dialog differs, which is the field's own business rather than this one's.
     case 'image_input':
+    case 'folder_image':
       return (
         <ImageField
           field={field}
@@ -188,9 +188,10 @@ export function GenerateScreen() {
   const allWorkflows = useWorkflows();
   const consumePending = usePendingStore((state) => state.consume);
   const pending = usePendingStore((state) => state.pending);
+  const wide = useWide();
 
-  const [workflowId, setWorkflowId] = useState<string | null>(
-    () => localStorage.getItem(LAST_WORKFLOW_KEY),
+  const [workflowId, setWorkflowId] = useState<string | null>(() =>
+    localStorage.getItem(LAST_WORKFLOW_KEY),
   );
 
   // Fall back to the first available workflow if the remembered one is gone.
@@ -245,7 +246,7 @@ export function GenerateScreen() {
     );
   }
 
-  return (
+  const form = (
     <GenerateForm
       key={workflowId ?? 'none'}
       workflowQuery={workflow}
@@ -255,11 +256,33 @@ export function GenerateScreen() {
       consumePending={consumePending}
     />
   );
+
+  if (!wide) return form;
+
+  /*
+   * Two panes: the settings, and what they made.
+   *
+   * The form keeps a fixed width rather than sharing the space evenly. It is a
+   * column of labelled rows and chips whose ideal width is a phone's — wider
+   * only spreads a label away from its own control — while the picture beside
+   * it is worth every pixel that is left. So the form gets what it needs and
+   * the render gets the rest, which on a nine-inch screen turned sideways is
+   * roughly half each and on anything bigger is mostly picture.
+   *
+   * The form scrolls inside its own column, not with the page: the whole point
+   * is that the render stays put while you go through the settings.
+   */
+  return (
+    <div className="flex h-full min-h-0">
+      <div className="min-h-0 w-[25rem] shrink-0 overflow-y-auto overscroll-contain">{form}</div>
+      <GenerateWorkbench workflowId={workflowId} />
+    </div>
+  );
 }
 
 interface GenerateFormProps {
   workflowQuery: ReturnType<typeof useWorkflow>;
-  workflows: { id: string; name: string }[];
+  workflows: WorkflowSummary[];
   workflowId: string | null;
   onSelectWorkflow: (id: string) => void;
   consumePending: () => ReturnType<typeof usePendingStore.getState>['pending'];
@@ -287,10 +310,21 @@ function GenerateForm({
    */
   const finished = useLiveStore((state) => state.finished);
   const barInRow = Boolean(job || finished);
+  const wide = useWide();
   const comfyOnline = useLiveStore((state) => state.live.comfyOnline);
 
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
+  /*
+   * Reset asks twice, and disarms itself.
+   *
+   * It throws away a prompt somebody wrote, and it sits at the top of the
+   * screen beside the workflow picker where a thumb reaching for the picker
+   * passes over it. One tap arms it, the next does it, and if neither happens
+   * it goes back to being an icon rather than sitting armed until the next
+   * accidental tap lands on it.
+   */
+  const [confirmReset, setConfirmReset] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [justQueued, setJustQueued] = useState(0);
   const initialisedFor = useRef<string | null>(null);
@@ -305,6 +339,13 @@ function GenerateForm({
   const draft = useFormDrafts((state) => (detail ? state.drafts[detail.id] : undefined));
   const setDraft = useFormDrafts((state) => state.set);
   const patchDraft = useFormDrafts((state) => state.patch);
+  const rescan = useRescanWorkflow();
+
+  useEffect(() => {
+    if (!confirmReset) return;
+    const timer = setTimeout(() => setConfirmReset(false), 4000);
+    return () => clearTimeout(timer);
+  }, [confirmReset]);
 
   const values = draft?.values ?? {};
   const lockedSeeds = draft?.lockedSeeds ?? [];
@@ -401,16 +442,10 @@ function GenerateForm({
    * and stands alone. Grouping only ever merges *adjacent* chips, so the order
    * the user dragged them into is preserved exactly.
    */
-  const mainRuns = useMemo(() => {
-    const runs: { kind: 'chips' | 'block'; fields: ParamField[] }[] = [];
-    for (const field of fields.filter((candidate) => candidate.group === 'main')) {
-      const chip = !DEDICATED_ROLES.has(field.role) && !usesPointLine(field);
-      const last = runs[runs.length - 1];
-      if (chip && last?.kind === 'chips') last.fields.push(field);
-      else runs.push({ kind: chip ? 'chips' : 'block', fields: [field] });
-    }
-    return runs;
-  }, [fields]);
+  const mainRuns = useMemo(
+    () => planFormRuns(fields.filter((candidate) => candidate.group === 'main')),
+    [fields],
+  );
 
   // Hand the typed prompt to the Random tab, which previews draws on top of it.
   const promptDraft = promptFields
@@ -486,6 +521,45 @@ function GenerateForm({
     }
   };
 
+  /*
+   * ⌘↵ / Ctrl+↵ queues it, from anywhere on this screen.
+   *
+   * The one binding that deliberately fires *while* you are typing, because
+   * that is the only moment it is for: you have just finished the prompt, your
+   * hands are on the keys, and the alternative is reaching for a mouse to press
+   * a button you can already see. Every other shortcut stands down inside a
+   * text box — see `isTyping` — and this is the exception that proves why the
+   * rule is about bare keys rather than about keys.
+   *
+   * Bound here rather than in the app-wide handler because it is this screen's
+   * button: a global binding would need the form's values and the workflow it
+   * is on, which is exactly the state that lives here.
+   *
+   * Through a ref, so the listener is attached once rather than swapped on
+   * every keystroke — `submit` closes over the form's values and is therefore a
+   * different function each time one of them changes.
+   */
+  const latestSubmit = useRef(submit);
+  latestSubmit.current = submit;
+  /*
+    Exactly what the button is willing to do, not a looser version of it.
+    The button is disabled while a queue request is in flight; a chord that only
+    asked "is there a workflow and is ComfyUI up" queued one run per key repeat
+    if you held it down.
+  */
+  const canSubmit = Boolean(detail) && comfyOnline && !generate.isPending && !setEndless.isPending;
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
+      if (!canSubmit) return;
+      event.preventDefault();
+      void latestSubmit.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [canSubmit]);
+
   const toggleEndless = async () => {
     if (!detail) return;
     setError(null);
@@ -519,46 +593,120 @@ function GenerateForm({
     // options actually are. min-h-full so `mt-auto` on the pinned footer has
     // something to push against on a form too short to scroll.
     <WorkflowScope workflowId={detail.id}>
-      <div className="safe-t flex min-h-full flex-col gap-3 px-4 pt-2 pb-2">
-      {/* Workflow selector + connection state */}
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setShowPicker(true)}
-          // Labelled rather than named by its contents: what it *says* is the
-          // workflow you are on, which is not what the control is.
-          aria-label="Choose workflow"
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-left active:bg-surface-2"
-        >
-          <span className="min-w-0 flex-1 truncate font-medium">{detail.name}</span>
-          <span className="shrink-0 text-muted" aria-hidden>
-            ▾
-          </span>
-        </button>
-
-        <span
-          title={comfyOnline ? 'ComfyUI connected' : 'ComfyUI unreachable'}
-          className={cn(
-            'size-2.5 shrink-0 rounded-full',
-            comfyOnline ? 'bg-success' : 'bg-danger',
-          )}
-        />
-      </div>
-
-      {detail.schema.missingNodeTypes.length > 0 && (
-        <p className="rounded-xl border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
-          Not installed on this ComfyUI: {detail.schema.missingNodeTypes.join(', ')}. Generation
-          will fail until those custom nodes are added.
-        </p>
-      )}
-
-      <PresetBar
-        workflowId={detail.id}
-        values={values}
-        onApply={(preset) => patchDraft(detail.id, { values: { ...values, ...preset } })}
-      />
-
       {/*
+        A column, capped, in the middle.
+
+        The cap only bites where there is no pane beside the form — a tablet
+        held upright, where Generate is one column across seven hundred points.
+        Stretched that far a chip is a label and a value at opposite ends of a
+        hand's width, and the prompt is one line of forty words. Where the pane
+        *is* beside it the form is already narrower than this, so the cap costs
+        nothing and there is no second layout to keep in step.
+      */}
+      <div className="safe-t flex min-h-full flex-col gap-3 px-4 pt-2 pb-2 tablet:mx-auto tablet:w-full tablet:max-w-[40rem]">
+        {/* Workflow selector + connection state */}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowPicker(true)}
+            // Labelled rather than named by its contents: what it *says* is the
+            // workflow you are on, which is not what the control is.
+            aria-label="Choose workflow"
+            className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-left active:bg-surface-2"
+          >
+            <span className="min-w-0 flex-1 truncate font-medium">{detail.name}</span>
+            <span className="shrink-0 text-muted" aria-hidden>
+              ▾
+            </span>
+          </button>
+
+          {/*
+            The connection light, and under it the way out of a form that has
+            got itself into a state.
+
+            Two things in one gesture, because they are one thought: put this
+            workflow back the way it comes. The values go to the graph's own
+            defaults — not the last run's, which is history rather than the
+            workflow — and the schema is re-read from ComfyUI, so a model
+            installed since, or a custom node that was missing, turns up in the
+            dropdowns without a trip to Settings.
+
+            Under the light rather than beside the picker: it is about the
+            workflow's connection to the machine, which is what the light is
+            about, and putting it in the row proper would have it competing with
+            the one control up here anybody uses often.
+          */}
+          <div className="flex shrink-0 flex-col items-center gap-1.5">
+            <span
+              title={comfyOnline ? 'ComfyUI connected' : 'ComfyUI unreachable'}
+              className={cn('size-2.5 rounded-full', comfyOnline ? 'bg-success' : 'bg-danger')}
+            />
+            <button
+              type="button"
+              aria-label={confirmReset ? 'Reset this workflow — sure?' : 'Reset this workflow'}
+              title={
+                confirmReset
+                  ? 'Tap again to throw away what is set up here'
+                  : 'Put the form back to the workflow’s own values and re-read it from ComfyUI'
+              }
+              onClick={() => {
+                if (!confirmReset) return setConfirmReset(true);
+                setConfirmReset(false);
+                setError(null);
+
+                /*
+                 * The values first, because that half cannot fail: it is a
+                 * local store, and a ComfyUI that has gone away must not be
+                 * the reason the form stays stuck.
+                 */
+                setDraft(detail.id, {
+                  values: { ...defaultValues(detail.schema) },
+                  lockedSeeds: [],
+                  batchCount: 1,
+                });
+
+                rescan.mutate(detail.id, {
+                  // Seeded again from the schema that just came back: a rescan
+                  // can add a field, and one left at `undefined` submits
+                  // nothing rather than its default.
+                  onSuccess: (fresh) =>
+                    setDraft(fresh.id, {
+                      values: { ...defaultValues(fresh.schema) },
+                      lockedSeeds: [],
+                      batchCount: 1,
+                    }),
+                  onError: (cause) =>
+                    setError(
+                      cause instanceof Error
+                        ? `The form was reset, but ComfyUI could not be re-read: ${cause.message}`
+                        : 'The form was reset, but ComfyUI could not be re-read.',
+                    ),
+                });
+              }}
+              className={cn(
+                'rounded-md px-1.5 py-0.5 text-[11px] leading-none',
+                confirmReset ? 'bg-danger/20 text-danger' : 'bg-surface-2 text-muted',
+              )}
+            >
+              {rescan.isPending ? <Spinner className="size-3" /> : confirmReset ? 'Sure?' : '⟳'}
+            </button>
+          </div>
+        </div>
+
+        {detail.schema.missingNodeTypes.length > 0 && (
+          <p className="rounded-xl border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
+            Not installed on this ComfyUI: {detail.schema.missingNodeTypes.join(', ')}. Generation
+            will fail until those custom nodes are added.
+          </p>
+        )}
+
+        <PresetBar
+          workflowId={detail.id}
+          values={values}
+          onApply={(preset) => patchDraft(detail.id, { values: { ...values, ...preset } })}
+        />
+
+        {/*
         Rendered in the order the form editor was left in, not grouped by role.
 
         Bucketing by role — every prompt, then every LoRA field, then the chips —
@@ -568,9 +716,9 @@ function GenerateForm({
         chips still collapse into one two-column grid, because that is a layout
         decision about chips rather than a reordering of them.
       */}
-      {mainRuns.map((run, runIndex) =>
-        run.kind === 'chips' ? (
-          /*
+        {mainRuns.map((run, runIndex) =>
+          run.kind === 'chips' ? (
+            /*
             A two-column grid, not a wrapping row.
 
             Wrapping put chips of every width wherever they happened to land,
@@ -578,118 +726,164 @@ function GenerateForm({
             columns line the labels up, so the sampler block can be scanned down
             instead of hunted through.
           */
-          <div key={`chips-${runIndex}`} className="grid grid-cols-2 gap-1.5">
-            {run.fields.map((field) => (
-              <div key={field.id} className={cn('min-w-0', field.width === 'full' && 'col-span-2')}>
-                <FieldChip
-                  field={field}
-                  value={values[field.id] ?? field.defaultValue}
-                  onChange={(value) => setValue(field.id, value)}
-                  block
-                />
-              </div>
-            ))}
-          </div>
-        ) : (
-          <MainField
-            key={run.fields[0]!.id}
-            field={run.fields[0]!}
-            values={values}
-            setValue={setValue}
-            workflows={workflows}
-            workflowId={workflowId}
-            onSendToWorkflow={sendToWorkflow}
-            lockedSeeds={lockedSeeds}
-            onToggleSeedLock={(id) =>
-              patchDraft(detail.id, {
-                lockedSeeds: lockedSeeds.includes(id)
-                  ? lockedSeeds.filter((seed) => seed !== id)
-                  : [...lockedSeeds, id],
-              })
-            }
-          />
-        ),
-      )}
-
-      {seedFields.length > 0 && (
-        <p className="-mt-2 text-xs text-muted">
-          {anySeedUnlocked
-            ? 'A new seed is used for every run.'
-            : 'Seed is locked — each run reproduces the same image.'}
-        </p>
-      )}
-
-      {/* Batch */}
-      <div className="flex items-center justify-between rounded-xl border border-line bg-surface px-3 py-1.5">
-        <span className="text-sm">Queue this many</span>
-        <div className="flex items-center gap-1">
-          {[1, 2, 4, 8].map((count) => (
-            <button
-              key={count}
-              type="button"
-              onClick={() => patchDraft(detail.id, { batchCount: count })}
+            <div
+              key={`chips-${runIndex}`}
               className={cn(
-                'size-8 rounded-lg text-sm tabular-nums',
-                batchCount === count ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                'grid gap-1.5',
+                // Three across where the form has the whole screen to itself, two
+                // where it is sharing it with the render — the column is four
+                // hundred points there, and a third of that is not a chip.
+                wide ? 'grid-cols-2' : 'grid-cols-2 tablet:grid-cols-3',
               )}
             >
-              {count}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {advancedFields.length > 0 && (
-        <>
-          <button
-            type="button"
-            onClick={() => setShowAdvanced(true)}
-            className="flex items-center justify-between rounded-xl border border-line bg-surface px-3 py-2 text-left active:bg-surface-2"
-          >
-            <span className="text-sm">Advanced</span>
-            <span className="text-xs text-muted">{advancedFields.length} settings ›</span>
-          </button>
-
-          <Sheet open={showAdvanced} onClose={() => setShowAdvanced(false)} title="Advanced" full>
-            {/*
-              Two columns of chips, not a stack of labelled blocks.
-
-              Advanced is where a big workflow puts thirty inputs, and giving each
-              one a heading, a caption and a full-width control turned it into
-              several screens of scrolling to reach the one you came for. A chip
-              already carries its own label and value, so the heading was
-              redundant; the wide controls (text, image) still get a full row
-              because they cannot be read in half of one.
-            */}
-            <div className="flex flex-wrap gap-1.5">
-              {advancedFields.map((field) => (
+              {/* `col-span-full` rather than `col-span-2`: "full" means the whole
+                row, and the row is not always two columns wide. */}
+              {run.fields.map((field) => (
                 <div
                   key={field.id}
-                  className={cn(
-                    'min-w-0',
-                    isWideControl(field) ? 'w-full space-y-1' : 'max-w-full',
-                  )}
+                  className={cn('min-w-0', field.width === 'full' && 'col-span-full')}
                 >
-                  {isWideControl(field) && (
-                    <span className="block truncate text-[11px] tracking-wide text-muted uppercase">
-                      {field.label}
-                    </span>
+                  {/*
+                    A point line that was explicitly set to half width sits in
+                    this grid, and has to stay a point line: swapping it for a
+                    chip here would answer "make it narrower" by silently
+                    replacing the control.
+                  */}
+                  {usesPointLine(field) ? (
+                    <PointLine
+                      field={field}
+                      value={values[field.id] ?? field.defaultValue}
+                      onChange={(value) => setValue(field.id, value)}
+                    />
+                  ) : (
+                    <FieldChip
+                      field={field}
+                      value={values[field.id] ?? field.defaultValue}
+                      onChange={(value) => setValue(field.id, value)}
+                      block
+                    />
                   )}
-                  <AdvancedRow
-                    field={field}
-                    value={values[field.id] ?? field.defaultValue}
-                    onChange={(value) => setValue(field.id, value)}
-                  />
                 </div>
               ))}
             </div>
-          </Sheet>
-        </>
-      )}
+          ) : (
+            <MainField
+              key={run.fields[0]!.id}
+              field={run.fields[0]!}
+              values={values}
+              setValue={setValue}
+              workflows={workflows}
+              workflowId={workflowId}
+              onSendToWorkflow={sendToWorkflow}
+              lockedSeeds={lockedSeeds}
+              onToggleSeedLock={(id) =>
+                patchDraft(detail.id, {
+                  lockedSeeds: lockedSeeds.includes(id)
+                    ? lockedSeeds.filter((seed) => seed !== id)
+                    : [...lockedSeeds, id],
+                })
+              }
+            />
+          ),
+        )}
 
-      <ErrorNote>{error}</ErrorNote>
+        {seedFields.length > 0 && (
+          <p className="-mt-2 text-xs text-muted">
+            {anySeedUnlocked
+              ? 'A new seed is used for every run.'
+              : 'Seed is locked — each run reproduces the same image.'}
+          </p>
+        )}
 
-      {/*
+        {/* Batch */}
+        <div className="flex items-center justify-between rounded-xl border border-line bg-surface px-3 py-1.5">
+          <span className="text-sm">Queue this many</span>
+          <div className="flex items-center gap-1">
+            {[1, 2, 4, 8].map((count) => (
+              <button
+                key={count}
+                type="button"
+                onClick={() => patchDraft(detail.id, { batchCount: count })}
+                className={cn(
+                  'size-8 rounded-lg text-sm tabular-nums',
+                  batchCount === count ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+                )}
+              >
+                {count}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {advancedFields.length > 0 && (
+          <>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(true)}
+              className="flex items-center justify-between rounded-xl border border-line bg-surface px-3 py-2 text-left active:bg-surface-2"
+            >
+              <span className="text-sm">Advanced</span>
+              <span className="text-xs text-muted">{advancedFields.length} settings ›</span>
+            </button>
+
+            <Sheet open={showAdvanced} onClose={() => setShowAdvanced(false)} title="Advanced" full>
+              {/*
+              Chips, under the node each one came off.
+
+              Two things were wrong with one flat run of them. A chip carries
+              its own label and value, which is why there is no heading per
+              field — but a label alone is only half the name: `denoise`,
+              `strength`, `end_at_step` mean nothing until you know which node
+              they belong to, and a graph with two samplers has the same word
+              twice with nothing to tell them apart. And thirty of them in a
+              heap is a list you scan rather than a list you navigate.
+
+              The wide controls (text, image) still take a full row inside
+              their group, because they cannot be read in half of one.
+            */}
+              <div className="space-y-4">
+                {groupByNode(advancedFields).map((group) => (
+                  <section key={group.nodeId} className="space-y-1.5">
+                    <h3 className="flex items-baseline gap-2 border-b border-line pb-1">
+                      <span className="min-w-0 truncate text-xs font-medium tracking-wide text-muted uppercase">
+                        {group.title}
+                      </span>
+                      <span className="shrink-0 text-[11px] text-muted/70">
+                        {group.fields.length}
+                      </span>
+                    </h3>
+                    <div className="flex flex-wrap gap-1.5">
+                      {group.fields.map((field) => (
+                        <div
+                          key={field.id}
+                          className={cn(
+                            'min-w-0',
+                            isWideControl(field) ? 'w-full space-y-1' : 'max-w-full',
+                          )}
+                        >
+                          {isWideControl(field) && (
+                            <span className="block truncate text-[11px] tracking-wide text-muted uppercase">
+                              {field.label}
+                            </span>
+                          )}
+                          <AdvancedRow
+                            field={field}
+                            value={values[field.id] ?? field.defaultValue}
+                            onChange={(value) => setValue(field.id, value)}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </Sheet>
+          </>
+        )}
+
+        <ErrorNote>{error}</ErrorNote>
+
+        {/*
         Pinned to the bottom of the scroll area.
 
         A long form put Generate below the fold, so starting a render meant
@@ -698,120 +892,141 @@ function GenerateForm({
         short enough not to scroll, so a two-field workflow does not get a
         floating bar over empty space.
       */}
-      {/* Fully opaque, not translucent: chips scrolling underneath showed
+        {/* Fully opaque, not translucent: chips scrolling underneath showed
           through as half-visible shapes below the button. */}
-      {/*
+        {/*
         `overflow-hidden` because this is pinned: anything inside it that turns
         out to be wider than the screen — a ComfyUI error naming half a dozen
         nodes, say — would otherwise stretch the bar and let the whole page be
         dragged sideways.
       */}
-      <div className="sticky bottom-0 -mx-4 mt-auto space-y-1 overflow-hidden border-t border-line bg-ink px-4 pt-2 pb-1">
-        {/*
+        <div className="sticky bottom-0 -mx-4 mt-auto space-y-1 overflow-hidden border-t border-line bg-ink px-4 pt-2 pb-1">
+          {/*
           Said out loud, right where you tap. With random mode on, what gets
           rendered is not what the prompt field says — leaving that implicit
           would be genuinely confusing the next time you came back to the app.
         */}
-        {randomMode.data?.enabled && promptFields.length > 0 && (
-          <p className="text-center text-[11px] text-accent">
-            ⁂ Prompt drawn from blocks: {randomMode.data.minBlocks}–{randomMode.data.maxBlocks} per
-            run
-          </p>
-        )}
+          {randomMode.data?.enabled && promptFields.length > 0 && (
+            <p className="text-center text-[11px] text-accent">
+              ⁂ Prompt drawn from blocks: {randomMode.data.minBlocks}–{randomMode.data.maxBlocks}{' '}
+              per run
+            </p>
+          )}
 
-        {/*
+          {/*
           Progress and Generate share one row.
           Stacked, they cost two rows of a phone screen for two things you look
           at together — and the form is what the space is for. The bar only
           appears while something is running or has just finished, so an idle
           screen still gives the button the full width.
+
+          Not where the pane is beside the form, which is showing the same run
+          at ten times the size with the same progress underneath it. A
+          thumbnail of the picture you are already looking at is not a summary
+          of anything, and dropping it gives Generate the whole width back.
         */}
-        <div className="flex items-stretch gap-2">
-          <LiveBar inline />
-          <Button
-            variant="primary"
-            size="lg"
-            fullWidth={!barInRow}
-            className={barInRow ? 'shrink-0' : undefined}
-            onClick={submit}
-            busy={generate.isPending || setEndless.isPending}
-            disabled={!comfyOnline}
-          >
-            {justQueued
-              ? endless.data?.enabled
-                ? 'Updated ✓'
-                : 'Queued ✓'
-              : endless.data?.enabled
-                ? 'Update'
-                : job
-                  ? `+${batchCount > 1 ? batchCount : 1}`
-                  : `Generate${batchCount > 1 ? ` ×${batchCount}` : ''}`}
-          </Button>
-          {/*
+          <div className="flex items-stretch gap-2">
+            {!wide && <LiveBar inline />}
+            <Button
+              variant="primary"
+              size="lg"
+              fullWidth={!barInRow || wide}
+              className={barInRow && !wide ? 'shrink-0' : undefined}
+              onClick={submit}
+              busy={generate.isPending || setEndless.isPending}
+              disabled={!comfyOnline}
+            >
+              {justQueued
+                ? endless.data?.enabled
+                  ? 'Updated ✓'
+                  : 'Queued ✓'
+                : endless.data?.enabled
+                  ? 'Update'
+                  : job
+                    ? `+${batchCount > 1 ? batchCount : 1}`
+                    : `Generate${batchCount > 1 ? ` ×${batchCount}` : ''}`}
+            </Button>
+            {/*
             Endless generation. Its own switch rather than a mode buried in a
             sheet: it is the difference between the GPU working while you are
             not looking and not, and turning it off has to be as quick as
             turning it on.
           */}
-          <button
-            type="button"
-            onClick={() => void toggleEndless()}
-            aria-pressed={Boolean(endless.data?.enabled)}
-            aria-label="Endless generation"
-            title={
-              endless.data?.enabled
-                ? 'Generating until stopped — tap to stop'
-                : 'Keep generating until stopped'
-            }
-            className={cn(
-              'grid h-12 w-12 shrink-0 place-items-center rounded-xl text-xl',
-              endless.data?.enabled ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
-            )}
-          >
-            ∞
-          </button>
+            <button
+              type="button"
+              onClick={() => void toggleEndless()}
+              aria-pressed={Boolean(endless.data?.enabled)}
+              aria-label="Endless generation"
+              title={
+                endless.data?.enabled
+                  ? 'Generating until stopped — tap to stop'
+                  : 'Keep generating until stopped'
+              }
+              className={cn(
+                'grid h-12 w-12 shrink-0 place-items-center rounded-xl text-xl',
+                endless.data?.enabled ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+              )}
+            >
+              ∞
+            </button>
+          </div>
+
+          {endless.data?.enabled && (
+            <p className="text-center text-[11px] text-accent">
+              Generating until stopped · {endless.data.queued} so far · Update applies to the next
+              run
+            </p>
+          )}
+          {!endless.data?.enabled && endless.data?.message && (
+            <p className="text-center text-[11px] text-warn">
+              Endless generation stopped: {endless.data.message}
+            </p>
+          )}
+
+          {!comfyOnline && (
+            <p className="text-center text-xs text-danger">
+              ComfyUI is unreachable — check that it is running.
+            </p>
+          )}
         </div>
 
-        {endless.data?.enabled && (
-          <p className="text-center text-[11px] text-accent">
-            Generating until stopped · {endless.data.queued} so far · Update applies to the next run
-          </p>
-        )}
-        {!endless.data?.enabled && endless.data?.message && (
-          <p className="text-center text-[11px] text-warn">
-            Endless generation stopped: {endless.data.message}
-          </p>
-        )}
-
-        {!comfyOnline && (
-          <p className="text-center text-xs text-danger">
-            ComfyUI is unreachable — check that it is running.
-          </p>
-        )}
-      </div>
-
-      <Sheet open={showPicker} onClose={() => setShowPicker(false)} title="Workflow">
-        <ul className="space-y-1">
-          {workflows.map((item) => (
-            <li key={item.id}>
-              <button
-                type="button"
-                onClick={() => {
-                  onSelectWorkflow(item.id);
-                  setShowPicker(false);
-                }}
-                className={cn(
-                  'flex w-full items-center justify-between rounded-xl px-4 py-3 text-left',
-                  item.id === workflowId ? 'bg-accent/15 text-accent' : 'active:bg-surface-2',
-                )}
-              >
-                <span className="min-w-0 truncate">{item.name}</span>
-                {item.id === workflowId && <span aria-hidden>✓</span>}
-              </button>
-            </li>
-          ))}
-        </ul>
-      </Sheet>
+        <Sheet open={showPicker} onClose={() => setShowPicker(false)} title="Workflow">
+          <ul className="space-y-1">
+            {workflows.map((item) => (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSelectWorkflow(item.id);
+                    setShowPicker(false);
+                  }}
+                  className={cn(
+                    'flex w-full items-center justify-between rounded-xl px-4 py-3 text-left',
+                    item.id === workflowId ? 'bg-accent/15 text-accent' : 'active:bg-surface-2',
+                  )}
+                >
+                  <span className="min-w-0 truncate">{item.name}</span>
+                  <span className="flex shrink-0 items-center gap-2">
+                    {/* Which of these makes a clip rather than a picture is the
+                      first thing you want to know about a list of workflows,
+                      and the name does not reliably say. */}
+                    {item.producesVideo && (
+                      <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">
+                        video
+                      </span>
+                    )}
+                    {item.producesAudio && (
+                      <span className="rounded-md bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">
+                        sound
+                      </span>
+                    )}
+                    {item.id === workflowId && <span aria-hidden>✓</span>}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Sheet>
       </div>
     </WorkflowScope>
   );
@@ -900,9 +1115,7 @@ function PresetBar({
                 Save
               </Button>
             </div>
-            <p className="text-xs text-muted">
-              Saving under an existing name replaces it.
-            </p>
+            <p className="text-xs text-muted">Saving under an existing name replaces it.</p>
           </div>
 
           {list.length > 0 && (
@@ -1041,9 +1254,7 @@ function AdvancedRow({
     return <FilledFromPrompt field={field} prompt={filled} showLabel={!isWideControl(field)} />;
   }
   if (server && isLlamaServerField(field)) {
-    return (
-      <FilledFromServer field={field} server={server} showLabel={!isWideControl(field)} />
-    );
+    return <FilledFromServer field={field} server={server} showLabel={!isWideControl(field)} />;
   }
 
   if (isWideControl(field)) {
@@ -1134,8 +1345,8 @@ function SendToWorkflow({
           ))}
         </ul>
         <p className="mt-2 px-1 text-[11px] text-muted">
-          The prompt is copied across and that workflow is opened. Its own settings are left
-          exactly as you had them.
+          The prompt is copied across and that workflow is opened. Its own settings are left exactly
+          as you had them.
         </p>
       </Sheet>
     </>

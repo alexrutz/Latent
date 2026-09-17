@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 
 import type { ConnectionInput, ConnectionKind, ConnectionTestResult } from '@latent/shared';
-import { defaultSampling } from '@latent/shared';
+import { DEFAULT_WANDER_DRAW, defaultSampling } from '@latent/shared';
 
 import { LlamaClient } from '../chat/llama.js';
 import { ComfyClient, ComfyError, isSelfSignedError } from '../comfy/client.js';
@@ -103,6 +103,17 @@ async function testLlama(config: ConnectionConfig): Promise<ConnectionTestResult
     thinking: false,
     systemPromptId: null,
     tools: { prompt_blocks: 'off', build_prompt: 'off', ask_user: 'off' },
+    review: { enabled: false, threshold: 'never', keepInView: 0, askWhen: 'never' },
+    autonomous: { enabled: false, maxRounds: 0 },
+    wander: {
+      workflowId: '',
+      attributes: 3,
+      draw: DEFAULT_WANDER_DRAW,
+      sampling: 'chat',
+      ownSampling: defaultSampling(),
+    },
+    promptDetail: 'balanced',
+    taste: 'off',
     generation: { workflowId: '', values: {} },
     imageSize: 3,
     promptButton: 'dialog',

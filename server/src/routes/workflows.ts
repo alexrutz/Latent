@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 
 import {
-  applyOverrides,
   assertApiWorkflow,
   buildParamSchema,
   defaultValues,
   isUiWorkflow,
+  poolFields,
   uiToApiWorkflow,
   UiWorkflowError,
   WorkflowFormatError,
@@ -14,18 +14,21 @@ import {
 import type {
   CreateWorkflowRequest,
   ObjectInfo,
+  ParamSchema,
   UpdateWorkflowRequest,
   WorkflowDetail,
 } from '@latent/shared';
 
 import type { AppContext } from './context.js';
-
-/** Merge stored user overrides into the schema before it reaches the client. */
-function withOverrides(detail: WorkflowDetail): WorkflowDetail {
-  return { ...detail, schema: applyOverrides(detail.schema, detail.overrides) };
-}
+import { resolveSchema } from '../formSchema.js';
 
 export function registerWorkflowRoutes(app: FastifyInstance, ctx: AppContext): void {
+  /** The schema as the form shows it: arranged generally, then per workflow. */
+  const withOverrides = (detail: WorkflowDetail): WorkflowDetail => ({
+    ...detail,
+    schema: resolveSchema(ctx.store, detail.schema, detail.overrides),
+  });
+
   app.get('/api/workflows', async () => ctx.store.listWorkflows());
 
   /**
@@ -35,6 +38,24 @@ export function registerWorkflowRoutes(app: FastifyInstance, ctx: AppContext): v
    * are switched on.
    */
   app.post('/api/workflows/scan', async () => ctx.workflowScanner.scan());
+
+  /**
+   * Every distinct field across the workflows in use, for the arrangement.
+   *
+   * Answered here rather than by the client fetching all of them: reading a
+   * whole installation gives dozens of workflows, and a phone asking for each
+   * one's graph to count its fields would move megabytes to produce a list of
+   * names. The schemas are the derived ones — the pool is what *exists*, before
+   * anything has an opinion about it.
+   */
+  app.get('/api/workflows/fields', async () => {
+    const schemas = ctx.store
+      .listWorkflows()
+      .filter((workflow) => workflow.visible)
+      .map((workflow) => ctx.store.getWorkflow(workflow.id)?.schema)
+      .filter((schema): schema is ParamSchema => schema !== undefined);
+    return poolFields(schemas);
+  });
 
   app.get<{ Params: { id: string } }>('/api/workflows/:id', async (request, reply) => {
     const detail = ctx.store.getWorkflow(request.params.id);

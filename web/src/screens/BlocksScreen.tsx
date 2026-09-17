@@ -10,7 +10,8 @@ import {
   useUpdatePromptBlock,
 } from '../api/queries';
 import { SortableList } from '../components/SortableList';
-import { Button, cn, ErrorNote, Sheet, Spinner } from '../components/ui';
+import { Button, cn, DetailPane, ErrorNote, Spinner } from '../components/ui';
+import { useDesk } from '../state/layout';
 
 const UNGROUPED = 'Ungrouped';
 
@@ -31,6 +32,7 @@ export function BlocksScreen() {
   const blocks = usePromptBlocks();
   const reorder = useReorderPromptBlocks();
   const [editing, setEditing] = useState<PromptBlock | 'new' | null>(null);
+  const desk = useDesk();
 
   const library = blocks.data ?? [];
 
@@ -82,71 +84,87 @@ export function BlocksScreen() {
   }
 
   return (
-    <div className="safe-t px-4 pt-3 pb-6">
-      <div className="mb-3 flex items-center justify-between gap-2">
-        <h1 className="text-xl font-semibold">Blocks</h1>
-        <Button variant="secondary" size="sm" onClick={() => setEditing('new')}>
-          New block
-        </Button>
-      </div>
+    /*
+     * The library on the left, the block you are editing on the right.
+     *
+     * A block is a phrase you are wording — and wording it means reading the
+     * ones beside it, so you do not save the third near-duplicate of the same
+     * lighting note. A sheet covering the library to edit one entry of it is
+     * the wrong shape for that wherever there is room for both. See
+     * `DetailPane`.
+     */
+    <div
+      className={cn(
+        'safe-t',
+        desk ? 'flex h-full min-h-0 items-start gap-5 px-5 pt-3 pb-5' : 'readable px-4 pt-3 pb-6',
+      )}
+    >
+      <div className={cn(desk && 'h-full min-w-0 flex-1 overflow-y-auto pr-1')}>
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h1 className="text-xl font-semibold">Blocks</h1>
+          <Button variant="secondary" size="sm" onClick={() => setEditing('new')}>
+            New block
+          </Button>
+        </div>
 
-      {library.length === 0 ? (
-        <p className="text-sm text-muted">
-          Nothing saved yet. A block is a phrase you keep retyping — a lighting setup, a camera, a
-          style. Save a few and a prompt becomes a handful of taps.
-        </p>
-      ) : (
-        <div className="space-y-5">
-          {grouped.map(([category, items]) => (
-            <section key={category} className="space-y-1.5">
-              <div className="flex items-baseline justify-between gap-2">
-                <h2 className="min-w-0 truncate text-xs font-medium tracking-wide text-muted uppercase">
-                  {category}
-                </h2>
-                <span className="shrink-0 text-[11px] text-muted">{items.length}</span>
-              </div>
+        {library.length === 0 ? (
+          <p className="text-sm text-muted">
+            Nothing saved yet. A block is a phrase you keep retyping — a lighting setup, a camera, a
+            style. Save a few and a prompt becomes a handful of taps.
+          </p>
+        ) : (
+          <div className="space-y-5">
+            {grouped.map(([category, items]) => (
+              <section key={category} className="space-y-1.5">
+                <div className="flex items-baseline justify-between gap-2">
+                  <h2 className="min-w-0 truncate text-xs font-medium tracking-wide text-muted uppercase">
+                    {category}
+                  </h2>
+                  <span className="shrink-0 text-[11px] text-muted">{items.length}</span>
+                </div>
 
-              {/*
+                {/*
                 Two across. A library worth having is dozens of blocks, and one
                 per row turns managing them into a scroll — the name and a line
                 of the text fit in half a row perfectly well.
               */}
-              <SortableList
-                items={items}
-                idOf={(block) => block.id}
-                onReorder={reorderGroup}
-                className="grid grid-cols-2 gap-1.5"
-              >
-                {(block, handle, dragging) => (
-                  <div
-                    className={cn(
-                      'flex h-full items-center gap-1.5 rounded-xl border bg-surface px-1.5 py-1.5',
-                      dragging ? 'border-accent shadow-lg' : 'border-line',
-                    )}
-                  >
-                    <span
-                      {...handle}
-                      role="button"
-                      aria-label={`Reorder ${block.name}`}
-                      className="grid size-7 shrink-0 cursor-grab place-items-center rounded-lg bg-surface-2 text-xs text-muted"
+                <SortableList
+                  items={items}
+                  idOf={(block) => block.id}
+                  onReorder={reorderGroup}
+                  className="grid grid-cols-2 gap-1.5"
+                >
+                  {(block, handle, dragging) => (
+                    <div
+                      className={cn(
+                        'flex h-full items-center gap-1.5 rounded-xl border bg-surface px-1.5 py-1.5',
+                        dragging ? 'border-accent shadow-lg' : 'border-line',
+                      )}
                     >
-                      ⠿
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setEditing(block)}
-                      className="min-w-0 flex-1 text-left"
-                    >
-                      <p className="truncate text-xs">{block.name}</p>
-                      <p className="truncate text-[10px] text-muted">{block.text}</p>
-                    </button>
-                  </div>
-                )}
-              </SortableList>
-            </section>
-          ))}
-        </div>
-      )}
+                      <span
+                        {...handle}
+                        role="button"
+                        aria-label={`Reorder ${block.name}`}
+                        className="grid size-7 shrink-0 cursor-grab place-items-center rounded-lg bg-surface-2 text-xs text-muted"
+                      >
+                        ⠿
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setEditing(block)}
+                        className="min-w-0 flex-1 text-left"
+                      >
+                        <p className="truncate text-xs">{block.name}</p>
+                        <p className="truncate text-[10px] text-muted">{block.text}</p>
+                      </button>
+                    </div>
+                  )}
+                </SortableList>
+              </section>
+            ))}
+          </div>
+        )}
+      </div>
 
       {editing && (
         <BlockSheet
@@ -154,6 +172,17 @@ export function BlocksScreen() {
           categories={categories}
           onClose={() => setEditing(null)}
         />
+      )}
+
+      {/* So the second column is a place waiting for something rather than a
+          hole in the layout. Only at a desk, where there is one. */}
+      {desk && !editing && (
+        <aside className="grid h-full w-[26rem] shrink-0 place-items-center rounded-2xl border border-dashed border-line px-6 text-center">
+          <p className="text-sm text-muted">
+            Pick a block to edit it, or start a new one. They stay listed while you write, so a
+            phrase you already have is one glance away.
+          </p>
+        </aside>
       )}
     </div>
   );
@@ -192,7 +221,7 @@ function BlockSheet({
   };
 
   return (
-    <Sheet open onClose={onClose} title={block ? 'Edit block' : 'New block'}>
+    <DetailPane open onClose={onClose} title={block ? 'Edit block' : 'New block'}>
       <div className="space-y-3">
         <Field label="Name">
           <input
@@ -278,7 +307,7 @@ function BlockSheet({
           )}
         </div>
       </div>
-    </Sheet>
+    </DetailPane>
   );
 }
 

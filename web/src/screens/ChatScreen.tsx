@@ -1,17 +1,31 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { CHAT_IMAGE_SIZES } from '@latent/shared';
 import type { ChatMessage, ChatToolCall } from '@latent/shared';
 
-import { api, thumbnailUrl } from '../api/client';
-import { useGeneration, useSettings } from '../api/queries';
-import { ImageViewer } from '../components/ImageViewer';
+import { api } from '../api/client';
+import { useGeneration, useGenerations, useSettings } from '../api/queries';
+import { Still, Thumb, type ViewerEntry } from '../components/ImageViewer';
+import { RunProgress } from '../components/LiveBar';
+import { ViewerWithActions } from '../components/ViewerWithActions';
 import { Markdown } from '../components/Markdown';
 import { PromptDiff, promptChanged } from '../components/PromptDiff';
+import { BlurButton } from '../components/BlurButton';
+import { TasteSheet } from '../components/TasteSheet';
 import { ToolDialog } from '../components/ToolDialog';
-import { Button, cn, ErrorNote, Sheet, Spinner } from '../components/ui';
+import {
+  Button,
+  cn,
+  CONTROL_FACE,
+  CONTROL_FACE_SET,
+  ErrorNote,
+  Sheet,
+  Spinner,
+} from '../components/ui';
 import { useChatStore } from '../state/chat';
-import { useLiveStore } from '../state/live';
+import { pastedImages, useFileDrop } from '../state/dropFiles';
+import { useGridSettings } from '../state/grid';
+import { useWide } from '../state/layout';
 
 /**
  * Talking to a local model about what to make.
@@ -38,6 +52,35 @@ const MAX_IMAGE_SIDE = 1024;
  * scrolling back through a conversation should show the change that was made at
  * the time, which is the only version of that comparison worth anything.
  */
+/**
+ * The proposal a tool message came out of, when it was a wandering one.
+ *
+ * A wandering round is two messages: the assistant's `build_prompt` call, and
+ * the tool message carrying the run it started. The picture hangs off the
+ * second and the prompt off the first, so tapping the picture has to reach back
+ * one message to find what made it. Only for wandering rounds — everywhere else
+ * a picture opens the viewer, which is what a picture should do.
+ */
+function wanderCallBefore(
+  messages: ChatMessage[],
+  id: string,
+): { messageId: string; call: ChatToolCall } | null {
+  const at = messages.findIndex((message) => message.id === id);
+  if (at < 0) return null;
+  for (let index = at - 1; index >= 0; index -= 1) {
+    const earlier = messages[index]!;
+    const call = earlier.toolCall;
+    if (!call) continue;
+    return call.tool === 'build_prompt' && call.fromWander ? { messageId: earlier.id, call } : null;
+  }
+  return null;
+}
+
+/** What identifies one picture across the conversation's whole list. */
+function pictureKey(recordId: string, image: { subfolder: string; filename: string }): string {
+  return `${recordId}/${image.subfolder}/${image.filename}`;
+}
+
 function promptBefore(messages: ChatMessage[], id: string): string {
   const at = messages.findIndex((message) => message.id === id);
   if (at < 0) return '';
@@ -51,9 +94,26 @@ function promptBefore(messages: ChatMessage[], id: string): string {
 /** What a resolved tool call is called once it is only a line in the history. */
 const TOOL_LABELS: Record<ChatToolCall['tool'], string> = {
   build_prompt: 'Proposed a prompt',
+  revise_prompt: 'Proposed a rewrite',
   prompt_blocks: 'Proposed blocks',
   ask_user: 'Asked something',
 };
+
+/**
+ * The same, but honest about what a block proposal actually did.
+ *
+ * "Proposed blocks" for a call whose every row deletes one reads as the
+ * opposite of what happened, and the line in the transcript is often the only
+ * trace left once the dialog has been answered.
+ */
+function toolLabel(call: ChatToolCall): string {
+  if (call.tool !== 'prompt_blocks') return TOOL_LABELS[call.tool];
+  const actions = new Set(call.blocks.map((block) => block.action));
+  if (actions.size !== 1) return 'Proposed block changes';
+  if (actions.has('remove')) return 'Proposed removing blocks';
+  if (actions.has('update')) return 'Proposed changing blocks';
+  return 'Proposed blocks';
+}
 
 export function ChatScreen() {
   const settings = useSettings();
@@ -74,10 +134,56 @@ export function ChatScreen() {
   const draft = useChatStore((state) => state.draft);
   const attachments = useChatStore((state) => state.attachments);
   const error = useChatStore((state) => state.error);
-  const askedForPrompt = useChatStore((state) => state.askedForPrompt);
   const callMinimized = useChatStore((state) => state.callMinimized);
-  const waitingFor = useChatStore((state) => state.waitingFor);
+  /*
+   * What the conversation is doing, as one thing the server decided.
+   *
+   * These used to be seven separate flags kept in step by hand on this side —
+   * whether a run was going, how many rounds it had done, whether it had
+   * quietly stopped, what it was waiting on. Keeping them right meant the
+   * screen had to reason about the loop, and a screen that had been asleep
+   * reasoned from stale premises. Now it reads.
+   */
+  const run = useChatStore((state) => state.run);
   const store = useChatStore.getState;
+
+  const autonomous = settings.data?.chat.autonomous;
+  const wandering = run.mode === 'wander';
+  /** A prompt has been asked for by name and nothing has come back yet. */
+  const asking = run.phase === 'thinking' && (run.want === 'prompt' || run.want === 'freshPrompt');
+  /** The render the follow-up turn is waiting on, so it can be said out loud. */
+  const waitingFor = run.phase === 'generating' ? run.generationId : null;
+
+  /*
+   * Every picture in the conversation, in the order it was made.
+   *
+   * The viewer opens over this rather than over the one run you tapped: these
+   * are the last things generated, one after another, which is exactly the list
+   * a swipe should move through — and it is what the gallery does with the
+   * gallery. A wandering run makes that the whole point, since it *is* a column
+   * of one picture after another.
+   */
+  const runIds = useMemo(
+    () =>
+      (chat?.messages ?? [])
+        .map((message) => message.generationId)
+        .filter((id): id is string => typeof id === 'string' && id !== ''),
+    [chat?.messages],
+  );
+  const runs = useGenerations(runIds);
+  const viewerEntries = useMemo<ViewerEntry[]>(
+    () =>
+      runs.flatMap(({ data: record }) =>
+        record ? record.images.map((image) => ({ record, image })) : [],
+      ),
+    [runs],
+  );
+  const [viewing, setViewing] = useState<string | null>(null);
+  const [grid, updateGrid] = useGridSettings();
+  const wide = useWide();
+  const viewerIndex = viewing
+    ? viewerEntries.findIndex((entry) => pictureKey(entry.record.id, entry.image) === viewing)
+    : -1;
 
   /** A prompt from further up, reopened to run again or to rewind to. */
   const [revisiting, setRevisiting] = useState<{
@@ -85,6 +191,9 @@ export function ChatScreen() {
     call: ChatToolCall;
   } | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showTaste, setShowTaste] = useState(false);
+  /** Whether the prompt button's two options are showing. */
+  const [choosing, setChoosing] = useState(false);
   /** Set while the transcript is at the end, which is when it follows a reply. */
   const [atBottom, setAtBottom] = useState(true);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -165,7 +274,29 @@ export function ChatScreen() {
     setAtBottom(distance < 40);
   };
 
-  const attach = async (files: FileList) => {
+  /*
+    Dropped and pasted pictures take the same road as chosen ones.
+
+    Paste is bound to the window rather than to the composer, and stands down
+    inside a text box — pasting *text* while writing must stay text, and an
+    image on the clipboard while the caret is in the composer is still an image
+    somebody wants attached. `pastedImages` returns nothing for a text paste, so
+    the ordinary case never reaches this at all.
+  */
+  const drop = useFileDrop((files) => void attach(files));
+
+  useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      const images = pastedImages(event);
+      if (images.length === 0) return;
+      event.preventDefault();
+      void attach(images);
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  });
+
+  const attach = async (files: File[] | FileList) => {
     store().setError(null);
     for (const file of [...files].slice(0, 4)) {
       try {
@@ -181,6 +312,33 @@ export function ChatScreen() {
         store().setError(`${file.name} could not be read as an image.`);
       }
     }
+  };
+
+  /**
+   * Switch the mode, and switch on the thing it depends on.
+   *
+   * The loop's exit condition *is* the review: the model is shown the render,
+   * marks it against the prompt, and proposes a rewrite while it falls short.
+   * With the review off there is nothing to end a run, so turning this on with
+   * it off would be a switch that quietly does nothing — the honest reading of
+   * "carry on until it is good enough" is that you want the check on too.
+   */
+  const toggleAutonomous = async () => {
+    const chatSettings = settings.data?.chat;
+    if (!chatSettings) return;
+
+    /*
+     * One write, to the conversation, not two.
+     *
+     * This used to patch the setting from here while the loop kept the answer
+     * it had taken when the run started — so flipping the switch part way
+     * through left the strip announcing a run that carries on by itself and a
+     * loop that stopped at the next proposal and waited. The server owns both
+     * now: it writes the setting, turns the review on with it if it was off,
+     * and takes up whatever proposal is already on the table.
+     */
+    await store().setAutonomous(!chatSettings.autonomous.enabled);
+    await settings.refetch();
   };
 
   const startNew = async () => {
@@ -201,219 +359,480 @@ export function ChatScreen() {
       The whole screen, and the transcript takes all of it that is not the
       composer. A chat is the one place where more text on screen is simply
       better, so nothing else competes for the height.
-    */
-    <div className="safe-t flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center justify-between gap-2 px-4 pt-2 pb-1">
-        <h1 className="min-w-0 truncate text-base font-semibold">{chat.title || 'Chat'}</h1>
-        <div className="flex shrink-0 items-center gap-1">
-          <button
-            type="button"
-            onClick={() => setShowHistory(true)}
-            aria-label="Saved chats"
-            className="grid size-9 place-items-center rounded-full bg-surface text-muted active:bg-surface-2"
-          >
-            ≡
-          </button>
-          <button
-            type="button"
-            onClick={() => void startNew()}
-            aria-label="New chat"
-            className="grid size-9 place-items-center rounded-full bg-surface text-muted active:bg-surface-2"
-          >
-            ＋
-          </button>
-        </div>
-      </div>
 
+      It is also one drop target and one paste target — unambiguous here in a
+      way it is not on a form, because a chat has exactly one place a picture
+      can go, so "onto the app" and "onto the thing that wants it" are the same
+      gesture. Both routes go through `attach`, which is what the ＋ button
+      calls: the downscale before sending is not optional and must not have two
+      implementations.
+    */
+    <div {...drop.props} data-testid="chat-drop" className="relative flex h-full min-h-0">
+      {drop.over && (
+        <div className="pointer-events-none absolute inset-2 z-40 grid place-items-center rounded-2xl border-2 border-dashed border-accent bg-ink/70">
+          <p className="text-sm text-accent">Drop to attach</p>
+        </div>
+      )}
       {/*
+        The conversation itself, in a column that stops widening once the lines
+        are long enough to read.
+
+        A tablet's full width is about a hundred and forty characters a line,
+        which is roughly twice what anyone reads comfortably — the eye loses the
+        start of the next line on the way back. Capping it is not leaving the
+        space unused; on a wide screen the space goes to the pictures beside it,
+        and on a narrower one an even margin is what a page looks like.
+      */}
+      <div className="safe-t flex min-h-0 min-w-0 flex-1 flex-col tablet:mx-auto tablet:w-full tablet:max-w-[46rem]">
+        <div className="flex shrink-0 items-center justify-between gap-2 px-4 pt-2 pb-1">
+          <h1 className="min-w-0 truncate text-base font-semibold">{chat.title || 'Chat'}</h1>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setShowHistory(true)}
+              aria-label="Saved chats"
+              className={cn('grid size-9 place-items-center rounded-full text-base', CONTROL_FACE)}
+            >
+              ≡
+            </button>
+            {/*
+            Off wandering: picture after picture, out of your own notes.
+
+            Beside the other two mode buttons because it is the third answer to
+            "what now" — the chat list is what you were doing, the ♥ is what you
+            like, and this is being shown things made out of it without deciding
+            anything.
+          */}
+            <button
+              type="button"
+              aria-pressed={wandering}
+              // Not "…what you like": the ♥ beside it is called that, and two
+              // controls whose names contain one another are two controls nothing
+              // reading the screen aloud can tell apart.
+              aria-label="Wander through your notes"
+              onClick={() => (wandering ? store().stopWander() : void store().startWander())}
+              className={cn(
+                'grid size-9 place-items-center rounded-full text-base',
+                wandering ? CONTROL_FACE_SET : CONTROL_FACE,
+              )}
+            >
+              ❋
+            </button>
+            {/*
+            Left to get on with it.
+
+            A mode rather than a button that does something: while it is on, the
+            model's own prompts and rewrites are accepted for you and the next
+            render starts, until one clears the perfectionism threshold. Up here
+            with the other two because it is a thing about this conversation,
+            and because switching it on for one picture and off again should not
+            be a trip to Settings.
+          */}
+            <button
+              type="button"
+              aria-pressed={autonomous?.enabled === true}
+              aria-label="Carry on by itself"
+              onClick={() => void toggleAutonomous()}
+              className={cn(
+                'grid size-9 place-items-center rounded-full text-base',
+                autonomous?.enabled ? CONTROL_FACE_SET : CONTROL_FACE,
+              )}
+            >
+              ∞
+            </button>
+            {/*
+            Next to the chat list, because it belongs to the same question.
+
+            The list is "what have I been working on"; this is "what do I like"
+            — both are things you reach for when the composer is empty and you
+            do not know what to type. A heart rather than a cog: it is not a
+            setting, it is a description of you.
+          */}
+            <button
+              type="button"
+              onClick={() => setShowTaste(true)}
+              aria-label="What you like"
+              className={cn('grid size-9 place-items-center rounded-full text-base', CONTROL_FACE)}
+            >
+              ♥
+            </button>
+            <button
+              type="button"
+              onClick={() => void startNew()}
+              aria-label="New chat"
+              className={cn('grid size-9 place-items-center rounded-full text-base', CONTROL_FACE)}
+            >
+              ＋
+            </button>
+            {/* Last, as everywhere: see `BlurButton`. The chat shows pictures
+              like any other screen, and this is the corner your thumb knows. */}
+            <BlurButton />
+          </div>
+        </div>
+
+        {/*
         Blurred while a tool dialog is up. The dialog is a decision about
         something in this transcript, so the transcript stays visible — just
         plainly not the thing being interacted with.
       */}
-      <div
-        ref={transcriptRef}
-        data-testid="chat-transcript"
-        onScroll={onTranscriptScroll}
-        className={cn(
-          'min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-2',
-          pendingCall && !callMinimized && 'pointer-events-none blur-sm',
-        )}
-      >
-        {chat.messages.length === 0 && !streaming && (
-          <div className="py-10 text-center text-sm text-muted">
-            <p>Ask for prompt ideas, or describe what you want and ask for a prompt.</p>
-            <p className="mt-2 text-xs">
-              Anything it proposes — blocks, a finished prompt — arrives as something to accept or
-              throw away.
-            </p>
-          </div>
-        )}
+        <div
+          ref={transcriptRef}
+          data-testid="chat-transcript"
+          onScroll={onTranscriptScroll}
+          className={cn(
+            'min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-2',
+            pendingCall && !callMinimized && 'pointer-events-none blur-sm',
+          )}
+        >
+          {chat.messages.length === 0 && !streaming && (
+            <div className="py-10 text-center text-sm text-muted">
+              <p>Ask for prompt ideas, or describe what you want and ask for a prompt.</p>
+              <p className="mt-2 text-xs">
+                Anything it proposes — blocks, a finished prompt — arrives as something to accept or
+                throw away.
+              </p>
+            </div>
+          )}
 
-        <div className="space-y-3">
-          {chat.messages.map((message) => (
-            <MessageRow
-              key={message.id}
-              message={message}
-              pictureWidth={pictureWidth}
-              previousPrompt={promptBefore(chat.messages, message.id)}
-              showDiff={settings.data?.chat.showDiff.underPicture ?? true}
-              onRevisit={(call) => setRevisiting({ messageId: message.id, call })}
-            />
-          ))}
+          <div className="space-y-3">
+            {chat.messages.map((message) => (
+              <MessageRow
+                key={message.id}
+                message={message}
+                pictureWidth={pictureWidth}
+                previousPrompt={promptBefore(chat.messages, message.id)}
+                showDiff={settings.data?.chat.showDiff.underPicture ?? true}
+                onRevisit={(call) => setRevisiting({ messageId: message.id, call })}
+                wanderCall={wanderCallBefore(chat.messages, message.id)}
+                onOpenPrompt={(found) => setRevisiting(found)}
+                onOpenPicture={setViewing}
+              />
+            ))}
 
-          {/*
+            {/*
             Said plainly, because otherwise this looks like the chat has
             stopped answering. It has not — it is waiting for the picture it
             was asked about, and anything it said before that landed would be
             about something nobody has seen.
           */}
-          {waitingFor && !streaming && (
-            <div className="flex items-center gap-2 py-1 text-xs text-muted">
-              <Spinner className="size-3" />
-              <span>Rendering — the reply comes once the picture is done.</span>
-            </div>
-          )}
-
-          {streaming && (
-            <div className="space-y-1">
-              {streaming.thinking !== '' && (
-                <ThinkingBlock text={streaming.thinking} live={streaming.content === ''} />
-              )}
-              {/* Rendered as it arrives, so the reply does not reflow into
-                  something different the moment it finishes. */}
-              <div className="relative">
-                <Markdown text={streaming.content} />
-                <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-accent align-middle" />
+            {waitingFor && !streaming && (
+              <div className="flex items-center gap-2 py-1 text-xs text-muted">
+                <Spinner className="size-3" />
+                <span>Rendering — the reply comes once the picture is done.</span>
               </div>
-            </div>
-          )}
+            )}
+
+            {streaming && (
+              <div className="space-y-1">
+                {streaming.thinking !== '' && (
+                  <ThinkingBlock text={streaming.thinking} live={streaming.content === ''} />
+                )}
+                {/* Rendered as it arrives, so the reply does not reflow into
+                  something different the moment it finishes. */}
+                <div className="relative">
+                  <Markdown text={streaming.content} />
+                  <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-accent align-middle" />
+                </div>
+              </div>
+            )}
+          </div>
+          <div ref={bottomRef} />
         </div>
-        <div ref={bottomRef} />
-      </div>
 
-      <ErrorNote>{error}</ErrorNote>
+        <ErrorNote>{error}</ErrorNote>
 
-      {/*
+        {/*
         What was put aside, and the way back to it.
 
         Pinned to the composer rather than left in the transcript: the point of
         folding the dialog away is to go and look at something, and a marker
         that scrolls out of sight with everything else is not a way back.
       */}
-      {pendingCall && callMinimized && (
-        <button
-          type="button"
-          onClick={() => store().restoreCall()}
-          className="mx-3 mb-1 flex items-center gap-2 rounded-xl border border-accent/40 bg-accent/10 px-3 py-2 text-left text-xs text-accent active:bg-accent/20"
-        >
-          <span aria-hidden>◳</span>
-          <span className="min-w-0 flex-1 truncate">
-            {TOOL_LABELS[pendingCall.call.tool]} — waiting on you
-          </span>
-          <span className="shrink-0 font-medium underline">Open</span>
-        </button>
-      )}
+        {pendingCall && callMinimized && (
+          <button
+            type="button"
+            onClick={() => store().restoreCall()}
+            className="mx-3 mb-1 flex items-center gap-2 rounded-xl border border-accent/40 bg-accent/10 px-3 py-2 text-left text-xs text-accent active:bg-accent/20"
+          >
+            <span aria-hidden>◳</span>
+            <span className="min-w-0 flex-1 truncate">
+              {toolLabel(pendingCall.call)} — waiting on you
+            </span>
+            <span className="shrink-0 font-medium underline">Open</span>
+          </button>
+        )}
 
-      {/* Composer */}
-      <div className="shrink-0 border-t border-line bg-ink px-3 pt-2 pb-2">
-        {attachments.length > 0 && (
-          <div className="mb-2 flex gap-2 overflow-x-auto">
-            {attachments.map((attachment, index) => (
-              <div key={`${attachment.name}-${index}`} className="relative shrink-0">
-                {attachment.dataUrl ? (
-                  <img
-                    src={attachment.dataUrl}
-                    alt={attachment.name}
-                    className="size-14 rounded-lg object-cover"
-                  />
-                ) : (
-                  <div className="grid size-14 place-items-center rounded-lg bg-surface-2">
-                    <Spinner className="size-4 text-muted" />
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={() =>
-                    store().setAttachments((current) => current.filter((_, at) => at !== index))
-                  }
-                  aria-label={`Remove ${attachment.name}`}
-                  className="absolute -top-1 -right-1 grid size-5 place-items-center rounded-full bg-ink text-xs text-muted"
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
+        {/*
+        What a wandering run is up to, and the way out of it.
+
+        The count is the whole of the status: nothing else about this mode is
+        worth a line of text, and a run with no visible end needs a visible
+        stop.
+      */}
+        {wandering && (
+          <div
+            data-testid="wander-strip"
+            className="mx-3 mb-1 flex items-center gap-2 rounded-xl border border-accent/40 bg-accent/10 px-3 py-2 text-xs text-accent"
+          >
+            <Spinner className="size-3" />
+            <span className="min-w-0 flex-1">
+              {run.note ??
+                (run.round === 0
+                  ? 'Wandering through what you like…'
+                  : `Wandering — ${run.round} so far`)}
+            </span>
+            <button
+              type="button"
+              onClick={() => store().stopWander()}
+              className="shrink-0 font-medium underline"
+            >
+              Stop
+            </button>
           </div>
         )}
 
-        <div className="flex items-end gap-2">
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            aria-label="Attach an image"
-            className="grid size-10 shrink-0 place-items-center rounded-xl bg-surface-2 text-lg text-muted active:bg-surface-3"
+        {/*
+        What the autonomous run is doing, and the way out of it.
+
+        Only while the mode is on. A run is invisible otherwise — pictures
+        appear and prompts get accepted with nobody having tapped anything —
+        and "how many more of these are coming" is the one question watching it
+        raises. Stop halts this run; the mode itself stays on for the next thing
+        you say, which is what the ∞ button and Settings are for.
+      */}
+        {autonomous?.enabled && !wandering && (
+          <div
+            data-testid="autonomous-strip"
+            className="mx-3 mb-1 flex items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2 text-xs text-muted"
           >
-            ＋
-          </button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            multiple
-            className="hidden"
-            onChange={(event) => {
-              if (event.target.files) void attach(event.target.files);
-              event.target.value = '';
-            }}
-          />
+            <span aria-hidden>∞</span>
+            <span className="min-w-0 flex-1">
+              {run.note ??
+                (run.round === 0
+                  ? 'Carrying on by itself, until a picture clears the mark.'
+                  : `Round ${run.round} of ${autonomous.maxRounds} — carrying on until it clears the mark.`)}
+            </span>
+            {/* Only while there is something to stop. A run that has already
+              said why it finished does not need a button that repeats it. */}
+            {run.phase !== 'idle' && (
+              <button
+                type="button"
+                onClick={() => void store().stop()}
+                className="shrink-0 font-medium text-accent underline"
+              >
+                Stop
+              </button>
+            )}
+          </div>
+        )}
 
-          <textarea
-            value={draft}
-            onChange={(event) => store().setDraft(event.target.value)}
-            rows={1}
-            placeholder="Say something…"
-            className="max-h-32 min-h-10 flex-1 resize-none rounded-xl border border-line bg-surface px-3 py-2 text-sm leading-relaxed focus:border-accent focus:outline-none"
-          />
-
-          {/* Ask for a prompt without saying so. What it does with the answer
-              — queue it, or show it first — is the setting beside it. */}
-          {!streaming && (
-            <Button
-              variant="secondary"
-              className="size-10 shrink-0 rounded-xl p-0 text-base"
-              onClick={() => void store().askForPrompt()}
-              aria-label="Build a prompt"
-              title="Build a prompt from this conversation"
-            >
-              ✦
-            </Button>
+        {/* Composer */}
+        <div className="shrink-0 border-t border-line bg-ink px-3 pt-2 pb-2">
+          {attachments.length > 0 && (
+            <div className="mb-2 flex gap-2 overflow-x-auto">
+              {attachments.map((attachment, index) => (
+                <div key={`${attachment.name}-${index}`} className="relative shrink-0">
+                  {attachment.dataUrl ? (
+                    <img
+                      src={attachment.dataUrl}
+                      alt={attachment.name}
+                      className="size-14 rounded-lg object-cover"
+                    />
+                  ) : (
+                    <div className="grid size-14 place-items-center rounded-lg bg-surface-2">
+                      <Spinner className="size-4 text-muted" />
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      store().setAttachments((current) => current.filter((_, at) => at !== index))
+                    }
+                    aria-label={`Remove ${attachment.name}`}
+                    className="absolute -top-1 -right-1 grid size-5 place-items-center rounded-full bg-ink text-xs text-muted"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
           )}
 
-          {/* Stop sits beside Send rather than replacing it: replacing it makes
+          <div className="flex items-end gap-2">
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              aria-label="Attach an image"
+              className="grid size-10 shrink-0 place-items-center rounded-xl bg-surface-2 text-lg text-muted active:bg-surface-3"
+            >
+              ＋
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                if (event.target.files) void attach(event.target.files);
+                event.target.value = '';
+              }}
+            />
+
+            <textarea
+              value={draft}
+              onChange={(event) => store().setDraft(event.target.value)}
+              rows={1}
+              placeholder="Say something…"
+              // The thing you would type into on this screen — what `/` jumps to.
+              data-prompt=""
+              className="max-h-32 min-h-10 flex-1 resize-none rounded-xl border border-line bg-surface px-3 py-2 text-sm leading-relaxed focus:border-accent focus:outline-none"
+            />
+
+            {/* Ask for a prompt without saying so. What it does with the answer
+              — queue it, or show it first — is the setting beside it. */}
+            {(!streaming || asking) && (
+              <div className="relative shrink-0">
+                {/*
+                Two ways to press it, in the space of one button.
+
+                The second exists for a conversation that has converged: every
+                prompt is the last one with two words moved, because the last
+                one is right there in the history being treated as the thing to
+                improve. Icons only, and only while the choice is open — a
+                permanent second button would be a permanent question, and the
+                answer is the first one nearly every time.
+              */}
+                {/*
+                Anywhere else closes it.
+
+                A popover with no way out but the button that opened it is a
+                trap on a touch screen, where "click outside" is the gesture
+                everybody tries first.
+              */}
+                {choosing && (
+                  <div
+                    className="fixed inset-0 z-10"
+                    onClick={() => setChoosing(false)}
+                    role="presentation"
+                  />
+                )}
+                {choosing && (
+                  <div className="absolute right-0 bottom-12 z-20 flex gap-1 rounded-xl border border-line bg-surface-2 p-1 shadow-lg shadow-black/40">
+                    <button
+                      type="button"
+                      aria-label="Generate now"
+                      title="Build a prompt from this conversation and generate it"
+                      onClick={() => {
+                        setChoosing(false);
+                        void store().askForPrompt();
+                      }}
+                      className="grid size-9 place-items-center rounded-lg text-base active:bg-surface-3"
+                    >
+                      ✦
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Fresh prompt, then generate"
+                      title="Throw the current prompt away, compose a different one and generate it"
+                      onClick={() => {
+                        setChoosing(false);
+                        void store().askForPrompt({ fresh: true, instant: true });
+                      }}
+                      className="grid size-9 place-items-center rounded-lg text-base text-accent active:bg-surface-3"
+                    >
+                      ⟳
+                    </button>
+                  </div>
+                )}
+                {/*
+                Feedback the moment it is pressed, and until it has an answer.
+
+                Three things were wrong with the version that only set `busy`.
+                The button was hidden the instant the reply began streaming, so
+                the state it was meant to show lasted a few hundred milliseconds
+                and then the button vanished — which reads as a tap that missed,
+                and people press it again. `busy` also put a spinner *beside*
+                the glyph in a forty-pixel square, where there is room for one
+                of the two. And nothing at all happened on the press itself,
+                which on a phone is the only feedback that arrives instantly:
+                the press is a transform, so it does not wait for a network
+                round trip to be visible.
+              */}
+                <Button
+                  variant="secondary"
+                  className={cn(
+                    'size-10 shrink-0 rounded-xl p-0 text-base transition-transform active:scale-90',
+                    (asking || choosing) && 'scale-95 text-accent',
+                  )}
+                  disabled={asking}
+                  onClick={() => setChoosing(!choosing)}
+                  aria-label="Build a prompt"
+                  aria-expanded={choosing}
+                  aria-busy={asking}
+                  title="Build a prompt from this conversation"
+                >
+                  {asking ? <Spinner className="size-4" /> : '✦'}
+                </Button>
+              </div>
+            )}
+
+            {/* Stop sits beside Send rather than replacing it: replacing it makes
               the one button mean two things, and the moment you want to stop is
               the moment you are already reaching for that corner. */}
-          {streaming && (
-            <Button
-              variant="secondary"
-              className="size-10 shrink-0 rounded-xl p-0 text-base"
-              onClick={() => void store().stop()}
-              aria-label="Stop"
-            >
-              ■
-            </Button>
-          )}
+            {streaming && (
+              <Button
+                variant="secondary"
+                className="size-10 shrink-0 rounded-xl p-0 text-base"
+                onClick={() => void store().stop()}
+                aria-label="Stop"
+              >
+                ■
+              </Button>
+            )}
 
-          <Button
-            variant="primary"
-            className="size-10 shrink-0 rounded-xl p-0"
-            onClick={() => void store().send()}
-            disabled={streaming !== null || (draft.trim() === '' && attachments.length === 0)}
-            aria-label="Send"
-          >
-            {streaming ? <Spinner className="size-4" /> : '↑'}
-          </Button>
+            <Button
+              variant="primary"
+              className="size-10 shrink-0 rounded-xl p-0"
+              onClick={() => void store().send()}
+              /*
+              Not while the model is mid-sentence.
+
+              Sending then would interleave two turns, and the second would be
+              answering a conversation the first has not finished writing.
+              Waiting on a render is different — that is a good moment to
+              change your mind, and taking over is what the composer is for.
+            */
+              disabled={
+                run.phase === 'thinking' || (draft.trim() === '' && attachments.length === 0)
+              }
+              aria-label="Send"
+            >
+              {streaming ? <Spinner className="size-4" /> : '↑'}
+            </Button>
+          </div>
         </div>
       </div>
+
+      {/*
+        Every picture this conversation has made, down the side.
+
+        The transcript is the reasoning and this is the result, and on a phone
+        you can only ever have one of them: the pictures are strung out through
+        several screens of text, so comparing the last four means scrolling past
+        what was said about them. Here they are a contact sheet that stays put
+        while the conversation moves.
+
+        It earns its width most in a wandering run, which is nothing but a
+        column of pictures with a few words between them — the transcript is the
+        wrong shape for that, and this is the right one.
+      */}
+      {wide && (
+        <ConversationPictures
+          entries={viewerEntries}
+          onOpen={(entry) => setViewing(pictureKey(entry.record.id, entry.image))}
+        />
+      )}
 
       {pendingCall && !callMinimized && (
         <ToolDialog
@@ -421,10 +840,14 @@ export function ChatScreen() {
           onMinimize={() => store().minimizeCall()}
           settings={settings.data ?? null}
           previousPrompt={previousPrompt}
-          autoAccept={
-            pendingCall.call.tool === 'build_prompt' &&
-            askedForPrompt &&
-            settings.data?.chat.promptButton === 'generate'
+          /*
+            A wandering run has a workflow of its own — often the fast one,
+            since it is going to run all evening.
+          */
+          workflowId={
+            pendingCall.call.tool === 'build_prompt' && pendingCall.call.fromWander
+              ? settings.data?.chat.wander.workflowId || undefined
+              : undefined
           }
           onResolve={(body) => store().resolveTool(body)}
         />
@@ -438,20 +861,20 @@ export function ChatScreen() {
           onResolve={() => setRevisiting(null)}
           revisit={{
             onClose: () => setRevisiting(null),
-            onRerun: async (generationId, prompt) => {
+            onRerun: async (prompt, workflowId) => {
               const { messageId } = revisiting;
               setRevisiting(null);
               try {
+                // The server queues it and writes the note, in one act — the
+                // dialog no longer starts renders of its own.
                 await api.rerunPrompt(chat.id, {
                   messageId,
-                  ...(generationId ? { generationId } : {}),
                   prompt,
+                  ...(workflowId ? { workflowId } : {}),
                 });
                 await store().refresh();
               } catch (cause) {
-                store().setError(
-                  cause instanceof Error ? cause.message : 'Could not record that',
-                );
+                store().setError(cause instanceof Error ? cause.message : 'Could not record that');
               }
             },
             onRewind: async () => {
@@ -468,6 +891,31 @@ export function ChatScreen() {
         />
       )}
 
+      {/*
+        The gallery's viewer, over the whole conversation.
+
+        A picture is a picture whichever list you came in by, and here the list
+        is the conversation: these are the last things generated, one after
+        another, so a swipe moves to the one before it rather than being trapped
+        in the batch you happened to tap. That matters most while wandering,
+        where the conversation *is* a column of pictures.
+      */}
+      {viewerIndex >= 0 && (
+        <ViewerWithActions
+          entries={viewerEntries}
+          index={viewerIndex}
+          grid={grid}
+          onGridChange={updateGrid}
+          onIndexChange={(next) => {
+            const entry = viewerEntries[next];
+            if (entry) setViewing(pictureKey(entry.record.id, entry.image));
+          }}
+          onClose={() => setViewing(null)}
+        />
+      )}
+
+      <TasteSheet open={showTaste} onClose={() => setShowTaste(false)} />
+
       <Sheet open={showHistory} onClose={() => setShowHistory(false)} title="Saved chats">
         <SavedChats
           currentId={chat.id}
@@ -482,12 +930,93 @@ export function ChatScreen() {
   );
 }
 
+/**
+ * The conversation's output as a contact sheet, beside the conversation.
+ *
+ * Two columns rather than one: a strip of single thumbnails down a 17-rem
+ * column wastes half of it on margins, and two side by side is the smallest
+ * number that lets you actually compare one attempt with the next — which is
+ * what the panel is for.
+ *
+ * It follows the newest picture the way the transcript follows the newest
+ * message, and for the same reason: both are logs, and the end is where the
+ * thing you are waiting for appears.
+ */
+function ConversationPictures({
+  entries,
+  onOpen,
+}: {
+  entries: ViewerEntry[];
+  onOpen: (entry: ViewerEntry) => void;
+}) {
+  const endRef = useRef<HTMLDivElement>(null);
+  const count = entries.length;
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: 'end' });
+  }, [count]);
+
+  return (
+    <aside
+      data-testid="chat-pictures"
+      aria-label="Pictures from this conversation"
+      /*
+        Wider at a desk, and the thumbnails with it. Seventeen rems is what a
+        tablet can spare beside a readable transcript; here there is more, and
+        the pane exists to be *compared across* — two columns of postage stamps
+        answer "how many" rather than "which one is better", which is the
+        question it is for.
+      */
+      className="safe-t flex w-[17rem] shrink-0 flex-col border-l border-line bg-surface/30 desk:w-[23rem]"
+    >
+      <div className="flex shrink-0 items-baseline gap-2 px-3 pt-3 pb-2">
+        <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Made here</h2>
+        {count > 0 && <span className="text-xs text-muted tabular-nums">{count}</span>}
+      </div>
+
+      {count === 0 ? (
+        <p className="px-3 text-xs leading-relaxed text-muted">
+          Nothing yet. Every picture this conversation makes collects here, in the order it was
+          made.
+        </p>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pb-3">
+          <div className="grid grid-cols-2 gap-2">
+            {entries.map((entry, index) => (
+              <Thumb
+                key={pictureKey(entry.record.id, entry.image)}
+                image={entry.image}
+                alt={entry.record.title}
+                /*
+                  Numbered, because that is what identifies one here: the
+                  titles in a wandering run are all variations on the same
+                  sentence, and position is how you would point at it. Not
+                  "Open picture N" — the transcript already calls its own
+                  pictures that, and two controls with the same name are two
+                  nothing reading the screen aloud can tell apart.
+                */
+                label={`Picture ${index + 1} in this conversation`}
+                onClick={() => onOpen(entry)}
+                className="aspect-square w-full"
+              />
+            ))}
+          </div>
+          <div ref={endRef} />
+        </div>
+      )}
+    </aside>
+  );
+}
+
 function MessageRow({
   message,
   pictureWidth,
   previousPrompt,
   showDiff,
   onRevisit,
+  wanderCall,
+  onOpenPrompt,
+  onOpenPicture,
 }: {
   message: ChatMessage;
   pictureWidth: number;
@@ -495,11 +1024,24 @@ function MessageRow({
   previousPrompt: string;
   showDiff: boolean;
   onRevisit: (call: ChatToolCall) => void;
+  /** Set when this run came out of a wandering round; see `wanderCallBefore`. */
+  wanderCall: { messageId: string; call: ChatToolCall } | null;
+  onOpenPrompt: (found: { messageId: string; call: ChatToolCall }) => void;
+  /** Opens the viewer over every picture in the conversation, at this one. */
+  onOpenPicture: (key: string) => void;
 }) {
   if (message.role === 'tool' || message.role === 'note') {
     return (
       <div className="space-y-1.5">
-        <p className="text-center text-[11px] text-muted">{message.content}</p>
+        {/*
+          A wandering run is a column of pictures and nothing else.
+
+          "The user accepted the prompt and queued it" is true, useful to the
+          model, and noise on the screen — nobody accepted anything, and a line
+          of it between every picture turns a stream into a transcript of
+          itself. The words still go to the model; they just stop being shown.
+        */}
+        {!wanderCall && <p className="text-center text-[11px] text-muted">{message.content}</p>}
         {message.generationId && (
           <GeneratedRun
             id={message.generationId}
@@ -507,6 +1049,14 @@ function MessageRow({
             prompt={message.prompt ?? ''}
             previousPrompt={previousPrompt}
             showDiff={showDiff}
+            onOpen={onOpenPicture}
+            /*
+              In a wandering run the prompt was never read, so "what was that
+              one?" is the question the picture raises — and the answer is a
+              corner button, because tapping the picture itself opens the
+              viewer, here as everywhere else in the app.
+            */
+            onOpenPrompt={wanderCall ? () => onOpenPrompt(wanderCall) : undefined}
           />
         )}
       </div>
@@ -539,34 +1089,49 @@ function MessageRow({
     );
   }
 
+  const call = message.toolCall;
+  /*
+    A prompt stays reachable for the rest of the conversation.
+
+    Wanting the same picture with one thing changed is the commonest thing
+    there is, and the alternative was a trip to the gallery to find the result
+    and press reuse — which loses the conversation the prompt came out of. Only
+    prompts: a decided question or a saved block has nothing left to do. A
+    rewrite is a prompt like any other — often the better one, since it was
+    written knowing what the last attempt produced.
+  */
+  const reusable =
+    call?.tool === 'build_prompt' || call?.tool === 'revise_prompt' ? message.toolResult : null;
+  /*
+    Except in a wandering round, where the picture is directly below this and
+    opens the same dialog — the row would be a second door to a room you are
+    already standing in.
+  */
+  const quiet = call?.tool === 'build_prompt' && call.fromWander === true;
+
   return (
     <div className="space-y-1">
       {message.thinking && <ThinkingBlock text={message.thinking} />}
       {message.content !== '' && <Markdown text={message.content} />}
-      {message.toolCall &&
-        /*
-          A prompt stays reachable for the rest of the conversation.
-          Wanting the same picture with one thing changed is the commonest
-          thing there is, and the alternative was a trip to the gallery to
-          find the result and press reuse — which loses the conversation the
-          prompt came out of. Only prompts: a decided question or a saved
-          block has nothing left to do.
-        */
-        (message.toolCall.tool === 'build_prompt' && message.toolResult ? (
+      {call &&
+        !quiet &&
+        (reusable ? (
           <button
             type="button"
-            onClick={() => onRevisit(message.toolCall!)}
+            onClick={() => onRevisit(call)}
             className="flex w-full items-center gap-1.5 rounded-lg bg-surface-2/60 px-2 py-1.5 text-left text-[11px] text-muted active:bg-surface-2"
           >
             <span aria-hidden className="text-accent">
               ✦
             </span>
-            <span className="min-w-0 flex-1 truncate">{message.toolCall.prompt}</span>
+            <span className="min-w-0 flex-1 truncate">
+              {call.tool === 'build_prompt' || call.tool === 'revise_prompt' ? call.prompt : ''}
+            </span>
             <span className="shrink-0 text-accent">Again</span>
           </button>
         ) : (
           <p className="text-[11px] text-muted">
-            {TOOL_LABELS[message.toolCall.tool]}
+            {toolLabel(call)}
             {message.toolResult
               ? ` · ${message.toolResult.decision === 'accepted' ? 'accepted' : 'declined'}`
               : ' · waiting'}
@@ -594,16 +1159,21 @@ function GeneratedRun({
   prompt,
   previousPrompt,
   showDiff,
+  onOpen,
+  onOpenPrompt,
 }: {
   id: string;
   width: number;
   prompt: string;
   previousPrompt: string;
   showDiff: boolean;
+  /** Open the conversation's viewer at this picture. */
+  onOpen: (key: string) => void;
+  /** For a wandering round: the corner button that shows what made it. */
+  onOpenPrompt?: () => void;
 }) {
   const generation = useGeneration(id);
-  const job = useLiveStore((state) => state.live.job);
-  const [viewing, setViewing] = useState<number | null>(null);
+  const store = useChatStore.getState;
 
   const record = generation.data;
   const images = record?.images ?? [];
@@ -612,52 +1182,19 @@ function GeneratedRun({
 
   if (!record || (images.length === 0 && record.status !== 'failed')) {
     /*
-     * The same numbers the live bar shows, in the place you are looking.
+     * The bar the rest of the app shows for the same wait.
      *
-     * A run started from the chat is one you are watching from the chat, and
-     * "Queued" with no end in sight for two minutes is indistinguishable from
-     * broken. `graphProgress` rather than sampler steps: it covers the whole
-     * graph, so a workflow that loads a model for forty seconds before the
-     * first step still moves.
+     * A run asked for in a conversation is watched in that conversation, and
+     * what is wanted there is what the live bar gives everywhere else: the
+     * frame it is up to, how much longer, which node, the step count. See
+     * `RunProgress`.
      */
-    const mine = job?.generationId === id ? job : null;
-    const fraction = mine
-      ? Math.max(mine.graphProgress, mine.progressMax > 0 ? mine.progress / mine.progressMax : 0)
-      : 0;
-
     return (
-      <div style={style} className="mx-auto space-y-1.5 rounded-xl border border-line bg-surface-2/50 p-3">
-        <div className="flex items-center justify-between gap-2 text-xs text-muted">
-          <span className="flex min-w-0 items-center gap-2 truncate">
-            <Spinner className="size-3.5 shrink-0" />
-            {mine?.nodeTitle ?? (record?.status === 'running' ? 'Generating…' : 'Queued')}
-            {/*
-              The node's own steps, next to its name.
-              A percentage across the whole graph barely moves during the part
-              that actually takes the time; "KSampler 12/20" is the number you
-              are waiting on.
-            */}
-            {mine && mine.progressMax > 0 && (
-              <span className="shrink-0 tabular-nums text-body">
-                {mine.progress}/{mine.progressMax}
-              </span>
-            )}
-          </span>
-          {fraction > 0 && (
-            <span className="shrink-0 tabular-nums">{Math.round(fraction * 100)}%</span>
-          )}
-        </div>
-        <div className="h-1.5 overflow-hidden rounded-full bg-surface-3">
-          <div
-            className={cn(
-              'h-full rounded-full bg-accent transition-[width] duration-300',
-              // Nothing to report yet: a bar at zero looks stuck, so it pulses
-              // across instead of claiming a progress it does not have.
-              fraction === 0 && 'w-1/3 animate-pulse',
-            )}
-            style={fraction > 0 ? { width: `${Math.round(fraction * 100)}%` } : undefined}
-          />
-        </div>
+      <div style={style} className="mx-auto">
+        <RunProgress
+          generationId={id}
+          queued={record?.status === 'running' ? 'Generating…' : 'Queued'}
+        />
       </div>
     );
   }
@@ -673,23 +1210,50 @@ function GeneratedRun({
           pictures too small to judge. */}
       <div className="flex flex-col items-center gap-1.5">
         {images.map((image, index) => (
-          <button
-            key={image.id ?? `${image.filename}-${index}`}
-            type="button"
-            onClick={() => setViewing(index)}
-            style={style}
-            aria-label={`Open picture ${index + 1}`}
-            className="overflow-hidden rounded-xl bg-surface-2 active:opacity-80"
-          >
-            <img
-              src={thumbnailUrl(image)}
-              alt=""
-              // `h-auto` so each picture keeps its own shape: a portrait and a
-              // landscape from one batch should not be cropped into agreeing
-              // with each other.
-              className="block h-auto w-full"
-            />
-          </button>
+          <div key={image.id ?? `${image.filename}-${index}`} className="relative" style={style}>
+            {/*
+              What made it, in the corner.
+
+              Only on a wandering round, where the prompt is not written above
+              the picture — everywhere else the row with the prompt is right
+              there, and a badge on every picture in every conversation would be
+              a permanent apology for an ambiguity that is not there.
+            */}
+            {onOpenPrompt && (
+              <button
+                type="button"
+                onClick={onOpenPrompt}
+                aria-label={`What made picture ${index + 1}`}
+                className="absolute top-1.5 right-1.5 z-10 grid size-8 place-items-center rounded-lg bg-black/60 text-sm text-white backdrop-blur active:bg-black/80"
+              >
+                ✦
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onOpen(pictureKey(id, image))}
+              aria-label={`Open picture ${index + 1}`}
+              className="block w-full overflow-hidden rounded-xl bg-surface-2 active:opacity-80"
+            >
+              {/* `contain` so each picture keeps its own shape: a portrait and a
+                landscape from one batch should not be cropped into agreeing
+                with each other. */}
+              <Still
+                image={image}
+                alt=""
+                fit="contain"
+                className="block w-full"
+                /*
+                The moment it is on screen, and not before.
+                What happens next is the model being handed this picture, and
+                the whole order of the review depends on that happening after
+                you can see it — not merely after the run finished, which is a
+                refetch and a download earlier.
+              */
+                onShown={index === 0 ? () => store().notePictureShown(id) : undefined}
+              />
+            </button>
+          </div>
         ))}
       </div>
 
@@ -698,15 +1262,6 @@ function GeneratedRun({
         <div style={style} className="mx-auto">
           <PromptPanel prompt={prompt} previousPrompt={showDiff ? previousPrompt : ''} />
         </div>
-      )}
-
-      {viewing !== null && (
-        <ImageViewer
-          entries={images.map((image) => ({ record, image }))}
-          index={viewing}
-          onIndexChange={setViewing}
-          onClose={() => setViewing(null)}
-        />
       )}
     </>
   );

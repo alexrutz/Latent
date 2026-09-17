@@ -4,7 +4,11 @@ import { Route, Routes, useLocation } from 'react-router-dom';
 import { setArchiveLockedHandler } from './api/client';
 import { useLiveCacheSync, useStatus } from './api/queries';
 import { BottomTabs } from './components/BottomTabs';
+import { Dock } from './components/Dock';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { KeyMap } from './components/KeyMap';
 import { LiveBar } from './components/LiveBar';
+import { SideRail } from './components/SideRail';
 import { ArchiveLockedBar, UnlockArchiveDialog } from './components/UnlockArchive';
 import { cn, Spinner } from './components/ui';
 import { BlocksScreen } from './screens/BlocksScreen';
@@ -13,18 +17,27 @@ import { GalleryScreen } from './screens/GalleryScreen';
 import { FavoritesScreen } from './screens/FavoritesScreen';
 import { GenerateScreen } from './screens/GenerateScreen';
 import { LoginScreen } from './screens/LoginScreen';
+import { ModelsScreen } from './screens/ModelsScreen';
 import { MonitorScreen } from './screens/MonitorScreen';
 import { StudyScreen } from './screens/StudyScreen';
 import { QueueScreen } from './screens/QueueScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { SetupScreen } from './screens/SetupScreen';
 import { VariationScreen } from './screens/VariationScreen';
-import { registerScrollContainer } from './state/scroll';
+import { useDock } from './state/dock';
+import { useRefuseStrayDrops } from './state/dropFiles';
+import { useHotkeys } from './state/hotkeys';
+import { useDesk, useTablet } from './state/layout';
+import { registerScrollContainer, useDocumentScrollAnchor } from './state/scroll';
 import { useLiveSocket } from './state/useLiveSocket';
 
 export function App() {
   const status = useStatus();
   const pathname = useLocation().pathname;
+  const tablet = useTablet();
+  const desk = useDesk();
+  /** Whether the bench is showing what the bar would otherwise say. */
+  const dockOpen = useDock((state) => state.open);
   const onGenerate = pathname === '/';
   /*
    * The chat manages its own height and its composer is pinned to the bottom of
@@ -32,7 +45,31 @@ export function App() {
    * screen where every pixel of height is text you are reading.
    */
   const onChat = pathname.startsWith('/chat');
-  const authenticated = status.data ? !status.data.authRequired || status.data.authenticated : false;
+  const authenticated = status.data
+    ? !status.data.authRequired || status.data.authenticated
+    : false;
+
+  // The keyboard shifts the page up and does not always shift it back.
+  useDocumentScrollAnchor();
+
+  /*
+   * The keyboard as a way of driving the app, not only of typing into it.
+   *
+   * Bound whenever there is a session, rather than only at desk width: a
+   * tablet with a keyboard attached is a machine with a keyboard, and there is
+   * nothing about a narrow window that makes `g l` the wrong way to reach the
+   * gallery. What the width decides is layout, which is a different question.
+   */
+  const { map, closeMap } = useHotkeys(authenticated);
+
+  /*
+   * A file dropped anywhere but on a target is refused rather than opened.
+   *
+   * The browser's default is to navigate to it, so missing an image field by
+   * twenty pixels replaces the app with a PNG in a tab and takes the form you
+   * had set up with it. See `useRefuseStrayDrops`.
+   */
+  useRefuseStrayDrops();
 
   // Only hold a socket open once we're allowed to use the API.
   useLiveSocket(authenticated);
@@ -72,10 +109,16 @@ export function App() {
     return <LoginScreen onAuthenticated={() => void status.refetch()} />;
   }
 
-  return (
-    // 100dvh (not vh) so the layout tracks the collapsing mobile URL bar
-    // instead of hiding the tab bar behind it.
-    <div className="flex h-[100dvh] flex-col overflow-hidden">
+  /*
+   * Everything but the navigation, which is on a different side depending on
+   * how much screen there is.
+   *
+   * One column either way — the archive warning, the screen, the progress bar —
+   * so the only thing tablet mode changes about the shell is whether that
+   * column sits above a bar or beside a rail.
+   */
+  const column = (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {archiveLocked && <ArchiveLockedBar onUnlock={() => setUnlocking(true)} />}
 
       <main
@@ -87,30 +130,70 @@ export function App() {
           onChat ? 'overflow-y-hidden' : 'overflow-y-auto',
         )}
       >
-        <Routes>
-          <Route path="/" element={<GenerateScreen />} />
-          <Route path="/gallery" element={<GalleryScreen />} />
-          <Route path="/chat" element={<ChatScreen />} />
-          <Route path="/favorites" element={<FavoritesScreen />} />
-          <Route path="/blocks" element={<BlocksScreen />} />
-          <Route path="/variation" element={<VariationScreen />} />
-          <Route path="/monitor" element={<MonitorScreen />} />
-          <Route path="/study" element={<StudyScreen />} />
-          <Route path="/queue" element={<QueueScreen />} />
-          <Route path="/settings" element={<SettingsScreen />} />
-          <Route path="*" element={<GenerateScreen />} />
-        </Routes>
+        {/*
+          Inside `<main>`, so the tab bar and the rail stay outside it: a screen
+          that fails to draw should cost that screen, not the way out of it.
+          Keyed on the path so navigating away clears the wreck rather than
+          latching every later screen into the same error.
+        */}
+        <ErrorBoundary resetKey={pathname}>
+          <Routes>
+            <Route path="/" element={<GenerateScreen />} />
+            <Route path="/gallery" element={<GalleryScreen />} />
+            <Route path="/chat" element={<ChatScreen />} />
+            <Route path="/favorites" element={<FavoritesScreen />} />
+            <Route path="/blocks" element={<BlocksScreen />} />
+            <Route path="/variation" element={<VariationScreen />} />
+            <Route path="/models" element={<ModelsScreen />} />
+            <Route path="/monitor" element={<MonitorScreen />} />
+            <Route path="/study" element={<StudyScreen />} />
+            <Route path="/queue" element={<QueueScreen />} />
+            <Route path="/settings" element={<SettingsScreen />} />
+            <Route path="*" element={<GenerateScreen />} />
+          </Routes>
+        </ErrorBoundary>
       </main>
 
       {/*
         Everywhere but Generate, which shows the same bar inline beside its
         button — two rows for progress and Generate is a lot of a phone screen
         for two things you look at together.
+
+        And nowhere at all once the panel is beside it *and open*: the bar is a
+        strip across the bottom saying what the panel is already saying in full,
+        one column to the right. Shut, the panel says none of it — and the
+        collapse is remembered, so without this a run had no progress, no ETA
+        and no way to stop it anywhere outside Generate until somebody thought
+        to reopen a panel they had put away days ago.
       */}
-      {!onGenerate && !onChat && <LiveBar />}
-      <BottomTabs />
+      {!onGenerate && !onChat && !(desk && dockOpen) && <LiveBar />}
+    </div>
+  );
+
+  return (
+    // 100dvh (not vh) so the layout tracks the collapsing mobile URL bar
+    // instead of hiding the tab bar behind it.
+    <div className={cn('flex h-[100dvh] overflow-hidden', tablet ? 'flex-row' : 'flex-col')}>
+      {/*
+        Either way the navigation is in the document where it is on the screen:
+        first on a tablet, where it runs down the left, and last on a phone,
+        where it sits along the bottom. Keeping the two in step is what makes
+        the reading order and the tab order match what you can see.
+      */}
+      {tablet && <SideRail />}
+      {column}
+      {/*
+        The third column, and the one that is not a screen. See `Dock`.
+
+        Last in the document as well as on the right, so reading order and tab
+        order still run navigation → what you are doing → what the machine is
+        doing, which is the order of importance too.
+      */}
+      {desk && <Dock />}
+      {!tablet && <BottomTabs />}
 
       <UnlockArchiveDialog open={unlocking} onClose={() => setUnlocking(false)} />
+      <KeyMap open={map} onClose={closeMap} />
     </div>
   );
 }

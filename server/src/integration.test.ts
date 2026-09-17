@@ -6,10 +6,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 
 import type {
+  AppInfo,
   ChatMessage,
   ChatSettings,
-  ChatStreamEvent,
-  ChatToolCall,
+  ChatEvent,
+  ChatRun,
   GalleryPage,
   GenerateResponse,
   GenerationRecord,
@@ -28,12 +29,20 @@ import type {
   StudyShotImage,
   StudyStats,
   SystemPrompt,
+  UpdateStatus,
+  TasteCategory,
+  TasteEntry,
+  TasteProfile,
   WorkflowDetail,
   WorkflowScanResult,
 } from '@latent/shared';
-import { defaultSampling } from '@latent/shared';
+import { DEFAULT_WANDER_DRAW, defaultSampling, LATENT_API_VERSION } from '@latent/shared';
 import {
+  ltxVideoGguf,
+  minimaxMusic,
+  qwenSpeech,
   sd15Txt2Img,
+  videoCombine,
   withLlamaServer,
   withPresetChat,
   sd15Txt2ImgUi,
@@ -45,10 +54,12 @@ import Database from 'better-sqlite3';
 
 import { buildApp } from './app.js';
 import { Store } from './db.js';
-import { Vault } from './vault.js';
+import { Taste } from './taste.js';
+import { Vault, VaultLockedError } from './vault.js';
 import { createMockComfy } from './mock/comfy.js';
 import { createMockLlama } from './mock/llama.js';
 import { readImageSize } from './images/png.js';
+import { renderPlaceholderWebm } from './mock/gif.js';
 import { renderPlaceholder } from './mock/png.js';
 import { withPngText } from './images/png.js';
 
@@ -836,6 +847,172 @@ describe('first-run setup', () => {
         setTimeout(() => reject(new Error('socket neither opened nor failed')), 5_000);
       });
       expect(failure.message).toContain('401');
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+});
+
+/**
+ * Signing in from something this server did not ship.
+ *
+ * The web app is served by the same process it talks to, so it can hold a
+ * cookie and assume the two agree about everything else. A native app is
+ * installed once and meets whatever is running months later, with no cookie jar
+ * worth keeping in sync — so it asks what it has reached, signs in for a token,
+ * and sends that token in the header the platform already has a place for.
+ */
+describe('a client this server did not ship', () => {
+  it('says what it is before anyone has a credential', async () => {
+    const server = await bootIsolated();
+    try {
+      const response = await server.call('/api/app');
+      expect(response.status).toBe(200);
+      const info = (await response.json()) as AppInfo;
+
+      expect(info.app).toBe('latent');
+      expect(info.api.version).toBe(LATENT_API_VERSION);
+      expect(info.auth.schemes).toContain('bearer');
+      expect(info.auth.login).toBe('/api/auth/login');
+      // An unclaimed server says so, which is what sends a client to setup.
+      expect(info.auth.setupRequired).toBe(true);
+
+      /*
+       * And nothing else. This is the one route a stranger can reach, so what
+       * it does *not* say is the point: nothing about the machine, the ComfyUI
+       * behind it, or what is on it.
+       */
+      const text = JSON.stringify(info);
+      expect(text).not.toContain('comfy');
+      expect(text).not.toContain(server.url);
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  it('hands over a token when asked, and takes it back as a bearer', async () => {
+    const server = await bootIsolated();
+    try {
+      await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+
+      /*
+       * Not by default. The cookie is `httpOnly` so a page cannot read it, and
+       * returning the same secret in the body to every caller would hand it
+       * back to exactly the script that was arranged not to see it.
+       */
+      const quiet = await json<{ ok: true; token?: string }>(
+        server.call('/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ password: 'correct horse' }),
+        }),
+      );
+      expect(quiet.ok).toBe(true);
+      expect(quiet.token).toBeUndefined();
+
+      const issued = await json<{ ok: true; token: string }>(
+        server.call('/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ password: 'correct horse', issueToken: true }),
+        }),
+      );
+      expect(typeof issued.token).toBe('string');
+      expect(issued.token.length).toBeGreaterThan(16);
+
+      const bearer = { authorization: `Bearer ${issued.token}` };
+      // With no cookie anywhere: this is a client that has never had one.
+      expect((await server.call('/api/workflows', { headers: bearer })).status).toBe(200);
+      expect((await server.call('/api/gallery', { headers: bearer })).status).toBe(200);
+      // And the status route agrees it is signed in, which is how a client
+      // decides whether to show its login screen.
+      const status = await json<StatusResponse>(server.call('/api/status', { headers: bearer }));
+      expect(status.authenticated).toBe(true);
+
+      // The scheme is matched without case, because clients differ.
+      expect(
+        (await server.call('/api/workflows', { headers: { authorization: `bearer ${issued.token}` } }))
+          .status,
+      ).toBe(200);
+
+      // A wrong one, a missing one and a malformed header are all just "no".
+      expect((await server.call('/api/workflows', { headers: { authorization: 'Bearer nope' } })).status).toBe(401);
+      expect((await server.call('/api/workflows', { headers: { authorization: 'Bearer' } })).status).toBe(401);
+      expect((await server.call('/api/workflows', { headers: { authorization: issued.token } })).status).toBe(401);
+      expect((await server.call('/api/workflows')).status).toBe(401);
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  /*
+   * The token is the password's, not a session's. There is no expiry to track
+   * and no refresh to implement — and changing the password ends it, which is
+   * the one revocation anybody needs on a server with one door.
+   */
+  it('stops working when the password changes', async () => {
+    const server = await bootIsolated();
+    try {
+      await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+      const { token } = await json<{ token: string }>(
+        server.call('/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ password: 'correct horse', issueToken: true }),
+        }),
+      );
+      const bearer = { authorization: `Bearer ${token}` };
+      expect((await server.call('/api/workflows', { headers: bearer })).status).toBe(200);
+
+      const changed = await server.call('/api/auth/password', {
+        method: 'POST',
+        headers: bearer,
+        body: JSON.stringify({ currentPassword: 'correct horse', newPassword: 'a different one' }),
+      });
+      expect(changed.status).toBe(200);
+
+      expect((await server.call('/api/workflows', { headers: bearer })).status).toBe(401);
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  /*
+   * The notes are the one thing a signed-in client still cannot reach: they
+   * want the password again, on top of any credential. A bearer token is a way
+   * in, not a level of access.
+   */
+  it('still cannot read the notes without the password again', async () => {
+    const server = await bootIsolated();
+    try {
+      await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+      const { token } = await json<{ token: string }>(
+        server.call('/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ password: 'correct horse', issueToken: true }),
+        }),
+      );
+      const bearer = { authorization: `Bearer ${token}` };
+
+      // 403, not 401: signed in, and still not allowed through that door.
+      expect((await server.call('/api/taste', { headers: bearer })).status).toBe(403);
+
+      // With the pass bought the same way the app buys one, it opens.
+      const opened = await json<{ ticket: string }>(
+        server.call('/api/taste/unlock', {
+          method: 'POST',
+          headers: bearer,
+          body: JSON.stringify({ password: 'correct horse' }),
+        }),
+      );
+      const withPass = { ...bearer, 'x-latent-taste': opened.ticket };
+      expect((await server.call('/api/taste', { headers: withPass })).status).toBe(200);
     } finally {
       await server.dispose();
     }
@@ -4315,34 +4492,220 @@ describe('connections of both kinds', () => {
   }, 30_000);
 });
 
+/**
+ * Point the chat at a stand-in model server.
+ *
+ * A connection like any other now, rather than an address inside the chat
+ * settings — which is the whole point of the change: one list, one dialog,
+ * one way of saying "talk to this box".
+ */
+const useLlama = async (url: string): Promise<string> => {
+  const created = await json<{ id: string }>(
+    api('/api/connections', {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'llama', name: `Model server ${url}`, url }),
+    }),
+  );
+  await api(`/api/connections/${created.id}/activate`, { method: 'POST' });
+  return created.id;
+};
+
+/** Read a server-sent stream to the end and hand back the events. */
+/**
+ * Say what you want, and wait for the conversation to stop working.
+ *
+ * The routes do not stream a reply any more — they take an intent and return.
+ * What follows happens on the server whether or not anybody is watching, which
+ * is the whole point of the rebuild, and it means a test's "and then" is a wait
+ * on the run state rather than the end of a response body.
+ */
+const intent = async (chatId: string, path: string, body?: unknown): Promise<ChatRun> => {
+  const response = await api(`/api/chat/conversations/${chatId}/${path}`, {
+    method: 'POST',
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  expect(response.status).toBeLessThan(300);
+  return settled(chatId);
+};
+
+/**
+ * The same, but handing back the response rather than the settled state.
+ *
+ * For the few tests that are about what the route *answered* — a second
+ * decision on one call has to be refused, and that refusal is a status code.
+ */
+const intentRaw = async (chatId: string, path: string, body?: unknown): Promise<Response> => {
+  const response = await api(`/api/chat/conversations/${chatId}/${path}`, {
+    method: 'POST',
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  if (response.status < 300) await settled(chatId);
+  return response;
+};
+
+/**
+ * Until the model has been asked at least this many times.
+ *
+ * For the tests about a loop that does not stop on its own — an autonomous run
+ * goes until it clears the threshold, and waiting for that would be waiting for
+ * four renders to prove something about the first turn.
+ */
+const askedAtLeast = async (
+  llama: ReturnType<typeof createMockLlama>,
+  count: number,
+  timeoutMs = 20_000,
+): Promise<void> => {
+  const deadline = Date.now() + timeoutMs;
+  while (llama.requests.length < count) {
+    if (Date.now() > deadline) {
+      throw new Error(`The model was asked ${llama.requests.length} times, wanted ${count}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+};
+
+/**
+ * Wandering, which does not stop on its own — so nor does `settled`.
+ *
+ * Start it, wait for as many rounds as the test is about, then stop it. Rounds
+ * are counted as proposals stamped `fromWander`, which is the one thing every
+ * round produces whether or not there is a workflow behind it to render with.
+ */
+const startWandering = (chatId: string) =>
+  api(`/api/chat/conversations/${chatId}/wander`, {
+    method: 'POST',
+    body: JSON.stringify({ on: true }),
+  });
+
+const stopWandering = async (chatId: string) => {
+  await api(`/api/chat/conversations/${chatId}/stop`, { method: 'POST' });
+  await settled(chatId);
+};
+
+const wandered = async (
+  chatId: string,
+  rounds: number,
+  timeoutMs = 30_000,
+): Promise<ChatMessage[]> => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const detail = await json<{ messages: ChatMessage[] }>(
+      api(`/api/chat/conversations/${chatId}`),
+    );
+    const made = detail.messages.filter(
+      (message) => message.toolCall?.tool === 'build_prompt' && message.toolCall.fromWander,
+    );
+    if (made.length >= rounds) return made;
+    if (Date.now() > deadline) {
+      throw new Error(`Wandering made ${made.length} rounds, wanted ${rounds}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+};
+
+/** Until it is idle, or waiting on a person. Both mean "it is not busy". */
+const settled = async (chatId: string, timeoutMs = 20_000): Promise<ChatRun> => {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const detail = await json<{ run: ChatRun }>(api(`/api/chat/conversations/${chatId}`));
+    if (detail.run.phase === 'idle' || detail.run.phase === 'awaiting') return detail.run;
+    if (Date.now() > deadline) {
+      throw new Error(`Conversation ${chatId} is still ${detail.run.phase}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+};
+
+/** The proposal a conversation is waiting on, and the message carrying it. */
+const awaiting = async (chatId: string): Promise<ChatMessage | undefined> => {
+  const detail = await json<{ messages: ChatMessage[]; run: ChatRun }>(
+    api(`/api/chat/conversations/${chatId}`),
+  );
+  return detail.messages.find((message) => message.id === detail.run.awaiting);
+};
+
+/**
+ * Watch a conversation while something happens, and collect what arrived.
+ *
+ * For the handful of tests that are about the stream itself rather than about
+ * what was stored. Subscribes first, so nothing can be missed between the
+ * intent and the first frame.
+ */
+const watching = async (
+  chatId: string,
+  during: () => Promise<unknown>,
+): Promise<ChatEvent[]> => {
+  const controller = new AbortController();
+  const response = await api(`/api/chat/conversations/${chatId}/events`, {
+    signal: controller.signal,
+  });
+  expect(response.status).toBe(200);
+
+  const events: ChatEvent[] = [];
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const pump = (async () => {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let split: number;
+        while ((split = buffer.indexOf('\n\n')) >= 0) {
+          const frame = buffer.slice(0, split);
+          buffer = buffer.slice(split + 2);
+          if (frame.startsWith('data:')) {
+            events.push(JSON.parse(frame.slice(5).trim()) as ChatEvent);
+          }
+        }
+      }
+    } catch {
+      // Aborted on purpose, below.
+    }
+  })();
+
+  try {
+    await during();
+    await settled(chatId);
+  } finally {
+    controller.abort();
+    await pump;
+  }
+  return events;
+};
+
 describe('chat', () => {
-  /**
-   * Point the chat at a stand-in model server.
-   *
-   * A connection like any other now, rather than an address inside the chat
-   * settings — which is the whole point of the change: one list, one dialog,
-   * one way of saying "talk to this box".
-   */
-  const useLlama = async (url: string): Promise<string> => {
-    const created = await json<{ id: string }>(
-      api('/api/connections', {
+
+  async function render(prompt: string): Promise<string> {
+    const workflows = await json<{ id: string }[]>(api('/api/workflows'));
+    const workflowId =
+      workflows[0]?.id ??
+      (
+        await json<WorkflowDetail>(
+          api('/api/workflows', {
+            method: 'POST',
+            body: JSON.stringify({ name: 'review', graph: sd15Txt2Img }),
+          }),
+        )
+      ).id;
+
+    const { generationIds } = await json<GenerateResponse>(
+      api('/api/generate', {
         method: 'POST',
-        body: JSON.stringify({ kind: 'llama', name: `Model server ${url}`, url }),
+        body: JSON.stringify({ workflowId, values: { '6.text': prompt, '3.steps': 2 } }),
       }),
     );
-    await api(`/api/connections/${created.id}/activate`, { method: 'POST' });
-    return created.id;
-  };
+    const id = generationIds[0] as string;
 
-  /** Read a server-sent stream to the end and hand back the events. */
-  const readStream = async (response: Response): Promise<ChatStreamEvent[]> => {
-    expect(response.status).toBe(200);
-    const text = await response.text();
-    return text
-      .split('\n\n')
-      .filter((frame) => frame.startsWith('data:'))
-      .map((frame) => JSON.parse(frame.slice(5).trim()) as ChatStreamEvent);
-  };
+    await waitFor(async () => {
+      const record = await json<GenerationRecord>(api(`/api/gallery/${id}`));
+      return record.status === 'completed' && record.images.length > 0 ? record : null;
+    }, 30_000);
+
+    return id;
+  }
 
   it('streams a reply, keeps the reasoning apart, and stores both', async () => {
     const llama = createMockLlama();
@@ -4366,8 +4729,8 @@ describe('chat', () => {
         content: 'How about a harbour at dawn?',
       });
 
-      const events = await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
+      const events = await watching(chat.id, () =>
+        api(`/api/chat/conversations/${chat.id}/say`, {
           method: 'POST',
           body: JSON.stringify({ content: 'suggest something' }),
         }),
@@ -4397,12 +4760,7 @@ describe('chat', () => {
 
       // Reasoning is deliberately not fed back — it is working, not record.
       llama.script({ content: 'Sure.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'again' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'again' });
       const sent = llama.requests[1] as { messages: { role: string; content: unknown }[] };
       expect(JSON.stringify(sent.messages)).not.toContain('calm');
       expect(sent.messages[0]?.role).toBe('system');
@@ -4436,36 +4794,23 @@ describe('chat', () => {
         },
       });
 
-      const events = await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'block ideas please' }),
-        }),
-      );
+      const run = await intent(chat.id, 'say', { content: 'block ideas please' });
 
-      const call = events.find(
-        (event): event is { type: 'tool'; call: ChatToolCall } => event.type === 'tool',
-      );
-      expect(call?.call.tool).toBe('prompt_blocks');
-      const messageId = events.find(
-        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
-      )?.messageId;
+      const call = (await awaiting(chat.id))?.toolCall;
+      expect(call?.tool).toBe('prompt_blocks');
+      const messageId = run.awaiting;
       expect(messageId).toBeTruthy();
 
       const before = await json<{ id: string }[]>(api('/api/prompt-blocks'));
 
       // Two of the three, and one of them corrected on the way through.
-      await api(`/api/chat/conversations/${chat.id}/tool`, {
-        method: 'POST',
-        body: JSON.stringify({
+      await intentRaw(chat.id, 'decide', {
           messageId,
           decision: 'accepted',
           blocks: [
             { action: 'add', name: 'Golden hour', category: 'Lighting', text: 'warm rim light' },
             { action: 'add', name: 'Overcast', category: 'Lighting', text: 'flat grey daylight' },
-          ],
-        }),
-      });
+          ] });
 
       const after = await json<{ name: string; text: string }[]>(api('/api/prompt-blocks'));
       expect(after.length).toBe(before.length + 2);
@@ -4482,6 +4827,198 @@ describe('chat', () => {
       expect(
         stored.messages.find((message) => message.id === messageId)?.toolResult?.decision,
       ).toBe('accepted');
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
+   * The one that did not work.
+   *
+   * A removal had to carry the block's id, the model had never been shown one,
+   * and `applyBlocks` skipped anything without one — silently, so the
+   * conversation said the block was gone and the library still had it. The
+   * library is in the prompt now and the name is what finds the block, so this
+   * walks the whole path: what the model is told, what it sends back, what the
+   * dialog is shown, and what is left in the library afterwards.
+   */
+  it('removes a block the model names, with no id and no text', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+
+      const doomed = await json<{ id: string }>(
+        api('/api/prompt-blocks', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'Vague mood', category: 'Mood', text: 'nice vibes' }),
+        }),
+      );
+      await api('/api/prompt-blocks', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Golden hour', category: 'Lighting', text: 'warm rim light' }),
+      });
+
+      const chat = await json<{ id: string }>(
+        api('/api/chat/conversations', { method: 'POST' }),
+      );
+
+      llama.script({
+        content: 'That one is doing no work.',
+        toolCall: {
+          name: 'prompt_blocks',
+          arguments: {
+            reason: 'Too vague to draw anything from.',
+            // As a model that has read the library writes it: a name and a
+            // group, no uuid, and nothing invented to fill a required field.
+            blocks: [{ action: 'remove', name: 'Vague mood', category: 'Mood' }],
+          },
+        },
+      });
+
+      const run = await intent(chat.id, 'say', { content: 'anything worth throwing out?' });
+      const messageId = run.awaiting;
+      expect(messageId).toBeTruthy();
+
+      // The model was shown the library, which is the only way it could name one.
+      const sent = JSON.stringify(llama.requests[0]?.messages ?? []);
+      expect(sent).toContain('Vague mood');
+      expect(sent).toContain('warm rim light');
+
+      // And the proposal reaching the dialog already points at the real block.
+      const call = (await awaiting(chat.id))?.toolCall;
+      expect(call?.tool).toBe('prompt_blocks');
+      const proposed = call?.tool === 'prompt_blocks' ? call.blocks[0] : undefined;
+      expect(proposed?.id).toBe(doomed.id);
+      expect(proposed?.missing).toBeUndefined();
+      // Described by the block itself, not by what the model guessed about it.
+      expect(proposed?.text).toBe('nice vibes');
+
+      await intentRaw(chat.id, 'decide', {
+        messageId,
+        decision: 'accepted',
+        blocks: call?.tool === 'prompt_blocks' ? call.blocks : [],
+      });
+
+      const after = await json<{ id: string; name: string }[]>(api('/api/prompt-blocks'));
+      expect(after.some((block) => block.id === doomed.id)).toBe(false);
+      expect(after.some((block) => block.name === 'Golden hour')).toBe(true);
+
+      const stored = await json<{ messages: ChatMessage[] }>(
+        api(`/api/chat/conversations/${chat.id}`),
+      );
+      expect(stored.messages.find((message) => message.role === 'tool')?.content).toContain(
+        '1 removed',
+      );
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
+  it('says so when a removal names nothing in the library', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      const chat = await json<{ id: string }>(
+        api('/api/chat/conversations', { method: 'POST' }),
+      );
+
+      llama.script({
+        toolCall: {
+          name: 'prompt_blocks',
+          arguments: {
+            reason: 'Cleaning up.',
+            blocks: [{ action: 'remove', name: 'Never existed', category: 'Mood' }],
+          },
+        },
+      });
+
+      const run = await intent(chat.id, 'say', { content: 'tidy the library' });
+      const messageId = run.awaiting;
+
+      const call = (await awaiting(chat.id))?.toolCall;
+      const proposed = call?.tool === 'prompt_blocks' ? call.blocks[0] : undefined;
+      expect(proposed?.missing).toBe(true);
+
+      const before = await json<{ id: string }[]>(api('/api/prompt-blocks'));
+
+      await intentRaw(chat.id, 'decide', {
+        messageId,
+        decision: 'accepted',
+        blocks: call?.tool === 'prompt_blocks' ? call.blocks : [],
+      });
+
+      // Nothing was touched, and the model is told why rather than being left
+      // to read "the user kept none of them" as a refusal and try again.
+      expect((await json<{ id: string }[]>(api('/api/prompt-blocks'))).length).toBe(before.length);
+      const stored = await json<{ messages: ChatMessage[] }>(
+        api(`/api/chat/conversations/${chat.id}`),
+      );
+      const toolMessage = stored.messages.find((message) => message.role === 'tool');
+      expect(toolMessage?.content).toContain('Could not find');
+      expect(toolMessage?.content).toContain('Never existed');
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
+  it('changes a block in place instead of adding a second one like it', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      // A name nothing else in this file uses: two blocks called the same thing
+      // are deliberately left unresolved, which is a different test.
+      const existing = await json<{ id: string }>(
+        api('/api/prompt-blocks', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'Storm light', category: 'Lighting', text: 'grey' }),
+        }),
+      );
+      const before = await json<{ id: string }[]>(api('/api/prompt-blocks'));
+
+      const chat = await json<{ id: string }>(
+        api('/api/chat/conversations', { method: 'POST' }),
+      );
+
+      llama.script({
+        toolCall: {
+          name: 'prompt_blocks',
+          arguments: {
+            reason: 'Sharper wording.',
+            blocks: [
+              {
+                action: 'update',
+                name: 'Storm light',
+                category: 'Lighting',
+                text: 'flat grey daylight, no shadows',
+              },
+            ],
+          },
+        },
+      });
+
+      const run = await intent(chat.id, 'say', { content: 'improve storm light' });
+      const call = (await awaiting(chat.id))?.toolCall;
+
+      await intentRaw(chat.id, 'decide', {
+        messageId: run.awaiting,
+        decision: 'accepted',
+        blocks: call?.tool === 'prompt_blocks' ? call.blocks : [],
+      });
+
+      const after = await json<{ id: string; name: string; text: string }[]>(
+        api('/api/prompt-blocks'),
+      );
+      // The old fault: no id meant this fell through to an insert.
+      expect(after.length).toBe(before.length);
+      expect(after.find((block) => block.id === existing.id)?.text).toBe(
+        'flat grey daylight, no shadows',
+      );
     } finally {
       await llama.close();
     }
@@ -4504,27 +5041,14 @@ describe('chat', () => {
         },
       });
 
-      const events = await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'build me a prompt' }),
-        }),
-      );
-      const messageId = events.find(
-        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
-      )?.messageId;
+      const run = await intent(chat.id, 'say', { content: 'build me a prompt' });
+      const messageId = run.awaiting;
 
-      const first = await api(`/api/chat/conversations/${chat.id}/tool`, {
-        method: 'POST',
-        body: JSON.stringify({ messageId, decision: 'rejected' }),
-      });
+      const first = await intentRaw(chat.id, 'decide', { messageId, decision: 'rejected' });
       expect(first.status).toBe(200);
 
       // A double tap, or two phones, must not queue the same thing twice.
-      const second = await api(`/api/chat/conversations/${chat.id}/tool`, {
-        method: 'POST',
-        body: JSON.stringify({ messageId, decision: 'accepted' }),
-      });
+      const second = await intentRaw(chat.id, 'decide', { messageId, decision: 'accepted' });
       expect(second.status).toBe(409);
     } finally {
       await llama.close();
@@ -4550,12 +5074,7 @@ describe('chat', () => {
       );
 
       llama.script({ content: 'A harbour at dawn, then.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'something calm' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'something calm' });
 
       llama.script({
         toolCall: {
@@ -4563,10 +5082,11 @@ describe('chat', () => {
           arguments: { prompt: 'a harbour at dawn, soft light', reason: 'Calm and blue.' },
         },
       });
-      const events = await readStream(
-        await api(`/api/chat/conversations/${chat.id}/build`, { method: 'POST' }),
-      );
-      expect(events.some((event) => event.type === 'tool')).toBe(true);
+      /*
+       * What the button does with the answer is the setting's business and
+       * another test's; this one is about what the turn asking for it *said*.
+       */
+      await intent(chat.id, 'prompt');
 
       const sent = llama.requests[1] as {
         messages: { role: string; content: string }[];
@@ -4590,6 +5110,822 @@ describe('chat', () => {
   }, 30_000);
 
   /**
+   * Showing the model what its prompt actually produced.
+   *
+   * The turn after a render used to be the model talking about a picture it had
+   * never seen — which it does confidently, because that is what these models
+   * do. With a multimodal server there is no reason for that: hand it the
+   * result and the prompt together, and the sentence becomes a judgement it is
+   * in a position to make.
+   */
+  describe('checking the picture against the prompt', () => {
+    /** Generate one picture through the real path, and hand back its run. */
+
+    /** Get to the point where a prompt has been accepted and has rendered. */
+    /**
+     * A conversation with a prompt on the table, waiting to be accepted.
+     *
+     * It stops one step short on purpose. Accepting is now one act on the
+     * server — queue the render, record the decision, wait for the picture,
+     * take the turn that judges it — so whatever the test wants that judging
+     * turn to say has to be scripted before the accept, not after it. Stopping
+     * here is what makes that possible to write.
+     */
+    async function upToAPrompt(llama: ReturnType<typeof createMockLlama>, prompt: string) {
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      // A workflow to generate through; the engine resolves it for itself.
+      await render(prompt);
+
+      llama.script({ toolCall: { name: 'build_prompt', arguments: { prompt, reason: 'Calm.' } } });
+      const run = await intent(chat.id, 'say', { content: 'build me a prompt' });
+      expect(run.awaiting).toBeTruthy();
+      return { chatId: chat.id, messageId: run.awaiting as string };
+    }
+
+    /** Accept it, which renders it and takes the turn that judges the result. */
+    const acceptAndRender = (chatId: string, messageId: string) =>
+      intent(chatId, 'decide', { messageId, decision: 'accepted' });
+
+    /** The last request's final message, which is where the review lands. */
+    function lastTurn(llama: ReturnType<typeof createMockLlama>) {
+      const sent = llama.requests[llama.requests.length - 1] as {
+        messages: { role: string; content: unknown }[];
+        tools?: { function: { name: string } }[];
+      };
+      return { sent, last: sent.messages[sent.messages.length - 1]! };
+    }
+
+    afterAll(async () => {
+      // Back to the default, so the tests after this one see what they expect.
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: {
+            review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'unsure' },
+          },
+        }),
+      });
+    });
+
+    it('hands over the picture and the prompt, and takes back a rewrite', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            chat: { review: { enabled: true, threshold: 'balanced', askWhen: 'never' } },
+          }),
+        });
+
+        const { chatId, messageId } = await upToAPrompt(llama, 'a harbour at dawn, soft light');
+
+        llama.script({
+          content: 'The light is right but there is no harbour.',
+          toolCall: {
+            name: 'revise_prompt',
+            arguments: {
+              prompt: 'a working harbour at dawn, soft light on the water',
+              reason: 'The harbour itself is missing.',
+              score: 4,
+            },
+          },
+        });
+        await acceptAndRender(chatId, messageId);
+
+        const { sent, last } = lastTurn(llama);
+
+        /*
+         * The picture goes over as a picture, at the point it was made — not
+         * appended to the question about it. Where it sits is what makes it
+         * still there two turns later, when the change is asked for.
+         */
+        const shown = sent.messages.filter((message) =>
+          JSON.stringify(message.content).includes('image_url'),
+        );
+        expect(shown).toHaveLength(1);
+        const parts = shown[0]!.content as {
+          type: string;
+          text?: string;
+          image_url?: { url: string };
+        }[];
+        expect(parts[0]?.image_url?.url.startsWith('data:image/png;base64,')).toBe(true);
+        // Small enough to be worth prefilling: a render is not sent whole.
+        expect(parts[0]!.image_url!.url.length).toBeLessThan(1_500_000);
+        expect(parts[1]?.text).toContain('a harbour at dawn, soft light');
+
+        // And the question about it is the turn that ends the request, with the
+        // prompt in full rather than a pointer to it.
+        expect(last.role).toBe('user');
+        expect(String(last.content)).toContain('a harbour at dawn, soft light');
+        expect(String(last.content)).toContain('out of 10');
+
+        // One tool on that turn: a rewrite. Not a fresh proposal on top of a
+        // picture nobody has looked at yet.
+        expect(sent.tools?.map((tool) => tool.function.name)).toEqual(['revise_prompt']);
+
+        const call = (await awaiting(chatId))?.toolCall;
+        expect(call?.tool).toBe('revise_prompt');
+        expect(call && 'score' in call ? call.score : null).toBe(4);
+
+        // It is a proposal like any other: stored, and waiting on the user.
+        const stored = await json<{ messages: ChatMessage[] }>(
+          api(`/api/chat/conversations/${chatId}`),
+        );
+        const proposal = stored.messages[stored.messages.length - 1];
+        expect(proposal?.toolCall?.tool).toBe('revise_prompt');
+        expect(proposal?.toolResult).toBeUndefined();
+      } finally {
+        await llama.close();
+      }
+    }, 60_000);
+
+    /**
+     * A group of settings keeps the fields the patch did not mention.
+     *
+     * The chat's settings have groups of their own now, and a client patching
+     * one of them sends the fields it knows about. Before this, the rest came
+     * back `undefined` — which for "how many pictures to keep in view" meant
+     * every picture in the conversation, re-read on every turn.
+     */
+    it('keeps the rest of a settings group when part of it is patched', async () => {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: { review: { enabled: true, threshold: 'balanced', keepInView: 3 } },
+        }),
+      });
+
+      // As a client that predates the field would send it.
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { review: { enabled: true, threshold: 'strict' } } }),
+      });
+
+      const settings = await json<{ chat: ChatSettings }>(api('/api/settings'));
+      expect(settings.chat.review.threshold).toBe('strict');
+      expect(settings.chat.review.keepInView).toBe(3);
+    });
+
+    /**
+     * The picture is still there when the change is asked for.
+     *
+     * The point of keeping it in view: "make the sky darker" means nothing to a
+     * model working from its own description of a render it saw two turns ago.
+     */
+    it('keeps the picture in the conversation after the turn that judged it', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            chat: { review: { enabled: true, threshold: 'never', keepInView: 2 } },
+          }),
+        });
+
+        const { chatId, messageId } = await upToAPrompt(llama, 'a harbour at dawn');
+
+        llama.script({ content: 'The light came through.' });
+        await acceptAndRender(chatId, messageId);
+
+        // Two turns later, with something else said in between.
+        llama.script({ content: 'Darker it is.' });
+        await intent(chatId, 'say', { content: 'make the sky darker' });
+
+        const { sent, last } = lastTurn(llama);
+        // Still in front of it, and still where it happened rather than piled
+        // onto the end.
+        expect(JSON.stringify(sent.messages)).toContain('image_url');
+        expect(String(last.content)).toBe('make the sky darker');
+        expect(JSON.stringify(last.content)).not.toContain('image_url');
+      } finally {
+        await llama.close();
+      }
+    }, 60_000);
+
+    /**
+     * A few, not all of them.
+     *
+     * Every picture in view is prefill on every turn from then on, so a long
+     * session would spend its time re-reading its own back catalogue.
+     */
+    it('keeps only as many pictures as the setting allows', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            chat: { review: { enabled: true, threshold: 'never', keepInView: 1 } },
+          }),
+        });
+
+        const { chatId, messageId } = await upToAPrompt(llama, 'a harbour at dawn');
+        llama.script({ content: 'Right.' });
+        await acceptAndRender(chatId, messageId);
+
+        // A second prompt, accepted and rendered, in the same conversation.
+        llama.script({
+          toolCall: {
+            name: 'build_prompt',
+            arguments: { prompt: 'the same harbour at noon', reason: 'Brighter.' },
+          },
+        });
+        const run = await intent(chatId, 'say', { content: 'now at noon' });
+        const nextMessageId = run.awaiting as string;
+        // Accepting renders it and takes the turn that judges it, so what that
+        // turn says is scripted before the accept rather than after it.
+        llama.script({ content: 'Brighter indeed.' });
+        await intentRaw(chatId, 'decide', {
+          messageId: nextMessageId,
+          decision: 'accepted',
+          prompt: 'the same harbour at noon',
+        });
+        await settled(chatId);
+
+        const { sent } = lastTurn(llama);
+        const shown = sent.messages.filter((message) =>
+          JSON.stringify(message.content).includes('image_url'),
+        );
+        // One picture, and it is the one that goes with the newest prompt.
+        expect(shown).toHaveLength(1);
+        expect(JSON.stringify(shown[0]?.content)).toContain('the same harbour at noon');
+      } finally {
+        await llama.close();
+      }
+    }, 90_000);
+
+    /**
+     * Refusing a rewrite is an ordinary turn.
+     *
+     * The tool response for a refused call carries no run, so the turn after it
+     * is a normal one again — tools back, no picture to judge — and the
+     * conversation carries on rather than waiting on a decision already made.
+     */
+    it('carries on after a rewrite is refused', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            chat: { review: { enabled: true, threshold: 'balanced', keepInView: 2 } },
+          }),
+        });
+
+        const { chatId, messageId } = await upToAPrompt(llama, 'a harbour at dawn');
+
+        llama.script({
+          content: 'No harbour.',
+          toolCall: {
+            name: 'revise_prompt',
+            arguments: { prompt: 'a working harbour at dawn', reason: 'Missing.', score: 4 },
+          },
+        });
+        const run = await acceptAndRender(chatId, messageId);
+        const nextMessageId = run.awaiting as string;
+        expect(nextMessageId).toBeTruthy();
+
+        const rejected = await intentRaw(chatId, 'decide', { messageId: nextMessageId, decision: 'rejected' });
+        expect(rejected.status).toBe(200);
+
+        llama.script({ content: 'Fair enough.' });
+        // The conversation carries on by itself, and lands back at rest.
+        expect((await settled(chatId)).phase).toBe('idle');
+      } finally {
+        await llama.close();
+      }
+    }, 60_000);
+
+    /**
+     * Asking rather than guessing, and staying in the review to do it.
+     *
+     * A picture can miss for several reasons at once, and which of them to
+     * chase is a matter of taste. Guessing produces a confident rewrite of the
+     * wrong thing; asking costs one tap — and the turn *after* the answer is
+     * still about the same picture, which is where the rewrite belongs.
+     */
+    /**
+     * A run left to itself is not offered the question tool at all.
+     *
+     * The setting says "ask when unsure", and normally that is right. With
+     * nobody there to answer, a question is a dialog that sits unread — so the
+     * tool is withheld and the instruction says why, which is what keeps the
+     * model from writing the question into its reply instead.
+     */
+    it('withholds the question tool while it is carrying on by itself', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            chat: {
+              review: { enabled: true, threshold: 'balanced', askWhen: 'always' },
+              autonomous: { enabled: true, maxRounds: 4 },
+            },
+          }),
+        });
+
+        /*
+         * No fixture here, because with nobody to ask there is nothing to tap:
+         * the proposal is accepted, rendered and judged in one go. Both turns
+         * are scripted up front and the run is stopped once the second of them
+         * has been asked for, which is the one this test is about.
+         */
+        const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+        await render('a harbour at dawn');
+        llama.script({
+          toolCall: {
+            name: 'build_prompt',
+            arguments: { prompt: 'a harbour at dawn', reason: 'Calm.' },
+          },
+        });
+        llama.script({
+          content: 'The harbour is thin.',
+          toolCall: {
+            name: 'revise_prompt',
+            arguments: {
+              prompt: 'a working harbour at dawn, boats at the quay',
+              reason: 'More harbour.',
+              score: 5,
+            },
+          },
+        });
+        void api(`/api/chat/conversations/${chat.id}/say`, {
+          method: 'POST',
+          body: JSON.stringify({ content: 'build me a prompt' }),
+        });
+        await askedAtLeast(llama, 2);
+        const { sent, last } = lastTurn(llama);
+        await api(`/api/chat/conversations/${chat.id}/stop`, { method: 'POST' });
+        // Only the rewrite, even though asking is set to its most insistent
+        // step — the setting is about a conversation, and this is not one.
+        expect(sent.tools?.map((tool) => tool.function.name)).toEqual(['revise_prompt']);
+        expect(JSON.stringify(last.content)).toContain('not answering questions');
+        // The judgement it is asked for is unchanged.
+        expect(JSON.stringify(last.content)).toContain('below 7 out of 10');
+      } finally {
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            chat: {
+              review: { enabled: true, threshold: 'balanced', askWhen: 'unsure' },
+              autonomous: { enabled: false, maxRounds: 4 },
+            },
+          }),
+        });
+        await llama.close();
+      }
+    }, 40_000);
+
+    /**
+     * Switching it on has to mean something wherever the loop happens to be.
+     *
+     * The fault: the mode was read once, when a run started, and carried for
+     * the rest of it — while the strip on the screen read the setting. Turn it
+     * on part way through and the two said different things, so it "sometimes
+     * iterated and sometimes waited" with nothing on screen to explain which.
+     * A run parked on a proposal is the worst case, because being parked is
+     * exactly the state with no next step to notice the change.
+     */
+    describe('turning it on part way through a run', () => {
+      const setAutonomous = (chatId: string, on: boolean) =>
+        intent(chatId, 'autonomous', { on });
+
+      /**
+       * Open the event stream and leave again.
+       *
+       * `watching` waits for the run to settle, which is the one thing that
+       * must not happen here — the point is that arriving sets it going. So
+       * this only opens the connection, which is what the server reacts to.
+       */
+      const lookIn = async (chatId: string): Promise<() => void> => {
+        const controller = new AbortController();
+        const response = await api(`/api/chat/conversations/${chatId}/events`, {
+          signal: controller.signal,
+        });
+        expect(response.status).toBe(200);
+        void response.body?.getReader().read().catch(() => undefined);
+        return () => controller.abort();
+      };
+
+      /** Wait until a proposal has been answered, however it was answered. */
+      const decided = (chatId: string, messageId: string) =>
+        waitFor(async () => {
+          const stored = await json<{ messages: ChatMessage[] }>(
+            api(`/api/chat/conversations/${chatId}`),
+          );
+          const message = stored.messages.find((entry) => entry.id === messageId);
+          return message?.toolResult?.decision ?? null;
+        });
+
+      it('takes up the proposal that was already waiting', async () => {
+        const llama = createMockLlama();
+        const url = await llama.listen(0);
+
+        try {
+          await useLlama(url);
+          // Off to begin with: this is a run that started as an ordinary one.
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({ chat: { autonomous: { enabled: false, maxRounds: 4 } } }),
+          });
+
+          const { chatId, messageId } = await upToAPrompt(llama, 'a harbour at dawn');
+          const parked = await json<{ run: ChatRun }>(api(`/api/chat/conversations/${chatId}`));
+          expect(parked.run.phase).toBe('awaiting');
+          expect(parked.run.mode).toBe('manual');
+
+          const after = await setAutonomous(chatId, true);
+
+          // The proposal is taken, not left sitting behind a truthful-looking
+          // strip. Both halves: the decision is recorded and a render started.
+          expect(after.phase).not.toBe('awaiting');
+          expect(after.mode).toBe('auto');
+          const stored = await json<{ messages: ChatMessage[] }>(
+            api(`/api/chat/conversations/${chatId}`),
+          );
+          const decided = stored.messages.find((message) => message.id === messageId);
+          expect(decided?.toolResult?.decision).toBe('accepted');
+
+          await api(`/api/chat/conversations/${chatId}/stop`, { method: 'POST' });
+        } finally {
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({ chat: { autonomous: { enabled: false, maxRounds: 4 } } }),
+          });
+          await llama.close();
+        }
+      }, 40_000);
+
+      /**
+       * The same switch lives in Settings, which patches the setting and never
+       * reaches this conversation. Coming back to it is the next chance to act.
+       */
+      it('engages on a waiting run when the switch was flipped elsewhere', async () => {
+        const llama = createMockLlama();
+        const url = await llama.listen(0);
+
+        try {
+          await useLlama(url);
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({ chat: { autonomous: { enabled: false, maxRounds: 4 } } }),
+          });
+
+          const { chatId, messageId } = await upToAPrompt(llama, 'a quiet street');
+
+          // Exactly what the Settings screen does: no intent, just the setting.
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({ chat: { autonomous: { enabled: true, maxRounds: 4 } } }),
+          });
+
+          // Opening the conversation is what notices.
+          const leave = await lookIn(chatId);
+          expect(await decided(chatId, messageId)).toBe('accepted');
+          leave();
+
+          await api(`/api/chat/conversations/${chatId}/stop`, { method: 'POST' });
+        } finally {
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({ chat: { autonomous: { enabled: false, maxRounds: 4 } } }),
+          });
+          await llama.close();
+        }
+      }, 40_000);
+
+      /**
+       * A run that stopped because it used its budget must not make the switch
+       * a no-op — pressing it then looks exactly like the fault being fixed.
+       *
+       * So it is staged properly: one round allowed, spent, and the run parked
+       * on the rewrite it was not allowed to take. Pressing ∞ again is fresh
+       * permission and picks that rewrite up.
+       */
+      it('picks a run back up after it has spent its rounds', async () => {
+        const llama = createMockLlama();
+        const url = await llama.listen(0);
+
+        try {
+          await useLlama(url);
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({
+              chat: {
+                review: { enabled: true, threshold: 'balanced', askWhen: 'unsure' },
+                autonomous: { enabled: true, maxRounds: 1 },
+              },
+            }),
+          });
+
+          const chat = await json<{ id: string }>(
+            api('/api/chat/conversations', { method: 'POST' }),
+          );
+          await render('a lighthouse in fog');
+          llama.script({
+            toolCall: {
+              name: 'build_prompt',
+              arguments: { prompt: 'a lighthouse in fog', reason: 'Quiet.' },
+            },
+          });
+          llama.script({
+            content: 'The fog is thin.',
+            toolCall: {
+              name: 'revise_prompt',
+              arguments: { prompt: 'a lighthouse in heavy fog', reason: 'More fog.', score: 5 },
+            },
+          });
+
+          // One round is allowed and taken; the rewrite after it is not.
+          const spent = await intent(chat.id, 'say', { content: 'build me a prompt' });
+          expect(spent.phase).toBe('awaiting');
+          expect(spent.round).toBe(1);
+          expect(spent.note).toContain('1 of 1');
+          const parked = spent.awaiting as string;
+          expect(parked).toBeTruthy();
+
+          // Pressing it again is permission, not a repeat of a setting already
+          // set — the round count starts over and the rewrite is taken.
+          llama.script({ content: 'Better.' });
+          await setAutonomous(chat.id, true);
+          expect(await decided(chat.id, parked)).toBe('accepted');
+
+          await api(`/api/chat/conversations/${chat.id}/stop`, { method: 'POST' });
+        } finally {
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({ chat: { autonomous: { enabled: false, maxRounds: 4 } } }),
+          });
+          await llama.close();
+        }
+      }, 60_000);
+
+      it('leaves a wandering run alone, which is a different thing entirely', async () => {
+        const llama = createMockLlama();
+        const url = await llama.listen(0);
+
+        try {
+          await useLlama(url);
+          const chat = await json<{ id: string }>(
+            api('/api/chat/conversations', { method: 'POST' }),
+          );
+          await intent(chat.id, 'wander', { on: true });
+          const after = await setAutonomous(chat.id, true);
+          expect(after.mode).toBe('wander');
+
+          await api(`/api/chat/conversations/${chat.id}/stop`, { method: 'POST' });
+        } finally {
+          await api('/api/settings', {
+            method: 'PATCH',
+            body: JSON.stringify({ chat: { autonomous: { enabled: false, maxRounds: 4 } } }),
+          });
+          await llama.close();
+        }
+      }, 40_000);
+    });
+
+    it('asks how to improve the match, and keeps the picture for the answer', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            chat: { review: { enabled: true, threshold: 'balanced', askWhen: 'often' } },
+          }),
+        });
+
+        const { chatId, messageId } = await upToAPrompt(llama, 'a harbour at dawn');
+
+        // Both are on offer: rewrite it, or ask which way to go.
+        llama.script({
+          content: 'The light is right; the harbour is not really there.',
+          toolCall: {
+            name: 'ask_user',
+            arguments: {
+              questions: [
+                {
+                  question: 'What should the rewrite chase?',
+                  options: ['More of the harbour', 'Stronger light', 'Closer framing'],
+                },
+              ],
+              reason: 'Several things are off at once.',
+            },
+          },
+        });
+        const run = await acceptAndRender(chatId, messageId);
+
+        const offered = (
+          llama.requests[llama.requests.length - 1] as { tools?: { function: { name: string } }[] }
+        ).tools?.map((tool) => tool.function.name);
+        expect(offered).toEqual(['revise_prompt', 'ask_user']);
+
+        const nextMessageId = run.awaiting as string;
+
+        /*
+         * Answering it is an ordinary tool decision — and the turn it leads to
+         * is still about the picture, so what that turn says is scripted before
+         * the answer rather than after it.
+         */
+        llama.script({
+          toolCall: {
+            name: 'revise_prompt',
+            arguments: {
+              prompt: 'a working harbour at dawn, boats at the quay',
+              reason: 'More harbour, as asked.',
+              score: 5,
+            },
+          },
+        });
+        await intentRaw(chatId, 'decide', {
+          messageId: nextMessageId,
+          decision: 'accepted',
+          note: 'More of the harbour.',
+        });
+
+        /*
+         * Still the same review: the picture is there and the rewrite is still
+         * on offer. Without that, answering the question would have ended the
+         * review and thrown away the answer's whole purpose.
+         */
+        const after = llama.requests[llama.requests.length - 1] as {
+          messages: { content: unknown }[];
+          tools?: { function: { name: string } }[];
+        };
+        expect(JSON.stringify(after.messages)).toContain('image_url');
+        expect(after.tools?.map((tool) => tool.function.name)).toContain('revise_prompt');
+
+        // And the model is never shown the marker Latent stamped on its call.
+        expect(JSON.stringify(after.messages)).not.toContain('fromReview');
+      } finally {
+        await llama.close();
+      }
+    }, 60_000);
+
+    /**
+     * How much a prompt spells out reaches the model as instructions.
+     *
+     * Not a length limit anywhere in the request: it is a section of the system
+     * prompt, so it applies to a system prompt somebody wrote themselves as
+     * well as to Latent's own.
+     */
+    it('tells the model how much detail a prompt should go into', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({ chat: { promptDetail: 'elaborate' } }),
+        });
+
+        const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+        llama.script({ content: 'All right.' });
+        await intent(chat.id, 'say', { content: 'hello' });
+
+        const system = (
+          llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
+        ).messages[0]!;
+        expect(system.content).toContain('How much detail a prompt goes into');
+        expect(system.content).toContain('exhaustively');
+
+        // And the other end of the scale says something else entirely.
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({ chat: { promptDetail: 'sparse' } }),
+        });
+        llama.script({ content: 'Fine.' });
+        await intent(chat.id, 'say', { content: 'again' });
+        const after = (
+          llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
+        ).messages[0]!;
+        expect(after.content).toContain('Leave everything else open');
+        expect(after.content).not.toContain('exhaustively');
+      } finally {
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({ chat: { promptDetail: 'balanced' } }),
+        });
+        await llama.close();
+      }
+    }, 30_000);
+
+    /**
+     * The quiet end of the scale.
+     *
+     * "Look at it and tell me" without "and rewrite it" is a real way to work,
+     * and it is the setting that makes the feature safe to leave on: the model
+     * still sees the picture, it simply has nothing to propose with.
+     */
+    it('shows the picture but offers no rewrite at the lowest setting', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({
+            chat: { review: { enabled: true, threshold: 'never', askWhen: 'never' } },
+          }),
+        });
+
+        const { chatId, messageId } = await upToAPrompt(llama, 'a lighthouse in a storm');
+
+        llama.script({ content: 'It matches well enough.' });
+        await acceptAndRender(chatId, messageId);
+
+        const { sent } = lastTurn(llama);
+        expect(JSON.stringify(sent.messages)).toContain('image_url');
+        expect(sent.tools).toBeUndefined();
+      } finally {
+        await llama.close();
+      }
+    }, 60_000);
+
+    it('sends no picture at all when the check is switched off', async () => {
+      const llama = createMockLlama();
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({ chat: { review: { enabled: false, threshold: 'balanced' } } }),
+        });
+
+        const { chatId, messageId } = await upToAPrompt(llama, 'a field of rape in flower');
+
+        llama.script({ content: 'Hope it came out well.' });
+        await acceptAndRender(chatId, messageId);
+
+        const { sent } = lastTurn(llama);
+        expect(JSON.stringify(sent.messages)).not.toContain('image_url');
+        expect(sent.tools).toBeUndefined();
+      } finally {
+        await llama.close();
+      }
+    }, 60_000);
+
+    /**
+     * A text-only server, which is what a refusal actually looks like.
+     *
+     * `llama-server` without a vision projector answers an image with an error
+     * rather than ignoring it — and this setting is on by default, so that
+     * error would land on somebody who never asked for any of it. The turn is
+     * asked again without the picture instead.
+     */
+    it('falls back to the plain turn when the server cannot take a picture', async () => {
+      const llama = createMockLlama({ refuseImages: true });
+      const url = await llama.listen(0);
+
+      try {
+        await useLlama(url);
+        await api('/api/settings', {
+          method: 'PATCH',
+          body: JSON.stringify({ chat: { review: { enabled: true, threshold: 'balanced' } } }),
+        });
+
+        const { chatId, messageId } = await upToAPrompt(llama, 'a red bicycle against a wall');
+
+        llama.script({ content: 'Hope that worked.' });
+        const run = await acceptAndRender(chatId, messageId);
+
+        // The reply arrives, and nothing is reported as broken.
+        const stored = await json<{ messages: ChatMessage[] }>(
+          api(`/api/chat/conversations/${chatId}`),
+        );
+        expect(stored.messages[stored.messages.length - 1]?.content).toBe('Hope that worked.');
+        expect(run.error).toBeNull();
+
+        // The retry is the turn as it always was: no picture, no tools.
+        const { sent } = lastTurn(llama);
+        expect(JSON.stringify(sent.messages)).not.toContain('image_url');
+        expect(sent.tools).toBeUndefined();
+      } finally {
+        await llama.close();
+      }
+    }, 60_000);
+  });
+
+  /**
    * What the model is shown of a tool call it made earlier.
    *
    * Replayed on every request from then on, so a call carrying fields the tool
@@ -4611,20 +5947,10 @@ describe('chat', () => {
           arguments: { prompt: 'a harbour at dawn', reason: 'Calm and blue.' },
         },
       });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'build me a prompt' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'build me a prompt' });
 
       llama.script({ content: 'Anything else?' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'thanks' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'thanks' });
 
       const sent = llama.requests[1] as {
         messages: {
@@ -4657,9 +5983,19 @@ describe('chat', () => {
 
     try {
       await useLlama(url);
+      /*
+       * With the check switched off, so the turn after the render is the plain
+       * one this test is about. With it on, that turn is a review — which is a
+       * turn that deliberately *does* carry one tool, and is covered above.
+       */
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { review: { enabled: false } } }),
+      });
       const chat = await json<{ id: string }>(
         api('/api/chat/conversations', { method: 'POST' }),
       );
+      await render('a harbour at dawn');
 
       llama.script({
         toolCall: {
@@ -4667,32 +6003,16 @@ describe('chat', () => {
           arguments: { prompt: 'a harbour at dawn', reason: 'Calm and blue.' },
         },
       });
-      const events = await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'build me a prompt' }),
-        }),
-      );
-      const messageId = events.find(
-        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
-      )?.messageId;
+      const run = await intent(chat.id, 'say', { content: 'build me a prompt' });
+      const messageId = run.awaiting;
 
-      // Accepted, and it started a run — which is what makes the next turn
-      // "after a generation" rather than after any other decision.
-      await api(`/api/chat/conversations/${chat.id}/tool`, {
-        method: 'POST',
-        body: JSON.stringify({
-          messageId,
-          decision: 'accepted',
-          generationId: 'gen-from-the-chat',
-          prompt: 'a harbour at dawn',
-        }),
-      });
-
+      /*
+       * Accepted, which starts a run — and that is what makes the next turn
+       * "after a generation" rather than after any other decision. Scripted
+       * first, because accepting now carries straight on into that turn.
+       */
       llama.script({ content: 'That came out well.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/continue`, { method: 'POST' }),
-      );
+      await intentRaw(chat.id, 'decide', { messageId, decision: 'accepted' });
 
       const sent = llama.requests[llama.requests.length - 1] as {
         tools?: unknown[];
@@ -4703,12 +6023,7 @@ describe('chat', () => {
 
       // And only for that one turn: saying something else puts them back.
       llama.script({ content: 'Anything else?' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'make it colder' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'make it colder' });
       const after = llama.requests[llama.requests.length - 1] as { tools?: unknown[] };
       expect(after.tools?.length).toBeGreaterThan(0);
     } finally {
@@ -4736,25 +6051,13 @@ describe('chat', () => {
           },
         },
       });
-      const events = await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'something calm' }),
-        }),
-      );
-      const messageId = events.find(
-        (event): event is { type: 'done'; messageId: string } => event.type === 'done',
-      )?.messageId;
+      const run = await intent(chat.id, 'say', { content: 'something calm' });
+      const messageId = run.awaiting;
 
-      await api(`/api/chat/conversations/${chat.id}/tool`, {
-        method: 'POST',
-        body: JSON.stringify({ messageId, decision: 'accepted', note: 'Portrait' }),
-      });
+      await intentRaw(chat.id, 'decide', { messageId, decision: 'accepted', note: 'Portrait' });
 
       llama.script({ content: 'Portrait it is.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/continue`, { method: 'POST' }),
-      );
+      await settled(chat.id);
 
       const sent = llama.requests[llama.requests.length - 1] as { tools?: unknown[] };
       expect(sent.tools?.length).toBeGreaterThan(0);
@@ -4782,12 +6085,7 @@ describe('chat', () => {
       );
 
       llama.script({ content: 'Sure.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'hello' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'hello' });
 
       const untouched = llama.requests[0] as Record<string, unknown>;
       expect(untouched.temperature).toBeUndefined();
@@ -4815,12 +6113,7 @@ describe('chat', () => {
       });
 
       llama.script({ content: 'Colder, then.' });
-      await readStream(
-        await api(`/api/chat/conversations/${chat.id}/messages`, {
-          method: 'POST',
-          body: JSON.stringify({ content: 'make it colder' }),
-        }),
-      );
+      await intent(chat.id, 'say', { content: 'make it colder' });
 
       const sent = llama.requests[llama.requests.length - 1] as Record<string, unknown>;
       expect(sent.temperature).toBe(0.35);
@@ -4839,14 +6132,1975 @@ describe('chat', () => {
     expect(status.message).toBeTruthy();
 
     const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
-    const response = await api(`/api/chat/conversations/${chat.id}/messages`, {
+    const response = await api(`/api/chat/conversations/${chat.id}/say`, {
       method: 'POST',
       body: JSON.stringify({ content: 'hello' }),
     });
 
-    // The stream opens and reports the failure inside it, rather than a bare
-    // 502 the chat screen would have to translate.
-    const events = await readStream(response);
-    expect(events.some((event) => event.type === 'error')).toBe(true);
+    // Accepted, and the failure is reported on the run rather than as a status
+    // code the chat screen would have to translate.
+    expect(response.status).toBeLessThan(300);
+    const run = await settled(chat.id);
+    expect(run.error).toBeTruthy();
+  }, 30_000);
+});
+
+/**
+ * Video, end to end.
+ *
+ * A workflow ending in a video saver is the same workflow in every other
+ * respect — it is queued, watched, rated and kept exactly like one that draws a
+ * picture — and the differences are all in what comes back: which key ComfyUI
+ * files it under, how it is fetched, and how it is stored. Each of those is a
+ * place a still-image assumption used to sit.
+ */
+describe('audio workflows', () => {
+  /** What every RIFF/WAVE file starts with, so "did we get it" has a real answer. */
+  const RIFF = Buffer.from('RIFF', 'ascii');
+
+  async function renderTrack(name: string, graph: unknown) {
+    const workflow = await json<WorkflowDetail>(
+      api('/api/workflows', { method: 'POST', body: JSON.stringify({ name, graph }) }),
+    );
+
+    await api('/api/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        workflowId: workflow.id,
+        values: { '5.steps': 2, '2.text': `track for ${name}` },
+      }),
+    });
+
+    const record = await waitFor(async () => {
+      const page = await json<GalleryPage>(api('/api/gallery'));
+      const found = page.items.find((item) => item.title === `track for ${name}`);
+      return found && found.status === 'completed' && found.images.length > 0 ? found : null;
+    }, 20_000);
+
+    return { workflow, record, image: record.images[0] as GenerationRecord['images'][number] };
+  }
+
+  /**
+   * A music model is a picture workflow that ends in a sound.
+   *
+   * Everything between the prompt and the save node is the same, which is why
+   * this works at all — and everything after it differs: the output arrives
+   * under a key nothing was reading, it has no frame to draw, and it is played
+   * by asking for the middle of the file.
+   */
+  it('renders a track, streams it in ranges, and keeps it as itself', async () => {
+    const { workflow, record, image } = await renderTrack('MiniMax Music', minimaxMusic);
+
+    // Known before anything has run, off the graph's save node.
+    expect(workflow.capabilities.audio).toBe(true);
+    expect(workflow.capabilities.video).toBe(false);
+    expect(workflow.producesAudio).toBe(true);
+    // And the length is a field of its own — seconds, not frames.
+    const seconds = workflow.schema.fields.find((field) => field.id === '4.seconds');
+    expect(seconds?.role).toBe('seconds');
+    expect(seconds?.group).toBe('main');
+
+    expect(image.kind).toBe('audio');
+    expect(image.filename.endsWith('.wav')).toBe(true);
+
+    const query = new URLSearchParams({
+      filename: image.filename,
+      subfolder: image.subfolder,
+      type: image.type,
+      id: String(image.id),
+    });
+
+    const whole = await api(`/api/view?${query}`);
+    expect(whole.status).toBe(200);
+    expect(whole.headers.get('content-type')).toBe('audio/wav');
+    expect(whole.headers.get('accept-ranges')).toBe('bytes');
+    const full = Buffer.from(await whole.arrayBuffer());
+    expect(full.subarray(0, 4)).toEqual(RIFF);
+
+    // Seeking is the same byte range it is for a clip.
+    const part = await api(`/api/view?${query}`, { headers: { range: 'bytes=0-43' } });
+    expect(part.status).toBe(206);
+    expect(part.headers.get('content-range')).toBe(`bytes 0-43/${full.length}`);
+    expect(Buffer.from(await part.arrayBuffer())).toEqual(full.subarray(0, 44));
+
+    /*
+     * There is no preview and never will be. Said once, plainly, so the grid
+     * draws its card instead of asking again for every tile.
+     */
+    const preview = await api(`/api/view?${query}&preview=webp;70`);
+    expect(preview.status).toBe(404);
+    const answer = await json<{ noPoster?: boolean; kind?: string }>(preview);
+    expect(answer.noPoster).toBe(true);
+    expect(answer.kind).toBe('audio');
+
+    // A sound is not an input image, and saying which it is beats a PIL error.
+    const toInput = await api('/api/images/to-input', {
+      method: 'POST',
+      body: JSON.stringify(image),
+    });
+    expect(toInput.status).toBe(400);
+    expect((await json<{ error: string }>(toInput)).error).toMatch(/sound/i);
+
+    // Rating copies it here, in the clear, for the same reason a clip is: a
+    // track is played by asking for the middle of the file.
+    const rated = await json<GenerationRecord>(
+      api(`/api/gallery/${record.id}/rating`, {
+        method: 'PUT',
+        body: JSON.stringify({ image, rating: 5 }),
+      }),
+    );
+    expect(rated.images[0]?.archived).toBe(true);
+
+    const stored = (readdirSync(join(dataDir, 'archive'), { recursive: true }) as string[])
+      .filter((entry) => entry.endsWith('.wav'))
+      .map((entry) => readFileSync(join(dataDir, 'archive', entry)));
+    expect(stored.length).toBeGreaterThan(0);
+    expect(stored.every((bytes) => !Vault.isEncrypted(bytes))).toBe(true);
+    expect(stored[0]?.subarray(0, 4)).toEqual(RIFF);
+
+    const archived = await api(`/api/view?${query}`, { headers: { range: 'bytes=4-11' } });
+    expect(archived.status).toBe(206);
+    expect(archived.headers.get('x-latent-source')).toBe('archive');
+    expect(Buffer.from(await archived.arrayBuffer())).toEqual(full.subarray(4, 12));
+
+    /*
+     * How long it runs, from the only thing that can read it: the browser
+     * playing it. The same route a video's poster arrives by, with no poster.
+     */
+    const timed = await api('/api/images/poster', {
+      method: 'PUT',
+      body: JSON.stringify({ image, durationMs: 30_000 }),
+    });
+    expect(timed.status).toBe(204);
+    const after = await json<GenerationRecord>(api(`/api/gallery/${record.id}`));
+    expect(after.images[0]?.durationMs).toBe(30_000);
+    // And still no thumbnail: nothing invented a picture for it.
+    expect(after.images[0]?.hasThumbnail).toBe(false);
+  }, 40_000);
+
+  /** The speech models file their result the same way, in a different container. */
+  it('takes a speech workflow as an audio workflow too', async () => {
+    const { workflow, image } = await renderTrack('Qwen speech', qwenSpeech);
+    expect(workflow.producesAudio).toBe(true);
+    expect(image.kind).toBe('audio');
+    // The words to say are the prompt field, which is what makes the whole
+    // chat module work for speech without knowing anything about speech.
+    expect(workflow.schema.fields.find((field) => field.id === '2.text')?.role).toBe('prompt');
+  }, 40_000);
+});
+
+describe('video workflows', () => {
+  /** The bytes a WebM starts with, so "did we get the file" has a real answer. */
+  const EBML = Buffer.from([0x1a, 0x45, 0xdf, 0xa3]);
+
+  async function renderVideo(name: string, graph: unknown) {
+    const workflow = await json<WorkflowDetail>(
+      api('/api/workflows', { method: 'POST', body: JSON.stringify({ name, graph }) }),
+    );
+
+    await api('/api/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        workflowId: workflow.id,
+        values: { '8.steps': 2, '4.text': `clip for ${name}` },
+      }),
+    });
+
+    const record = await waitFor(async () => {
+      const page = await json<GalleryPage>(api('/api/gallery'));
+      const found = page.items.find((item) => item.title === `clip for ${name}`);
+      return found && found.status === 'completed' && found.images.length > 0 ? found : null;
+    }, 20_000);
+
+    return { workflow, record, image: record.images[0] as GenerationRecord['images'][number] };
+  }
+
+  it('renders a clip, streams it in ranges, and keeps it as itself', async () => {
+    const { workflow, record, image } = await renderVideo('LTXV GGUF', ltxVideoGguf);
+
+    // Known to be a video workflow before anything has run, off the graph.
+    expect(workflow.capabilities.video).toBe(true);
+    expect(workflow.producesVideo).toBe(true);
+    // And the frame count is a field of its own rather than one more integer.
+    const length = workflow.schema.fields.find((field) => field.id === '6.length');
+    expect(length?.role).toBe('length');
+    expect(length?.group).toBe('main');
+    expect(
+      workflow.schema.fields.find((field) => field.id === '7.frame_rate')?.role,
+    ).toBe('frame_rate');
+    // A quantised model is still the model picker.
+    expect(workflow.schema.fields.find((field) => field.id === '1.unet_name')?.role).toBe('model');
+
+    expect(image.filename.endsWith('.webm')).toBe(true);
+    expect(image.kind).toBe('video');
+
+    const query = new URLSearchParams({
+      filename: image.filename,
+      subfolder: image.subfolder,
+      type: image.type,
+      id: String(image.id),
+    });
+
+    // Whole file, as a video, and announced as seekable.
+    const whole = await api(`/api/view?${query}`);
+    expect(whole.status).toBe(200);
+    expect(whole.headers.get('content-type')).toBe('video/webm');
+    expect(whole.headers.get('accept-ranges')).toBe('bytes');
+    const full = Buffer.from(await whole.arrayBuffer());
+    expect(full.subarray(0, 4)).toEqual(EBML);
+
+    /*
+     * The part a browser actually asks for.
+     *
+     * A `<video>` fetches the head of the file, then whatever the scrubber
+     * lands on. Answering those with the whole clip is the difference between
+     * a video that starts and one that has to be downloaded first.
+     */
+    const part = await api(`/api/view?${query}`, { headers: { range: 'bytes=0-127' } });
+    expect(part.status).toBe(206);
+    expect(part.headers.get('content-range')).toBe(`bytes 0-127/${full.length}`);
+    const head = Buffer.from(await part.arrayBuffer());
+    expect(head.length).toBe(128);
+    expect(head).toEqual(full.subarray(0, 128));
+
+    // No poster yet, and the grid is told so rather than handed the clip.
+    const preview = await api(`/api/view?${query}&preview=webp;70`);
+    expect(preview.status).toBe(404);
+    expect((await json<{ noPoster?: boolean }>(preview)).noPoster).toBe(true);
+
+    // img2img takes a picture. Saying so beats a PIL error from ComfyUI.
+    const toInput = await api('/api/images/to-input', {
+      method: 'POST',
+      body: JSON.stringify(image),
+    });
+    expect(toInput.status).toBe(400);
+    expect((await json<{ error: string }>(toInput)).error).toMatch(/video/i);
+
+    /*
+     * Rating copies it here, exactly as it does for a picture — and stores it
+     * in the clear, which is the one deliberate difference. Whole-file AES
+     * cannot be read from the middle, and a video is watched by asking for the
+     * middle.
+     */
+    const rated = await json<GenerationRecord>(
+      api(`/api/gallery/${record.id}/rating`, {
+        method: 'PUT',
+        body: JSON.stringify({ image, rating: 4 }),
+      }),
+    );
+    expect(rated.images[0]?.archived).toBe(true);
+
+    const stored = (readdirSync(join(dataDir, 'archive'), { recursive: true }) as string[])
+      .filter((entry) => entry.endsWith('.webm'))
+      .map((entry) => readFileSync(join(dataDir, 'archive', entry)));
+    expect(stored.length).toBeGreaterThan(0);
+    expect(stored.every((bytes) => !Vault.isEncrypted(bytes))).toBe(true);
+    expect(stored[0]?.subarray(0, 4)).toEqual(EBML);
+
+    // Served from the archive now, still in pieces.
+    const archived = await api(`/api/view?${query}`, { headers: { range: 'bytes=8-23' } });
+    expect(archived.status).toBe(206);
+    expect(archived.headers.get('x-latent-source')).toBe('archive');
+    expect(Buffer.from(await archived.arrayBuffer())).toEqual(full.subarray(8, 24));
+
+    /*
+     * The poster, from the only thing here that can decode a video: the browser
+     * playing it. Nothing on this server has an ffmpeg, and a clip with no
+     * still is a gallery tile that has to load the clip.
+     */
+    const poster = renderPlaceholder(64, 48, 'poster');
+    const sent = await api('/api/images/poster', {
+      method: 'PUT',
+      body: JSON.stringify({
+        image,
+        poster: `data:image/png;base64,${poster.toString('base64')}`,
+        durationMs: 4000,
+      }),
+    });
+    expect(sent.status).toBe(204);
+
+    const withPoster = await json<GenerationRecord>(api(`/api/gallery/${record.id}`));
+    expect(withPoster.images[0]?.hasThumbnail).toBe(true);
+    expect(withPoster.images[0]?.durationMs).toBe(4000);
+
+    const served = await api(`/api/view?${query}&preview=webp;70`);
+    expect(served.status).toBe(200);
+    expect(served.headers.get('content-type')).toBe('image/png');
+    expect(readImageSize(Buffer.from(await served.arrayBuffer()))).toEqual({
+      width: 64,
+      height: 48,
+    });
+
+    // A poster is a picture of a video, so it is encrypted like every picture.
+    const posterFiles = (readdirSync(join(dataDir, 'archive'), { recursive: true }) as string[])
+      .filter((entry) => entry.endsWith('_t.png'))
+      .map((entry) => readFileSync(join(dataDir, 'archive', entry)));
+    expect(posterFiles.every((bytes) => Vault.isEncrypted(bytes))).toBe(true);
+  }, 40_000);
+
+  /**
+   * The other convention.
+   *
+   * VideoHelperSuite files everything it makes under `gifs`, whatever the
+   * container turned out to be. A client that reads only `images` finishes the
+   * run successfully and shows an empty gallery row.
+   */
+  /**
+   * A folder of finished work has clips in it too.
+   *
+   * They take the streaming, unencrypted path — a directory of renders is
+   * gigabytes, and none of it has any business passing through a Buffer on the
+   * way to disk — while the pictures beside them are read and encrypted exactly
+   * as before.
+   */
+  it('imports a clip from a folder without encrypting it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-import-video-'));
+    const outputs = join(dir, 'outputs');
+    mkdirSync(outputs, { recursive: true });
+
+    const clip = renderPlaceholderWebm('imported');
+    writeFileSync(join(outputs, 'clip.webm'), clip);
+    writeFileSync(join(outputs, 'still.png'), renderPlaceholder(64, 64, 'still'));
+
+    const comfy = createMockComfy({ logLevel: 'silent' });
+    const comfyUrl = await comfy.listen(0);
+    const server = await bootIsolated({
+      comfyUrl,
+      dbPath: join(dir, 'import.db'),
+      dataDir: dir,
+      archiveDir: join(dir, 'archive'),
+      webDir: join(dir, 'no-web'),
+    });
+
+    try {
+      const claim = await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'import a clip' }),
+      });
+      const cookie = claim.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      await server.call('/api/settings', {
+        method: 'PATCH',
+        cookie,
+        body: JSON.stringify({ importRoot: outputs }),
+      });
+
+      const scan = (await (
+        await server.call('/api/import/scan', { cookie })
+      ).json()) as ImportScanResult;
+      expect(scan.files.map((file) => file.path).sort()).toEqual(['clip.webm', 'still.png']);
+
+      const result = (await (
+        await server.call('/api/import', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ paths: ['clip.webm', 'still.png'], rating: 5 }),
+        })
+      ).json()) as ImportResult;
+      expect(result).toMatchObject({ imported: 2, failed: [] });
+
+      const page = (await (await server.call('/api/gallery', { cookie })).json()) as GalleryPage;
+      const imported = page.items.flatMap((item) => item.images);
+      const video = imported.find((image) => image.filename === 'clip.webm');
+      expect(video?.kind).toBe('video');
+      expect(video?.archived).toBe(true);
+
+      // The clip is on disk as itself; the picture beside it is not.
+      const archived = (readdirSync(join(dir, 'archive'), { recursive: true }) as string[])
+        .map((name) => join(dir, 'archive', String(name)))
+        .filter((candidate) => statSync(candidate).isFile());
+      const webm = archived.filter((file) => file.endsWith('.webm'));
+      expect(webm).toHaveLength(1);
+      expect(readFileSync(webm[0] as string)).toEqual(clip);
+      for (const file of archived.filter((candidate) => candidate.endsWith('.png'))) {
+        expect(Vault.isEncrypted(readFileSync(file))).toBe(true);
+      }
+
+      // And it plays: an imported clip lives only here, so this is the only
+      // place its bytes can come from.
+      const query = new URLSearchParams({
+        filename: 'clip.webm',
+        subfolder: '',
+        type: 'import',
+        id: String(video?.id),
+      });
+      const part = await server.call(`/api/view?${query}`, {
+        cookie,
+        headers: { range: 'bytes=0-15' },
+      });
+      expect(part.status).toBe(206);
+      expect(Buffer.from(await part.arrayBuffer())).toEqual(clip.subarray(0, 16));
+    } finally {
+      await server.dispose();
+      await comfy.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  it('reads a clip filed under another output key', async () => {
+    const { image } = await renderVideo('Video Combine', videoCombine);
+
+    expect(image.filename.endsWith('.gif')).toBe(true);
+    expect(image.kind).toBe('video');
+
+    const query = new URLSearchParams({
+      filename: image.filename,
+      subfolder: image.subfolder,
+      type: image.type,
+      id: String(image.id),
+    });
+    const response = await api(`/api/view?${query}`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe('image/gif');
+
+    const bytes = Buffer.from(await response.arrayBuffer());
+    // A real GIF, not a placeholder: the mock renders one so the whole path —
+    // including what a browser is asked to draw — is exercised for real.
+    expect(bytes.subarray(0, 6).toString('ascii')).toBe('GIF89a');
+  }, 40_000);
+});
+
+/**
+ * Notes about what the user likes.
+ *
+ * Three things worth proving here and nowhere else: that the notes survive a
+ * round trip through the API, that what lands on disk is ciphertext rather than
+ * a description of somebody's taste, and that the active ones — and only those
+ * — reach the model.
+ */
+/**
+ * The conversation runs on the server, and that is the point.
+ *
+ * Everything the chat module does across several steps — accept a proposal,
+ * queue the render, wait for it, say something about it, go round again — used
+ * to be a sequence the browser drove. A backgrounded tab is frozen: its open
+ * streams are cut, its timers slow to a crawl, and the step between two awaits
+ * never runs. So a run stopped the moment you looked at something else, and
+ * regularly stopped mid-step in a state nothing could continue from.
+ *
+ * These are the tests for the fix, and they are all the same shape: nobody is
+ * watching, and it happens anyway.
+ */
+describe('a conversation that nobody is watching', () => {
+  const render = async (prompt: string) => {
+    const workflows = await json<{ id: string }[]>(api('/api/workflows'));
+    if (workflows.length === 0) {
+      await api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'unwatched', graph: sd15Txt2Img }),
+      });
+    }
+    return prompt;
+  };
+
+  /**
+   * The whole round happens with no client attached at all.
+   *
+   * One request in, and by the time it has settled a prompt has been proposed,
+   * accepted, rendered and judged — with nothing subscribed to the event stream
+   * and nothing polled from outside. That is what a frozen tab looks like from
+   * the server's side, and it is now indistinguishable from an open one.
+   */
+  it('finishes a whole round with nothing subscribed to it', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      await render('a quiet harbour');
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: {
+            promptButton: 'generate',
+            review: { enabled: false, threshold: 'balanced', keepInView: 2, askWhen: 'never' },
+            autonomous: { enabled: false, maxRounds: 4 },
+          },
+        }),
+      });
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      llama.script({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a quiet harbour', reason: 'Calm.' },
+        },
+      });
+      llama.script({ content: 'There it is.' });
+
+      // "Generate now", which accepts whatever comes back without asking.
+      const run = await intent(chat.id, 'prompt', { instant: true });
+
+      // Nothing is waiting on anybody, and the picture exists.
+      expect(run.phase).toBe('idle');
+      expect(run.awaiting).toBeNull();
+
+      const stored = await json<{ messages: ChatMessage[] }>(
+        api(`/api/chat/conversations/${chat.id}`),
+      );
+      const rendered = stored.messages.find((message) => message.generationId);
+      expect(rendered?.prompt).toBe('a quiet harbour');
+      expect(stored.messages[stored.messages.length - 1]?.content).toBe('There it is.');
+
+      // And the render is a real one in the gallery, queued by the server.
+      const record = await json<GenerationRecord>(
+        api(`/api/gallery/${rendered?.generationId as string}`),
+      );
+      expect(record.id).toBe(rendered?.generationId);
+    } finally {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: {
+            promptButton: 'dialog',
+            review: { enabled: true, threshold: 'balanced', keepInView: 2, askWhen: 'unsure' },
+          },
+        }),
+      });
+      await llama.close();
+    }
+  }, 60_000);
+
+  /**
+   * A wandering run keeps going with nobody there, and stops when told.
+   *
+   * The mode this rebuild was really for: an evening of pictures is worth
+   * nothing if it ends the first time you open another app. Started, left
+   * entirely alone, and three rounds later it has made three of them.
+   */
+  it('keeps a wandering run going with nobody there', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+    let noteId = '';
+
+    try {
+      await useLlama(url);
+      await render('a wandering picture');
+
+      // A note to draw from, bought the same way the app buys one.
+      const opened = await json<{ ticket: string }>(
+        api('/api/taste/unlock', {
+          method: 'POST',
+          body: JSON.stringify({ password: 'test-password' }),
+        }),
+      );
+      noteId = (
+        await json<{ id: string }>(
+          api('/api/taste/entries', {
+            method: 'POST',
+            body: JSON.stringify({ text: 'low fog over water' }),
+            headers: { 'x-latent-taste': opened.ticket },
+          }),
+        )
+      ).id;
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      for (const round of [1, 2, 3, 4]) {
+        llama.script({
+          toolCall: {
+            name: 'build_prompt',
+            arguments: { prompt: `wandering ${round}`, reason: 'From the notes.' },
+          },
+        });
+      }
+
+      await startWandering(chat.id);
+      // At least three, not exactly: the run does not pause to be counted, and
+      // "it kept going" is the claim.
+      const made = await wandered(chat.id, 3, 60_000);
+      expect(made.length).toBeGreaterThanOrEqual(3);
+
+      // Stopping is immediate, and it stays stopped.
+      await stopWandering(chat.id);
+      const after = await json<{ run: ChatRun }>(api(`/api/chat/conversations/${chat.id}`));
+      expect(after.run.mode).toBe('manual');
+      expect(after.run.phase).toBe('idle');
+    } finally {
+      const opened = await json<{ ticket: string }>(
+        api('/api/taste/unlock', {
+          method: 'POST',
+          body: JSON.stringify({ password: 'test-password' }),
+        }),
+      );
+      if (noteId) {
+        await api(`/api/taste/entries/${noteId}`, {
+          method: 'DELETE',
+          headers: { 'x-latent-taste': opened.ticket },
+        });
+      }
+      await llama.close();
+    }
+  }, 90_000);
+
+  /**
+   * A restart picks the run back up.
+   *
+   * The other thing a browser-driven loop could never survive. A wandering run
+   * is meant to go all evening, and this server is restarted often — updated,
+   * crashed, rebooted — so a run that quietly ended each time was a run that
+   * ended most evenings. Where a conversation had got to is written down at
+   * every transition, so a fresh process can read it and carry on.
+   *
+   * The one exception is deliberate: an ordinary reply interrupted mid-sentence
+   * is *not* re-asked. Nobody wants a model answering an hour-old message on
+   * its own initiative, so that one stops and says why.
+   */
+  it('picks a wandering run back up after a restart', async () => {
+    const llama = createMockLlama();
+    const llamaUrl = await llama.listen(0);
+    const root = mkdtempSync(join(tmpdir(), 'latent-resume-'));
+    const dir = join(root, 'data');
+
+    const boot = async () => {
+      const instance = await buildApp({
+        comfyUrl: 'http://127.0.0.1:1',
+        dbPath: join(dir, 'latent.db'),
+        dataDir: dir,
+        stateDir: join(root, 'above'),
+        webDir: join(dir, 'no-web'),
+        password: 'resume-password',
+        logLevel: 'silent',
+      });
+      await instance.app.listen({ port: 0, host: '127.0.0.1' });
+      const address = instance.app.server.address();
+      if (!address || typeof address === 'string') throw new Error('No port');
+      const base = `http://127.0.0.1:${address.port}`;
+      const login = await fetch(`${base}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password: 'resume-password' }),
+      });
+      const cookie = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+      const call = (path: string, init: RequestInit = {}) =>
+        fetch(`${base}${path}`, {
+          ...init,
+          headers: { 'content-type': 'application/json', cookie, ...(init.headers ?? {}) },
+        });
+      return { instance, call };
+    };
+
+    const one = await boot();
+    let chatId = '';
+    try {
+      await one.call('/api/connections', {
+        method: 'POST',
+        body: JSON.stringify({ kind: 'llama', name: 'model', url: llamaUrl }),
+      });
+      const connections = (await (await one.call('/api/connections')).json()) as {
+        id: string;
+        kind: string;
+      }[];
+      const model = connections.find((entry) => entry.kind === 'llama')!;
+      await one.call(`/api/connections/${model.id}/activate`, { method: 'POST' });
+
+      chatId = (
+        (await (await one.call('/api/chat/conversations', { method: 'POST' })).json()) as {
+          id: string;
+        }
+      ).id;
+
+      llama.script({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'before the restart', reason: 'From the notes.' },
+        },
+      });
+      await one.call(`/api/chat/conversations/${chatId}/wander`, {
+        method: 'POST',
+        body: JSON.stringify({ on: true }),
+      });
+
+      // Wait until the run is genuinely under way before pulling the plug.
+      const deadline = Date.now() + 20_000;
+      for (;;) {
+        const detail = (await (
+          await one.call(`/api/chat/conversations/${chatId}`)
+        ).json()) as { run: ChatRun };
+        if (detail.run.mode === 'wander') break;
+        if (Date.now() > deadline) throw new Error('The run never started');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    } finally {
+      await one.instance.app.close();
+    }
+
+    // A new process, the same database, and a run it never started.
+    llama.script({
+      toolCall: {
+        name: 'build_prompt',
+        arguments: { prompt: 'after the restart', reason: 'From the notes.' },
+      },
+    });
+
+    const two = await boot();
+    try {
+      const deadline = Date.now() + 30_000;
+      for (;;) {
+        const detail = (await (
+          await two.call(`/api/chat/conversations/${chatId}`)
+        ).json()) as { messages: ChatMessage[] };
+        const asked = detail.messages.some(
+          (message) =>
+            message.toolCall?.tool === 'build_prompt' &&
+            message.toolCall.prompt === 'after the restart',
+        );
+        if (asked) break;
+        if (Date.now() > deadline) throw new Error('The run did not resume');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      await two.call(`/api/chat/conversations/${chatId}/stop`, { method: 'POST' });
+    } finally {
+      await two.instance.app.close();
+      await llama.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 90_000);
+
+  /**
+   * Two watchers see the same thing, and a late one is caught up.
+   *
+   * The other half of moving the loop: a stream that only exists while a
+   * request is in flight cannot tell you about anything that happened while you
+   * were away. This one opens with the present tense, so arriving late and
+   * arriving early are the same path.
+   */
+  it('tells a client that arrives late what it missed', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+
+      llama.script({ content: 'Something you did not see happen.' });
+      await intent(chat.id, 'say', { content: 'say something' });
+
+      // Subscribing afterwards still describes where the conversation is.
+      const events = await watching(chat.id, async () => undefined);
+      const sync = events.find((event) => event.type === 'sync');
+      expect(sync).toBeTruthy();
+      expect(sync?.type === 'sync' && sync.run.phase).toBe('idle');
+
+      const stored = await json<{ messages: ChatMessage[] }>(
+        api(`/api/chat/conversations/${chat.id}`),
+      );
+      expect(stored.messages[stored.messages.length - 1]?.content).toBe(
+        'Something you did not see happen.',
+      );
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+});
+
+describe('what the user likes', () => {
+  const categories: string[] = [];
+  const entries: string[] = [];
+
+  /**
+   * The pass this screen's routes need, bought with the password.
+   *
+   * Being signed in is deliberately not enough for these: see `PasswordGate`. The
+   * tests buy one the same way the app does, which is also what proves the
+   * routes are shut without it.
+   */
+  let ticket = '';
+
+  const taste = (path: string, init: RequestInit = {}) =>
+    api(path, { ...init, headers: { ...(init.headers ?? {}), 'x-latent-taste': ticket } });
+
+  beforeAll(async () => {
+    const opened = await json<{ ticket: string }>(
+      api('/api/taste/unlock', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'test-password' }),
+      }),
+    );
+    ticket = opened.ticket;
+  });
+
+  afterAll(async () => {
+    for (const id of entries) await taste(`/api/taste/entries/${id}`, { method: 'DELETE' });
+    for (const id of categories) await taste(`/api/taste/categories/${id}`, { method: 'DELETE' });
+    await api('/api/settings', { method: 'PATCH', body: JSON.stringify({ chat: { taste: 'hints' } }) });
+  });
+
+  it('keeps categories, notes filed under them, and notes filed under nothing', async () => {
+    const colour = await json<TasteCategory>(
+      taste('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name: 'Colour' }) }),
+    );
+    categories.push(colour.id);
+    expect(colour.name).toBe('Colour');
+    expect(colour.active).toBe(true);
+
+    const filed = await json<TasteEntry>(
+      taste('/api/taste/entries', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'washed-out teal', categoryId: colour.id }),
+      }),
+    );
+    // A heading is optional by design: being made to file everything is how a
+    // list like this ends up empty.
+    const loose = await json<TasteEntry>(
+      taste('/api/taste/entries', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'rain at night' }),
+      }),
+    );
+    entries.push(filed.id, loose.id);
+    expect(filed.categoryId).toBe(colour.id);
+    expect(loose.categoryId).toBe(null);
+
+    const profile = await json<TasteProfile>(taste('/api/taste'));
+    expect(profile.categories.map((entry) => entry.name)).toContain('Colour');
+    expect(profile.entries.map((entry) => entry.text).sort()).toEqual([
+      'rain at night',
+      'washed-out teal',
+    ]);
+
+    // Switching one off is a tap, not a deletion: changing your mind for an
+    // evening should not cost you the note.
+    const off = await json<TasteEntry>(
+      taste(`/api/taste/entries/${loose.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active: false }),
+      }),
+    );
+    expect(off.active).toBe(false);
+    expect(off.text).toBe('rain at night');
+  }, 20_000);
+
+  /** Deleting the heading is not deleting what was written under it. */
+  it('sets a category’s notes loose rather than deleting them with it', async () => {
+    const temporary = await json<TasteCategory>(
+      taste('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name: 'Passing' }) }),
+    );
+    const note = await json<TasteEntry>(
+      taste('/api/taste/entries', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'brutalist stairwells', categoryId: temporary.id }),
+      }),
+    );
+    entries.push(note.id);
+
+    expect((await taste(`/api/taste/categories/${temporary.id}`, { method: 'DELETE' })).status).toBe(
+      204,
+    );
+
+    const profile = await json<TasteProfile>(taste('/api/taste'));
+    const survivor = profile.entries.find((entry) => entry.id === note.id);
+    expect(survivor?.text).toBe('brutalist stairwells');
+    expect(survivor?.categoryId).toBe(null);
+  }, 20_000);
+
+  /**
+   * The reason the feature is encrypted at all.
+   *
+   * These notes are never on screen, so nobody would notice them sitting
+   * readable in a database file or a backup — which is exactly the situation
+   * this test rules out.
+   */
+  it('writes ciphertext to the database, not words', async () => {
+    const category = await json<TasteCategory>(
+      taste('/api/taste/categories', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Distinctive heading' }),
+      }),
+    );
+    const entry = await json<TasteEntry>(
+      taste('/api/taste/entries', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'an unmistakable phrase', categoryId: category.id }),
+      }),
+    );
+    categories.push(category.id);
+    entries.push(entry.id);
+
+    const db = new Database(join(dataDir, 'test.db'), { readonly: true });
+    try {
+      const storedName = db
+        .prepare<[string], { name: string }>('SELECT name FROM taste_categories WHERE id = ?')
+        .get(category.id)?.name;
+      const storedText = db
+        .prepare<[string], { text: string }>('SELECT text FROM taste_entries WHERE id = ?')
+        .get(entry.id)?.text;
+
+      expect(storedName).toBeTruthy();
+      expect(storedName).not.toContain('Distinctive heading');
+      expect(storedText).not.toContain('unmistakable');
+      // Latent's own envelope, so a stray plaintext row would be obvious.
+      expect(Vault.isEncrypted(Buffer.from(storedText ?? '', 'base64'))).toBe(true);
+
+      // What is *not* encrypted is what the screen needs to work while locked:
+      // the order, the switches, and which heading a note is under.
+      const row = db
+        .prepare<[string], { active: number; category_id: string | null }>(
+          'SELECT active, category_id FROM taste_entries WHERE id = ?',
+        )
+        .get(entry.id);
+      expect(row?.active).toBe(1);
+      expect(row?.category_id).toBe(category.id);
+    } finally {
+      db.close();
+    }
+  }, 20_000);
+
+  it('puts the active notes in front of the model, and nothing else', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+
+      const category = await json<TasteCategory>(
+        taste('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name: 'Weather' }) }),
+      );
+      const kept = await json<TasteEntry>(
+        taste('/api/taste/entries', {
+          method: 'POST',
+          body: JSON.stringify({ text: 'low fog over water', categoryId: category.id }),
+        }),
+      );
+      const silenced = await json<TasteEntry>(
+        taste('/api/taste/entries', {
+          method: 'POST',
+          body: JSON.stringify({ text: 'bright noon sun', categoryId: category.id }),
+        }),
+      );
+      categories.push(category.id);
+      entries.push(kept.id, silenced.id);
+      await taste(`/api/taste/entries/${silenced.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ active: false }),
+      });
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      llama.script({ content: 'Right.' });
+      await intent(chat.id, 'say', { content: 'give me an idea' });
+
+      const system = (
+        llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
+      ).messages[0]!;
+      expect(system.content).toContain('What this person likes');
+      expect(system.content).toContain('low fog over water');
+      expect(system.content).not.toContain('bright noon sun');
+      // The rule the whole feature hangs on, at every level of the scale.
+      expect(system.content).toContain('never overrule what was said');
+
+      // Switched off, and the section is gone entirely — not present and empty,
+      // which is the version a small model fills in for itself.
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { taste: 'off' } }),
+      });
+      llama.script({ content: 'Fine.' });
+      await intent(chat.id, 'say', { content: 'again' });
+      const after = (
+        llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
+      ).messages[0]!;
+      expect(after.content).not.toContain('What this person likes');
+      expect(after.content).not.toContain('low fog over water');
+    } finally {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { taste: 'hints' } }),
+      });
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
+   * A pinned note overrides the scale — and only where it is relevant.
+   *
+   * The rest of the notes step aside the moment a picture is named, which is
+   * exactly when a settled preference matters most. What keeps that from
+   * turning into "work this into every prompt" is the relevance limit, which
+   * goes in beside it.
+   */
+  it('sends a pinned note as a rule that holds, bounded by relevance', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      const pinned = await json<TasteEntry>(
+        taste('/api/taste/entries', {
+          method: 'POST',
+          body: JSON.stringify({ text: 'never any text in the picture', always: true }),
+        }),
+      );
+      const ordinary = await json<TasteEntry>(
+        taste('/api/taste/entries', {
+          method: 'POST',
+          body: JSON.stringify({ text: 'low fog over water' }),
+        }),
+      );
+      entries.push(pinned.id, ordinary.id);
+      expect(pinned.always).toBe(true);
+      expect(ordinary.always).toBe(false);
+
+      // At the quietest setting the ordinary notes barely reach; the pinned one
+      // reaches all the same, which is the point of the override.
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { taste: 'sparingly' } }),
+      });
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      llama.script({ content: 'Right.' });
+      await intent(chat.id, 'say', { content: 'a portrait of a fisherman, close up' });
+
+      const system = (
+        llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
+      ).messages[0]!;
+      expect(system.content).toContain('Things that always hold');
+      expect(system.content).toContain('never any text in the picture');
+      expect(system.content).toContain('even when they have told you exactly what they want');
+      expect(system.content).toContain('only where it actually bears on the picture');
+      // Listed once, as a rule — not again among the ordinary notes.
+      expect(system.content.match(/never any text in the picture/g)).toHaveLength(1);
+
+      // Unpinning puts it back among the rest.
+      await taste(`/api/taste/entries/${pinned.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ always: false }),
+      });
+      llama.script({ content: 'Fine.' });
+      await intent(chat.id, 'say', { content: 'again' });
+      const after = (
+        llama.requests[llama.requests.length - 1] as { messages: { content: string }[] }
+      ).messages[0]!;
+      expect(after.content).not.toContain('Things that always hold');
+      expect(after.content).toContain('never any text in the picture');
+    } finally {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ chat: { taste: 'hints' } }),
+      });
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
+   * A wandering round: the draw happens here, and says what it drew.
+   *
+   * The draw is the server's because the notes are encrypted here. What goes
+   * back is the prompt and the handful of notes *this round* used — never the
+   * profile, which stays behind the password. And what is stored is their ids,
+   * not their words: a chat message is written to the database in the clear,
+   * and the whole reason these notes are encrypted is that nobody would think
+   * to look at them.
+   */
+  it('makes a picture out of a few notes, and records which ones', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+
+      /*
+       * A pool of exactly three, so "two were drawn" means something.
+       *
+       * The tests above this one leave their notes for the shared cleanup, and
+       * a draw of two out of nine says nothing about how many were asked for.
+       */
+      const before = await json<TasteProfile>(taste('/api/taste'));
+      for (const entry of before.entries) {
+        await taste(`/api/taste/entries/${entry.id}`, { method: 'DELETE' });
+      }
+
+      const written = ['low fog over water', 'brutalist stairwells', 'washed-out teal'];
+      for (const text of written) {
+        const made = await json<TasteEntry>(
+          taste('/api/taste/entries', { method: 'POST', body: JSON.stringify({ text }) }),
+        );
+        entries.push(made.id);
+      }
+      /*
+       * A ceiling of two, and the caps out of the way.
+       *
+       * These three notes are filed under nothing, and the loose pile is one
+       * heading as far as the caps are concerned — so under the default cap of
+       * one per heading a round would take one of them and this would be
+       * testing the cap rather than the count it is about.
+       */
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: {
+            wander: {
+              attributes: 2,
+              sampling: 'chat',
+              draw: { ...DEFAULT_WANDER_DRAW, perCategory: 0 },
+            },
+          },
+        }),
+      });
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      llama.script({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a flooded stairwell at dawn', reason: 'Drawn from the notes.' },
+        },
+      });
+      /*
+       * Wandering is a loop, so it is started and then stopped rather than
+       * awaited: "one round" is a thing to catch, not a request to finish.
+       */
+      await startWandering(chat.id);
+      const rounds = await wandered(chat.id, 1);
+      await stopWandering(chat.id);
+
+      const sent = llama.requests[0] as {
+        messages: { role: string; content: string }[];
+        tools?: { function: { name: string } }[];
+      };
+      const turn = sent.messages[sent.messages.length - 1]!;
+
+      // Exactly the number asked for, and only from what is switched on.
+      const drawn = written.filter((text) => turn.content.includes(text));
+      expect(drawn).toHaveLength(2);
+      expect(turn.content).toContain('drawn at random');
+      // One tool, and it is the one that writes a prompt.
+      expect(sent.tools?.map((tool) => tool.function.name)).toEqual(['build_prompt']);
+
+      /*
+       * And the call is stamped as a wandering one, which is what makes
+       * tapping its picture open what made it rather than the viewer.
+       */
+      const call = rounds[0]?.toolCall;
+      expect(call?.tool).toBe('build_prompt');
+      expect(call?.tool === 'build_prompt' && call.fromWander).toBe(true);
+
+      /*
+       * And it says what it was made of — which is the one question an endless
+       * stream raises, and one the mode used to have no answer to.
+       */
+      const notes = call?.tool === 'build_prompt' ? (call.wanderNotes ?? []) : [];
+      expect(notes.sort()).toEqual(drawn.sort());
+      // The ids are what actually went to disk; the words were put back on the
+      // way out. Both halves have to be there or the round cannot avoid
+      // repeating itself later.
+      const ids = call?.tool === 'build_prompt' ? (call.wanderNoteIds ?? []) : [];
+      expect(ids).toHaveLength(2);
+      for (const id of ids) expect(entries).toContain(id);
+    } finally {
+      // Back to the shipped defaults, not to the numbers this test chose.
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: { wander: { attributes: 0, sampling: 'chat', draw: { ...DEFAULT_WANDER_DRAW } } },
+        }),
+      });
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
+   * What the mode does out of the box: one note from each heading.
+   *
+   * The headings are the thing you curated — a colour heading, a films heading,
+   * a mood heading — so a picture built from one of each is a picture made of
+   * your list. The default used to be a flat shuffle of a fixed three, which
+   * will happily take three films and no colour because one heading won the
+   * toss, and then every round is three ways of saying the same thing.
+   *
+   * Nothing is configured here on purpose. The settings are the shipped ones,
+   * and what is under test is that they are the ones that do this.
+   */
+  it('draws one note from each heading, with nothing configured', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+
+      const before = await json<TasteProfile>(taste('/api/taste'));
+      for (const entry of before.entries) {
+        await taste(`/api/taste/entries/${entry.id}`, { method: 'DELETE' });
+      }
+      for (const category of before.categories) {
+        await taste(`/api/taste/categories/${category.id}`, { method: 'DELETE' });
+      }
+
+      // Two headings with two notes each: a round that took both from one of
+      // them would be the old behaviour, and is what this rules out.
+      const headings: Record<string, string[]> = {
+        Colour: ['washed-out teal', 'sodium orange'],
+        Films: ['Portra 400', 'Ilford HP5'],
+      };
+      const byNote = new Map<string, string>();
+      for (const [name, texts] of Object.entries(headings)) {
+        const category = await json<{ id: string }>(
+          taste('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name }) }),
+        );
+        categories.push(category.id);
+        for (const text of texts) {
+          const made = await json<TasteEntry>(
+            taste('/api/taste/entries', {
+              method: 'POST',
+              body: JSON.stringify({ text, categoryId: category.id }),
+            }),
+          );
+          entries.push(made.id);
+          byNote.set(text, name);
+        }
+      }
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      llama.script({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a teal harbour on Portra', reason: 'Drawn from the notes.' },
+        },
+      });
+
+      await startWandering(chat.id);
+      const rounds = await wandered(chat.id, 1);
+      await stopWandering(chat.id);
+
+      const call = rounds[0]?.toolCall;
+      const notes = call?.tool === 'build_prompt' ? (call.wanderNotes ?? []) : [];
+
+      // One from each heading: two notes, and one of them from each.
+      expect(notes).toHaveLength(2);
+      expect(notes.map((text) => byNote.get(text)).sort()).toEqual(['Colour', 'Films']);
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
+   * Every round starts from nothing.
+   *
+   * The mode is a fresh draw from the notes, not a conversation, and it used to
+   * be sent the whole transcript anyway — so each round wrote its prompt with
+   * every earlier prompt in front of it. A model handed twenty variations on a
+   * theme continues the theme: round twenty is about round nineteen, and the
+   * notes it was supposedly drawn from are a footnote under a page of its own
+   * work. The instruction fought that in prose, which is asking a model to
+   * ignore the largest thing in its context.
+   *
+   * So the shape of the request is the thing under test, and it is the same
+   * shape on the fourth round as on the first: a system prompt and one turn.
+   */
+  it('shows a wandering round nothing it has already written', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+
+      const before = await json<TasteProfile>(taste('/api/taste'));
+      for (const entry of before.entries) {
+        await taste(`/api/taste/entries/${entry.id}`, { method: 'DELETE' });
+      }
+      for (const text of ['low fog over water', 'brutalist stairwells', 'washed-out teal']) {
+        const made = await json<TasteEntry>(
+          taste('/api/taste/entries', { method: 'POST', body: JSON.stringify({ text }) }),
+        );
+        entries.push(made.id);
+      }
+
+      /*
+       * Something to render with, or the run stops after one round with
+       * "nothing to generate with" — and one round proves nothing about what
+       * the second one is shown.
+       */
+      const workflows = await json<{ id: string }[]>(api('/api/workflows'));
+      if (workflows.length === 0) {
+        await api('/api/workflows', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'wandering', graph: sd15Txt2Img }),
+        });
+      }
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      // Distinct per round, so "the next one never saw it" can be asserted on
+      // the words themselves rather than on a message count alone.
+      const written = ['a flooded stairwell', 'a brass door in fog', 'a wet platform at night'];
+      for (const prompt of written) {
+        llama.script({
+          toolCall: {
+            name: 'build_prompt',
+            arguments: { prompt, reason: 'Drawn from the notes.' },
+          },
+        });
+      }
+
+      /*
+       * Waited on by request rather than by round.
+       *
+       * `wandered` counts stored messages carrying a wandering call, and an
+       * accepted round stores two of those — the proposal and the tool result
+       * that answers it — so asking it for three would settle after two rounds.
+       * What this test is about is what the model was sent, so that is what it
+       * waits for.
+       */
+      await startWandering(chat.id);
+      const deadline = Date.now() + 20_000;
+      while (llama.requests.length < 3 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      await stopWandering(chat.id);
+
+      const sent = llama.requests.slice(0, 3) as {
+        messages: { role: string; content: unknown }[];
+      }[];
+      expect(sent).toHaveLength(3);
+
+      for (const [index, request] of sent.entries()) {
+        /*
+         * Two messages, always: the system prompt and the round's own
+         * instruction. Growing by two a round is exactly the drift this fixes,
+         * so the count is asserted rather than merely "no earlier prompt in
+         * here" — a transcript that came back in some other shape would slip
+         * past the looser check.
+         */
+        expect({ round: index, roles: request.messages.map((message) => message.role) }).toEqual({
+          round: index,
+          roles: ['system', 'user'],
+        });
+      }
+
+      // And in particular, not a word of what the rounds before it wrote.
+      for (const [index, request] of sent.entries()) {
+        const text = JSON.stringify(request.messages);
+        for (const earlier of written.slice(0, index)) {
+          expect({ round: index, sawEarlier: text.includes(earlier) }).toEqual({
+            round: index,
+            sawEarlier: false,
+          });
+        }
+      }
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
+   * The rules that make the mode usable on a list anyone has curated.
+   *
+   * A flat shuffle treats a heading of near-synonyms and a heading of settled
+   * decisions as the same thing, and the result is four ways of saying "teal"
+   * in one picture and the format note never turning up. This is the whole
+   * feature in one round: a heading that must be in it, a heading that must
+   * not, and a cap that stops any one of them taking over.
+   */
+  it('draws under the rules: one heading always, one never, one at a time', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+
+      // A clean slate, so what comes back names the rules rather than the
+      // leftovers of whatever ran before.
+      const before = await json<TasteProfile>(taste('/api/taste'));
+      for (const entry of before.entries) {
+        await taste(`/api/taste/entries/${entry.id}`, { method: 'DELETE' });
+      }
+      for (const category of before.categories) {
+        await taste(`/api/taste/categories/${category.id}`, { method: 'DELETE' });
+      }
+
+      const heading = async (name: string) => {
+        const made = await json<TasteCategory>(
+          taste('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name }) }),
+        );
+        categories.push(made.id);
+        return made.id;
+      };
+      const wrote = async (categoryId: string | null, text: string) => {
+        const made = await json<TasteEntry>(
+          taste('/api/taste/entries', {
+            method: 'POST',
+            body: JSON.stringify({ text, categoryId }),
+          }),
+        );
+        entries.push(made.id);
+        return made.id;
+      };
+
+      const format = await heading('Format');
+      const colour = await heading('Colour');
+      const later = await heading('Ideas for later');
+
+      await wrote(format, 'shot on 6x6 film');
+      const colours = ['washed-out teal', 'sodium amber', 'cold grey-green'];
+      for (const text of colours) await wrote(colour, text);
+      await wrote(later, 'a lighthouse someday');
+
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: {
+            wander: {
+              attributes: 3,
+              sampling: 'chat',
+              draw: {
+                perCategory: 1,
+                loose: 'draw',
+                pinned: 'draw',
+                avoidRepeats: 0,
+                categories: {
+                  [format]: { role: 'always', max: 0 },
+                  [later]: { role: 'off', max: 0 },
+                },
+              },
+            },
+          },
+        }),
+      });
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      llama.script({
+        toolCall: {
+          name: 'build_prompt',
+          arguments: { prompt: 'a square photograph', reason: 'From the notes.' },
+        },
+      });
+      await startWandering(chat.id);
+      await wandered(chat.id, 1);
+      await stopWandering(chat.id);
+
+      const sent = llama.requests[0] as {
+        messages: { role: string; content: string }[];
+      };
+      const turn = sent.messages[sent.messages.length - 1]!.content;
+
+      // The heading that insists is in it.
+      expect(turn).toContain('shot on 6x6 film');
+      // The one switched out of wandering is not — though it is still a note,
+      // and still switched on for the chat.
+      expect(turn).not.toContain('a lighthouse someday');
+      // And the heading of near-synonyms contributed exactly one of its three.
+      expect(colours.filter((text) => turn.includes(text))).toHaveLength(1);
+    } finally {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: { wander: { attributes: 3, sampling: 'chat', draw: DEFAULT_WANDER_DRAW } },
+        }),
+      });
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
+   * Two rounds running, and the second one does not repeat the first.
+   *
+   * The fault of a long run is not repeated pictures, it is repeated notes: a
+   * short list will show you the same one twice within a minute. The previous
+   * round's notes are read back out of the conversation, so this survives a
+   * restart — which is the only place it matters.
+   */
+  it('keeps the last round’s notes out of the next one', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+
+      const before = await json<TasteProfile>(taste('/api/taste'));
+      for (const entry of before.entries) {
+        await taste(`/api/taste/entries/${entry.id}`, { method: 'DELETE' });
+      }
+
+      const written = ['low fog over water', 'brutalist stairwells', 'a wet street at night'];
+      for (const text of written) {
+        const made = await json<TasteEntry>(
+          taste('/api/taste/entries', { method: 'POST', body: JSON.stringify({ text }) }),
+        );
+        entries.push(made.id);
+      }
+
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: {
+            wander: {
+              attributes: 1,
+              sampling: 'chat',
+              draw: { ...DEFAULT_WANDER_DRAW, avoidRepeats: 1 },
+            },
+          },
+        }),
+      });
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      for (const round of [1, 2, 3]) {
+        llama.script({
+          toolCall: {
+            name: 'build_prompt',
+            arguments: { prompt: `round ${round}`, reason: 'From the notes.' },
+          },
+        });
+      }
+
+      // Three rounds of one run, rather than three runs: what is being tested
+      // is what the *second* round knows about the first.
+      await startWandering(chat.id);
+      await wandered(chat.id, 3);
+      await stopWandering(chat.id);
+
+      const asked = llama.requests.slice(0, 3).map((request) => {
+        const sent = request as { messages: { content: string }[] };
+        const turn = sent.messages[sent.messages.length - 1]!.content;
+        return written.find((text) => turn.includes(text)) ?? '';
+      });
+
+      // Each round drew one note, and never the one immediately before it.
+      expect(asked.every((text) => text !== '')).toBe(true);
+      expect(asked[1]).not.toBe(asked[0]);
+      expect(asked[2]).not.toBe(asked[1]);
+    } finally {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: { wander: { attributes: 3, sampling: 'chat', draw: DEFAULT_WANDER_DRAW } },
+        }),
+      });
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
+   * Sampling of its own, because this is not a conversation.
+   *
+   * Nobody reads the words, the same few notes come round again, and a model at
+   * its careful settings writes the same prompt from them every time.
+   */
+  it('sends the wandering run’s own sampling when it has been given one', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      /*
+       * Both ends set explicitly, because this is about them differing.
+       *
+       * The conversation's own sampling is whatever an earlier test left it as,
+       * and "the plain turn did not send 1.4" would pass on a suite that had
+       * never set anything at all.
+       */
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: {
+            sampling: { ...defaultSampling(), temperature: { on: true, value: 0.2 } },
+            wander: {
+              attributes: 1,
+              sampling: 'own',
+              ownSampling: { ...defaultSampling(), temperature: { on: true, value: 1.4 } },
+            },
+          },
+        }),
+      });
+
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
+      llama.script({
+        toolCall: { name: 'build_prompt', arguments: { prompt: 'something else', reason: 'x' } },
+      });
+      await startWandering(chat.id);
+      await wandered(chat.id, 1);
+      await stopWandering(chat.id);
+
+      const sent = llama.requests[0] as Record<string, unknown>;
+      expect(sent.temperature).toBe(1.4);
+
+      // …and an ordinary turn is untouched by it.
+      llama.script({ content: 'Fine.' });
+      await intent(chat.id, 'say', { content: 'hello' });
+      const plain = llama.requests[llama.requests.length - 1] as Record<string, unknown>;
+      expect(plain.temperature).toBe(0.2);
+    } finally {
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          chat: {
+            sampling: defaultSampling(),
+            wander: { attributes: 3, sampling: 'chat', ownSampling: defaultSampling() },
+          },
+        }),
+      });
+      await llama.close();
+    }
+  }, 30_000);
+
+  /**
+   * Being signed in is not enough for this one screen.
+   *
+   * Everything else in the app is pictures and settings, which a phone on a
+   * table shows to whoever picks it up. This is a description of a person, and
+   * the reason it is encrypted on disk is that nobody would think to look at
+   * it — so the door asks again, and asks the server rather than the browser.
+   */
+  it('refuses the notes to a session that has not given the password', async () => {
+    const server = await bootIsolated();
+    try {
+      const claim = await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+      const cookie = claim.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      // Signed in, and still shut — with a marker the screen can act on rather
+      // than an error it would have to guess at.
+      const barred = await server.call('/api/taste', { cookie });
+      expect(barred.status).toBe(403);
+      expect((await json<{ needsPassword?: boolean }>(barred)).needsPassword).toBe(true);
+
+      // Writing is shut too, not merely reading.
+      const refused = await server.call('/api/taste/entries', {
+        method: 'POST',
+        cookie,
+        body: JSON.stringify({ text: 'something private' }),
+      });
+      expect(refused.status).toBe(403);
+
+      // The wrong password buys nothing.
+      const wrong = await server.call('/api/taste/unlock', {
+        method: 'POST',
+        cookie,
+        body: JSON.stringify({ password: 'not it' }),
+      });
+      expect(wrong.status).toBe(401);
+
+      const opened = await json<{ ticket: string; profile: TasteProfile }>(
+        server.call('/api/taste/unlock', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ password: 'correct horse' }),
+        }),
+      );
+      expect(opened.ticket).toBeTruthy();
+      expect(opened.profile.entries).toEqual([]);
+
+      const withTicket = (path: string, init: RequestInit & { cookie?: string } = {}) =>
+        server.call(path, {
+          ...init,
+          cookie,
+          headers: { ...(init.headers ?? {}), 'x-latent-taste': opened.ticket },
+        });
+
+      const made = await withTicket('/api/taste/entries', {
+        method: 'POST',
+        body: JSON.stringify({ text: 'something private' }),
+      });
+      expect(made.status).toBe(201);
+
+      /*
+       * And the pass ends with the session it was bought in. Signing out is
+       * the moment somebody else might pick the phone up, which is the whole
+       * case this screen is locked for.
+       */
+      await server.call('/api/auth/logout', { method: 'POST', cookie });
+      const login = await server.call('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+      const back = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      const stale = await server.call('/api/taste', {
+        cookie: back,
+        headers: { 'x-latent-taste': opened.ticket },
+      });
+      expect(stale.status).toBe(403);
+
+      // The notes themselves survived all of that.
+      const again = await json<{ profile: TasteProfile }>(
+        server.call('/api/taste/unlock', {
+          method: 'POST',
+          cookie: back,
+          body: JSON.stringify({ password: 'correct horse' }),
+        }),
+      );
+      expect(again.profile.entries[0]?.text).toBe('something private');
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  /**
+   * With the key gone, so is the reading — and so is the writing.
+   *
+   * Tested against the store directly because there is no way to reach this
+   * state over HTTP: every route here needs a session, and signing in is what
+   * unlocks the vault. The state is reachable in a running server, though — a
+   * restart with sessions still valid and nobody signed in yet — which is why
+   * the routes answer 423 rather than assuming an open vault.
+   */
+  it('cannot read or write the notes with the vault locked', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-taste-'));
+    try {
+      const store = new Store(join(dir, 'taste.db'));
+      const vault = new Vault(store);
+      const taste = new Taste(store, vault);
+
+      vault.unlock('a password');
+      const entry = taste.addEntry(randomUUID(), { categoryId: null, text: 'quiet rooms' });
+      expect(taste.profile().entries[0]?.text).toBe('quiet rooms');
+
+      vault.lock();
+      expect(taste.isUnlocked).toBe(false);
+      expect(() => taste.profile()).toThrow(VaultLockedError);
+      expect(() => taste.addEntry(randomUUID(), { categoryId: null, text: 'more' })).toThrow(
+        VaultLockedError,
+      );
+      // The chat would rather go without the section than fail the turn.
+      expect(taste.profileOrNull()).toBe(null);
+
+      // Nothing was lost: the same password reads it back.
+      vault.unlock('a password');
+      expect(taste.profile().entries.map((row) => row.id)).toEqual([entry.id]);
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('updating Latent itself', () => {
+  /**
+   * The door, not the update.
+   *
+   * Nothing here ever calls `/api/update/run` with a valid pass — that would
+   * `git reset --hard` the working tree the tests are running from. What can be
+   * checked without doing that is everything that matters most anyway: who is
+   * let through, who is not, and that a refusal happens *before* anything is
+   * touched. The run itself is covered in `update.test.ts`, where git and npm
+   * are scripted rather than real.
+   */
+  const claim = async (server: Awaited<ReturnType<typeof bootIsolated>>) => {
+    const response = await server.call('/api/auth/setup', {
+      method: 'POST',
+      body: JSON.stringify({ password: 'correct horse' }),
+    });
+    return response.headers.get('set-cookie')?.split(';')[0] ?? '';
+  };
+
+  it('tells a signed-in session what is installed without asking for the password again', async () => {
+    const server = await bootIsolated();
+    try {
+      const cookie = await claim(server);
+
+      // Signed in first, like everything else under /api.
+      expect((await server.call('/api/update')).status).toBe(401);
+
+      const status = await json<UpdateStatus>(server.call('/api/update', { cookie }));
+      // Reading is not the guarded part: the screen has to be able to draw
+      // before there is anything to ask a password for.
+      expect(status.checkout).toBeTruthy();
+      expect(status.supervisor.kind).toBeTruthy();
+      expect(status.cursor).toBe(0);
+      expect(status.run).toBeNull();
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  it('will not install or restart for a session that has only signed in', async () => {
+    const server = await bootIsolated();
+    try {
+      const cookie = await claim(server);
+
+      for (const path of ['/api/update/run', '/api/update/restart']) {
+        const barred = await server.call(path, { method: 'POST', cookie });
+        expect(barred.status).toBe(403);
+        // A marker rather than a 401, so the screen asks for the password
+        // instead of concluding the session died and throwing somebody back to
+        // a sign-in they do not need.
+        expect((await json<{ needsPassword?: boolean }>(barred)).needsPassword).toBe(true);
+      }
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  it('sells the pass for the right password and nothing else', async () => {
+    const server = await bootIsolated();
+    try {
+      const cookie = await claim(server);
+
+      const wrong = await server.call('/api/update/unlock', {
+        method: 'POST',
+        cookie,
+        body: JSON.stringify({ password: 'not it' }),
+      });
+      expect(wrong.status).toBe(401);
+
+      const opened = await json<{ ticket: string; status: UpdateStatus }>(
+        server.call('/api/update/unlock', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ password: 'correct horse' }),
+        }),
+      );
+      expect(opened.ticket).toBeTruthy();
+      expect(opened.status.checkout).toBeTruthy();
+
+      /*
+       * Past the door, and refused for a reason that is about the machine
+       * rather than about permission: nothing has been installed, so there is
+       * nothing a restart would pick up. This is also the guard that makes the
+       * test safe — it answers before anything is stopped.
+       */
+      const pointless = await server.call('/api/update/restart', {
+        method: 'POST',
+        cookie,
+        headers: { 'x-latent-update': opened.ticket },
+      });
+      expect(pointless.status).toBe(409);
+      expect((await json<{ error: string }>(pointless)).error).toContain('Nothing has been installed');
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  it('keeps the two books of passes apart', async () => {
+    const server = await bootIsolated();
+    try {
+      const cookie = await claim(server);
+
+      const forTaste = await json<{ ticket: string }>(
+        server.call('/api/taste/unlock', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ password: 'correct horse' }),
+        }),
+      );
+      const forUpdate = await json<{ ticket: string }>(
+        server.call('/api/update/unlock', {
+          method: 'POST',
+          cookie,
+          body: JSON.stringify({ password: 'correct horse' }),
+        }),
+      );
+
+      // A pass for the notes is not a pass to replace the running code.
+      const crossed = await server.call('/api/update/run', {
+        method: 'POST',
+        cookie,
+        headers: { 'x-latent-update': forTaste.ticket },
+      });
+      expect(crossed.status).toBe(403);
+
+      // And the reverse: closing the notes must not lock an update out of its
+      // own progress, which is what one shared book would have done.
+      await server.call('/api/taste/lock', {
+        method: 'POST',
+        cookie,
+        headers: { 'x-latent-taste': forTaste.ticket },
+      });
+      const stillGood = await server.call('/api/update/restart', {
+        method: 'POST',
+        cookie,
+        headers: { 'x-latent-update': forUpdate.ticket },
+      });
+      // 409 rather than 403: through the door, and refused on the merits.
+      expect(stillGood.status).toBe(409);
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  it('has no update routes at all when they are switched off', async () => {
+    const server = await bootIsolated({ updateEnabled: false });
+    try {
+      const cookie = await claim(server);
+
+      // A route that does not exist cannot be reached by a stolen cookie —
+      // the same reasoning the terminal is registered under.
+      expect((await server.call('/api/update', { cookie })).status).toBe(404);
+      expect((await server.call('/api/update/run', { method: 'POST', cookie })).status).toBe(404);
+
+      const status = await json<StatusResponse>(server.call('/api/status', { cookie }));
+      expect(status.updateEnabled).toBe(false);
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+});
+
+describe('browsing folders on the ComfyUI machine', () => {
+  /**
+   * A proxy, and the interesting case is the ComfyUI that cannot answer.
+   *
+   * A stock ComfyUI answers 404 to everything under `/comfyllama/`, and that
+   * has to arrive as a sentence somebody can act on rather than an empty folder
+   * list — an empty list looks like "no pictures" and sends people through
+   * their output directory after a fault that is not there.
+   *
+   * Its own far end, built without the custom nodes: the shared mock has them,
+   * because the browser cannot be exercised at all against one that does not.
+   */
+  it('says what to install when the far end has no browser', async () => {
+    const stock = createMockComfy({ logLevel: 'silent', withoutComfyllama: true });
+    const address = await stock.listen(0);
+    const server = await bootIsolated({ comfyUrl: address });
+    try {
+      const claimed = await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+      const cookie = claimed.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      const barred = await server.call('/api/browse/roots', { cookie });
+      expect(barred.status).toBe(404);
+      expect((await json<{ error: string }>(barred)).error).toContain('comfyllama');
+    } finally {
+      await server.dispose();
+      await stock.close();
+    }
+  }, 30_000);
+
+  /** And with comfyllama there, the roots it allows come straight through. */
+  it('hands back the folders the far end allows', async () => {
+    const response = await api('/api/browse/roots');
+    expect(response.status).toBe(200);
+    const { roots } = await json<{ roots: { key: string }[] }>(response);
+    expect(roots.map((root) => root.key)).toEqual(['output', 'input', 'temp']);
+  });
+
+  /**
+   * The kind reaches the far end.
+   *
+   * It was being dropped by the proxy: the picker asked for clips, this handed
+   * the request on without the word, and comfyllama fell back to pictures — so
+   * a video slot was offered files it cannot load. Proved by asking for videos
+   * and getting the clip rather than the renders beside it.
+   */
+  it('asks for the kind of file the slot can actually use', async () => {
+    const response = await api('/api/browse/list?root=output&kind=video');
+    expect(response.status).toBe(200);
+    const listing = await json<{ files: { name: string }[] }>(response);
+    expect(listing.files.map((file) => file.name)).toEqual(['a-clip.webm']);
+  });
+
+  it('will not list a folder without being told which one', async () => {
+    const response = await api('/api/browse/list');
+    expect(response.status).toBe(400);
+  });
+
+  it('will not fetch a thumbnail without both halves of the reference', async () => {
+    // Root and path together are the reference; either alone names nothing.
+    expect((await api('/api/browse/thumb?root=output')).status).toBe(400);
+    expect((await api('/api/browse/thumb?path=a.png')).status).toBe(400);
+  });
+
+  it('needs a session, like everything else under /api', async () => {
+    const server = await bootIsolated();
+    try {
+      await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+      expect((await server.call('/api/browse/roots')).status).toBe(401);
+    } finally {
+      await server.dispose();
+    }
   }, 30_000);
 });

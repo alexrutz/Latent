@@ -57,6 +57,26 @@ export const UPSCALE_MODELS = ['RealESRGAN_x4plus.pth', '4x-UltraSharp.pth'];
 
 export const INPUT_IMAGES = ['example.png', 'photo.jpg'];
 
+/**
+ * Quantised weights, as they actually appear on a machine that runs video
+ * models on one consumer card.
+ *
+ * The published checkpoints for LTX-2.5 and MiniMax-H3 are tens of gigabytes of
+ * bf16 safetensors that nobody loads on a 24 GB card; what people run is a GGUF
+ * or fp8 repack of them, loaded by a different node than a checkpoint. The
+ * fixture says so, because a workflow this app cannot describe is a workflow it
+ * cannot offer.
+ */
+export const GGUF_MODELS = [
+  'ltx-2.5-video-Q4_K_M.gguf',
+  'ltx-2.5-video-Q6_K.gguf',
+  'minimax-h3-Q4_K_M.gguf',
+];
+
+export const GGUF_CLIPS = ['t5xxl_encoderonly-Q5_K_M.gguf', 'umt5-xxl-Q4_K_M.gguf'];
+
+export const VAES = ['ltx-2.5-vae.safetensors', 'ae.safetensors'];
+
 /** The ratios comfyllama's aspect-ratio latent offers, in its own order. */
 export const ASPECT_RATIOS = [
   '1:1',
@@ -253,6 +273,57 @@ export const objectInfoFixture: ObjectInfo = {
       },
     },
   },
+  /**
+   * Advanced sampling, and the one node with two ways to reach the same values.
+   *
+   * Temperature, top_p and top_k are settable one at a time, each on its own
+   * switch, or all three at once from the `intensity` slider across the six
+   * range bounds below it. Latent shows whichever half is deciding — see
+   * `idleSamplingControl` — which is only testable against a node that declares
+   * both halves.
+   *
+   * Copied in the node's own order, which is not the order it reads in: the
+   * newer widgets are appended because ComfyUI stores widget values
+   * positionally.
+   */
+  LlamaCppSampling: {
+    display_name: 'Sampler Settings (llama.cpp)',
+    output: ['LLAMA_SAMPLING'],
+    input: {
+      required: {
+        use_top_k: ['BOOLEAN', { default: false }],
+        top_k: ['INT', { default: 40, min: 0, max: 1000 }],
+        use_min_p: ['BOOLEAN', { default: false }],
+        min_p: ['FLOAT', { default: 0.05, min: 0.0, max: 1.0, step: 0.01 }],
+        use_typical_p: ['BOOLEAN', { default: false }],
+        typical_p: ['FLOAT', { default: 1.0, min: 0.0, max: 1.0, step: 0.01 }],
+        use_repeat_penalty: ['BOOLEAN', { default: false }],
+        repeat_penalty: ['FLOAT', { default: 1.1, min: 0.0, max: 2.0, step: 0.01 }],
+        use_presence_penalty: ['BOOLEAN', { default: false }],
+        presence_penalty: ['FLOAT', { default: 0.0, min: -2.0, max: 2.0, step: 0.01 }],
+        use_frequency_penalty: ['BOOLEAN', { default: false }],
+        frequency_penalty: ['FLOAT', { default: 0.0, min: -2.0, max: 2.0, step: 0.01 }],
+        use_mirostat: ['BOOLEAN', { default: false }],
+        mirostat_mode: ['INT', { default: 2, min: 0, max: 2 }],
+        mirostat_tau: ['FLOAT', { default: 5.0, min: 0.0, max: 20.0, step: 0.1 }],
+        mirostat_eta: ['FLOAT', { default: 0.1, min: 0.0, max: 1.0, step: 0.01 }],
+        use_stop_sequences: ['BOOLEAN', { default: false }],
+        stop_sequences: ['STRING', { default: '', multiline: true }],
+        use_temperature: ['BOOLEAN', { default: false }],
+        temperature: ['FLOAT', { default: 0.7, min: 0.0, max: 5.0, step: 0.01 }],
+        use_top_p: ['BOOLEAN', { default: false }],
+        top_p: ['FLOAT', { default: 0.95, min: 0.0, max: 1.0, step: 0.01 }],
+        use_intensity: ['BOOLEAN', { default: false }],
+        intensity: ['FLOAT', { default: 0.5, min: 0.0, max: 1.0, step: 0.01 }],
+        temperature_min: ['FLOAT', { default: 0.1, min: 0, max: 5.0, step: 0.01 }],
+        temperature_max: ['FLOAT', { default: 1.4, min: 0, max: 5.0, step: 0.01 }],
+        top_p_min: ['FLOAT', { default: 0.5, min: 0, max: 1.0, step: 0.01 }],
+        top_p_max: ['FLOAT', { default: 1.0, min: 0, max: 1.0, step: 0.01 }],
+        top_k_min: ['INT', { default: 10, min: 0, max: 1000 }],
+        top_k_max: ['INT', { default: 100, min: 0, max: 1000 }],
+      },
+    },
+  },
   LlamaServerChat: {
     display_name: 'Chat (llama-server)',
     output: ['STRING', 'STRING', 'LLAMA_MESSAGES'],
@@ -261,6 +332,20 @@ export const objectInfoFixture: ObjectInfo = {
         server: ['LLAMA_SERVER'],
         system: ['STRING', { default: 'You are a helpful assistant.', multiline: true }],
         prompt: ['STRING', { default: '', multiline: true, dynamicPrompts: true }],
+      },
+      /*
+       * The image and its three controls, in the node's own order.
+       *
+       * `use_image` comes last because comfyllama appends it there: ComfyUI
+       * stores widget values positionally, so a switch inserted above the two
+       * encoding controls would have shifted them in every already-saved
+       * workflow.
+       */
+      optional: {
+        image: ['IMAGE'],
+        image_max_size: ['INT', { default: 1024, min: 0, max: 4096, step: 64 }],
+        image_quality: ['INT', { default: 90, min: 30, max: 100 }],
+        use_image: ['BOOLEAN', { default: true }],
       },
     },
   },
@@ -320,6 +405,17 @@ export const objectInfoFixture: ObjectInfo = {
         image: ['IMAGE'],
         image_max_size: ['INT', { default: 1024, min: 0, max: 4096, step: 64 }],
         image_quality: ['INT', { default: 90, min: 30, max: 100 }],
+        /* The switch that ignores a connected image; in the node's own order. */
+        use_image: ['BOOLEAN', { default: true }],
+        /*
+         * Run the chosen preset, or hand the prompt straight through.
+         *
+         * The switch that replaced picking `passthrough` out of a dropdown of
+         * system prompts. Latent hides the picker while it is off — see
+         * `applyPresetChat` — which is only testable against a node that
+         * declares it.
+         */
+        use_model: ['BOOLEAN', { default: true }],
       },
     },
   },
@@ -329,6 +425,131 @@ export const objectInfoFixture: ObjectInfo = {
    * `divisible_by` is the numeric combo in the suite: its choices arrive as
    * numbers, and the node compares against numbers.
    */
+  /* ---------------------------------------------------------------- */
+  /* Video: quantised loaders, a video latent, and the savers           */
+  /* ---------------------------------------------------------------- */
+
+  /** ComfyUI-GGUF's loader — how a quantised video model is actually loaded. */
+  UnetLoaderGGUF: {
+    display_name: 'Unet Loader (GGUF)',
+    output: ['MODEL'],
+    input: { required: { unet_name: [GGUF_MODELS] } },
+  },
+  CLIPLoaderGGUF: {
+    display_name: 'CLIP Loader (GGUF)',
+    output: ['CLIP'],
+    input: {
+      required: {
+        clip_name: [GGUF_CLIPS],
+        type: [['ltxv', 'stable_diffusion', 'flux', 'hunyuan_video', 'wan']],
+      },
+    },
+  },
+  VAELoader: {
+    display_name: 'Load VAE',
+    output: ['VAE'],
+    input: { required: { vae_name: [VAES] } },
+  },
+  EmptyLTXVLatentVideo: {
+    display_name: 'Empty LTXV Latent Video',
+    output: ['LATENT'],
+    input: {
+      required: {
+        width: ['INT', { default: 768, min: 64, max: 16384, step: 32 }],
+        height: ['INT', { default: 512, min: 64, max: 16384, step: 32 }],
+        // Quantised to 8n+1 by the model, which is what the step is for.
+        length: ['INT', { default: 97, min: 9, max: 257, step: 8 }],
+        batch_size: ['INT', { default: 1, min: 1, max: 4096 }],
+      },
+    },
+  },
+  LTXVConditioning: {
+    display_name: 'LTXV Conditioning',
+    output: ['CONDITIONING', 'CONDITIONING'],
+    input: {
+      required: {
+        positive: ['CONDITIONING'],
+        negative: ['CONDITIONING'],
+        frame_rate: ['FLOAT', { default: 25, min: 0, max: 1000, step: 1 }],
+      },
+    },
+  },
+  /** Core ComfyUI's own video saver: files its result under `images`. */
+  SaveWEBM: {
+    display_name: 'Save WEBM',
+    output: [],
+    output_node: true,
+    input: {
+      required: {
+        images: ['IMAGE'],
+        filename_prefix: ['STRING', { default: 'ComfyUI' }],
+        codec: [['vp9', 'av1']],
+        fps: ['FLOAT', { default: 24, min: 1, max: 120, step: 1 }],
+        crf: ['FLOAT', { default: 32, min: 0, max: 63, step: 1 }],
+      },
+    },
+  },
+  /** VideoHelperSuite's, which files its result under `gifs` whatever it made. */
+  VHS_VideoCombine: {
+    display_name: 'Video Combine 🎥🅥🅗🅢',
+    output: [],
+    output_node: true,
+    input: {
+      required: {
+        images: ['IMAGE'],
+        frame_rate: ['FLOAT', { default: 8, min: 1, max: 120, step: 1 }],
+        loop_count: ['INT', { default: 0, min: 0, max: 100 }],
+        filename_prefix: ['STRING', { default: 'AnimateDiff' }],
+        format: [['image/gif', 'video/h264-mp4', 'video/webm']],
+        pingpong: ['BOOLEAN', { default: false }],
+        save_output: ['BOOLEAN', { default: true }],
+      },
+    },
+  },
+
+  /* -------------------------------------------------------------- */
+  /* Audio                                                            */
+  /* -------------------------------------------------------------- */
+
+  EmptyLatentAudio: {
+    display_name: 'Empty Latent Audio',
+    output: ['LATENT'],
+    input: {
+      required: {
+        // Seconds, not frames: the one number that decides what you get, and
+        // most of the time spent making it.
+        seconds: ['FLOAT', { default: 47.6, min: 1, max: 1000, step: 0.1 }],
+        batch_size: ['INT', { default: 1, min: 1, max: 4096 }],
+      },
+    },
+  },
+  VAEDecodeAudio: {
+    display_name: 'VAE Decode (Audio)',
+    output: ['AUDIO'],
+    input: { required: { samples: ['LATENT'], vae: ['VAE'] } },
+  },
+  /** Core ComfyUI's own audio saver: files its result under `audio`, as flac. */
+  SaveAudio: {
+    display_name: 'Save Audio (FLAC)',
+    output: [],
+    output_node: true,
+    input: {
+      required: { audio: ['AUDIO'], filename_prefix: ['STRING', { default: 'audio/ComfyUI' }] },
+    },
+  },
+  SaveAudioMP3: {
+    display_name: 'Save Audio (MP3)',
+    output: [],
+    output_node: true,
+    input: {
+      required: {
+        audio: ['AUDIO'],
+        filename_prefix: ['STRING', { default: 'audio/ComfyUI' }],
+        quality: [['V0', '128k', '320k'], { default: 'V0' }],
+      },
+    },
+  },
+
   EmptyLatentByAspectRatio: {
     display_name: 'Empty Latent (Aspect Ratio)',
     output: ['LATENT', 'INT', 'INT'],
@@ -344,7 +565,91 @@ export const objectInfoFixture: ObjectInfo = {
           ['SD1.5 / SDXL (4 channels)', 'SD3 / Flux (16 channels)', 'Krea 2 (16 channels)'],
           { default: 'SD1.5 / SDXL (4 channels)' },
         ],
+        /*
+         * The size can come from a connected picture instead of the widgets.
+         *
+         * Appended after `latent_format` rather than put beside `aspect_ratio`,
+         * for the same positional reason as every other switch in this pack —
+         * and the order is what the parity test against the real node checks.
+         */
+        from_image: [['off', 'aspect ratio', 'resolution'], { default: 'off' }],
+        image: ['IMAGE'],
       },
     },
+  },
+
+  /**
+   * MiniMax H3 reference-to-video, one fixed slot per reference.
+   *
+   * Nine picture slots, three video slots (each with a soundtrack) and three
+   * audio slots, every one with a switch and a tag. Forty-eight optional inputs,
+   * of which a normal shot uses three — `idleReferenceSlot` is what keeps the
+   * form readable, and the order here is what the parity test checks.
+   */
+  MiniMaxH3ReferencesFlat: {
+    input: {
+      required: {
+        clip: ['CLIP'],
+        vae: ['VAE'],
+        audio_vae: ['VAE'],
+        prompt: ['STRING', { multiline: true }],
+        width: ['INT', { default: 1344, min: 32, max: 16384, step: 32 }],
+        height: ['INT', { default: 768, min: 32, max: 16384, step: 32 }],
+        length: ['INT', { default: 124, min: 5, max: 3600, step: 17 }],
+        ref_image_size: [['match', 'max'], { default: 'match' }],
+      },
+      optional: {
+        image_1: ['IMAGE', { lazy: true }],
+        image_1_on: ['BOOLEAN', { default: true }],
+        image_1_tag: ['STRING', { default: '' }],
+        image_2: ['IMAGE', { lazy: true }],
+        image_2_on: ['BOOLEAN', { default: true }],
+        image_2_tag: ['STRING', { default: '' }],
+        image_3: ['IMAGE', { lazy: true }],
+        image_3_on: ['BOOLEAN', { default: true }],
+        image_3_tag: ['STRING', { default: '' }],
+        image_4: ['IMAGE', { lazy: true }],
+        image_4_on: ['BOOLEAN', { default: true }],
+        image_4_tag: ['STRING', { default: '' }],
+        image_5: ['IMAGE', { lazy: true }],
+        image_5_on: ['BOOLEAN', { default: true }],
+        image_5_tag: ['STRING', { default: '' }],
+        image_6: ['IMAGE', { lazy: true }],
+        image_6_on: ['BOOLEAN', { default: true }],
+        image_6_tag: ['STRING', { default: '' }],
+        image_7: ['IMAGE', { lazy: true }],
+        image_7_on: ['BOOLEAN', { default: true }],
+        image_7_tag: ['STRING', { default: '' }],
+        image_8: ['IMAGE', { lazy: true }],
+        image_8_on: ['BOOLEAN', { default: true }],
+        image_8_tag: ['STRING', { default: '' }],
+        image_9: ['IMAGE', { lazy: true }],
+        image_9_on: ['BOOLEAN', { default: true }],
+        image_9_tag: ['STRING', { default: '' }],
+        video_1: ['IMAGE', { lazy: true }],
+        video_1_audio: ['AUDIO', { lazy: true }],
+        video_1_on: ['BOOLEAN', { default: true }],
+        video_1_tag: ['STRING', { default: '' }],
+        video_2: ['IMAGE', { lazy: true }],
+        video_2_audio: ['AUDIO', { lazy: true }],
+        video_2_on: ['BOOLEAN', { default: true }],
+        video_2_tag: ['STRING', { default: '' }],
+        video_3: ['IMAGE', { lazy: true }],
+        video_3_audio: ['AUDIO', { lazy: true }],
+        video_3_on: ['BOOLEAN', { default: true }],
+        video_3_tag: ['STRING', { default: '' }],
+        audio_1: ['AUDIO', { lazy: true }],
+        audio_1_on: ['BOOLEAN', { default: true }],
+        audio_1_tag: ['STRING', { default: '' }],
+        audio_2: ['AUDIO', { lazy: true }],
+        audio_2_on: ['BOOLEAN', { default: true }],
+        audio_2_tag: ['STRING', { default: '' }],
+        audio_3: ['AUDIO', { lazy: true }],
+        audio_3_on: ['BOOLEAN', { default: true }],
+        audio_3_tag: ['STRING', { default: '' }],
+      },
+    },
+    output: ['CONDITIONING', 'LATENT', 'STRING'],
+    output_name: ['positive', 'latent', 'prompt'],
   },
 };

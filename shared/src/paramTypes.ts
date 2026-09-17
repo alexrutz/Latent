@@ -9,6 +9,16 @@ export type ParamRole =
   | 'prompt'
   | 'negative_prompt'
   | 'image_input'
+  /**
+   * A picture named by where it sits, rather than one uploaded.
+   *
+   * comfyllama's folder browser holds `output/monday/render.png` — a reference
+   * into a folder on the ComfyUI machine. It is deliberately not `image_input`:
+   * that role means "a picture this device can supply", which drives the
+   * img2img capability and the camera-roll upload, and neither is true here.
+   * The picture already exists on the far end and is chosen, not sent.
+   */
+  | 'folder_image'
   | 'model'
   | 'lora'
   /** A free-text field holding `<lora:name:0.8>` tags, edited structurally. */
@@ -25,6 +35,24 @@ export type ParamRole =
    */
   | 'aspect_ratio'
   | 'megapixels'
+  /**
+   * How many frames a video workflow renders.
+   *
+   * The single most consequential number in a video graph — it is the length of
+   * the clip and most of the render time — and without a role of its own it sat
+   * in the advanced group as "Length", one unremarkable integer among twenty.
+   */
+  | 'length'
+  /** Frames per second: the same frames stretched or compressed in time. */
+  | 'frame_rate'
+  /**
+   * How long a generated sound runs, in seconds.
+   *
+   * The audio equivalent of `length`, and consequential for the same reason: it
+   * is the piece of music you get and most of the time spent making it. In
+   * seconds rather than frames, because that is what the audio nodes take.
+   */
+  | 'seconds'
   | 'batch_size'
   | 'steps'
   | 'cfg'
@@ -35,7 +63,16 @@ export type ParamRole =
   | 'other';
 
 /** Which UI control renders the field. */
-export type ControlKind = 'textarea' | 'text' | 'int' | 'float' | 'combo' | 'boolean' | 'image';
+export type ControlKind =
+  | 'textarea'
+  | 'text'
+  | 'int'
+  | 'float'
+  | 'combo'
+  | 'boolean'
+  | 'image'
+  /** A picture chosen out of a folder on the ComfyUI machine, held as a path. */
+  | 'folderImage';
 
 export type ParamGroup = 'main' | 'advanced';
 
@@ -150,6 +187,22 @@ export interface ParamSchema {
     img2img: boolean;
     /** Has at least one seed field. */
     seeded: boolean;
+    /**
+     * Ends in a moving picture rather than a still one.
+     *
+     * Read off the graph's save node, so it is known before anything has run —
+     * which is what lets the picker label a workflow, and what warns a screen
+     * expecting a picture that it is about to be handed a video.
+     */
+    video: boolean;
+    /**
+     * Ends in a sound rather than a picture.
+     *
+     * Kept apart from `video` rather than folded into a "not a still image"
+     * flag: a video has frames to draw and a poster to grab, and audio has
+     * neither, so the screens that ask this question want different answers.
+     */
+    audio: boolean;
   };
   /** Node classes referenced by the workflow but missing from `/object_info`. */
   missingNodeTypes: string[];

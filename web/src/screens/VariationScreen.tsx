@@ -106,7 +106,7 @@ export function VariationScreen() {
   const narrowed = config.blockIds.length > 0;
 
   return (
-    <div className="safe-t px-4 pt-3 pb-6">
+    <div className="readable safe-t px-4 pt-3 pb-6">
       <h1 className="mb-3 text-xl font-semibold">Random</h1>
       <div className="space-y-4">
         <div className="flex items-center justify-between rounded-xl border border-line bg-surface px-3 py-2">

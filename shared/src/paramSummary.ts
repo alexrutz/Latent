@@ -33,6 +33,8 @@ const ROLE_ORDER: ParamRole[] = [
   'height',
   'aspect_ratio',
   'megapixels',
+  'length',
+  'frame_rate',
   'batch_size',
   'model',
   'lora',
@@ -61,6 +63,9 @@ const PRIMARY_ROLES: ParamRole[] = [
   // neither shape nor size says nothing about the picture at all.
   'aspect_ratio',
   'megapixels',
+  // On a video job the frame count is what distinguishes two otherwise
+  // identical entries, and it is most of the wait.
+  'length',
   'model',
 ];
 

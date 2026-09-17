@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { objectInfoFixture } from './fixtures/objectInfo.js';
-import { withPresetChat, sd15Txt2Img } from './fixtures/workflows.js';
+import { withLlamaServer, withPresetChat, sd15Txt2Img } from './fixtures/workflows.js';
 import { applyParams, buildParamSchema } from './paramSchema.js';
 import {
   applyPresetActive,
@@ -62,10 +62,12 @@ describe('applyPresetChat', () => {
     expect(applyPresetChat(plain, {})).toBe(plain);
   });
 
-  it('offers the slot names in the picker, passthrough first', () => {
+  it('offers the slot names in the picker, and nothing else', () => {
+    // `passthrough` is not a system prompt, and picking it out of a list of
+    // six that are was the clunky way to turn the model off. The `use_model`
+    // switch says it instead.
     const shaped = applyPresetChat(schema, {});
     expect(field(`${NODE}.active`, shaped)?.options).toEqual([
-      'passthrough',
       'Rewrite',
       'Caption',
       'Preset 3',
@@ -111,7 +113,7 @@ describe('applyPresetChat', () => {
     const shaped = applyPresetChat(schema, { [`${NODE}.slot_count`]: 5 });
     expect(field(`${NODE}.system_5`, shaped)?.hidden).toBeFalsy();
     expect(field(`${NODE}.system_6`, shaped)?.hidden).toBe(true);
-    expect(field(`${NODE}.active`, shaped)?.options).toHaveLength(6);
+    expect(field(`${NODE}.active`, shaped)?.options).toHaveLength(5);
   });
 
   it('labels each system prompt with its slot name', () => {
@@ -130,6 +132,60 @@ describe('applyPresetChat', () => {
       ),
     };
     expect(field(`${NODE}.system_1`, applyPresetChat(renamed, {}))?.label).toBe('House style');
+  });
+
+  /**
+   * The switch that replaced choosing "passthrough" from a list of prompts.
+   *
+   * Latent has no ComfyUI extension, so what it can do is show whichever
+   * control is deciding: with the model off there is no preset to pick, and
+   * with it on the picker holds presets and only presets.
+   */
+  describe('the run-or-pass-through switch', () => {
+    const withSwitch = (on: boolean) => applyPresetChat(schema, { [`${NODE}.use_model`]: on });
+
+    it('hides the picker while the model is off', () => {
+      expect(field(`${NODE}.active`, withSwitch(false))?.hidden).toBe(true);
+    });
+
+    it('shows it again when the model is back on', () => {
+      expect(field(`${NODE}.active`, withSwitch(true))?.hidden).toBeFalsy();
+    });
+
+    it('never hides the switch itself', () => {
+      for (const on of [true, false]) {
+        expect(field(`${NODE}.use_model`, withSwitch(on))?.hidden).toBeFalsy();
+      }
+    });
+
+    it('reads a stored passthrough as the model being off', () => {
+      // A workflow saved before the switch existed says it in the dropdown.
+      // Reading only the switch would leave a picker showing a value that is
+      // no longer one of its own options.
+      const older = applyPresetChat(schema, { [`${NODE}.active`]: 'passthrough' });
+      expect(field(`${NODE}.active`, older)?.hidden).toBe(true);
+    });
+
+    it('keeps passthrough in the picker for a workflow that has no switch', () => {
+      // Without the switch there is no other way to say it, so the entry stays
+      // exactly as long as it is needed.
+      const unswitched = {
+        ...withPresetChat,
+        '22': {
+          ...withPresetChat['22']!,
+          inputs: Object.fromEntries(
+            Object.entries(withPresetChat['22']!.inputs).filter(([key]) => key !== 'use_model'),
+          ),
+        },
+      };
+      const shaped = applyPresetChat(buildParamSchema(unswitched, objectInfoFixture), {});
+      expect(shaped.fields.find((entry) => entry.id === `${NODE}.active`)?.options).toEqual([
+        'passthrough',
+        'Rewrite',
+        'Caption',
+        'Preset 3',
+      ]);
+    });
   });
 
   it('lets a saved system prompt reach the slot named after it', () => {
@@ -250,21 +306,203 @@ describe('the image controls every chat node now carries', () => {
    * them out whether or not a picture is wired in — and on a text-only chat
    * node they are two settings that cannot change anything.
    */
+  /** The same node with something wired to `image`, and the switch as given. */
+  const wiredTo = (useImage: boolean) =>
+    buildParamSchema(
+      {
+        ...withPresetChat,
+        '22': {
+          ...withPresetChat['22']!,
+          inputs: { ...withPresetChat['22']!.inputs, image: ['9', 0], use_image: useImage },
+        },
+      },
+      objectInfoFixture,
+    );
+
   it('hides them when no picture is connected', () => {
     expect(field('22.image_max_size')?.hidden).toBe(true);
     expect(field('22.image_quality')?.hidden).toBe(true);
+    // The switch too: it switches off a picture that was never coming.
+    expect(field('22.use_image')?.hidden).toBe(true);
   });
 
   it('shows them as soon as one is', () => {
-    const withImage = {
-      ...withPresetChat,
-      '22': {
-        ...withPresetChat['22']!,
-        inputs: { ...withPresetChat['22']!.inputs, image: ['9', 0] },
-      },
-    };
-    const wired = buildParamSchema(withImage, objectInfoFixture);
+    const wired = wiredTo(true);
     expect(field('22.image_max_size', wired)?.hidden).toBe(false);
     expect(field('22.image_quality', wired)?.hidden).toBe(false);
+    expect(field('22.use_image', wired)?.hidden).toBe(false);
+  });
+
+  /*
+   * The switch is the point of contact between the two halves of this repo:
+   * comfyllama can ignore a connected image, and the form has to say so rather
+   * than offering an encoding setting for a picture that is not being sent.
+   */
+  it('drops the encoding controls again when the picture is switched off', () => {
+    const off = wiredTo(false);
+    expect(field('22.image_max_size', off)?.hidden).toBe(true);
+    expect(field('22.image_quality', off)?.hidden).toBe(true);
+  });
+
+  it('keeps the switch itself, because it is what turns the picture back on', () => {
+    expect(field('22.use_image', wiredTo(false))?.hidden).toBe(false);
+  });
+});
+
+/**
+ * Two ways to the same three numbers, and a form that shows one of them.
+ *
+ * The Sampler Settings node sets temperature, top_p and top_k either one at a
+ * time or all at once from an `intensity` slider. In ComfyUI a web extension
+ * keeps the halves in step live; there is none here, and the node is quite
+ * clear about which half is deciding, so the form follows that rather than
+ * offering both and letting one of them do nothing.
+ */
+describe('the sampler node’s two ways of setting the same values', () => {
+  /** The node with the slider on or off, everything else as exported. */
+  const withSlider = (on: boolean) =>
+    buildParamSchema(
+      {
+        ...withPresetChat,
+        '23': {
+          ...withPresetChat['23']!,
+          inputs: { ...withPresetChat['23']!.inputs, use_intensity: on },
+        },
+      },
+      objectInfoFixture,
+    );
+
+  it('hides the slider and its ranges while the values are set one by one', () => {
+    const off = withSlider(false);
+    expect(field('23.intensity', off)?.hidden).toBe(true);
+    expect(field('23.temperature_min', off)?.hidden).toBe(true);
+    expect(field('23.top_k_max', off)?.hidden).toBe(true);
+    // And the three values are the whole story, so they stay.
+    expect(field('23.temperature', off)?.hidden).toBe(false);
+    expect(field('23.top_k', off)?.hidden).toBe(false);
+  });
+
+  it('hides the three values while the slider is deciding them', () => {
+    const on = withSlider(true);
+    expect(field('23.temperature', on)?.hidden).toBe(true);
+    expect(field('23.top_p', on)?.hidden).toBe(true);
+    expect(field('23.top_k', on)?.hidden).toBe(true);
+    // Their switches with them: the node forces those on, so they are not
+    // choices anybody is making.
+    expect(field('23.use_temperature', on)?.hidden).toBe(true);
+    expect(field('23.use_top_k', on)?.hidden).toBe(true);
+  });
+
+  it('shows the slider and its ranges instead', () => {
+    const on = withSlider(true);
+    expect(field('23.intensity', on)?.hidden).toBe(false);
+    expect(field('23.temperature_min', on)?.hidden).toBe(false);
+    expect(field('23.temperature_max', on)?.hidden).toBe(false);
+    expect(field('23.top_p_min', on)?.hidden).toBe(false);
+    expect(field('23.top_k_max', on)?.hidden).toBe(false);
+  });
+
+  it('never hides the switch that moves between the two', () => {
+    expect(field('23.use_intensity', withSlider(true))?.hidden).toBe(false);
+    expect(field('23.use_intensity', withSlider(false))?.hidden).toBe(false);
+  });
+
+  it('leaves every other sampler setting alone either way', () => {
+    for (const on of [true, false]) {
+      const schema = withSlider(on);
+      expect(field('23.repeat_penalty', schema)?.hidden).toBe(false);
+      expect(field('23.use_mirostat', schema)?.hidden).toBe(false);
+      expect(field('23.stop_sequences', schema)?.hidden).toBe(false);
+    }
+  });
+
+  /*
+   * The rule is about this node, not about the names. `temperature` and
+   * `top_p` are on every generation node too, where nothing hides them.
+   */
+  it('does not reach into the chat nodes that share those input names', () => {
+    const chat = buildParamSchema(
+      {
+        ...withLlamaServer,
+        '21': {
+          ...withLlamaServer['21']!,
+          // A generation node has its own temperature and top_p, and its own
+          // `intensity` would mean nothing — there is no slider on it.
+          inputs: { ...withLlamaServer['21']!.inputs, temperature: 0.7, top_p: 0.95 },
+        },
+      },
+      objectInfoFixture,
+    );
+
+    const shared = chat.fields.filter((entry) => ['temperature', 'top_p'].includes(entry.inputName));
+    expect(shared).toHaveLength(2);
+    for (const entry of shared) expect(entry.hidden).not.toBe(true);
+  });
+});
+
+/**
+ * The empty latent, when a picture decides how big it is.
+ *
+ * The node makes its latent from a ratio and a megapixel budget, and it can
+ * take either from a connected picture instead: the shape only, keeping the
+ * budget, or the picture's exact size. Whichever it takes stops being something
+ * the form can decide — and a number you can still edit that changes nothing is
+ * worse than no number at all.
+ */
+describe('where the empty latent gets its size', () => {
+  /** Node `5` of the preset workflow, with the mode set and a picture wired. */
+  const sizedBy = (mode: string) =>
+    buildParamSchema(
+      {
+        ...withPresetChat,
+        '5': {
+          ...withPresetChat['5']!,
+          inputs: { ...withPresetChat['5']!.inputs, from_image: mode, image: ['1', 0] },
+        },
+      },
+      objectInfoFixture,
+    );
+
+  it('leaves both controls alone while nothing is taken from a picture', () => {
+    expect(field('5.aspect_ratio')?.hidden).toBeFalsy();
+    expect(field('5.megapixels')?.hidden).toBeFalsy();
+    // And explicitly off, with a picture wired, is the same thing.
+    const off = sizedBy('off');
+    expect(field('5.aspect_ratio', off)?.hidden).toBeFalsy();
+    expect(field('5.megapixels', off)?.hidden).toBeFalsy();
+  });
+
+  /*
+   * The difference between the two modes, in one assertion each. Borrowing a
+   * shape leaves you deciding how big it is; borrowing a size does not.
+   */
+  it('keeps the budget when only the shape is borrowed', () => {
+    const ratio = sizedBy('aspect ratio');
+    expect(field('5.aspect_ratio', ratio)?.hidden).toBe(true);
+    expect(field('5.megapixels', ratio)?.hidden).toBeFalsy();
+  });
+
+  it('drops both when the picture’s own size is the answer', () => {
+    const resolution = sizedBy('resolution');
+    expect(field('5.aspect_ratio', resolution)?.hidden).toBe(true);
+    expect(field('5.megapixels', resolution)?.hidden).toBe(true);
+  });
+
+  it('never hides the mode itself, which is what brings them back', () => {
+    for (const mode of ['off', 'aspect ratio', 'resolution']) {
+      expect(field('5.from_image', sizedBy(mode))?.hidden).toBeFalsy();
+    }
+  });
+
+  /** Nothing else in the graph has a ratio to lose to this rule. */
+  it('leaves other nodes’ controls alone', () => {
+    const resolution = sizedBy('resolution');
+    const elsewhere = resolution.fields.filter(
+      (entry) => entry.nodeId !== '5' && entry.inputName === 'megapixels',
+    );
+    for (const entry of elsewhere) expect(entry.hidden).not.toBe(true);
+    // The rest of node 5 is untouched: this rule is about size, not the node.
+    expect(field('5.batch_size', resolution)?.hidden).toBeFalsy();
+    expect(field('5.divisible_by', resolution)?.hidden).toBeFalsy();
   });
 });

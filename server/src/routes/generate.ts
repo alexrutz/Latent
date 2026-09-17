@@ -3,25 +3,29 @@ import type { FastifyInstance } from 'fastify';
 import {
   appendAlwaysBlocks,
   applyModelServer,
-  applyOverrides,
+  applyImageOff,
   applyParams,
+  imageOffNodes,
   applyPresetActive,
   applyPresetChat,
   applySystemPrompts,
   buildParamSummary,
   composeRandomPrompt,
   drawRandomParams,
+  findEditOrigins,
   pickRandomBlocks,
 } from '@latent/shared';
 import type {
   GenerateRequest,
   GenerateResponse,
   ModelServerTarget,
+  ObjectInfo,
   ParamValues,
 } from '@latent/shared';
 
 import { ComfyError } from '../comfy/client.js';
 import { deriveTitle, type AppContext } from './context.js';
+import { resolveSchema } from '../formSchema.js';
 
 const MAX_BATCH_COUNT = 32;
 
@@ -48,7 +52,6 @@ export async function queueBatch(
   return runBatch(ctx, detail, body);
 }
 
-
 /** The batch itself, once the workflow has been found. */
 async function runBatch(
   ctx: AppContext,
@@ -63,7 +66,7 @@ async function runBatch(
    * named "Rewrite" on screen would land nowhere here. The overrides go on top,
    * so a label typed in the form editor still wins over the slot's name.
    */
-  const schema = applyOverrides(applyPresetChat(detail.schema, values), detail.overrides);
+  const schema = resolveSchema(ctx.store, applyPresetChat(detail.schema, values), detail.overrides);
   const batchCount = Math.min(Math.max(Math.floor(body.batchCount ?? 1) || 1, 1), MAX_BATCH_COUNT);
 
   // Remember what the user last typed so the form reopens where they left it.
@@ -170,6 +173,17 @@ async function runBatch(
       }
     : null;
 
+  /*
+   * The node definitions, for deciding whether a picture may be unplugged.
+   *
+   * Fetched once for the whole batch and cached upstream. A ComfyUI that cannot
+   * be reached gives nothing rather than failing the request: without the
+   * definitions the switch still unplugs, and a workflow that turns out to need
+   * the picture is refused by ComfyUI instead of by us — a worse message, but
+   * only in the case where nothing was going to run anyway.
+   */
+  const objectInfo = await ctx.orchestrator.objectInfo().catch(() => ({}) as ObjectInfo);
+
   for (let i = 0; i < batchCount; i += 1) {
     let itemValues = applySystemPrompts(
       schema,
@@ -207,19 +221,40 @@ async function runBatch(
      */
     const graph = applyModelServer(workflow, modelServer);
 
+    /*
+     * Pictures the form switched off never reach ComfyUI.
+     *
+     * After the values are applied, because that is when the switches are
+     * known, and before submitting, because the point is that the link is not
+     * in the graph that goes over the wire.
+     */
+    const withoutPictures = applyImageOff(graph, imageOffNodes(schema, itemValues), objectInfo);
+    if (withoutPictures.error) {
+      // The same shape as a submit failure: whatever was already queued stays
+      // queued, and the message says why the rest stopped.
+      return { generationIds, promptIds, error: withoutPictures.error };
+    }
+
     // Built per item, not once: each item in a batch gets its own seed, and
     // the seed is often the only thing distinguishing two queued jobs.
     const submitted = { ...itemValues, ...seeds };
 
     try {
       const result = await ctx.orchestrator.submit({
-        graph,
+        graph: withoutPictures.workflow,
         workflowId: detail.id,
         workflowName: detail.name,
         title,
         values: submitted,
         seeds,
         params: buildParamSummary(schema, submitted),
+        /*
+         * Which picture this edit started from, settled here rather than in the
+         * gallery. The answer comes from a node's title, and by the time
+         * anybody opens the result the workflow may have been re-titled or
+         * deleted — the same reason `params` is recorded at submit time.
+         */
+        origins: findEditOrigins(schema, submitted),
       });
       generationIds.push(result.generationId);
       promptIds.push(result.promptId);
