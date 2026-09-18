@@ -4,6 +4,7 @@ import {
   applyOverrides,
   applyParams,
   assertApiWorkflow,
+  browseKindOf,
   buildParamSchema,
   defaultValues,
   findFieldByRole,
@@ -16,6 +17,7 @@ import {
   img2img,
   loadImageFromFolder,
   ltxVideoGguf,
+  minimaxReferencePicker,
   minimaxReferences,
   sd15Txt2Img,
   sdxlBaseRefiner,
@@ -668,11 +670,18 @@ describe('a video workflow', () => {
 
 describe('the MiniMax H3 reference slots', () => {
   /**
-   * Forty-eight optional inputs, of which a shot uses three.
+   * Every control the graph carries, whatever state its neighbours are in.
    *
-   * The node offers every reference slot as a fixed input so that an API-format
-   * prompt can reach it at all — which is the whole reason it exists — and the
-   * cost of that is a form nobody could read if it were shown whole.
+   * These slots used to hide themselves: a slot with nothing wired lost both
+   * its controls, and a wired slot that was switched off lost its tag. The rule
+   * was true — neither could affect the result — and using it was horrible,
+   * because controls appeared and vanished as you touched the thing beside
+   * them and the form was a different shape every time you opened it. A setting
+   * that does nothing for the moment is a much smaller problem than a form you
+   * cannot learn the shape of.
+   *
+   * What still keeps the form short is the other half, below: a saved workflow
+   * only carries the widgets it was saved with.
    */
   const field = (id: string) => byId(build(minimaxReferences).fields, id);
 
@@ -681,16 +690,14 @@ describe('the MiniMax H3 reference slots', () => {
     expect(field('4.image_1_tag')?.hidden).toBeFalsy();
   });
 
-  it('keeps the switch but drops the tag when a wired slot is off', () => {
-    // The tag only ever writes a number the prompt will not contain now.
-    expect(field('4.image_2_tag')?.hidden).toBe(true);
-    // The switch stays: it is the only thing that turns the slot back on.
+  it('keeps the tag of a wired slot that is switched off', () => {
+    expect(field('4.image_2_tag')?.hidden).toBeFalsy();
     expect(field('4.image_2_on')?.hidden).toBeFalsy();
   });
 
-  it('drops both controls for a slot the graph carries but nothing is wired to', () => {
-    expect(field('4.image_3_on')?.hidden).toBe(true);
-    expect(field('4.image_3_tag')?.hidden).toBe(true);
+  it('keeps both controls of a slot the graph carries but nothing is wired to', () => {
+    expect(field('4.image_3_on')?.hidden).toBeFalsy();
+    expect(field('4.image_3_tag')?.hidden).toBeFalsy();
   });
 
   it('has no field at all for a slot the graph never mentions', () => {
@@ -754,5 +761,57 @@ describe('the folder browser is not an upload', () => {
     const stock = build(img2img);
     expect(findFieldByRole(stock, 'image_input')?.id).toBe('1.image');
     expect(stock.capabilities.img2img).toBe(true);
+  });
+});
+
+/**
+ * The reference picker, which is fifteen of the same kind of field.
+ *
+ * Two bugs lived here undisturbed because nothing in the suite built a schema
+ * from this node. Both were about *telling the slots apart*: every one of them
+ * was labelled "Picture from a folder", and the browser behind each is filtered
+ * to what that slot can load. Fifteen identical labels over three different
+ * browsers reads, from the outside, as a browser that can only find pictures.
+ */
+describe('the MiniMax H3 reference picker', () => {
+  const schema = build(minimaxReferencePicker);
+  const field = (id: string) => byId(schema.fields, id);
+
+  it('names each slot by what it is and which one it is', () => {
+    expect(field('1.picture_1')?.label).toBe('Picture 1');
+    expect(field('1.picture_2')?.label).toBe('Picture 2');
+    expect(field('1.video_1')?.label).toBe('Video 1');
+    expect(field('1.audio_1')?.label).toBe('Audio 1');
+  });
+
+  it('gives every slot the folder browser rather than an upload', () => {
+    for (const id of ['1.picture_1', '1.video_1', '1.audio_1']) {
+      expect(field(id)?.role).toBe('folder_image');
+      expect(field(id)?.control).toBe('folderImage');
+    }
+  });
+
+  it('points each slot at the files it can actually load', () => {
+    expect(browseKindOf(field('1.picture_1')!)).toBe('image');
+    expect(browseKindOf(field('1.video_1')!)).toBe('video');
+    expect(browseKindOf(field('1.audio_1')!)).toBe('audio');
+  });
+
+  it('does not claim the workflow can be fed a photo from this device', () => {
+    // The files already exist on the ComfyUI machine and are chosen, not sent.
+    expect(schema.capabilities.img2img).toBe(false);
+  });
+
+  it('leaves the switch in front of every slot visible', () => {
+    // Including the empty one: a control that appears and vanishes as you touch
+    // its neighbour is a form you cannot learn the shape of.
+    expect(field('1.use_picture_1')?.hidden).toBeFalsy();
+    expect(field('1.use_video_1')?.hidden).toBeFalsy();
+    expect(field('1.use_audio_1')?.hidden).toBeFalsy();
+  });
+
+  it('keeps the settings that apply to every slot as ordinary numbers', () => {
+    expect(field('1.video_fps')?.control).toBe('int');
+    expect(field('1.video_seconds')?.control).toBe('int');
   });
 });

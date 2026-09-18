@@ -8242,9 +8242,80 @@ describe('the supervisor', () => {
     await api(`/api/supervisor/services/${created.config.id}`, { method: 'DELETE' });
   });
 
+  /**
+   * The folder beside the executable, read so nothing has to be typed.
+   *
+   * Model filenames are long, versioned and quantisation-suffixed, and people
+   * keep every `.gguf` in one folder precisely so a desktop shell can complete
+   * them. A phone has no tab key.
+   */
+  it('lists the model files under a service root', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-gguf-'));
+    mkdirSync(join(dir, 'models'), { recursive: true });
+    mkdirSync(join(dir, 'deep', 'deeper', 'deepest'), { recursive: true });
+
+    writeFileSync(join(dir, 'Qwen3-VL-30B-UD-Q5_K_XL.gguf'), 'x'.repeat(2048));
+    writeFileSync(join(dir, 'mmproj-Qwen3-VL-30B-F16.gguf'), 'x'.repeat(512));
+    writeFileSync(join(dir, 'models', 'llama-mtp-head.GGUF'), 'x'.repeat(128));
+    writeFileSync(join(dir, 'llama-server.exe'), 'not a model');
+    writeFileSync(join(dir, 'notes.txt'), 'nor this');
+    // Three levels down, which the shallow walk deliberately does not reach.
+    writeFileSync(join(dir, 'deep', 'deeper', 'deepest', 'buried.gguf'), 'x');
+
+    try {
+      const created = await json<ServiceView>(
+        api('/api/supervisor/services', {
+          method: 'POST',
+          body: JSON.stringify({ kind: 'llama-server', root: dir }),
+        }),
+      );
+
+      const listed = await json<{ files: { path: string; bytes: number }[]; root: string }>(
+        api(`/api/supervisor/services/${created.config.id}/files`),
+      );
+
+      const paths = listed.files.map((file) => file.path);
+      // Every `.gguf`, whatever its case, and nothing that is not one.
+      expect(paths).toContain('Qwen3-VL-30B-UD-Q5_K_XL.gguf');
+      expect(paths).toContain('mmproj-Qwen3-VL-30B-F16.gguf');
+      expect(paths).toContain('models/llama-mtp-head.GGUF');
+      expect(paths).not.toContain('llama-server.exe');
+      expect(paths).not.toContain('notes.txt');
+      // Bounded: a models tree can be enormous and this runs on a phone.
+      expect(paths.some((path) => path.includes('buried'))).toBe(false);
+
+      // Sorted by name, so the quantisations of one model sort together —
+      // which is the comparison somebody is making when they open this.
+      expect(paths).toEqual([...paths].sort((a, b) => a.localeCompare(b)));
+      // The size is what tells two quantisations apart at a glance.
+      expect(listed.files.find((file) => file.path.startsWith('Qwen3'))?.bytes).toBe(2048);
+
+      await api(`/api/supervisor/services/${created.config.id}`, { method: 'DELETE' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('has an empty listing rather than an error for a service with no root', async () => {
+    const created = await json<ServiceView>(
+      api('/api/supervisor/services', {
+        method: 'POST',
+        body: JSON.stringify({ kind: 'llama-server' }),
+      }),
+    );
+
+    const listed = await json<{ files: unknown[]; root: string }>(
+      api(`/api/supervisor/services/${created.config.id}/files`),
+    );
+    expect(listed.files).toEqual([]);
+    expect(listed.root).toBe('');
+
+    await api(`/api/supervisor/services/${created.config.id}`, { method: 'DELETE' });
+  });
+
   it('is 404 for a service that is not there', async () => {
-    for (const path of ['start', 'stop', 'restart', 'log']) {
-      const method = path === 'log' ? 'GET' : 'POST';
+    for (const path of ['start', 'stop', 'restart', 'log', 'files']) {
+      const method = path === 'log' || path === 'files' ? 'GET' : 'POST';
       const response = await api(`/api/supervisor/services/nobody/${path}`, { method });
       expect(response.status).toBe(404);
     }

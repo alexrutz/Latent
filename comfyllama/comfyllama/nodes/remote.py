@@ -15,9 +15,9 @@ from ..reasoning import combine, split_thinking
 from ..server import (AUTH_MODES, LlamaServer, LlamaServerError, apply_grammar,
                       apply_model, apply_thinking, build_payload, stream_chat,
                       stream_completion)
-from .common import (CATEGORY_SERVER, active_image, generation_inputs,
-                     image_inputs, is_changed_for_seed, thinking_input,
-                     wants_image)
+from .common import (CATEGORY_SERVER, active_image, active_media,
+                     generation_inputs, image_inputs, is_changed_for_seed,
+                     media_inputs, thinking_input, wants_image)
 from .generation import _messages, user_content
 
 
@@ -154,6 +154,7 @@ class LlamaServerChat:
                 "sampling": ("LLAMA_SAMPLING",),
                 "grammar": ("LLAMA_GRAMMAR",),
                 **image_inputs(),
+                **media_inputs(),
             },
         }
 
@@ -161,7 +162,7 @@ class LlamaServerChat:
     RETURN_NAMES = ("text", "thinking", "messages")
     FUNCTION = "generate"
     CATEGORY = CATEGORY_SERVER
-    DESCRIPTION = "Chat with a remote llama-server. Accepts images too."
+    DESCRIPTION = "Chat with a remote llama-server. Takes pictures, clips and sound too."
 
     @classmethod
     def IS_CHANGED(cls, seed=0, **kwargs):
@@ -172,8 +173,11 @@ class LlamaServerChat:
 
     def generate(self, server, system, prompt, thinking, max_tokens, temperature,
                  top_p, seed, model="", messages=None, sampling=None, grammar=None,
-                 use_image=True, image=None, image_max_size=1024, image_quality=90):
+                 use_image=True, image=None, image_max_size=1024, image_quality=90,
+                 **kwargs):
         content = user_content(prompt, active_image(image, use_image),
+                               **active_media(kwargs),
+                               video_frames=kwargs.get("video_frames", 8),
                                max_size=image_max_size, quality=image_quality)
         conversation = _messages(system, prompt, messages, content=content)
         text, thought = _chat(server, conversation, thinking, max_tokens, temperature,
@@ -217,6 +221,9 @@ class LlamaServerVisionChat:
                 "messages": ("LLAMA_MESSAGES",),
                 "sampling": ("LLAMA_SAMPLING",),
                 "grammar": ("LLAMA_GRAMMAR",),
+                # Not lazy: this node has no `check_lazy_status`, and a lazy
+                # input nobody ever asks for stays None forever.
+                **media_inputs(lazy=False),
             },
         }
 
@@ -224,7 +231,7 @@ class LlamaServerVisionChat:
     RETURN_NAMES = ("text", "thinking", "messages")
     FUNCTION = "generate"
     CATEGORY = CATEGORY_SERVER
-    DESCRIPTION = "Caption or interrogate images with a multimodal llama-server."
+    DESCRIPTION = "Describe or interrogate a picture, a clip or a sound with a multimodal llama-server."
 
     @classmethod
     def IS_CHANGED(cls, seed=0, **kwargs):
@@ -232,9 +239,10 @@ class LlamaServerVisionChat:
 
     def generate(self, server, image, system, prompt, thinking, max_tokens, temperature,
                  top_p, seed, image_max_size=1024, image_quality=90, model="",
-                 messages=None, sampling=None, grammar=None):
-        content = user_content(prompt, image, max_size=image_max_size,
-                               quality=image_quality)
+                 messages=None, sampling=None, grammar=None, **kwargs):
+        content = user_content(prompt, image, **active_media(kwargs),
+                               video_frames=kwargs.get("video_frames", 8),
+                               max_size=image_max_size, quality=image_quality)
         conversation = _messages(system, prompt, messages, content=content)
         text, thought = _chat(server, conversation, thinking, max_tokens, temperature,
                               top_p, seed, sampling, grammar, model)

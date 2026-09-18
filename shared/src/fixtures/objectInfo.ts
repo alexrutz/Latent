@@ -552,7 +552,7 @@ export const objectInfoFixture: ObjectInfo = {
 
   EmptyLatentByAspectRatio: {
     display_name: 'Empty Latent (Aspect Ratio)',
-    output: ['LATENT', 'INT', 'INT'],
+    output: ['LATENT', 'INT', 'INT', 'INT', 'FLOAT'],
     input: {
       required: {
         aspect_ratio: [ASPECT_RATIOS, { default: '1:1' }],
@@ -574,6 +574,17 @@ export const objectInfoFixture: ObjectInfo = {
          */
         from_image: [['off', 'aspect ratio', 'resolution'], { default: 'off' }],
         image: ['IMAGE'],
+        /*
+         * A clip carries a third thing besides its shape and its size.
+         *
+         * A video in ComfyUI is an IMAGE batch, so its length is the first axis
+         * of the very tensor the width and height come from — which makes
+         * fetching a duration the same gesture as fetching a resolution, and
+         * wanted at the same moment. Appended after `image` for the usual
+         * positional reason, and the order is what the parity test checks.
+         */
+        length: ['INT', { default: 1, min: 1, max: 16384 }],
+        frame_rate: ['FLOAT', { default: 24.0, min: 0.1, max: 240.0, step: 0.1 }],
       },
     },
   },
@@ -586,6 +597,80 @@ export const objectInfoFixture: ObjectInfo = {
    * of which a normal shot uses three — `idleReferenceSlot` is what keeps the
    * form readable, and the order here is what the parity test checks.
    */
+  /**
+   * comfyllama's folder loader, as its `/object_info` declares it.
+   *
+   * Missing here until now, which meant every test of the folder browser was a
+   * test of an *unknown* node — typed by inspecting its literal value rather
+   * than by what the node says, and refused outright by the mock's executor.
+   * So the browser could be opened in a test and the workflow behind it could
+   * never be run, which is exactly the gap a batch of pictures walks through.
+   */
+  LoadImageFromFolder: {
+    display_name: 'Load Image (Folder Browser)',
+    output: ['IMAGE', 'MASK', 'STRING'],
+    input: {
+      required: {
+        image: ['STRING', { default: '' }],
+      },
+    },
+  },
+  /**
+   * The fifteen-slot reference picker, likewise.
+   *
+   * Declared with every slot it really has — nine pictures, three videos, three
+   * audio clips, and the `use_…` switch in front of each — because the thing
+   * worth testing is that a video slot is offered clips and an audio slot is
+   * offered sound, and that cannot be tested against a node whose slots are
+   * guessed from whatever literals a fixture happened to set.
+   */
+  MiniMaxH3ReferencePicker: {
+    display_name: 'MiniMax H3 Reference Picker',
+    output: [
+      ...Array.from({ length: 9 }, () => 'IMAGE'),
+      ...Array.from({ length: 3 }, () => 'IMAGE'),
+      ...Array.from({ length: 3 }, () => 'AUDIO'),
+      ...Array.from({ length: 3 }, () => 'AUDIO'),
+    ],
+    input: {
+      required: {
+        video_fps: ['INT', { default: 24, min: 1, max: 120 }],
+        video_seconds: ['INT', { default: 15, min: 1, max: 60 }],
+      },
+      optional: {
+        ...Object.fromEntries(
+          Array.from({ length: 9 }, (_, at) => [
+            `picture_${at + 1}`,
+            ['STRING', { default: '', comfyllama_browse: 'image' }],
+          ]),
+        ),
+        ...Object.fromEntries(
+          Array.from({ length: 3 }, (_, at) => [
+            `video_${at + 1}`,
+            ['STRING', { default: '', comfyllama_browse: 'video' }],
+          ]),
+        ),
+        ...Object.fromEntries(
+          Array.from({ length: 3 }, (_, at) => [
+            `audio_${at + 1}`,
+            ['STRING', { default: '', comfyllama_browse: 'audio' }],
+          ]),
+        ),
+        ...Object.fromEntries(
+          Array.from({ length: 9 }, (_, at) => [
+            `use_picture_${at + 1}`,
+            ['BOOLEAN', { default: true }],
+          ]),
+        ),
+        ...Object.fromEntries(
+          Array.from({ length: 3 }, (_, at) => [`use_video_${at + 1}`, ['BOOLEAN', { default: true }]]),
+        ),
+        ...Object.fromEntries(
+          Array.from({ length: 3 }, (_, at) => [`use_audio_${at + 1}`, ['BOOLEAN', { default: true }]]),
+        ),
+      },
+    },
+  },
   MiniMaxH3ReferencesFlat: {
     input: {
       required: {

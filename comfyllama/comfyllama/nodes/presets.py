@@ -15,8 +15,9 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..backend import decode_escapes
-from .common import (CATEGORY_SERVER, active_image, generation_inputs,
-                     image_inputs, is_changed_for_seed, thinking_input)
+from .common import (CATEGORY_SERVER, active_image, active_media,
+                     generation_inputs, image_inputs, is_changed_for_seed,
+                     media_inputs, thinking_input)
 from .generation import _messages, user_content
 from .remote import _chat, model_input
 
@@ -172,7 +173,7 @@ class LlamaServerPresetChat:
                 # Lazy like the rest: neither passthrough nor a switched-off
                 # image may run the branch that produces one.
                 **image_inputs(),
-                # The switch, appended last.
+                # The switch, appended after the image controls.
                 #
                 # On by default so a workflow saved before it existed behaves
                 # exactly as it did — passthrough then still comes from the
@@ -190,6 +191,11 @@ class LlamaServerPresetChat:
                                "the connection, not the extra prompt, not the "
                                "image.",
                 }),
+                # And the clip and the sound after *that*, for the same reason
+                # `use_model` is where it is. Last is the only safe place to add
+                # a widget, and it stays the only safe place however many times
+                # this node grows.
+                **media_inputs(),
             },
         }
 
@@ -224,10 +230,14 @@ class LlamaServerPresetChat:
         if kwargs.get("server") is None:
             needed.append("server")
         wanted = [f"extra_{index}"]
-        # The image branch is skipped both ways: by passthrough, above, and by
-        # the switch — asking for it here is what would run it.
-        if kwargs.get("use_image", True):
-            wanted.append("image")
+        # The media branches are skipped both ways: by passthrough, above, and
+        # by their own switches — asking for one here is what would run it, so
+        # a switched-off clip costs nothing rather than costing a decode whose
+        # result is thrown away.
+        for name, switch in (("image", "use_image"), ("video", "use_video"),
+                             ("audio", "use_audio")):
+            if kwargs.get(switch, True):
+                wanted.append(name)
         for name in wanted:
             if name in kwargs and kwargs.get(name) is None:
                 needed.append(name)
@@ -252,7 +262,12 @@ class LlamaServerPresetChat:
 
         system = str(slots.get(f"system_{index}") or "")
         full_prompt = join_prompt(prompt, slots.get(f"extra_{index}"), extra_separator)
+        # `slots` is this node's catch-all, and the media controls arrive in it
+        # alongside the preset names. `slot_names` reads only `name_*`, so they
+        # pass through without being mistaken for a preset.
         content = user_content(full_prompt, active_image(image, use_image),
+                               **active_media(slots),
+                               video_frames=slots.get("video_frames", 8),
                                max_size=image_max_size, quality=image_quality)
         conversation = _messages(system, full_prompt, None, content=content)
         # Each preset may name its own model, which is the point of a router.

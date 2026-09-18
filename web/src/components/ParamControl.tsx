@@ -380,18 +380,22 @@ export function ImageField({ field, value, onChange }: ControlProps) {
       </div>
 
       {/*
-        The list itself, when there is one worth drawing.
+        The list itself, whenever one has been ticked.
 
         Under the field rather than inside the picker, because it is not a thing
         you set up and forget: it is what the slot is going to do over the next
         twelve renders, the tile it is on moves after every one of them, and
         watching that happen is how you know the batch is running at all.
 
-        Only above one, because a list of one is the ordinary case and drawing a
-        strip of a single picture underneath the preview of that same picture
-        would be saying the same thing twice.
+        Drawn for a list of one too, which looks redundant beside the preview of
+        that same picture and is not. Ticking one box and getting no visible
+        change at all is indistinguishable from ticking one box and having it
+        ignored — and "I ticked things and nothing iterated" is exactly how this
+        reads when the only feedback is a strip that waits for a second entry.
+        A slot with no list — the ordinary case, where you tapped a picture —
+        still draws nothing.
       */}
-      {batch.length > 1 && open && (
+      {batch.length > 0 && open && (
         <BatchStrip
           batch={batch}
           current={stored}
@@ -416,6 +420,8 @@ export function ImageField({ field, value, onChange }: ControlProps) {
           open={picking}
           onClose={() => setPicking(false)}
           onPicked={onChange}
+          batch={batch}
+          onBatch={useBatch}
           onEdit={(image) => void editFromFolder(image)}
         />
       )}
@@ -491,7 +497,9 @@ function BatchStrip({
     <div className="space-y-1.5" data-testid="batch-strip">
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-[11px] text-muted">
-          {batch.length} pictures, one per run
+          {batch.length === 1
+            ? 'One picture — every run uses it'
+            : `${batch.length} pictures, one per run`}
         </span>
         <button type="button" onClick={onClear} className="shrink-0 text-[11px] text-accent">
           Clear

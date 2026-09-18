@@ -1013,6 +1013,25 @@ export function useServices(enabled = true) {
   });
 }
 
+/**
+ * The model files under one service's root.
+ *
+ * Only while its picker is open, and never cached for long: somebody who has
+ * just downloaded a model and opened this to find it would otherwise be shown
+ * the list from before they downloaded it, which is the one moment the list is
+ * being looked at at all.
+ */
+export function useServiceFiles(id: string | null) {
+  return useQuery({
+    queryKey: ['service-files', id ?? ''],
+    queryFn: () => api.serviceFiles(id as string),
+    enabled: Boolean(id),
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
+}
+
 function useServiceMutation<TArgs, TResult>(fn: (args: TArgs) => Promise<TResult>) {
   const client = useQueryClient();
   return useMutation({

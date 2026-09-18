@@ -691,6 +691,54 @@ const ROLE_LABELS: Partial<Record<ParamRole, string>> = {
   seed: 'Seed',
 };
 
+/**
+ * What a field is called, most specific answer first.
+ *
+ * A role label is the right answer nearly always — "Steps" reads better than
+ * "steps" and far better than the node's own spelling of it. It is exactly
+ * wrong where one node has *several* fields of the same role, because then the
+ * role names all of them identically and the form becomes a column of controls
+ * with one name between them.
+ *
+ * That is the reference picker: nine pictures, three videos and three audio
+ * clips, every one of them `folder_image`, every one of them labelled "Picture
+ * from a folder". You could not tell which slot you were filling, which is bad
+ * enough on its own — and worse than it sounds, because the browser behind a
+ * video slot offers clips and the one behind a picture slot offers pictures.
+ * Fifteen identical labels made that look like a browser that could only ever
+ * find pictures.
+ *
+ * So a field whose name already carries its own number keeps the number. Not
+ * scoped to the picker: an input called `video_2` anywhere is the second video
+ * of something, and "Video 2" is the right name for it wherever it turns up.
+ */
+function labelFor(inputName: string, role: ParamRole): string {
+  const numbered = NUMBERED_SLOT.exec(inputName);
+  if (numbered) {
+    const [, kind, index] = numbered;
+    return `${SLOT_NAMES[kind as keyof typeof SLOT_NAMES]} ${index}`;
+  }
+  return ROLE_LABELS[role] ?? humanise(inputName);
+}
+
+/** `picture_3`, `video_1`, `audio_2` — a slot and which one it is. */
+const NUMBERED_SLOT = /^(picture|image|video|audio)_(\d+)$/;
+
+/**
+ * What each kind of slot is called.
+ *
+ * "Picture" rather than "Image" for the one that holds a still, because the
+ * node's own inputs are `picture_1…9` and a label that disagrees with the
+ * tooltip beside it is a label you have to translate. `image_N` maps to the
+ * same word — it is the stock node's spelling of the same thing.
+ */
+const SLOT_NAMES = {
+  picture: 'Picture',
+  image: 'Picture',
+  video: 'Video',
+  audio: 'Audio',
+} as const;
+
 function humanise(name: string): string {
   const spaced = name.replace(/[_-]+/g, ' ').trim();
   if (!spaced) return name;
@@ -708,147 +756,6 @@ function nodeTitleOf(node: ApiWorkflowNode, objectInfo: ObjectInfo): string {
 /* ------------------------------------------------------------------ */
 /* Schema construction                                                 */
 /* ------------------------------------------------------------------ */
-
-/** How an image is encoded before being sent — meaningless without one. */
-const IMAGE_ENCODING_INPUTS = new Set(['image_max_size', 'image_quality']);
-
-/** The switch in front of a chat node's image. See `idleImageControl`. */
-const IMAGE_SWITCH_INPUT = 'use_image';
-
-/**
- * A control for an image the node is not going to send.
- *
- * comfyllama's chat nodes each grew an optional `image` alongside a size, a
- * quality and a `use_image` switch, so any of them can be multimodal. All three
- * are widgets and are therefore exported whether or not anything is wired to
- * `image` — which on a text-only chat node is three settings that cannot affect
- * the result, on a form where a screenful is four of them.
- *
- * Two different reasons to leave one out, in the same shape:
- *
- * - Nothing is wired to `image`. Then none of them mean anything, the switch
- *   included: it switches off a picture that was never coming.
- * - Something is wired but the switch is off. Then the picture is not being
- *   sent, so how it would have been encoded is moot — but the switch itself
- *   stays, because it is the thing that turns the picture back on. Hiding the
- *   only control that undoes a state is how a form traps somebody in it.
- */
-function idleImageControl(node: { inputs?: Record<string, unknown> }, inputName: string): boolean {
-  const wired = isNodeLink(node.inputs?.image);
-  if (inputName === IMAGE_SWITCH_INPUT) return !wired;
-  if (!IMAGE_ENCODING_INPUTS.has(inputName)) return false;
-  return !wired || node.inputs?.[IMAGE_SWITCH_INPUT] === false;
-}
-
-/** comfyllama's MiniMax H3 reference node, with a slot per reference. */
-const REFERENCE_SLOTS_CLASS = 'MiniMaxH3ReferencesFlat';
-/** `image_3_on` / `video_1_tag` — the slot, and which of its two controls. */
-const REFERENCE_SLOT_INPUT = /^(image|video|audio)_(\d+)_(on|tag)$/;
-
-/**
- * A slot control for a reference that is not there.
- *
- * The node offers nine picture slots, three video slots and three audio slots,
- * each with a switch and a tag — forty-odd controls, of which a normal shot uses
- * three. Exported wholesale that is a form nobody can read on a phone, so the
- * same rule the chat nodes use applies here, per slot:
- *
- * - Nothing wired to the slot: both its controls go. A switch that turns off a
- *   picture which was never coming, and a name for it, are equally moot.
- * - Wired but switched off: the tag goes, because a name is only ever used to
- *   write a number the prompt will not contain. The switch stays — it is what
- *   brings the slot back, and hiding the only control that undoes a state is how
- *   a form traps somebody in it.
- *
- * A video's soundtrack rides on its video's switch: it is wired to
- * `video_2_audio` but is not a slot of its own, and giving it separate controls
- * would only invite switching off a soundtrack whose video is already off.
- */
-function idleReferenceSlot(
-  node: { class_type?: string; inputs?: Record<string, unknown> },
-  inputName: string,
-): boolean {
-  if (node.class_type !== REFERENCE_SLOTS_CLASS) return false;
-  const match = REFERENCE_SLOT_INPUT.exec(inputName);
-  if (!match) return false;
-
-  const [, kind, index, control] = match;
-  const wired = isNodeLink(node.inputs?.[`${kind}_${index}`]);
-  if (control === 'on') return !wired;
-  return !wired || node.inputs?.[`${kind}_${index}_on`] === false;
-}
-
-/** comfyllama's empty-latent node, whose size can come from a picture. */
-const LATENT_SIZE_CLASS = 'EmptyLatentByAspectRatio';
-/** The mode that says where the size comes from. See `idleLatentSizeControl`. */
-const FROM_IMAGE_INPUT = 'from_image';
-
-/**
- * A size control the picture has taken over.
- *
- * The node makes an empty latent from a ratio and a megapixel budget, and it
- * can take either from a connected picture instead — the shape only, keeping
- * your budget, or the picture's exact size. Whichever it takes stops being
- * something the form can decide, and a number you can still edit that changes
- * nothing is worse than no number at all.
- *
- * `megapixels` is the interesting one: it survives *aspect ratio*, which is the
- * whole difference between the two modes, and goes under *resolution*, where
- * the picture's own size is the answer. `from_image` itself is never hidden —
- * it is what brings the others back, and hiding the control that undoes a state
- * is how a form traps somebody in it.
- */
-function idleLatentSizeControl(
-  node: { class_type?: string; inputs?: Record<string, unknown> },
-  inputName: string,
-): boolean {
-  if (node.class_type !== LATENT_SIZE_CLASS) return false;
-  const mode = node.inputs?.[FROM_IMAGE_INPUT];
-  if (typeof mode !== 'string' || mode === 'off') return false;
-  if (inputName === 'aspect_ratio') return true;
-  return inputName === 'megapixels' && mode === 'resolution';
-}
-
-/** comfyllama's advanced sampler node, the only one with an intensity slider. */
-const SAMPLING_CLASS = 'LlamaCppSampling';
-
-/** The three the slider moves, and the switch each one is sent on. */
-const SCALED_INPUTS = ['temperature', 'top_p', 'top_k'];
-
-/** What the two ends of the slider mean, per parameter. */
-const INTENSITY_BOUNDS = new Set(SCALED_INPUTS.flatMap((name) => [`${name}_min`, `${name}_max`]));
-
-/**
- * The half of the sampler node that is not currently deciding anything.
- *
- * comfyllama's Sampler Settings node reaches temperature, top_p and top_k two
- * ways: three fields with a switch each, or one `intensity` slider that sets
- * all three across ranges you give it. In ComfyUI a web extension keeps the two
- * in step live — move the slider and the fields follow, type a temperature and
- * the slider snaps to it. There is no extension here, and reimplementing a
- * two-way binding in a form that submits values rather than editing a graph
- * would be a second copy of the arithmetic to keep honest.
- *
- * So the form shows whichever half is deciding, which the node itself is quite
- * clear about: with the slider on, it computes all three and the fields cannot
- * affect the result; with it off, they are the whole story and the slider and
- * its six bounds are inert.
- *
- * The switch is never hidden — it is what moves between the two.
- */
-function idleSamplingControl(
-  node: { class_type?: string; inputs?: Record<string, unknown> },
-  inputName: string,
-): boolean {
-  if (node.class_type !== SAMPLING_CLASS) return false;
-  const driven = node.inputs?.use_intensity === true;
-
-  if (inputName === 'intensity' || INTENSITY_BOUNDS.has(inputName)) return !driven;
-  if (SCALED_INPUTS.includes(inputName)) return driven;
-  // Their own switches are forced on by the slider, so they are not choices.
-  if (SCALED_INPUTS.some((name) => inputName === `use_${name}`)) return driven;
-  return false;
-}
 
 /**
  * Turn an API-format workflow into a mobile form definition.
@@ -917,7 +824,7 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
         inputName,
         classType: node.class_type,
         nodeTitle,
-        label: ROLE_LABELS[role] ?? humanise(inputName),
+        label: labelFor(inputName, role),
         role,
         control: typed.control,
         defaultValue: value,
@@ -933,12 +840,26 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
         group,
         // `control_after_generate` is ComfyUI's own seed-randomiser widget; our
         // seed control replaces it, so hide it rather than showing a duplicate.
-        hidden:
-          inputName === 'control_after_generate' ||
-          idleImageControl(node, inputName) ||
-          idleSamplingControl(node, inputName) ||
-          idleLatentSizeControl(node, inputName) ||
-          idleReferenceSlot(node, inputName),
+        /*
+         * Only ComfyUI's own duplicate widget, and nothing else.
+         *
+         * Four rules used to hide controls that could not affect the result
+         * given the state of the node beside them: a chat node's image quality
+         * with no picture wired, a reference slot's tag with nothing in it, the
+         * aspect ratio of a latent taking its shape from a picture, the sampler
+         * fields the intensity slider had taken over. Every one of them was
+         * *true*, and together they were unusable — controls appearing and
+         * vanishing as you touched the thing next to them, so the form was a
+         * different shape every time you looked at it and you could never learn
+         * where anything was. A setting that does nothing is a smaller problem
+         * than a form you cannot build a habit around.
+         *
+         * `control_after_generate` stays hidden because it is not an idle
+         * control: it is ComfyUI's own seed randomiser, and our seed control
+         * replaces it outright. Showing it would be two controls for one thing,
+         * which is a different fault from a control that is momentarily inert.
+         */
+        hidden: inputName === 'control_after_generate',
         order: group === 'main' ? mainIndex : fields.length,
         unknownNodeType,
       });

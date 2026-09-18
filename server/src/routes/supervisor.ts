@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import type { Dirent } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
+import { join, relative, resolve, sep } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 
 import {
@@ -6,6 +9,7 @@ import {
   definitionFor,
   SERVICE_DEFINITIONS,
   type ServiceConfig,
+  type ServiceFile,
   type ServiceView,
 } from '@latent/shared';
 
@@ -134,6 +138,42 @@ export function registerSupervisorRoutes(app: FastifyInstance, ctx: AppContext):
   );
 
   /**
+   * The model files under a service's root, so nothing has to be typed.
+   *
+   * Model filenames are long, versioned and quantisation-suffixed, and typing
+   * one from memory on a phone is the most tedious part of setting a model
+   * server up. On a desktop you type three letters and press tab — which is
+   * exactly why people keep every `.gguf` in one folder beside the executable,
+   * and why looking in that folder is the right answer here.
+   *
+   * Bounded three ways, because a models folder can be enormous and this runs
+   * on somebody's phone: a shallow walk, a cap on how many files come back, and
+   * no following of symlinks out of the root.
+   */
+  app.get<{ Params: { id: string } }>(
+    '/api/supervisor/services/:id/files',
+    async (request, reply) => {
+      const config = ctx.store.getService(request.params.id);
+      if (!config) return reply.code(404).send({ error: 'No such service' });
+
+      const root = config.root.trim();
+      if (root === '') return { files: [], root: '', truncated: false };
+
+      try {
+        const found = await findModels(resolve(root));
+        return { files: found.files, root, truncated: found.truncated };
+      } catch (error) {
+        return reply.code(409).send({
+          error:
+            error instanceof Error
+              ? `Could not read ${root}: ${error.message}`
+              : `Could not read ${root}`,
+        });
+      }
+    },
+  );
+
+  /**
    * The output, from a line the client names.
    *
    * `since` rather than a page, because the question a log viewer asks is
@@ -152,4 +192,72 @@ export function registerSupervisorRoutes(app: FastifyInstance, ctx: AppContext):
       return { ...tail, running: isUp(ctx.supervisor.statusOf(config).state) };
     },
   );
+}
+
+/** How deep the walk goes. The root itself, plus the obvious `models/`. */
+const MODEL_SCAN_DEPTH = 2;
+/** How many files come back at most. A models folder can be enormous. */
+const MODEL_SCAN_LIMIT = 400;
+
+/**
+ * Every `.gguf` under a folder, shallowly.
+ *
+ * Depth-limited rather than exhaustive: the files worth offering are the ones
+ * beside the executable or one folder in, and walking a whole disk to find a
+ * model somebody keeps somewhere else would cost a phone a long wait for a list
+ * it cannot read anyway. Anything further away is still reachable by typing the
+ * path, which is what the box does when the list does not have it.
+ *
+ * Sorted by name, because a list of model files is read alphabetically — the
+ * quantisations of one model sort together, which is exactly the comparison
+ * somebody is making when they open this.
+ */
+async function findModels(
+  root: string,
+): Promise<{ files: ServiceFile[]; truncated: boolean }> {
+  const files: ServiceFile[] = [];
+  let truncated = false;
+
+  const walk = async (directory: string, depth: number): Promise<void> => {
+    if (depth > MODEL_SCAN_DEPTH || truncated) return;
+
+    let entries: Dirent[];
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      // A folder that cannot be read is not an error for the whole scan: one
+      // unreadable subdirectory should not cost the list the rest of them.
+      return;
+    }
+
+    for (const entry of entries) {
+      if (files.length >= MODEL_SCAN_LIMIT) {
+        truncated = true;
+        return;
+      }
+      // Never through a link: a symlink pointing at `/` would turn a shallow
+      // walk into an unbounded one.
+      if (entry.isSymbolicLink()) continue;
+
+      const full = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith('.')) continue;
+        await walk(full, depth + 1);
+        continue;
+      }
+      if (!entry.name.toLowerCase().endsWith('.gguf')) continue;
+
+      let bytes = 0;
+      try {
+        bytes = (await stat(full)).size;
+      } catch {
+        // Gone between the listing and the stat. Still worth offering.
+      }
+      files.push({ path: relative(root, full).split(sep).join('/'), bytes });
+    }
+  };
+
+  await walk(root, 1);
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  return { files, truncated };
 }

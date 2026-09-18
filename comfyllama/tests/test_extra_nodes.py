@@ -106,7 +106,7 @@ def fake_torch():
 class TestEmptyLatentNode(unittest.TestCase):
     def test_latent_shape_follows_the_ratio_and_batch(self):
         with fake_torch():
-            latent, width, height = EmptyLatentByAspectRatio().generate(
+            latent, width, height, *_ = EmptyLatentByAspectRatio().generate(
                 "2:3", 1.0, 8, 2)
         self.assertEqual((width, height), resolve_dimensions("2:3", 1.0))
         self.assertEqual(latent["samples"].shape, (2, 4, height // 8, width // 8))
@@ -114,12 +114,12 @@ class TestEmptyLatentNode(unittest.TestCase):
     def test_sixteen_channel_format(self):
         label = "SD3 / Flux (16 channels)"
         with fake_torch():
-            latent, _, _ = EmptyLatentByAspectRatio().generate("1:1", 1.0, 8, 1, label)
+            latent, *_ = EmptyLatentByAspectRatio().generate("1:1", 1.0, 8, 1, label)
         self.assertEqual(latent["samples"].shape[1], LATENT_FORMATS[label].channels)
 
     def test_an_unknown_format_falls_back_instead_of_failing(self):
         with fake_torch():
-            latent, _, _ = EmptyLatentByAspectRatio().generate(
+            latent, *_ = EmptyLatentByAspectRatio().generate(
                 "1:1", 1.0, 8, 1, "something else")
         self.assertEqual(latent["samples"].shape[1], 4)
 
@@ -133,13 +133,17 @@ class TestEmptyLatentNode(unittest.TestCase):
 
     @unittest.skipUnless(HAVE_TORCH, "torch is required")
     def test_the_real_tensor_is_zeroed(self):
-        latent, _, _ = EmptyLatentByAspectRatio().generate("1:1", 1.0, 8, 1)
+        latent, *_ = EmptyLatentByAspectRatio().generate("1:1", 1.0, 8, 1)
         self.assertEqual(float(latent["samples"].abs().sum()), 0.0)
 
 
-def fake_image(width, height):
-    """A stand-in for a ComfyUI IMAGE: [batch, height, width, channels]."""
-    return FakeTensor((1, height, width, 3), None)
+def fake_image(width, height, frames=1):
+    """A stand-in for a ComfyUI IMAGE: [batch, height, width, channels].
+
+    `frames` is the batch axis, which is what makes it a clip rather than a
+    still — a video in ComfyUI is an IMAGE batch and nothing more.
+    """
+    return FakeTensor((frames, height, width, 3), None)
 
 
 class TestSizeFromAnImage(unittest.TestCase):
@@ -221,7 +225,7 @@ class TestSizeFromAnImage(unittest.TestCase):
 class TestSizeFromAnImageOnTheNode(unittest.TestCase):
     def test_the_latent_is_built_at_the_picture_s_size(self):
         with fake_torch():
-            latent, width, height = EmptyLatentByAspectRatio().generate(
+            latent, width, height, *_ = EmptyLatentByAspectRatio().generate(
                 "1:1", 1.0, 8, 1, DEFAULT_LATENT_FORMAT,
                 FROM_IMAGE_RESOLUTION, fake_image(768, 1024))
         self.assertEqual((width, height), (768, 1024))
@@ -249,6 +253,72 @@ class TestSizeFromAnImageOnTheNode(unittest.TestCase):
         optional = list(EmptyLatentByAspectRatio.INPUT_TYPES()["optional"])
         self.assertLess(optional.index("latent_format"), optional.index("from_image"))
         self.assertIn("image", optional)
+        # The two newest widgets are last, for the same reason.
+        self.assertLess(optional.index("from_image"), optional.index("length"))
+        self.assertLess(optional.index("length"), optional.index("frame_rate"))
+
+
+class TestLengthFromAClip(unittest.TestCase):
+    """The third thing a connected clip carries, besides its shape and its size.
+
+    A clip is an IMAGE batch, so its length is the first axis of the same tensor
+    the width and height come from — which means fetching a duration is the same
+    gesture as fetching a resolution, and wanted at the same moment.
+    """
+
+    def test_the_widget_decides_when_no_clip_is_fetched(self):
+        with fake_torch():
+            *_, frames, seconds = EmptyLatentByAspectRatio().generate(
+                "1:1", 1.0, 8, 1, DEFAULT_LATENT_FORMAT, FROM_IMAGE_OFF, None,
+                length=97, frame_rate=24.0)
+        self.assertEqual(frames, 97)
+        self.assertAlmostEqual(seconds, 97 / 24.0, places=4)
+
+    def test_a_connected_clip_decides_instead(self):
+        with fake_torch():
+            _, width, height, frames, seconds = EmptyLatentByAspectRatio().generate(
+                "1:1", 1.0, 8, 1, DEFAULT_LATENT_FORMAT, FROM_IMAGE_RESOLUTION,
+                fake_image(1280, 720, frames=120), length=1, frame_rate=30.0)
+        # Its size and its length, from the one connection.
+        self.assertEqual((width, height), (1280, 720))
+        self.assertEqual(frames, 120)
+        self.assertAlmostEqual(seconds, 4.0, places=4)
+
+    def test_borrowing_the_shape_borrows_the_length_too(self):
+        """Not a fourth mode: a duration is not an alternative to a resolution.
+
+        Making it one would mean choosing between the length and the size of the
+        very same clip, which is not a choice anybody wants to make.
+        """
+        with fake_torch():
+            *_, frames, _ = EmptyLatentByAspectRatio().generate(
+                "1:1", 1.0, 8, 1, DEFAULT_LATENT_FORMAT, FROM_IMAGE_RATIO,
+                fake_image(1280, 720, frames=48), length=1)
+        self.assertEqual(frames, 48)
+
+    def test_a_still_is_a_clip_of_one(self):
+        with fake_torch():
+            *_, frames, _ = EmptyLatentByAspectRatio().generate(
+                "1:1", 1.0, 8, 1, DEFAULT_LATENT_FORMAT, FROM_IMAGE_RESOLUTION,
+                fake_image(512, 512), length=60)
+        self.assertEqual(frames, 1)
+
+    def test_a_workflow_saved_before_this_existed_reports_one_frame(self):
+        # No value for either widget, which is what an older graph carries.
+        with fake_torch():
+            *_, frames, seconds = EmptyLatentByAspectRatio().generate(
+                "1:1", 1.0, 8, 1)
+        self.assertEqual(frames, 1)
+        self.assertAlmostEqual(seconds, 1 / 24.0, places=4)
+
+    def test_the_latent_itself_is_still_a_still(self):
+        """Reporting a length is not the same as building a video latent."""
+        with fake_torch():
+            latent, *_ = EmptyLatentByAspectRatio().generate(
+                "1:1", 1.0, 8, 1, DEFAULT_LATENT_FORMAT, FROM_IMAGE_RESOLUTION,
+                fake_image(512, 512, frames=64))
+        self.assertEqual(len(latent["samples"].shape), 4)
+        self.assertEqual(latent["samples"].shape[0], 1)
 
 
 class TestKrea2Format(unittest.TestCase):
@@ -263,7 +333,7 @@ class TestKrea2Format(unittest.TestCase):
 
     def test_latent_shape_matches_a_16_channel_f8_autoencoder(self):
         with fake_torch():
-            latent, width, height = EmptyLatentByAspectRatio().generate(
+            latent, width, height, *_ = EmptyLatentByAspectRatio().generate(
                 "2:3", 1.0, 8, 1, self.LABEL)
         self.assertEqual(latent["samples"].shape, (1, 16, height // 8, width // 8))
 
@@ -288,7 +358,7 @@ class TestKrea2Format(unittest.TestCase):
 
     def test_reported_size_matches_the_latent_that_was_built(self):
         with fake_torch() as torch_stub:
-            _, width, height = EmptyLatentByAspectRatio().generate(
+            _, width, height, *_ = EmptyLatentByAspectRatio().generate(
                 "16:9", 2.0, 8, 1, self.LABEL)
         shape, _ = torch_stub.calls[0]
         self.assertEqual((shape[3] * 8, shape[2] * 8), (width, height))
@@ -521,9 +591,16 @@ class TestPresetModelSwitch(ServerTestCase):
     def test_it_is_on_by_default_so_saved_workflows_do_not_change(self):
         optional = LlamaServerPresetChat.INPUT_TYPES()["optional"]
         self.assertIs(optional["use_model"][1]["default"], True)
-        # Appended, or every widget value after it would shift by one in an
-        # already-saved workflow.
-        self.assertEqual(list(optional)[-1], "use_model")
+        # Nothing may be inserted *before* it, which is not the same as it being
+        # last. This used to assert that it was the final entry, which was true
+        # when it was written and is the wrong statement of the rule: the
+        # promise to an already-saved workflow is that no widget appears ahead
+        # of one it already has values for. Anything added later goes behind it,
+        # and then `use_model` is no longer last while every stored value still
+        # lands exactly where it did.
+        names = list(optional)
+        for earlier in ("image_max_size", "image_quality", "use_image"):
+            self.assertLess(names.index(earlier), names.index("use_model"))
 
     def test_off_passes_the_prompt_through_whatever_is_selected(self):
         text, thinking, active = self.NODE().generate(
@@ -631,3 +708,52 @@ class TestPresetLazyEvaluation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestWidgetsAreOnlyEverAppended(unittest.TestCase):
+    """ComfyUI stores a node's widget values as a positional list.
+
+    Which makes adding an input in the middle a silent data corruption: every
+    value after it shifts by one in a workflow somebody already saved, so a
+    max-size becomes a quality and a switch becomes a number. Every node in this
+    pack is written to append, and this is the test that says so — it exists
+    because adding the clip and the sound to the preset router put three widgets
+    in front of `use_model` on the first attempt.
+
+    Ordering only, deliberately. What each input *is* belongs to the node; where
+    it sits is a promise to every workflow already on disk.
+    """
+
+    def assert_in_order(self, optional, expected):
+        names = list(optional)
+        places = [names.index(name) for name in expected if name in names]
+        self.assertEqual(places, sorted(places), f"{expected} out of order in {names}")
+
+    def test_the_preset_router_appends_rather_than_inserting(self):
+        from comfyllama.nodes.presets import LlamaServerPresetChat
+
+        optional = LlamaServerPresetChat.INPUT_TYPES()["optional"]
+        # The order these arrived in, which is the order they must stay in.
+        self.assert_in_order(optional, [
+            "image_max_size", "image_quality", "use_image",
+            "use_model",
+            "video_frames", "use_video", "use_audio",
+        ])
+
+    def test_the_chat_nodes_append_too(self):
+        from comfyllama.nodes.generation import LlamaCppChat
+
+        optional = LlamaCppChat.INPUT_TYPES()["optional"]
+        self.assert_in_order(optional, [
+            "image_max_size", "image_quality", "use_image",
+            "video_frames", "use_video", "use_audio",
+        ])
+
+    def test_the_remote_chat_node_appends_too(self):
+        from comfyllama.nodes.remote import LlamaServerChat
+
+        optional = LlamaServerChat.INPUT_TYPES()["optional"]
+        self.assert_in_order(optional, [
+            "image_max_size", "image_quality", "use_image",
+            "video_frames", "use_video", "use_audio",
+        ])

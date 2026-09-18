@@ -2248,6 +2248,30 @@ control rather than filled into it, because a form pre-filled with every default
 produces a command line stating thirty things the program would have done anyway
 — and then the two that matter are invisible in the middle of it.
 
+**Except where the answer is always the same one.** A handful of llama-server's
+arguments are a switch rather than a box: speculative decoding (`--spec-type`,
+preset to `draft-mtp`), the slot count (`-np`, 1), fitting to device memory
+(`-fit`, *off* — llama.cpp's own default is on, and off is what you want once
+you have tuned the numbers yourself), sleeping when idle
+(`--sleep-idle-seconds`, 1) and log verbosity (`-lv`, 4). For those the
+interesting question is *whether*, not *what*, and a text box makes you answer
+the boring half by hand. The value stays editable underneath — the preset
+decides where it starts, not where it stays.
+
+**The model files are listed, not typed.** The ▾ beside the model file, the
+multimodal projector and the MTP head reads every `.gguf` in the service's root
+and one folder below it, with its size beside it so two quantisations of the
+same model can be told apart. `Qwen3-VL-30B-A3B-Instruct-UD-Q5_K_XL.gguf` is a
+real filename, and typing it from memory on a phone is the most tedious thing
+about setting a model server up — on a desktop you type three letters and press
+tab, which is exactly why every model ends up in one folder beside the
+executable. Typing a path still works, for a model kept somewhere else.
+
+The **MTP head** goes in the draft-model field, which is labelled as both.
+llama.cpp has no `--mtp-head`: multi-token prediction is one of the speculation
+*types*, and the weights it drafts with load through `--spec-draft-model`. The
+field says so rather than leaving you to work it out.
+
 **The command is shown in full**, above the arguments, exactly as it will be
 run. A manager that hides the command it produces is a manager you cannot debug,
 and it is the one place you can see that `--listen` got `0.0.0.0` and that the
@@ -2793,15 +2817,28 @@ side is that Latent already knows about three of them:
 - **`EmptyLatentByAspectRatio`** gives a ratio and a megapixel budget instead of
   a width and a height, and its `divisible_by` is a combo whose options are
   numbers rather than strings. It also takes an optional picture to borrow a
-  shape or a size from — `from_image` says which — and the form drops whichever
-  control that has taken over.
+  shape or a size from — `from_image` says which.
 
-Every chat node also takes an optional picture, with a `use_image` switch in
-front of it. Latent's form follows that switch: the two encoding controls
-disappear when there is no picture wired in *or* when the switch is off, and the
-switch itself only appears once something is actually connected to it — but
-never disappears while it is off, because it is the thing that turns the picture
-back on.
+  **It works for clips too.** A video in ComfyUI *is* an `IMAGE` batch, so its
+  length is the first axis of the very tensor the width and height come from —
+  which makes fetching a duration the same gesture as fetching a resolution, and
+  wanted at the same moment. Connect a clip and the node reports its frame count
+  on a `frames` output and its length on a `seconds` output, alongside the width
+  and height it already gave. Not a fourth `from_image` mode: a duration is not
+  an alternative to a resolution, and making it one would mean choosing between
+  the length and the size of the very same clip. With nothing connected the
+  `length` widget decides, and `frame_rate` is only there to turn frames into
+  seconds.
+
+  The latent itself stays a still, deliberately. Reporting a clip's length is
+  not the same as building a video latent: every video model in ComfyUI wants a
+  differently shaped tensor, and guessing wrong produces a latent that fails
+  deep inside a sampler rather than here. The numbers come out on their own
+  outputs, to be wired into whichever node actually wants them.
+
+Every chat node also takes an optional picture, clip and sound, each with its
+own switch in front of it — see [Pictures, clips and
+sound](#pictures-clips-and-sound).
 
 **Sampler Settings** reaches temperature, top_p and top_k two ways: three fields
 with a switch each, or one `intensity` slider that sets all three across ranges
@@ -2826,12 +2863,47 @@ and report nothing wrong. The comfyllama node takes the same references through
 ordinary fixed inputs and calls upstream's own `execute`, so nothing about the
 conditioning is reimplemented — only how the references arrive.
 
-Its forty-eight optional inputs are a slot each, and `idleReferenceSlot` in
-`shared/src/paramSchema.ts` is what keeps that readable: a slot with nothing
-wired loses both its controls, and a wired slot that is switched off loses its
-tag but keeps its switch — the same rule as `use_image`, for the same reason.
-The rest never reach the form, because a saved workflow only carries the widgets
-it was saved with.
+Its forty-eight optional inputs are a slot each, and what keeps the form short
+is that a saved workflow only carries the widgets it was saved with — the slots
+you never touched never reach it.
+
+**MiniMax H3 Reference Picker** is the other half: one node holding all fifteen
+references — nine pictures, three videos with their soundtracks, three sounds —
+each a path you pick with the folder browser, each with its own output to wire
+into the node above. The alternative is a loader node per reference, fifteen of
+them trailing wires across the canvas before any of the interesting settings.
+
+Each slot is named for what it is and which one it is — **Picture 1**, **Video
+2**, **Audio 3** — and the browser behind it is filtered to what that slot can
+actually load. That sounds like a detail and was the whole feature: every slot
+used to be labelled "Picture from a folder", all fifteen of them, so you could
+not tell which one you were filling, and the picture browser you kept landing in
+looked like a browser that could only ever find pictures.
+
+**No Get Video Components in between.** That node exists to take ComfyUI's
+`VIDEO` object apart into frames, a soundtrack and a frame rate, because the
+stock H3 node's video sockets are `IMAGE` and its audio sockets are `AUDIO` —
+neither of them a `VIDEO`. The picker already hands out exactly those:
+`video_N` is the frame batch and `video_N_audio` is the soundtrack beside it,
+both decoded in the node. The wire goes straight from a slot to the socket, and
+putting a Get Video Components between them would be asking it to split
+something that was never joined.
+
+What the picker does that Get Video Components does not is **resample**. H3 was
+trained at 24fps; the stock node trims frame counts but cannot know that a 60fps
+clip is playing at two and a half times speed, so `video_fps` is applied on the
+way out.
+
+**Nothing on a comfyllama node disappears.** Four rules used to hide controls
+that could not affect the result given the state of the node beside them — a
+chat node's image quality with no picture wired, a reference slot's tag with
+nothing in it, the aspect ratio of a latent taking its shape from a picture, the
+sampler fields the intensity slider had taken over. Every one of them was true,
+and together they were unusable: controls appeared and vanished as you touched
+the thing next to them, so the form was a different shape every time you looked
+at it and there was no learning where anything was. A setting that does nothing
+for the moment is a much smaller problem than a form you cannot build a habit
+around.
 
 **Arranging the form from a desktop.** Latent is a web app, so open it on a PC
 and the form editor works there with a mouse — the drag handles use pointer
@@ -2844,6 +2916,35 @@ The preview and the real form share one function, `planFormRuns` in
 screen; a preview with its own copy of it would drift, and a preview that is
 almost right is worse than none — the whole reason to look at one is to avoid
 picking the phone up.
+
+### Pictures, clips and sound
+
+Every chat node takes an `image`, a `video` and an `audio` input, because the
+models worth running through them are fully multimodal — they watch and listen
+as readily as they look — and a chat node that only ever took a still was the
+narrowest part of the pack.
+
+Each has its own switch, and off is **lazy**: the branch that would have
+produced the clip is not run at all, so switching one off makes the run shorter
+rather than only the message.
+
+A clip arrives as an `IMAGE` batch, which is what *Get Video Components* and the
+reference picker both produce — so the difference between `video` and `image` is
+not the type but the count. **`video_frames` decides how many are actually
+sent**, spread evenly across the clip with the first and last always included.
+Fifteen seconds at 24fps is 360 frames, and a model asked to look at 360
+pictures will either refuse or spend a minute of context on a shot that barely
+moves; the first *n* would be worse still, because the opening second of a clip
+is the part that says least about it.
+
+Sound is sent as a WAV, written with the standard library rather than a new
+dependency: llama-server decodes with miniaudio, which takes mp3, wav and flac,
+and wav is the one of those that can be written without an encoder. Stereo stays
+stereo — the channel axis is interleaved on the way out, and folding it the
+wrong way turns a stereo clip into a mono one at twice the length.
+
+Any of this needs a model that can take it, and llama-server started with the
+matching `--mmproj`.
 
 ### Running without the picture
 
@@ -2915,7 +3016,10 @@ dropping them without a word.
 **Several at once.** Every picture in the browser has a tick box in its corner,
 and ticking builds a *list* instead of picking one. See [A list of pictures, one
 per run](#a-list-of-pictures-one-per-run) — the sheet is unchanged until the
-first box is ticked, so picking one picture is still tapping one picture.
+first box is ticked, so picking one picture is still tapping one picture. The
+input-folder dialog next door has the same tick boxes, because which of them you
+get depends only on which kind of image node the workflow uses, and a feature
+that works in one and not the other reads as broken rather than absent.
 
 *Replace* still uploads from the camera roll, editor and all. The upload lands
 in ComfyUI's input directory, which the browser also serves, so it is stored as

@@ -60,6 +60,31 @@ export interface ServiceArg {
   /** Which section of the form it appears under. */
   group: string;
   /**
+   * What switching this argument on fills it in as.
+   *
+   * An argument with a preset is drawn as a switch and a value rather than as
+   * an empty box: the answer is nearly always the same one, and typing
+   * `draft-mtp` correctly at two in the morning is not a thing anybody should
+   * have to do twice. The value stays editable — the preset decides where it
+   * starts, not where it stays.
+   *
+   * Deliberately not the same thing as `fallback`. That is what the *program*
+   * does when the flag is absent; this is what *you* usually want when it is
+   * present, and for several of these the two are different on purpose —
+   * llama.cpp fits to memory by default and this switches that off.
+   */
+  preset?: ServiceArgValue;
+  /**
+   * Offer the files under the service's root instead of an empty text box.
+   *
+   * `gguf` lists every `.gguf` the root holds. Model filenames are long,
+   * versioned and quantisation-suffixed, and typing one from memory on a phone
+   * is the single most tedious thing about setting a model server up — on a
+   * desktop you tab-complete, which is exactly why the files end up in one
+   * folder beside the executable in the first place.
+   */
+  suggest?: 'gguf';
+  /**
    * Offered on the first page rather than behind "everything else".
    *
    * The handful somebody sets on day one — where it listens, how much VRAM to
@@ -463,6 +488,7 @@ const LLAMA_ARGS: ServiceArg[] = [
     flag: '--model',
     label: 'Model file',
     type: 'path',
+    suggest: 'gguf',
     help: 'The .gguf to load. An absolute path, or one relative to the root below.',
     group: 'Model',
     common: true,
@@ -483,9 +509,29 @@ const LLAMA_ARGS: ServiceArg[] = [
   },
   {
     flag: '--mmproj',
-    label: 'Vision projector',
+    label: 'Multimodal projector',
     type: 'path',
-    help: 'The mmproj file a multimodal model needs to see pictures at all.',
+    suggest: 'gguf',
+    help: 'The mmproj file a multimodal model needs to see pictures, watch clips or hear sound at all.',
+    group: 'Model',
+    common: true,
+  },
+  /*
+   * The MTP head, which is a draft model wearing another name.
+   *
+   * llama.cpp has no `--mtp-head`: multi-token prediction is one of the
+   * speculative decoding *types*, and the weights it speculates with are loaded
+   * through the ordinary draft-model flag. Worth saying in the label rather
+   * than leaving somebody to work out that "draft model" is where their MTP
+   * head goes — and worth pairing with the speculation setting below, which is
+   * the switch that makes it do anything.
+   */
+  {
+    flag: '--spec-draft-model',
+    label: 'MTP head / draft model',
+    type: 'path',
+    suggest: 'gguf',
+    help: 'The weights speculative decoding drafts with. For an MTP head this is where it goes — llama.cpp loads it through the draft-model flag and the speculation type below decides what it does with it.',
     group: 'Model',
     common: true,
   },
@@ -692,6 +738,75 @@ const LLAMA_ARGS: ServiceArg[] = [
     group: 'Sampling',
     common: true,
   },
+
+  {
+    flag: '--spec-type',
+    label: 'Speculative decoding',
+    type: 'choice',
+    choices: [
+      'none',
+      'draft-simple',
+      'draft-eagle3',
+      'draft-mtp',
+      'draft-dflash',
+      'draft-dspark',
+      'ngram-simple',
+      'ngram-map-k',
+      'ngram-map-k4v',
+      'ngram-mod',
+      'ngram-cache',
+    ],
+    preset: 'draft-mtp',
+    fallback: 'none',
+    help: 'How it guesses ahead. `draft-mtp` is multi-token prediction, which needs the MTP head above; the ngram ones speculate from the text alone and need no second model.',
+    group: 'Speculation',
+    common: true,
+  },
+  {
+    flag: '-np',
+    label: 'Slots',
+    type: 'int',
+    preset: 1,
+    fallback: '-1 (auto)',
+    min: 1,
+    help: 'How many requests it serves at once. Each slot takes its own share of the context, so one slot gives a single conversation all of it.',
+    group: 'Performance',
+    common: true,
+  },
+  {
+    flag: '-fit',
+    label: 'Fit to memory',
+    type: 'choice',
+    choices: ['on', 'off'],
+    preset: 'off',
+    fallback: 'on',
+    help: 'Whether llama.cpp adjusts the arguments you did not set so everything fits in device memory. Off leaves your numbers exactly as you typed them, which is what you want once you have tuned them.',
+    group: 'Performance',
+    common: true,
+  },
+  {
+    flag: '--sleep-idle-seconds',
+    label: 'Sleep when idle after',
+    type: 'int',
+    preset: 1,
+    fallback: '-1 (never)',
+    min: -1,
+    help: 'Seconds of quiet before it unloads the model and gives the VRAM back. The next request loads it again. -1 never sleeps.',
+    group: 'Performance',
+    common: true,
+  },
+  {
+    flag: '-lv',
+    label: 'Log verbosity',
+    type: 'int',
+    preset: 4,
+    fallback: '0',
+    min: 0,
+    max: 5,
+    help: 'How much it writes: 0 generic, 1 error, 2 warning, 3 info, 4 trace, 5 debug. 4 is what makes the log worth watching.',
+    group: 'Behaviour',
+    common: true,
+  },
 ];
 
 /**
@@ -864,6 +979,13 @@ export interface ServiceStatus {
 export interface ServiceView {
   config: ServiceConfig;
   status: ServiceStatus;
+}
+
+/** A file found under a service's root, offered instead of a text box. */
+export interface ServiceFile {
+  /** Relative to the root, with forward slashes whatever the platform. */
+  path: string;
+  bytes: number;
 }
 
 /** One line of output, as the log tail hands it over. */

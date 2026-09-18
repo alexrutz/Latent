@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import type { InputImage } from '@latent/shared';
 
 import { api, inputImageUrl } from '../api/client';
-import { Button, ErrorNote, Sheet, Spinner } from './ui';
+import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
 
 /**
  * Choose a picture from the folder of inputs on the Latent machine.
@@ -21,12 +21,29 @@ export function InputImagePicker({
   open,
   onClose,
   onPicked,
+  batch = [],
+  onBatch,
   onEdit,
 }: {
   open: boolean;
   onClose: () => void;
   /** A file already copied into ComfyUI's input directory. */
   onPicked: (filename: string) => void;
+  /**
+   * The list this slot is already working through, so reopening shows what is
+   * ticked rather than starting from nothing.
+   */
+  batch?: string[];
+  /**
+   * Hand back a list rather than one picture. See `advanceBatch`.
+   *
+   * The folder browser next door has had this since it arrived and this dialog
+   * did not, which made the feature depend on which *kind* of image node a
+   * workflow happened to use — the two dialogs look alike and are reached by
+   * the same button, so "tick several" working in one and not the other reads
+   * as it being broken rather than absent.
+   */
+  onBatch?: (filenames: string[]) => void;
   /** The user wants to edit this one first; the caller fetches and opens it. */
   onEdit: (image: InputImage) => void;
 }) {
@@ -41,6 +58,61 @@ export function InputImagePicker({
    * categorisation — there is no reason to invent a second one inside Latent.
    */
   const [folder, setFolder] = useState('');
+
+  /*
+   * What is ticked, in the order it was ticked — which is the order the runs
+   * will happen in. Seeded from the slot's list whenever the sheet opens, so
+   * coming back to add one more shows the ones already in it.
+   */
+  const [checked, setChecked] = useState<string[]>(batch);
+  useEffect(() => {
+    // Only on the transition to open: `batch` changes when the ticking is
+    // confirmed, and re-seeding on that would fight what it was just told.
+    if (open) setChecked(batch);
+  }, [open]);
+
+  const multiple = Boolean(onBatch);
+  const ticked = useMemo(() => new Set(checked), [checked]);
+
+  /**
+   * Which files have been copied into ComfyUI already, by their source path.
+   *
+   * Declared before the function that reads it, which it has to be to read
+   * sensibly even though the closure would have worked either way.
+   */
+  const [copied, setCopied] = useState<Record<string, string>>({});
+
+  /**
+   * Ticking holds the *uploaded* name, not the path in the input folder.
+   *
+   * A slot's value is what ComfyUI will be asked to load, and for this dialog
+   * that is a filename inside ComfyUI's input directory — which only exists
+   * once the file has been copied there. So a tick copies it, exactly as
+   * picking one does, and remembers what came back.
+   */
+  const tick = async (file: InputImage) => {
+    const known = copied[file.path];
+    if (known) {
+      setChecked((current) =>
+        current.includes(known) ? current.filter((entry) => entry !== known) : [...current, known],
+      );
+      return;
+    }
+
+    setBusy(file.path);
+    setError(null);
+    try {
+      const result = await api.useInputImage(file.path);
+      const name = result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
+      setCopied((current) => ({ ...current, [file.path]: name }));
+      setChecked((current) => (current.includes(name) ? current : [...current, name]));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not use that image');
+    } finally {
+      setBusy(null);
+    }
+  };
+
 
   // Only scanned when the sheet is actually open — the folder can be large.
   const scan = useQuery({ queryKey: ['input-images'], queryFn: api.inputImages, enabled: open });
@@ -205,6 +277,35 @@ export function InputImagePicker({
                     )}
                   </button>
 
+                  {/*
+                    Two gestures, kept apart, which is what lets a batch exist
+                    without a mode: tapping the picture picks that picture and
+                    shuts the sheet, ticking the box adds it to the list and
+                    leaves the sheet open.
+
+                    A sibling of the picture button rather than a child of it —
+                    a button inside a button is invalid, and the browsers that
+                    render it anyway disagree about which one a tap belongs to.
+                  */}
+                  {multiple && (
+                    <button
+                      type="button"
+                      role="checkbox"
+                      aria-checked={ticked.has(copied[file.path] ?? '')}
+                      aria-label={`Add ${file.name} to the batch`}
+                      disabled={busy !== null}
+                      onClick={() => void tick(file)}
+                      className={cn(
+                        'absolute top-1 right-1 grid size-6 place-items-center rounded-md border text-xs leading-none',
+                        ticked.has(copied[file.path] ?? '')
+                          ? 'border-accent bg-accent text-white'
+                          : 'border-line bg-ink/70 text-transparent',
+                      )}
+                    >
+                      ✓
+                    </button>
+                  )}
+
                   <div className="flex items-center justify-between gap-1">
                     <span className="min-w-0 truncate text-[10px] text-muted" title={file.path}>
                       {file.name}
@@ -234,6 +335,35 @@ export function InputImagePicker({
               </p>
             )}
           </>
+        )}
+
+        {/*
+          The way out of a batch, and only once there is one. Nothing about this
+          sheet changes until the first box is ticked.
+        */}
+        {multiple && checked.length > 0 && (
+          <div className="sticky bottom-0 -mx-1 flex items-center gap-2 border-t border-line bg-surface/95 px-1 py-2 backdrop-blur">
+            <span className="min-w-0 flex-1 text-xs text-muted">
+              {checked.length} ticked — one per run, then back to the first.
+            </span>
+            <button
+              type="button"
+              onClick={() => setChecked([])}
+              className="shrink-0 px-2 py-1.5 text-xs text-muted"
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                onBatch?.(checked);
+                onClose();
+              }}
+              className="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white"
+            >
+              Use {checked.length}
+            </button>
+          </div>
         )}
 
         <div className="border-t border-line pt-3">

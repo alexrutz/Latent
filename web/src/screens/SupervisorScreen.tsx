@@ -16,6 +16,7 @@ import {
   useDeleteService,
   useServiceAction,
   useServiceDefinitions,
+  useServiceFiles,
   useServices,
   useUpdateService,
 } from '../api/queries';
@@ -314,6 +315,8 @@ function ServiceSettings({
   const [showAll, setShowAll] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Which argument is being filled in from the folder, if any. */
+  const [browsing, setBrowsing] = useState<string | null>(null);
 
   const patch = (change: Partial<ServiceConfig>) => {
     setError(null);
@@ -447,6 +450,7 @@ function ServiceSettings({
                   arg={arg}
                   value={config.values[arg.flag]}
                   onChange={(value) => setValue(arg.flag, value)}
+                  onBrowse={arg.suggest ? () => setBrowsing(arg.flag) : undefined}
                 />
               ))}
             </div>
@@ -501,6 +505,18 @@ function ServiceSettings({
             </div>
           </Card>
         </section>
+
+        {browsing && (
+          <ModelFilePicker
+            serviceId={config.id}
+            root={config.root}
+            onPick={(path) => {
+              setValue(browsing, path);
+              setBrowsing(null);
+            }}
+            onClose={() => setBrowsing(null)}
+          />
+        )}
 
         <section className="space-y-1.5 border-t border-line pt-3">
           <Button
@@ -623,10 +639,13 @@ function ArgControl({
   arg,
   value,
   onChange,
+  onBrowse,
 }: {
   arg: ServiceArg;
   value: ServiceConfig['values'][string] | undefined;
   onChange: (value: ServiceConfig['values'][string] | undefined) => void;
+  /** Offer the files under the root instead of only a text box. */
+  onBrowse?: () => void;
 }) {
   const set = value !== undefined;
 
@@ -657,7 +676,43 @@ function ArgControl({
         </span>
       </div>
 
-      {arg.type === 'choice' ? (
+      {/*
+        A switch, for an argument that has an obvious value.
+
+        Most of these are a box you fill in, which is right when the answer is
+        different every time. It is wrong for the handful where the answer is
+        nearly always the same one — `--spec-type draft-mtp`, one slot, sleep
+        after a second — because then the interesting question is not *what* but
+        *whether*, and a text box makes you answer the boring half by hand.
+
+        The value stays editable underneath: the preset decides where it starts,
+        not where it stays.
+      */}
+      {arg.preset !== undefined && (
+        <div className="flex items-center justify-between gap-3 pb-0.5">
+          <span className="text-[11px] text-muted">
+            {/*
+              What *not* sending it means, which is not always "nothing".
+              `-fit` is the case that makes this worth spelling out: llama.cpp
+              fits to memory unless told otherwise, so leaving the flag off is a
+              decision with an effect, and a line reading "Off" beside a program
+              that is on would be exactly backwards.
+            */}
+            {set
+              ? 'Sent with the command'
+              : arg.fallback
+                ? `Not sent — llama-server uses ${arg.fallback}`
+                : 'Not sent'}
+          </span>
+          <Toggle
+            checked={set}
+            onChange={(on) => onChange(on ? arg.preset : undefined)}
+            label={`Send ${arg.label}`}
+          />
+        </div>
+      )}
+
+      {arg.preset !== undefined && !set ? null : arg.type === 'choice' ? (
         <select
           value={typeof value === 'string' ? value : ''}
           aria-label={arg.label}
@@ -699,6 +754,16 @@ function ArgControl({
               onChange(trimmed);
             }}
           />
+          {onBrowse && (
+            <button
+              type="button"
+              onClick={onBrowse}
+              aria-label={`Choose a file for ${arg.label}`}
+              className="shrink-0 rounded-lg border border-line px-2 py-1.5 text-xs text-accent"
+            >
+              ▾
+            </button>
+          )}
           {set && (
             <button
               type="button"
@@ -715,6 +780,117 @@ function ArgControl({
       <p className="text-[11px] text-muted">{arg.help}</p>
     </div>
   );
+}
+
+/**
+ * The model files under a service's root, offered instead of a text box.
+ *
+ * Model filenames are long, versioned and quantisation-suffixed —
+ * `Qwen3-VL-30B-A3B-Instruct-UD-Q5_K_XL.gguf` is a real one — and typing that
+ * from memory on a phone is the most tedious thing about setting a model server
+ * up. On a desktop you type three letters and press tab, which is exactly why
+ * every `.gguf` ends up in one folder beside the executable in the first place.
+ * This is that folder, read.
+ *
+ * Filterable, because "one folder beside the executable" is routinely forty
+ * files by the time you have kept a few quantisations of each. Sorted by name
+ * rather than by date, so the quantisations of one model sort together — which
+ * is the comparison somebody is making when they open this.
+ *
+ * It does not replace typing. A model kept somewhere else is still reachable by
+ * writing the path, and the list says so when it comes back short.
+ */
+function ModelFilePicker({
+  serviceId,
+  root,
+  onPick,
+  onClose,
+}: {
+  serviceId: string;
+  root: string;
+  onPick: (path: string) => void;
+  onClose: () => void;
+}) {
+  const files = useServiceFiles(serviceId);
+  const [filter, setFilter] = useState('');
+
+  const matching = useMemo(() => {
+    const needle = filter.trim().toLowerCase();
+    const all = files.data?.files ?? [];
+    return needle ? all.filter((file) => file.path.toLowerCase().includes(needle)) : all;
+  }, [files.data, filter]);
+
+  return (
+    <Sheet open onClose={onClose} title="Model files" closeLabel="Cancel" full>
+      <div className="space-y-3">
+        {root ? (
+          <p className="text-[11px] text-muted">
+            Every <code>.gguf</code> in {root} and one folder below it.
+          </p>
+        ) : (
+          <p className="text-[11px] text-warn">Set the root directory first.</p>
+        )}
+
+        {files.isLoading && (
+          <div className="grid place-items-center py-8">
+            <Spinner className="size-6 text-muted" />
+          </div>
+        )}
+
+        <ErrorNote>
+          {files.error instanceof Error ? files.error.message : null}
+        </ErrorNote>
+
+        {files.data && files.data.files.length > 0 && (
+          <input
+            type="search"
+            value={filter}
+            onChange={(event) => setFilter(event.target.value)}
+            placeholder="Filter by name…"
+            aria-label="Filter model files"
+            className="w-full rounded-xl border border-line bg-surface px-3 py-2 text-sm focus:border-accent focus:outline-none"
+          />
+        )}
+
+        {files.data && files.data.files.length === 0 && (
+          <p className="py-6 text-center text-sm text-muted">
+            No <code>.gguf</code> files there. Type the path instead — a model kept somewhere else
+            still works.
+          </p>
+        )}
+
+        <ul className="space-y-1">
+          {matching.map((file) => (
+            <li key={file.path}>
+              <button
+                type="button"
+                onClick={() => onPick(file.path)}
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-line bg-surface px-3 py-2 text-left active:bg-surface-2"
+              >
+                <span className="min-w-0 flex-1 break-all text-xs">{file.path}</span>
+                <span className="shrink-0 text-[10px] text-muted tabular-nums">
+                  {gigabytes(file.bytes)}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+
+        {files.data?.truncated && (
+          <p className="text-center text-[11px] text-muted">
+            Showing the first {files.data.files.length}. Narrow the filter, or type the path.
+          </p>
+        )}
+      </div>
+    </Sheet>
+  );
+}
+
+/** `4.1 GB` — the one number that tells two quantisations apart at a glance. */
+function gigabytes(bytes: number): string {
+  if (bytes <= 0) return '';
+  const gb = bytes / 1024 ** 3;
+  return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
 /* ------------------------------------------------------------------ */

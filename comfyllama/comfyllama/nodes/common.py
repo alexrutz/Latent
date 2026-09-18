@@ -124,6 +124,82 @@ def image_inputs(lazy: bool = True) -> Dict[str, Any]:
     }
 
 
+def media_inputs(lazy: bool = True) -> Dict[str, Any]:
+    """A clip and a sound beside the picture, for a model that takes all three.
+
+    The models worth running through these nodes are fully multimodal now — they
+    watch and listen as readily as they look — and a chat node that only ever
+    took a still was the narrowest part of the pack. Two more optional inputs
+    rather than one general "media" socket, because ComfyUI's types are the
+    thing that stops a clip being wired where a sound belongs, and because they
+    are genuinely encoded differently on the way out: frames as pictures, sound
+    as a WAV file.
+
+    A clip arrives as an ``IMAGE`` batch — that is what ComfyUI's own *Get Video
+    Components* hands out, and what this pack's reference picker hands out — so
+    the difference between this and ``image`` is not the type but the count.
+    ``video_frames`` decides how many of them are actually sent; see
+    ``sample_frames`` for why sending all of them is not an option.
+
+    Appended after the image controls wherever these are used, never
+    interleaved: ComfyUI stores widget values positionally, so a widget inserted
+    in the middle shifts every value after it in a workflow somebody already
+    saved.
+    """
+    video: Dict[str, Any] = {
+        "tooltip": "Optional. A clip, as the IMAGE batch that 'Get Video "
+                   "Components' or this pack's reference picker produces. Some "
+                   "of its frames are sent with the prompt — see 'video_frames'.",
+    }
+    audio: Dict[str, Any] = {
+        "tooltip": "Optional. A sound, sent with the prompt as a WAV. Needs a "
+                   "model that takes audio, and llama-server started with the "
+                   "matching --mmproj.",
+    }
+    if lazy:
+        video["lazy"] = True
+        audio["lazy"] = True
+
+    return {
+        "video": ("IMAGE", video),
+        "audio": ("AUDIO", audio),
+        "video_frames": ("INT", {
+            "default": 8, "min": 1, "max": 64,
+            "tooltip": "How many frames of the clip to send, spread evenly "
+                       "across it. Fifteen seconds at 24fps is 360 frames; a "
+                       "model asked to look at all of them will either refuse "
+                       "or spend a minute of context on a shot that barely moves.",
+        }),
+        "use_video": ("BOOLEAN", {
+            "default": True,
+            "label_on": "send video",
+            "label_off": "no video",
+            "tooltip": "Off ignores whatever is wired to 'video'. The nodes "
+                       "feeding it are not run at all.",
+        }),
+        "use_audio": ("BOOLEAN", {
+            "default": True,
+            "label_on": "send audio",
+            "label_off": "no audio",
+            "tooltip": "Off ignores whatever is wired to 'audio'. The nodes "
+                       "feeding it are not run at all.",
+        }),
+    }
+
+
+def active_media(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """The clip and the sound to send, honouring their switches.
+
+    The same shape as ``active_image`` and for the same reason: "is there a clip
+    on this turn" is asked in more than one place, and two of those answering
+    differently is how a node sends a picture it has already decided not to.
+    """
+    return {
+        "video": kwargs.get("video") if kwargs.get("use_video", True) else None,
+        "audio": kwargs.get("audio") if kwargs.get("use_audio", True) else None,
+    }
+
+
 def active_image(image, use_image=True):
     """The image to send, or ``None`` while the switch is off.
 
@@ -136,15 +212,24 @@ def active_image(image, use_image=True):
 
 
 def wants_image(kwargs: Dict[str, Any]) -> List[str]:
-    """The lazy ``image`` input, named only when it is switched on.
+    """The lazy media inputs, named only when they are switched on.
 
     ComfyUI evaluates a lazy input when ``check_lazy_status`` asks for it by
     name, and not before. Returning nothing here is what keeps the upstream
-    branch from running while the switch is off.
+    branch from running while the switch is off — which is the whole value of
+    the switches: off costs nothing rather than costing a decode whose result is
+    thrown away.
+
+    Named for the image because that is all it used to cover; it answers for the
+    clip and the sound too now, and the three are asked in exactly the same way.
     """
-    if not kwargs.get("use_image", True):
-        return []
-    return ["image"] if "image" in kwargs and kwargs.get("image") is None else []
+    wanted: List[str] = []
+    for name, switch in (("image", "use_image"), ("video", "use_video"), ("audio", "use_audio")):
+        if not kwargs.get(switch, True):
+            continue
+        if name in kwargs and kwargs.get(name) is None:
+            wanted.append(name)
+    return wanted
 
 
 def generation_inputs() -> Dict[str, Any]:

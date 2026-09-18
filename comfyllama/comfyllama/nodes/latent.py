@@ -88,6 +88,41 @@ def image_size(image) -> Tuple[int, int]:
     return int(shape[2]), int(shape[1])
 
 
+def image_frames(image) -> int:
+    """How many frames a connected IMAGE holds.
+
+    A clip in ComfyUI is an ``IMAGE`` batch — that is what *Get Video
+    Components* produces and what this pack's reference picker produces — so the
+    length of a clip is the first axis of the same tensor its size comes from. A
+    still is a batch of one, which is the honest answer for a still rather than
+    a special case.
+    """
+    shape = getattr(image, "shape", None)
+    if shape is None or len(shape) < 3:
+        raise ValueError("The connected image is not in ComfyUI's IMAGE format.")
+    return int(shape[0]) if len(shape) == 4 else 1
+
+
+def plan_length(length: int, from_image: str = FROM_IMAGE_OFF,
+                source_frames: Optional[int] = None) -> int:
+    """How many frames this node reports, whatever decided it.
+
+    The same shape as `plan_dimensions`, and for the same reason: the number the
+    node hands out and the number it was asked for have to be decided in one
+    place or they drift.
+
+    A clip's length is taken whenever a clip is connected *and* `from_image` is
+    fetching something. Not a mode of its own: "borrow the shape" and "borrow
+    the size" are alternatives — you want one or the other — but a duration is
+    not an alternative to either, it is the third thing a clip carries, and
+    making it a fourth mode would mean choosing between the length and the
+    resolution of the very same clip.
+    """
+    if from_image != FROM_IMAGE_OFF and source_frames is not None:
+        return max(1, source_frames)
+    return max(1, int(length))
+
+
 def resolve_dimensions(aspect_ratio: str, megapixels: float, divisible_by: int = 8,
                        minimum_multiple: int = 1) -> Tuple[int, int]:
     """Pixel size closest to ``megapixels`` at the given ratio.
@@ -208,13 +243,29 @@ class EmptyLatentByAspectRatio:
                 # runs at all — no loader, no decode, no resize.
                 "image": ("IMAGE", {
                     "lazy": True,
-                    "tooltip": "Only read when 'from_image' asks for it.",
+                    "tooltip": "Only read when 'from_image' asks for it. A clip "
+                               "is an IMAGE batch, so connecting one fetches its "
+                               "length as well as its shape.",
+                }),
+                # Appended after everything above, never interleaved: ComfyUI
+                # stores widget values positionally, so a widget inserted in the
+                # middle shifts every value after it in a saved workflow.
+                "length": ("INT", {
+                    "default": 1, "min": 1, "max": 16384,
+                    "tooltip": "Frames, for a video workflow. Reported on the "
+                               "'frames' output and overridden by a connected "
+                               "clip's own length whenever 'from_image' is on.",
+                }),
+                "frame_rate": ("FLOAT", {
+                    "default": 24.0, "min": 0.1, "max": 240.0, "step": 0.1,
+                    "tooltip": "Only used to turn the frame count into the "
+                               "'seconds' output. It does not resample anything.",
                 }),
             },
         }
 
-    RETURN_TYPES = ("LATENT", "INT", "INT")
-    RETURN_NAMES = ("latent", "width", "height")
+    RETURN_TYPES = ("LATENT", "INT", "INT", "INT", "FLOAT")
+    RETURN_NAMES = ("latent", "width", "height", "frames", "seconds")
     FUNCTION = "generate"
     CATEGORY = CATEGORY_LATENT
     DESCRIPTION = "Empty latent from an aspect ratio and a megapixel budget."
@@ -225,7 +276,7 @@ class EmptyLatentByAspectRatio:
 
     def generate(self, aspect_ratio, megapixels, divisible_by, batch_size,
                  latent_format=DEFAULT_FORMAT, from_image=FROM_IMAGE_OFF,
-                 image=None):
+                 image=None, length=1, frame_rate=24.0):
         import torch
 
         if from_image != FROM_IMAGE_OFF and image is None:
@@ -239,6 +290,9 @@ class EmptyLatentByAspectRatio:
         width, height = plan_dimensions(
             aspect_ratio, megapixels, divisible_by, spec.minimum_multiple,
             from_image, image_size(image) if image is not None else None,
+        )
+        frames = plan_length(
+            length, from_image, image_frames(image) if image is not None else None,
         )
 
         device = None
@@ -254,4 +308,12 @@ class EmptyLatentByAspectRatio:
              width // spec.downscale],
             device=device,
         )
-        return ({"samples": samples}, width, height)
+        # The latent stays a still, deliberately.
+        #
+        # Reporting a clip's length is not the same as making a video latent,
+        # and this does not try to: every video model in ComfyUI wants a
+        # differently shaped tensor, and guessing wrong produces a latent that
+        # fails deep inside a sampler rather than here. The numbers come out on
+        # their own outputs, to be wired into whichever node wants them.
+        return ({"samples": samples}, width, height, frames,
+                frames / max(0.1, float(frame_rate)))

@@ -7562,6 +7562,84 @@ test.describe('picking a picture out of a folder', () => {
 });
 
 /**
+ * A list of pictures in one slot, worked through one render at a time.
+ *
+ * The behaviour this pins is the whole of "batch": the slot advances *after*
+ * each run and wraps at the end. It went untested when it was written because
+ * no workflow in the suite could both browse folders and be executed by the
+ * mock — the folder loader was missing from `/object_info`, so every test of
+ * the browser was a test of a node the mock then refused to run.
+ */
+test.describe('a batch of pictures in one slot', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'Folder batch', graph: loadImageFromFolder } }),
+    );
+  });
+
+  test('advances to the next picture after each run, and wraps', async ({ page }) => {
+    await open(page, '/');
+
+    await page.getByRole('button', { name: 'Browse folders' }).click();
+    const sheet = page.getByRole('dialog', { name: 'Pick a picture' });
+    await sheet.getByRole('button', { name: 'monday', exact: true }).click();
+
+    /*
+     * By name, not by position.
+     *
+     * `getByRole('checkbox')` also matches the "include subfolders" switch
+     * above the grid, which is how a first attempt at this test ticked one tile
+     * and the recursion setting and then waited forever for a button that said
+     * "Use 2".
+     */
+    const boxes = sheet.getByRole('checkbox', { name: /to the batch$/ });
+    await expect(boxes).toHaveCount(2);
+    await boxes.nth(0).click();
+    await boxes.nth(1).click();
+
+    await sheet.getByRole('button', { name: 'Use 2' }).click();
+    await expect(sheet).toBeHidden();
+
+    // The slot takes the first of the list, and the strip shows the list.
+    const field = page.getByTestId('image-drop');
+    await expect(field.getByText('output/monday/render_0007.png')).toBeVisible();
+    await expect(page.getByTestId('batch-strip').getByText('2 pictures, one per run')).toBeVisible();
+
+    // One run, and the slot has moved on to the second.
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await expect(field.getByText('output/monday/render_0008.png')).toBeVisible();
+    await page.screenshot({ path: 'test-results/106-batch-advanced.png' });
+
+    // And the end of the list is the beginning again, not a stop.
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await expect(field.getByText('output/monday/render_0007.png')).toBeVisible();
+  });
+
+  test('leaves a slot with one picture exactly where it was', async ({ page }) => {
+    await open(page, '/');
+
+    await page.getByRole('button', { name: 'Browse folders' }).click();
+    const sheet = page.getByRole('dialog', { name: 'Pick a picture' });
+    await sheet.getByRole('button', { name: 'monday', exact: true }).click();
+
+    // Tapping the picture, rather than ticking it — which is what picking one
+    // picture has always been, and has to keep being.
+    await sheet.locator('img[alt="render_0008.png"]').click();
+    await expect(sheet).toBeHidden();
+
+    const field = page.getByTestId('image-drop');
+    await expect(field.getByText('output/monday/render_0008.png')).toBeVisible();
+    // No list, so no strip: the ordinary case is untouched by any of this.
+    await expect(page.getByTestId('batch-strip')).toHaveCount(0);
+
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await expect(page.getByRole('button', { name: /Queued/ })).toBeVisible();
+    await expect(field.getByText('output/monday/render_0008.png')).toBeVisible();
+  });
+});
+
+/**
  * Advanced, and the way back out of a form that has got into a state.
  *
  * Two complaints about the top and the bottom of the same screen. Advanced is

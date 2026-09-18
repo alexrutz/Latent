@@ -319,33 +319,35 @@ describe('the image controls every chat node now carries', () => {
       objectInfoFixture,
     );
 
-  it('hides them when no picture is connected', () => {
-    expect(field('22.image_max_size')?.hidden).toBe(true);
-    expect(field('22.image_quality')?.hidden).toBe(true);
-    // The switch too: it switches off a picture that was never coming.
-    expect(field('22.use_image')?.hidden).toBe(true);
-  });
-
-  it('shows them as soon as one is', () => {
-    const wired = wiredTo(true);
-    expect(field('22.image_max_size', wired)?.hidden).toBe(false);
-    expect(field('22.image_quality', wired)?.hidden).toBe(false);
-    expect(field('22.use_image', wired)?.hidden).toBe(false);
-  });
-
   /*
-   * The switch is the point of contact between the two halves of this repo:
-   * comfyllama can ignore a connected image, and the form has to say so rather
-   * than offering an encoding setting for a picture that is not being sent.
+   * They used to come and go with the picture: hidden with nothing wired,
+   * and the encoding pair hidden again when the switch was off. The rule was
+   * true — neither could affect a picture that was not being sent — and living
+   * with it was horrible. Controls appeared and vanished as you touched the
+   * thing beside them, so the form was a different shape every time you opened
+   * it and there was no learning where anything was.
+   *
+   * A setting that does nothing for the moment is a much smaller problem than a
+   * form you cannot build a habit around.
    */
-  it('drops the encoding controls again when the picture is switched off', () => {
-    const off = wiredTo(false);
-    expect(field('22.image_max_size', off)?.hidden).toBe(true);
-    expect(field('22.image_quality', off)?.hidden).toBe(true);
+  it('shows them with no picture connected', () => {
+    expect(field('22.image_max_size')?.hidden).toBeFalsy();
+    expect(field('22.image_quality')?.hidden).toBeFalsy();
+    expect(field('22.use_image')?.hidden).toBeFalsy();
   });
 
-  it('keeps the switch itself, because it is what turns the picture back on', () => {
-    expect(field('22.use_image', wiredTo(false))?.hidden).toBe(false);
+  it('shows them when one is', () => {
+    const wired = wiredTo(true);
+    expect(field('22.image_max_size', wired)?.hidden).toBeFalsy();
+    expect(field('22.image_quality', wired)?.hidden).toBeFalsy();
+    expect(field('22.use_image', wired)?.hidden).toBeFalsy();
+  });
+
+  it('shows them when the picture is switched off', () => {
+    const off = wiredTo(false);
+    expect(field('22.image_max_size', off)?.hidden).toBeFalsy();
+    expect(field('22.image_quality', off)?.hidden).toBeFalsy();
+    expect(field('22.use_image', off)?.hidden).toBeFalsy();
   });
 });
 
@@ -372,28 +374,33 @@ describe('the sampler node’s two ways of setting the same values', () => {
       objectInfoFixture,
     );
 
-  it('hides the slider and its ranges while the values are set one by one', () => {
+  /*
+   * Both halves are shown, whichever one is deciding.
+   *
+   * The node is quite clear about which half it reads, and the form used to
+   * follow that by hiding the other — which meant flipping one switch changed
+   * the shape of the whole screen. Showing both costs a few inert controls;
+   * hiding them cost the ability to learn where anything was.
+   */
+  it('shows the slider and its ranges while the values are set one by one', () => {
     const off = withSlider(false);
-    expect(field('23.intensity', off)?.hidden).toBe(true);
-    expect(field('23.temperature_min', off)?.hidden).toBe(true);
-    expect(field('23.top_k_max', off)?.hidden).toBe(true);
-    // And the three values are the whole story, so they stay.
-    expect(field('23.temperature', off)?.hidden).toBe(false);
-    expect(field('23.top_k', off)?.hidden).toBe(false);
+    expect(field('23.intensity', off)?.hidden).toBeFalsy();
+    expect(field('23.temperature_min', off)?.hidden).toBeFalsy();
+    expect(field('23.top_k_max', off)?.hidden).toBeFalsy();
+    expect(field('23.temperature', off)?.hidden).toBeFalsy();
+    expect(field('23.top_k', off)?.hidden).toBeFalsy();
   });
 
-  it('hides the three values while the slider is deciding them', () => {
+  it('shows the three values while the slider is deciding them', () => {
     const on = withSlider(true);
-    expect(field('23.temperature', on)?.hidden).toBe(true);
-    expect(field('23.top_p', on)?.hidden).toBe(true);
-    expect(field('23.top_k', on)?.hidden).toBe(true);
-    // Their switches with them: the node forces those on, so they are not
-    // choices anybody is making.
-    expect(field('23.use_temperature', on)?.hidden).toBe(true);
-    expect(field('23.use_top_k', on)?.hidden).toBe(true);
+    expect(field('23.temperature', on)?.hidden).toBeFalsy();
+    expect(field('23.top_p', on)?.hidden).toBeFalsy();
+    expect(field('23.top_k', on)?.hidden).toBeFalsy();
+    expect(field('23.use_temperature', on)?.hidden).toBeFalsy();
+    expect(field('23.use_top_k', on)?.hidden).toBeFalsy();
   });
 
-  it('shows the slider and its ranges instead', () => {
+  it('shows the slider and its ranges too', () => {
     const on = withSlider(true);
     expect(field('23.intensity', on)?.hidden).toBe(false);
     expect(field('23.temperature_min', on)?.hidden).toBe(false);
@@ -473,19 +480,23 @@ describe('where the empty latent gets its size', () => {
   });
 
   /*
-   * The difference between the two modes, in one assertion each. Borrowing a
-   * shape leaves you deciding how big it is; borrowing a size does not.
+   * Both modes leave every control on screen.
+   *
+   * Borrowing a shape or a size does take those decisions away from the
+   * widgets, and the form used to say so by hiding them — which made the panel
+   * reshuffle itself as the mode changed. What decides is stated in the mode
+   * itself, which is the control you just touched and the one you are reading.
    */
-  it('keeps the budget when only the shape is borrowed', () => {
+  it('keeps the size controls when only the shape is borrowed', () => {
     const ratio = sizedBy('aspect ratio');
-    expect(field('5.aspect_ratio', ratio)?.hidden).toBe(true);
+    expect(field('5.aspect_ratio', ratio)?.hidden).toBeFalsy();
     expect(field('5.megapixels', ratio)?.hidden).toBeFalsy();
   });
 
-  it('drops both when the picture’s own size is the answer', () => {
+  it('keeps them when the picture’s own size is the answer', () => {
     const resolution = sizedBy('resolution');
-    expect(field('5.aspect_ratio', resolution)?.hidden).toBe(true);
-    expect(field('5.megapixels', resolution)?.hidden).toBe(true);
+    expect(field('5.aspect_ratio', resolution)?.hidden).toBeFalsy();
+    expect(field('5.megapixels', resolution)?.hidden).toBeFalsy();
   });
 
   it('never hides the mode itself, which is what brings them back', () => {

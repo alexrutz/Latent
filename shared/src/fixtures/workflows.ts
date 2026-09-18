@@ -671,6 +671,39 @@ export const loadImageFromFolder: ApiWorkflow = {
   '4': { class_type: 'SaveImage', inputs: { filename_prefix: 'from-folder', images: ['1', 0] } },
 };
 
+/**
+ * The fifteen-slot reference picker, feeding the stock MiniMax H3 node.
+ *
+ * Carries one of each kind of slot with a path in it, which is the arrangement
+ * that matters: what a video slot offers has to differ from what a picture slot
+ * offers, and until this existed there was no workflow in the suite where that
+ * question could even be asked.
+ */
+export const minimaxReferencePicker: ApiWorkflow = {
+  '1': {
+    class_type: 'MiniMaxH3ReferencePicker',
+    inputs: {
+      video_fps: 24,
+      video_seconds: 15,
+      picture_1: 'output/monday/render_0007.png',
+      picture_2: '',
+      video_1: 'output/monday/clip.mp4',
+      audio_1: 'output/monday/song.flac',
+      use_picture_1: true,
+      use_video_1: true,
+      use_audio_1: true,
+    },
+  },
+  '2': {
+    class_type: 'CheckpointLoaderSimple',
+    inputs: { ckpt_name: 'v1-5-pruned-emaonly.safetensors' },
+  },
+  '3': {
+    class_type: 'SaveImage',
+    inputs: { filename_prefix: 'h3-refs', images: ['1', 0] },
+  },
+};
+
 export const workflowFixtures = {
   sd15Txt2Img,
   sdxlBaseRefiner,
@@ -688,6 +721,7 @@ export const workflowFixtures = {
   qwenSpeech,
   minimaxReferences,
   loadImageFromFolder,
+  minimaxReferencePicker,
 };
 
 /**

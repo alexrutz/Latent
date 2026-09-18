@@ -31,6 +31,7 @@ import type {
   RandomPromptRoll,
   ServiceConfig,
   ServiceDefinition,
+  ServiceFile,
   ServiceLogLine,
   ServiceView,
   SystemPrompt,
@@ -465,6 +466,12 @@ export const api = {
 
   serviceAction: (id: string, action: 'start' | 'stop' | 'restart') =>
     request<ServiceView>(`/api/supervisor/services/${id}/${action}`, { method: 'POST' }),
+
+  /** The `.gguf` files under a service's root, so nothing has to be typed. */
+  serviceFiles: (id: string) =>
+    request<{ files: ServiceFile[]; root: string; truncated: boolean }>(
+      `/api/supervisor/services/${id}/files`,
+    ),
 
   serviceLog: (id: string, since: number) =>
     request<{ lines: ServiceLogLine[]; seq: number; running: boolean }>(

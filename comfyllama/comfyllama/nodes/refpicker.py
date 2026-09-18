@@ -22,6 +22,20 @@ knows to drop.
 Decoding is PyAV for video and audio, which is what ComfyUI itself uses for
 both — not a second decoder with its own opinions about frame rates and sample
 formats.
+
+**No Get Video Components in between.** That node exists to take ComfyUI's
+``VIDEO`` object apart into frames, a soundtrack and a frame rate, because the
+stock MiniMax H3 node's video sockets are ``IMAGE`` and its audio sockets are
+``AUDIO`` — neither of them a ``VIDEO``. This node already hands out exactly
+those: ``video_N`` is the frame batch and ``video_N_audio`` is the soundtrack
+beside it, both decoded here. So the wire goes straight from a slot to the
+socket, and putting a Get Video Components between them would be asking it to
+split something that was never joined.
+
+What it does that Get Video Components does not is resample. H3 was trained at
+24fps, and the stock node trims frame counts but cannot know that a 60fps clip
+is playing at two and a half times speed — so ``video_fps`` is applied on the
+way out, which is the one reason a clip does not arrive here frame for frame.
 """
 
 from __future__ import annotations

@@ -206,6 +206,77 @@ describe('portOf', () => {
   });
 });
 
+describe('the arguments a model server actually needs', () => {
+  const arg = (flag: string) => llama.args.find((entry) => entry.flag === flag);
+
+  it('offers the five that otherwise get typed by hand every time', () => {
+    for (const flag of ['--spec-type', '-lv', '-fit', '--sleep-idle-seconds', '-np']) {
+      expect(arg(flag)).toBeDefined();
+    }
+  });
+
+  it('presets each of them to the value that is nearly always wanted', () => {
+    expect(arg('--spec-type')?.preset).toBe('draft-mtp');
+    expect(arg('-lv')?.preset).toBe(4);
+    expect(arg('-fit')?.preset).toBe('off');
+    expect(arg('--sleep-idle-seconds')?.preset).toBe(1);
+    expect(arg('-np')?.preset).toBe(1);
+  });
+
+  it('keeps the preset apart from what the program does unasked', () => {
+    // These two differ on purpose: llama.cpp fits to memory by default, and the
+    // preset here switches that off.
+    expect(arg('-fit')?.fallback).toBe('on');
+    expect(arg('-fit')?.preset).toBe('off');
+  });
+
+  it('sends nothing at all until one is switched on', () => {
+    const fresh: ServiceConfig = { ...blankConfig(llama, 'id', 0), root: '/opt/llama' };
+    expect(argumentsOf(llama, fresh)).toEqual([]);
+  });
+
+  it('sends the flag and its value once it is', () => {
+    const on: ServiceConfig = {
+      ...blankConfig(llama, 'id', 0),
+      root: '/opt/llama',
+      values: { '--spec-type': 'draft-mtp', '-np': 1, '-fit': 'off' },
+    };
+    // In the order the catalogue declares them, which is the order they read
+    // in on the form — so the command line and the form agree.
+    expect(argumentsOf(llama, on)).toEqual([
+      '--spec-type', 'draft-mtp',
+      '-np', '1',
+      '-fit', 'off',
+    ]);
+  });
+
+  it('lists draft-mtp among the speculation types llama.cpp knows', () => {
+    expect(arg('--spec-type')?.choices).toContain('draft-mtp');
+    expect(arg('--spec-type')?.choices).toContain('none');
+  });
+
+  /**
+   * The MTP head is a draft model wearing another name.
+   *
+   * llama.cpp has no `--mtp-head`: multi-token prediction is a speculation
+   * *type*, and the weights it drafts with load through the ordinary draft
+   * flag. Worth pinning, because a label that says "draft model" and a user
+   * looking for "MTP head" is exactly how this gets asked for twice.
+   */
+  it('reaches the MTP head through the draft-model flag, and says so', () => {
+    const head = arg('--spec-draft-model');
+    expect(head).toBeDefined();
+    expect(head?.label).toMatch(/MTP head/i);
+    expect(head?.suggest).toBe('gguf');
+  });
+
+  it('offers the folder for every file it would be tedious to type', () => {
+    for (const flag of ['--model', '--mmproj', '--spec-draft-model']) {
+      expect(arg(flag)?.suggest).toBe('gguf');
+    }
+  });
+});
+
 describe('blankConfig', () => {
   it('starts with no arguments set, so the command says only what you chose', () => {
     const fresh = blankConfig(comfy, 'new', 1234);

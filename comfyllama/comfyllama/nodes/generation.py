@@ -6,35 +6,53 @@ import json
 from typing import Any, Dict, List, Tuple
 
 from .. import backend, reasoning
-from ..images import images_to_content
+from ..images import audio_to_content, images_to_content, video_to_content
 from ..scale import DEFAULT_RANGES, INTEGER, SCALED, scaled_values
-from .common import (CATEGORY, CATEGORY_ADVANCED, active_image,
+from .common import (CATEGORY, CATEGORY_ADVANCED, active_image, active_media,
                      generation_inputs, image_inputs, is_changed_for_seed,
-                     thinking_input, wants_image)
+                     media_inputs, thinking_input, wants_image)
 
 
-def user_content(prompt: str, image=None, *, max_size: int = 1024,
+def user_content(prompt: str, image=None, *, video=None, audio=None,
+                 video_frames: int = 8, max_size: int = 1024,
                  quality: int = 90):
     """The user turn's content.
 
-    ``None`` when no image was connected, which leaves the turn as plain text;
-    otherwise the OpenAI-style parts list, images first, prompt last.
+    ``None`` when nothing was connected, which leaves the turn as plain text;
+    otherwise the OpenAI-style parts list, media first and the prompt last.
+
+    Pictures, then the clip's frames, then the sound, then the words. The order
+    is not arbitrary: a model reads the parts in sequence, and the prompt is
+    almost always *about* the media, so it belongs after the thing it refers to.
+    The clip's frames sit with the pictures because that is what they are by the
+    time they leave here — see ``sample_frames``.
     """
-    if image is None:
+    parts: List[Dict[str, Any]] = []
+    if image is not None:
+        parts.extend(images_to_content(image, max_size=max_size, quality=quality))
+    if video is not None:
+        parts.extend(video_to_content(video, frames=video_frames,
+                                      max_size=max_size, quality=quality))
+    if audio is not None:
+        parts.extend(audio_to_content(audio))
+
+    if not parts:
         return None
-    content = images_to_content(image, max_size=max_size, quality=quality)
-    content.append({"type": "text", "text": prompt})
-    return content
+    parts.append({"type": "text", "text": prompt})
+    return parts
 
 
-def require_vision_model(model, image) -> None:
-    """In-process models can only see images if a projector was loaded."""
-    if image is not None and not model.vision:
-        raise ValueError(
-            "An image is connected, but this model was loaded without a "
-            "multimodal projector. Load it with 'Load Vision LLM (llama.cpp)' "
-            "instead, or disconnect the image."
-        )
+def require_vision_model(model, image, video=None, audio=None) -> None:
+    """In-process models can only take media if a projector was loaded."""
+    for name, value in (("image", image), ("video", video), ("audio", audio)):
+        if value is None:
+            continue
+        if not model.vision:
+            raise ValueError(
+                f"A {name} is connected, but this model was loaded without a "
+                "multimodal projector. Load it with 'Load Vision LLM "
+                f"(llama.cpp)' instead, or disconnect the {name}."
+            )
 
 
 def _messages(system: str, prompt: str, history, content=None) -> List[Dict[str, Any]]:
@@ -118,6 +136,7 @@ class LlamaCppChat:
                 "sampling": ("LLAMA_SAMPLING",),
                 "grammar": ("LLAMA_GRAMMAR",),
                 **image_inputs(),
+                **media_inputs(),
             },
         }
 
@@ -136,11 +155,13 @@ class LlamaCppChat:
 
     def generate(self, model, system, prompt, thinking, max_tokens, temperature, top_p,
                  seed, messages=None, sampling=None, grammar=None, use_image=True,
-                 image=None, image_max_size=1024, image_quality=90):
+                 image=None, image_max_size=1024, image_quality=90, **kwargs):
         image = active_image(image, use_image)
-        require_vision_model(model, image)
-        content = user_content(prompt, image, max_size=image_max_size,
-                               quality=image_quality)
+        media = active_media(kwargs)
+        require_vision_model(model, image, media["video"], media["audio"])
+        content = user_content(prompt, image, **media,
+                               video_frames=kwargs.get("video_frames", 8),
+                               max_size=image_max_size, quality=image_quality)
         conversation = _messages(system, prompt, messages, content=content)
         text, thought = _run_chat(model, conversation, thinking, max_tokens,
                                   temperature, top_p, seed, sampling, grammar)
@@ -204,6 +225,9 @@ class LlamaCppVisionChat:
                 "messages": ("LLAMA_MESSAGES",),
                 "sampling": ("LLAMA_SAMPLING",),
                 "grammar": ("LLAMA_GRAMMAR",),
+                # Not lazy here: this node has no `check_lazy_status`, and a
+                # lazy input nobody ever asks for stays None forever.
+                **media_inputs(lazy=False),
             },
         }
 
@@ -219,10 +243,12 @@ class LlamaCppVisionChat:
 
     def generate(self, model, image, system, prompt, thinking, max_tokens, temperature,
                  top_p, seed, image_max_size=1024, image_quality=90, messages=None,
-                 sampling=None, grammar=None):
-        require_vision_model(model, image)
-        content = user_content(prompt, image, max_size=image_max_size,
-                               quality=image_quality)
+                 sampling=None, grammar=None, **kwargs):
+        media = active_media(kwargs)
+        require_vision_model(model, image, media["video"], media["audio"])
+        content = user_content(prompt, image, **media,
+                               video_frames=kwargs.get("video_frames", 8),
+                               max_size=image_max_size, quality=image_quality)
         conversation = _messages(system, prompt, messages, content=content)
         text, thought = _run_chat(model, conversation, thinking, max_tokens,
                                   temperature, top_p, seed, sampling, grammar)
