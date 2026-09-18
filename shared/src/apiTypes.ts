@@ -476,6 +476,21 @@ export interface Favorite {
   createdAt: number;
 }
 
+/**
+ * Where a favourite's picture can be loaded from, on the ComfyUI machine.
+ *
+ * `copied` is what it says: false when the file was already there and the
+ * reference simply points at it, true when Latent had to send its stored copy
+ * over first. Worth reporting rather than hiding, because the two differ in a
+ * way somebody might care about — one costs a transfer and leaves a file in the
+ * input directory, and the other costs nothing.
+ */
+export interface FavoriteReference {
+  /** `output/monday/render.png`, or `input/latent-favorite-….png`. */
+  reference: string;
+  copied: boolean;
+}
+
 export interface CreateFavoriteRequest {
   generationId: string;
   image: ComfyImageRef;
@@ -1027,20 +1042,6 @@ export interface AppSettings {
    */
   workflowPrefix: string;
   /**
-   * Folders and files starred in the folder browser, newest first.
-   *
-   * Reference material is reused, and the same handful of it is reused most:
-   * the sketch a series is built on, the folder of masks, the one photograph
-   * every portrait starts from. Finding those by walking down from `output`
-   * every time is the whole cost of using them, and it is paid per picture.
-   *
-   * Kept with the settings rather than on the device because what you reference
-   * is a property of the installation, not of the phone you happened to pick it
-   * from — the same reasoning that puts the workflows and the prompt library
-   * here.
-   */
-  browseFavorites: BrowseFavorite[];
-  /**
    * One form arrangement applied to every workflow. See `fieldArrangement.ts`.
    *
    * Keyed by what a field is called rather than by which workflow it is in, so
@@ -1049,15 +1050,43 @@ export interface AppSettings {
    * win, so nothing arranged here can quietly undo hand-tuned work.
    */
   fieldArrangement: FieldArrangement;
+  /**
+   * What the app shows instead of itself once you are no longer looking at it.
+   *
+   * Server-side rather than per device, because the answer is a fact about the
+   * work — whether renders are something you would rather other people did not
+   * read over your shoulder — and not about which screen you happen to be
+   * holding. Set once, and the tablet behaves like the phone.
+   */
+  privacy: PrivacySettings;
+  /**
+   * How much of a folded day the gallery and the favourites still show.
+   *
+   * Separately, because the two lists are different densities of the same
+   * thing: a day of generating is hundreds of pictures and a day of favouriting
+   * is a handful, so the stride that reads as "a glance at that evening" is far
+   * apart for them. See `previewOf`.
+   */
+  dayPreview: DayPreviewSettings;
 }
 
-/** One starred entry in the folder browser: `root/relative/path`, plus what it is. */
-export interface BrowseFavorite {
-  /** `output/monday/render_0007.png` — the reference the picker hands back. */
-  ref: string;
-  /** A folder is somewhere to go; a file is something to pick. */
-  kind: 'file' | 'folder';
-  addedAt: number;
+/** The cover that goes up when the app is no longer in front of you. */
+export interface PrivacySettings {
+  /**
+   * On by default, and deliberately so.
+   *
+   * The moment this is for is the one you did not plan: the phone handed over,
+   * the screen shared, the laptop turned round. A privacy feature that has to
+   * be switched on before the moment it protects is a privacy feature nobody
+   * has on when it matters.
+   */
+  cover: boolean;
+}
+
+/** One in every how many, per list. Rated media is always shown besides. */
+export interface DayPreviewSettings {
+  gallery: number;
+  favorites: number;
 }
 
 /**

@@ -13,6 +13,7 @@ import type {
   ArchiveStats,
   ComfyImageRef,
   Favorite,
+  FavoriteReference,
   FavoriteSort,
   FieldOverrides,
   FormLayout,
@@ -28,6 +29,10 @@ import type {
   PromptBlockInput,
   RandomPromptConfig,
   RandomPromptRoll,
+  ServiceConfig,
+  ServiceDefinition,
+  ServiceLogLine,
+  ServiceView,
   SystemPrompt,
   SystemPromptInput,
   TasteCategory,
@@ -415,6 +420,56 @@ export const api = {
     request<Favorite>(`/api/favorites/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
 
   deleteFavorite: (id: string) => request<void>(`/api/favorites/${id}`, { method: 'DELETE' }),
+
+  /**
+   * Where the ComfyUI machine can load this favourite from.
+   *
+   * A POST rather than a GET because it may have to *do* something — send the
+   * stored copy over when the original is no longer in the output folder — and
+   * a request that can upload a file has no business being cacheable.
+   */
+  favoriteReference: (id: string) =>
+    request<FavoriteReference>(`/api/favorites/${id}/reference`, { method: 'POST' }),
+
+  /* ---------------------------------------------------------------- */
+  /* Supervised services                                               */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * What Latent knows how to run.
+   *
+   * Fetched rather than compiled in, although it is a constant on the server:
+   * the screen builds its whole form from this, so a service added to the
+   * catalogue appears with its arguments, its groups and its help text without
+   * the client knowing anything about it.
+   */
+  serviceDefinitions: () =>
+    request<{ definitions: ServiceDefinition[] }>('/api/supervisor/definitions'),
+
+  services: () => request<{ services: ServiceView[] }>('/api/supervisor/services'),
+
+  addService: (kind: string, name?: string, root?: string) =>
+    request<ServiceView>('/api/supervisor/services', {
+      method: 'POST',
+      body: JSON.stringify({ kind, name, root }),
+    }),
+
+  updateService: (id: string, patch: Partial<ServiceConfig>) =>
+    request<ServiceView>(`/api/supervisor/services/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+
+  deleteService: (id: string) =>
+    request<void>(`/api/supervisor/services/${id}`, { method: 'DELETE' }),
+
+  serviceAction: (id: string, action: 'start' | 'stop' | 'restart') =>
+    request<ServiceView>(`/api/supervisor/services/${id}/${action}`, { method: 'POST' }),
+
+  serviceLog: (id: string, since: number) =>
+    request<{ lines: ServiceLogLine[]; seq: number; running: boolean }>(
+      `/api/supervisor/services/${id}/log?since=${since}`,
+    ),
 
   /* ---------------------------------------------------------------- */
   /* Prompt building blocks                                            */

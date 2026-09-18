@@ -10,6 +10,7 @@ import { useEffect, useMemo } from 'react';
 
 import type {
   AppSettings,
+  ServiceConfig,
   GenerationRecord,
   ComfyImageRef,
   FavoriteSort,
@@ -56,6 +57,8 @@ export const queryKeys = {
   studyPreview: (id: string) => ['study-preview', id] as const,
   studyNext: (id: string) => ['study-next', id] as const,
   studyStats: (id: string) => ['study-stats', id] as const,
+  serviceDefinitions: ['service-definitions'] as const,
+  services: ['services'] as const,
 };
 
 export function useStatus() {
@@ -80,8 +83,21 @@ export function useWorkflow(id: string | null) {
   });
 }
 
-export function useSettings() {
-  return useQuery({ queryKey: queryKeys.settings, queryFn: api.settings });
+/**
+ * The settings, once there is a session to read them with.
+ *
+ * `enabled` exists for one caller and matters to all of them: the app shell
+ * reads a setting of its own — whether to cover the screen when you leave —
+ * and it renders before anybody has signed in. Asking then gets a 401, and
+ * react-query answers a 401 by retrying with a growing pause, so the value
+ * arrived seconds *after* sign-in rather than at it. Held back until there is
+ * a session, the request happens once and succeeds.
+ *
+ * Every other caller is inside a screen that only exists behind the login, so
+ * the default is the behaviour they already had.
+ */
+export function useSettings(enabled = true) {
+  return useQuery({ queryKey: queryKeys.settings, queryFn: api.settings, enabled });
 }
 
 export function useUpdateSettings() {
@@ -956,3 +972,68 @@ export function useKeepStudyShot(studyId: string) {
     },
   });
 }
+
+/* ------------------------------------------------------------------ */
+/* Supervised services                                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The catalogue, which never changes while the app is open.
+ *
+ * `staleTime: Infinity` because it is compiled into the server: refetching it
+ * on every focus would be a request per tab switch for an answer that cannot
+ * have moved.
+ */
+export function useServiceDefinitions() {
+  return useQuery({
+    queryKey: queryKeys.serviceDefinitions,
+    queryFn: api.serviceDefinitions,
+    staleTime: Infinity,
+  });
+}
+
+/**
+ * What is configured and what it is doing, polled.
+ *
+ * Polled rather than pushed over the live socket, and the reason is worth
+ * stating: that socket carries ComfyUI's progress, and a service that has
+ * crashed is precisely the case where ComfyUI is not sending anything. A screen
+ * that learned about crashes over a connection to the thing that crashed would
+ * be silent at the one moment it matters.
+ *
+ * Two seconds while the screen is open, and nothing at all while it is not —
+ * this is the only caller, and it unmounts when you leave.
+ */
+export function useServices(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.services,
+    queryFn: api.services,
+    refetchInterval: enabled ? 2_000 : false,
+    enabled,
+  });
+}
+
+function useServiceMutation<TArgs, TResult>(fn: (args: TArgs) => Promise<TResult>) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => void client.invalidateQueries({ queryKey: queryKeys.services }),
+  });
+}
+
+export const useAddService = () =>
+  useServiceMutation(({ kind, name, root }: { kind: string; name?: string; root?: string }) =>
+    api.addService(kind, name, root),
+  );
+
+export const useUpdateService = () =>
+  useServiceMutation(({ id, patch }: { id: string; patch: Partial<ServiceConfig> }) =>
+    api.updateService(id, patch),
+  );
+
+export const useDeleteService = () => useServiceMutation((id: string) => api.deleteService(id));
+
+export const useServiceAction = () =>
+  useServiceMutation(({ id, action }: { id: string; action: 'start' | 'stop' | 'restart' }) =>
+    api.serviceAction(id, action),
+  );

@@ -44,7 +44,25 @@ down the side, and the render on screen beside the form that made it. See
   for a side-by-side comparison.
 - **Gallery.** Every result, with the exact settings that produced it. Swipe
   through the whole gallery, pinch to zoom, tap to close, save to your camera
-  roll, re-run, or send a result straight to img2img or an upscale pass.
+  roll, re-run, or send a result straight to img2img or an upscale pass. Listed
+  by day, with today and yesterday open and everything older folded down to a
+  sample of itself — so a year of work is something you skim rather than scroll.
+  Favourites are cut the same way. See [In the gallery](#in-the-gallery).
+- **It covers itself when you leave.** Lock the phone, switch apps or tab away
+  and everything above the tab bar goes behind a cover; a tap on it, or on a
+  tab, brings you back. Not a lock — the app is still signed in — but the screen
+  that is about to be a thumbnail in an app switcher is no longer your prompt and
+  the pictures it made. See [When you are not looking at
+  it](#when-you-are-not-looking-at-it).
+- **A batch is a list of pictures, not a mode.** Tick the twelve photographs you
+  want run through the same graph and the image slot works through them one per
+  render, wrapping at the end. Picking one picture is a list of one, and behaves
+  exactly as it always did. See [A list of pictures, one per
+  run](#a-list-of-pictures-one-per-run).
+- **It can run ComfyUI and llama-server for you.** Latent stays up; they fall
+  over. **More → Supervisor** starts them, watches them, shows their output and
+  brings them back when they crash — with their command lines built from a form
+  rather than typed. See [The Supervisor](#the-supervisor).
 - **Sound, too.** A workflow ending in music or speech — MiniMax-Music3, a Qwen
   TTS graph, whatever you run — is queued, played, rated, kept and favourited
   like everything else. The picker says which workflows make sound, the length
@@ -847,6 +865,47 @@ disk, until some other screen happened to refetch it.
 Reconnecting and becoming visible are exactly the two moments the client may
 have missed something, so both now refetch the history.
 
+## When you are not looking at it
+
+Lock the phone, switch apps, tab away, turn the laptop round — and the app puts
+itself away behind a cover. Everything above the tab bar goes; the tab bar
+itself stays, which is what makes it feel like part of the app rather than a
+crash, because the way back in is the navigation that was always there.
+
+Coming back is one tap. **Tapping the cover** puts you back exactly where you
+were. **Tapping a tab** lifts it and takes you there — including the tab you
+were already on, where the usual scroll-to-top is deliberately suppressed:
+"take me back to what I was doing" should not throw away where you were in it.
+
+There is no password on it. This is not protecting the account — that is what
+signing in is for — it is protecting the glance: the screen that is about to be
+a thumbnail in an app switcher, or a window somebody else is now standing in
+front of, with a prompt you wrote and the pictures it made on it.
+
+Three signals raise it, because no one of them catches every way of leaving. The
+page becoming hidden is the phone locking and the tab going to the background.
+The window losing focus is the desktop case that misses entirely — the window is
+still perfectly visible, you have just clicked on something else — and it fires
+*earlier* when an app is switched away from, which on iOS is the difference
+between the cover being in the app switcher's snapshot and not. And `pagehide`
+covers the tab being closed, where the last frame drawn is the one a restored
+session starts on.
+
+Nothing lowers it automatically. If returning to the app were enough the cover
+would be gone by the time you looked at the screen you had just unlocked, which
+is exactly the frame it exists for.
+
+It is on by default and switched off under Settings → Pictures → Display, beside
+the blur. The two sit together because they answer the same worry at different
+moments: the blur is for while you are looking — handing somebody the phone to
+show them one thing — and this is for once you are not.
+
+The cover is armed as soon as there is a session, before the setting that
+governs it has arrived. It is on by default, so assuming it during the moment
+the fetch takes is assuming the truth for nearly everybody; assuming the other
+way would leave the app uncovered for exactly the first second after it is
+opened. If the setting turns out to be off, the cover comes down and stays down.
+
 ## Keeping images when the instance goes away
 
 A gallery entry normally just points at a file in ComfyUI's output directory. If
@@ -1031,6 +1090,50 @@ root.
 size, sitting on the screen you look at with other people around, so the label
 is a fold: tap it and only the filename is left. The choice is remembered per
 input, and survives a reload.
+
+### A list of pictures, one per run
+
+The thing people actually want from an "img2img batch" is not a mode. It is
+this: the twelve photographs you are about to run the same graph over, ticked
+once, and then Generate pressed twelve times without going back to the picker in
+between.
+
+So there is no mode. **Every image slot holds a list**, and picking one picture
+is a list of one. After each run the slot advances to the next entry and wraps
+at the end — which for a list of one is the same picture again, exactly as it
+always was. Nothing about the ordinary case changes, and the unusual one is a
+second tick.
+
+Every picture in the browser has a tick box in its corner. Tapping the picture
+picks it and shuts the sheet, as it always did; tapping the box adds it to the
+list and leaves the sheet open, so ticking six is six taps in one place. A bar
+appears at the bottom once the first box is ticked — and only then — saying how
+many are ticked and offering **Use N**. The order they were ticked in is the
+order the renders happen in.
+
+Underneath the image field, the list is drawn as a strip with the one on deck
+ringed. Tapping another jumps to it, which is what you want when a run went
+wrong and you would like that photograph again rather than eleven more presses
+of Generate to come back round. Jumping does not reorder anything: the next run
+is still the one after whatever you landed on. The × on a tile drops it from the
+list.
+
+The slot moves on **after** the run, not before it, so what is on screen is
+always the picture the last Generate used, right up until it succeeds. Advancing
+first would show a picture that has not been rendered yet, and a failed queue
+would have skipped one.
+
+Where you are in the list is not stored anywhere — it is simply which picture the
+slot is holding. So the state cannot drift out of step with what you can see, a
+reload resumes where it left off, and picking something by hand mid-way through
+just starts the list again from its beginning.
+
+**Queue this many** and a picture list are different questions — "make me four
+of this" and "make me one of each of these" — and asking both at once means four
+runs that each need their own picture. With a list running, Generate queues that
+many runs and walks the slot forward between them, and says so in a line under
+the control. A workflow with two image slots advances both together, so a
+subject and its mask stay paired.
 
 ## Importing an existing output folder
 
@@ -2107,6 +2210,95 @@ the door out: the run stops being a study run and becomes an ordinary one, so it
 appears in the gallery and the favourites with its bytes archived, and survives
 the study being deleted. Deleting a study takes its remaining pictures with it.
 
+## The Supervisor
+
+Latent is a small server that reads a database and proxies HTTP, and it runs for
+weeks. ComfyUI and llama-server are large programs holding a GPU, and they do
+not: a model one gigabyte too big, a custom node that throws on import, a driver
+that goes away mid-render. That asymmetry is the whole argument for this module.
+**The stable process gets the button that starts the unstable ones**, and the
+switch that starts them again by itself.
+
+The hierarchy is a convenience rather than a claim — ComfyUI is a powerful
+program in its own right and so is llama-server, and neither knows Latent
+exists. It is under **More → Supervisor**.
+
+Each service is four things:
+
+- **A root directory.** Where the binaries are. For ComfyUI Portable that is the
+  folder holding `python_embeded` and `ComfyUI` — `ComfyUI_windows_portable`, not
+  the `ComfyUI` inside it. For llama.cpp it is wherever `llama-server` lives, or
+  the build directory above `bin`.
+- **How to start it.** Automatic by default, which tries each known launcher in
+  turn and takes the first whose file is actually there — the portable build's
+  embedded Python, a venv, a system Python; an unzipped llama.cpp release, a
+  CMake build. Naming one by hand is for the cases where that is ambiguous, or
+  where the folder is on a machine this one cannot see.
+- **Arguments, as a form.** Both services are configured entirely on the command
+  line and both have a hundred flags, and typing one out is how you find out at
+  2am that `--lowvram` has one dash. So the arguments are declared — name, type,
+  default, one sentence on what it does — and the command is built from what you
+  set. The common handful is what the form opens on; **show all** is the rest.
+  There is a free-text field at the end for anything the catalogue does not
+  cover, which is where a flag added to ComfyUI last week goes.
+- **What to do when it stops.**
+
+**Nothing is passed unless you set it.** The defaults are shown *beside* each
+control rather than filled into it, because a form pre-filled with every default
+produces a command line stating thirty things the program would have done anyway
+— and then the two that matter are invisible in the middle of it.
+
+**The command is shown in full**, above the arguments, exactly as it will be
+run. A manager that hides the command it produces is a manager you cannot debug,
+and it is the one place you can see that `--listen` got `0.0.0.0` and that the
+model path with the space in it arrived in one piece. If the root holds none of
+the expected binaries, that is what the box says instead.
+
+**Restarting is the point.** On by default: a crash mid-queue is otherwise a
+walk to another machine. The pause between attempts grows, and after five
+launches that never stayed up it gives up and says so — a command line that does
+not work fails in under a second, and a supervisor without that would run it a
+hundred times a minute for as long as nobody was looking. A process that stayed
+up for half an hour and then died is a crash and gets an immediate retry; one
+that died at once is a configuration error and gets counted. "Flake" is not a
+diagnosis a supervisor is allowed to reach on its own.
+
+**Starting with Latent is off by default**, which sounds inconsistent with the
+above and is not. Bringing back something that was running is restoring the
+state you had; starting something you never started is a decision, and a
+supervisor that launched processes on a machine because it happened to be
+installed there would be a nasty surprise. Turn it on once you trust the command.
+
+**The log** is a tap away on each card, and the first line of it is the command
+that was actually run. Latent's own lines — what it started, what it exited
+with, when it will try again — are marked apart from the process's own output.
+It follows the bottom and stops following the moment you scroll up, because
+reading the line that explains a crash while the view keeps jumping past it is
+the one thing a log viewer must not do. Polled rather than streamed: a service
+that has crashed is exactly the case where a stream would have gone away.
+
+Stopping is `SIGTERM` first — both of these write things on the way down — and
+`SIGKILL` after eight seconds, because a process that ignores a term signal
+would otherwise hold the port and stop the restart working. Removing a service
+stops it first: there is no "remove but leave it running", because there is no
+way back from it. Latent stops everything it started when it shuts down, so
+there is never a GPU held by something with no parent to stop it.
+
+**More of these are expected.** A service is a definition in a list rather than
+a branch in the code — `shared/src/supervisor.ts` — and the screen builds its
+whole form from what the server sends, so adding one is adding a definition and
+nothing else. The process manager, the routes and the screen mention neither
+ComfyUI nor llama.cpp by name.
+
+Everything here can start a process on the machine Latent is installed on, which
+is worth being plain about rather than burying. It is the same class of power
+the update routes already have — they run `git` and `npm` — and it sits behind
+the same session check as everything else. What it is not is arbitrary: the
+executable is never sent by the client. It is derived from the service's kind,
+which has to be one of the definitions Latent ships with, and from the root
+directory you typed. Nothing goes through a shell, so a semicolon in a field is
+a character in an argument rather than a second command.
+
 ## Getting around
 
 Six tabs across the bottom — Generate, Gallery, Favourites, **Chat**, Queue,
@@ -2216,15 +2408,47 @@ distinction already in your hands.
 
 ## In the gallery
 
-**Cut into days.** A month of heavy use is thousands of tiles, and "the ones
-from Tuesday" was a minute of scrolling. The grid is divided at midnight, and
-the divider *is* the control — tapping the line between two days folds that day
-away. A separate chevron would be a second thing to aim at on a phone, and the
-boundary between two days is already what you are thinking about when you want
-one of them gone. Folded days leave the viewer's swipe list too, or putting a
-day away would be a lie about what you are browsing. Which days are folded is
-kept on the device: that is a fact about this screen and this phone, not about
-the pictures.
+**Cut into days, and folded by default.** A month of heavy use is thousands of
+tiles, and "the ones from Tuesday" was a minute of scrolling. The grid is
+divided at midnight, and the divider *is* the control — tapping the line between
+two days folds that day away. A separate chevron would be a second thing to aim
+at on a phone, and the boundary between two days is already what you are
+thinking about when you want one of them gone.
+
+**Today and yesterday are open; everything older is not.** A rule rather than
+stored state, because it is the answer that stays right without anybody
+maintaining it — a day that was "today" when you folded it is not today
+tomorrow, and the old default of "open until you fold it" cost one tap per day
+forever. "This week" was the obvious alternative and is wrong on a Monday, where
+it means six days of open grid before the first fold. What *is* remembered is
+disagreement: the days you deliberately opened although the rule would have
+folded them, and vice versa. Kept on the device — that is a fact about this
+screen and this phone, not about the pictures — and agreeing with the rule again
+forgets rather than records, so nothing stale is left to override it.
+
+**A folded day still shows what it was.** Not blank: every n-th picture, so the
+strip is a sample of that evening rather than a date you have to open to
+identify. Twenty by default in the gallery, and the setting is under Settings →
+Pictures → *Folded days*. Sampled per *picture* rather than per run, which is the
+part that matters — a day of a hundred batches of four is four hundred pictures,
+and sampling the runs would show you four near-identical seeds at a time where
+sampling the pictures gives a strip that actually changes.
+
+**Anything rated is always in it**, at whatever position it holds. A sample that
+can leave out the one five-star picture of the week is a sample nobody would
+trust enough to leave folded, and that trust is the whole feature. A run still
+in flight survives a fold for the same reason: it is the thing you are waiting
+for. The heading counts the whole day and says how much of it is showing, so
+folding can never make a day look smaller than it is.
+
+What a folded day shows is in the viewer's swipe list and what it hides is not.
+Either rule on its own would be wrong: leaving a folded day out entirely would
+make its strip untappable, and putting all of it in would mean swiping out of
+the sample into four hundred pictures you had put away.
+
+The favourites tab is cut the same way, on the same rule, with its own stride —
+five by default, because a day of favouriting is a handful by definition and one
+in twenty of a handful is one picture, which says nothing.
 
 **A tile is the shape of its picture.** A grid of squares crops a third off a
 2:3 portrait, and a gallery of generated pictures is mostly not square — the
@@ -2661,24 +2885,37 @@ because the commonest thing anybody wants is to feed a finished render back in,
 and it carries a path — `output/monday/render_0007.png` — shown under the
 filename, because the same name exists under several roots.
 
-**Favourites, as another category.** Every folder and every file in the browser
-has a star beside it, and starring one puts it in a **★ Favourites** chip that
-stands beside `output`, `input` and `temp` — always, whether or not anything has
-been starred yet. It used to appear only once it had something in it, which
-meant the star on every row put pictures into a place that did not visibly
-exist; empty, the category says what a star does instead. Reference material is
-reused and the same handful of it is reused most — the sketch a series is built
-on, the folder of masks, the one photograph every portrait starts from — and
-finding those by walking down from `output` is a cost paid per picture. A
-starred folder opens where it actually lives, so the category is a shortcut into
-the browser rather than a copy of it.
+**Your favourites, as another category.** A **★ Favourites** chip stands beside
+`output`, `input` and `temp` — always, whether or not there is anything in it —
+and what it lists is the gallery's favourites. The ones from the ★ tab of the
+app: the pictures you keep because you want more like them.
 
-The list is kept with the settings, not on the device: what you reference is a
-property of the installation, not of the phone you picked it from. A slot only
-offers what it can load — a starred clip does not appear in a picture slot, and
-the category says how many it is holding back rather than dropping them without
-a word — but starring is against the whole list, so a picture slot never loses
-the clips it is not showing.
+This used to be a second, private list you built *inside* this dialog by
+starring file paths, which was asking for the same curation twice with worse
+tools. You already keep the pictures worth coming back to, you curate that list
+every day from the viewer, and wanting one again is most of what a reference
+slot is for. So the star on every row is gone and the category shows the list
+you already have.
+
+A favourite is a row in Latent's database and the node takes a path on the
+ComfyUI machine, so picking one resolves it. Two answers, and which you get
+depends on where the picture still is. Nearly always it is a render from this
+instance still sitting in its output folder, and then the reference is just
+that — nothing is copied, and the node opens the file that was already there.
+Checked rather than assumed: the whole point of favouriting is to outlive the
+folder. Anything else — a picture imported from a folder, one whose original was
+swept up, one from a rented box that no longer exists — is sent over from
+Latent's own copy and lands in `input`, named by content hash so picking it
+twice reuses one file rather than filling the directory with copies of it.
+
+A slot only offers what it can load: a favourited clip does not appear in a
+picture slot, and the category says how many it is holding back rather than
+dropping them without a word.
+
+**Several at once.** Every picture in the browser has a tick box in its corner,
+and ticking builds a *list* instead of picking one. See [A list of pictures, one
+per run](#a-list-of-pictures-one-per-run) — the sheet is unchanged until the
+first box is ticked, so picking one picture is still tapping one picture.
 
 *Replace* still uploads from the camera roll, editor and all. The upload lands
 in ComfyUI's input directory, which the browser also serves, so it is stored as

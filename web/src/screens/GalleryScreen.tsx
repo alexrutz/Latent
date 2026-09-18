@@ -1,6 +1,14 @@
 import { forwardRef, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { VIEWER_SCALE_STEPS, viewerScaleLabel, viewerScaleOf } from '@latent/shared';
+import {
+  DEFAULT_GALLERY_PREVIEW_EVERY,
+  groupByDay,
+  previewEveryOf,
+  previewOf,
+  VIEWER_SCALE_STEPS,
+  viewerScaleLabel,
+  viewerScaleOf,
+} from '@latent/shared';
 import type {
   GallerySort,
   GenerationImage,
@@ -11,6 +19,7 @@ import type {
 import {
   useGallery,
   reportImageDimensions,
+  useSettings,
   useSetTileSpan,
   useWorkflows,
 } from '../api/queries';
@@ -23,6 +32,7 @@ import {
 import { shapeOf, ThumbGrid, useTileStyle } from '../components/ThumbGrid';
 import { Toggle } from '../components/ParamControl';
 import { BlurButton } from '../components/BlurButton';
+import { DayDivider } from '../components/DayDivider';
 import {
   cn,
   CONTROL_FACE,
@@ -32,6 +42,7 @@ import {
   Spinner,
 } from '../components/ui';
 import { ViewerWithActions } from '../components/ViewerWithActions';
+import { useDayFolds } from '../state/dayFolds';
 import { maxColumns, TILE_OPTIONS, useGridSettings } from '../state/grid';
 import { useGalleryTargetStore } from '../state/galleryTarget';
 import { useMeasuredVersion } from '../state/measured';
@@ -42,7 +53,17 @@ function identify(entry: ViewerEntry | undefined): string | null {
   return `${entry.record.id}/${entry.image.subfolder}/${entry.image.filename}`;
 }
 
-const COLLAPSED_KEY = 'latent.galleryCollapsed';
+/**
+ * Days the user has opened or shut by hand, against a default they did not.
+ *
+ * The old key held a plain list of folded days, which meant the default was
+ * "open" and a fold was something you had to do to every day you were finished
+ * with — one tap per day, forever. The rule is the other way round now: today
+ * and yesterday are open and everything older is folded, and this records only
+ * the days somebody disagreed with that about. A new key, because the old one's
+ * contents would read as the opposite of what they meant.
+ */
+const FOLDS_KEY = 'latent.galleryDayFolds';
 
 const SORTS: { value: GallerySort; label: string; hint: string }[] = [
   { value: 'newest', label: 'Newest first', hint: 'what you just made' },
@@ -50,35 +71,6 @@ const SORTS: { value: GallerySort; label: string; hint: string }[] = [
   { value: 'rating', label: 'Best rated', hint: 'across every day at once' },
 ];
 
-/** The local day a run belongs to, as a key that sorts and compares. */
-function dayKey(at: number): string {
-  const date = new Date(at);
-  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
-}
-
-/**
- * How that day reads.
- *
- * Today and yesterday by name, because those are the two you look for most and
- * a date tells you less than the word does. The year only when it is not this
- * one — otherwise every heading carries four digits nobody needed.
- */
-function dayLabel(at: number): string {
-  const date = new Date(at);
-  const today = new Date();
-  const yesterday = new Date(today);
-  yesterday.setDate(today.getDate() - 1);
-
-  if (dayKey(at) === dayKey(today.getTime())) return 'Today';
-  if (dayKey(at) === dayKey(yesterday.getTime())) return 'Yesterday';
-
-  return date.toLocaleDateString(undefined, {
-    weekday: 'short',
-    day: 'numeric',
-    month: 'short',
-    ...(date.getFullYear() === today.getFullYear() ? {} : { year: 'numeric' }),
-  });
-}
 
 /** Sorting and the workflow filter, out of the way until asked for. */
 function FilterSheet({
@@ -217,23 +209,16 @@ export function GalleryScreen() {
   const [sort, setSort] = useState<GallerySort>('newest');
   const [workflowId, setWorkflowId] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
-  /**
-   * Days folded shut, by their key.
-   *
-   * Kept on the device: which days you have finished with is a fact about this
-   * screen and this phone, not about the pictures.
+  /*
+   * Which days are open. Today and yesterday by default; see `useDayFolds`.
    */
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => {
-    try {
-      return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]') as string[]);
-    } catch {
-      return new Set();
-    }
-  });
-
-  useEffect(() => {
-    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsed]));
-  }, [collapsed]);
+  const folds = useDayFolds(FOLDS_KEY);
+  const appSettings = useSettings();
+  /** One in how many a folded day shows. See `previewOf`. */
+  const previewEvery = previewEveryOf(
+    appSettings.data?.dayPreview.gallery,
+    DEFAULT_GALLERY_PREVIEW_EVERY,
+  );
 
   const gallery = useGallery({ minRating, sort, workflowId });
   /**
@@ -317,15 +302,40 @@ export function GalleryScreen() {
    */
   const sections = useMemo(() => {
     if (sort === 'rating') return [{ key: '', label: '', items }];
-    const out: { key: string; label: string; items: GenerationRecord[] }[] = [];
-    for (const record of items) {
-      const key = dayKey(record.createdAt);
-      const last = out[out.length - 1];
-      if (last?.key === key) last.items.push(record);
-      else out.push({ key, label: dayLabel(record.createdAt), items: [record] });
-    }
-    return out;
+    return groupByDay(items, (record) => record.createdAt);
   }, [items, sort]);
+
+  /**
+   * Each day as tiles, and the tiles of it that are actually on screen.
+   *
+   * The split is what makes a fold useful rather than merely tidy. `all` is the
+   * day — every picture of every run in it, which is what the heading counts.
+   * `shown` is what is drawn: the whole thing when the day is open, and a
+   * sample of it when it is not.
+   *
+   * The sample is tiles, not runs, and that is deliberate. A day of a hundred
+   * runs of four is four hundred pictures, and sampling the runs would show you
+   * a fifth of the *batches* — four near-identical seeds at a time, over and
+   * over — where sampling the pictures gives a strip that actually changes.
+   * See `previewOf`; anything rated is in it regardless.
+   */
+  const laid = useMemo(
+    () =>
+      sections.map((section) => {
+        const all = sectionEntries(section.items);
+        // The unnamed section that `rating` produces has no heading and so no
+        // way to be folded; it is always open.
+        const open = section.key === '' || folds.isOpen(section.key);
+        return {
+          ...section,
+          all,
+          open,
+          shown: open ? all : previewOf(all, previewEvery, isRatedEntry),
+          pictures: all.reduce((total, entry) => total + (entry.kind === 'image' ? 1 : 0), 0),
+        };
+      }),
+    [sections, folds, previewEvery],
+  );
 
   /*
    * Every picture the gallery is currently showing, flattened.
@@ -334,19 +344,19 @@ export function GalleryScreen() {
    * boundary when you are flicking through results, and stopping dead at the end
    * of one run made swiping feel broken.
    *
-   * Folded days are left out on purpose: putting a day away and then swiping
-   * back into it would make the fold a lie.
+   * What a folded day *shows* is in it, and what it hides is not. Either rule
+   * on its own would be wrong: leaving a folded day out entirely would make its
+   * visible strip untappable, and putting all of it in would mean swiping out of
+   * the sample into four hundred pictures you had put away.
    */
   const entries = useMemo<ViewerEntry[]>(
     () =>
-      sections
-        .filter((section) => !collapsed.has(section.key))
-        .flatMap((section) =>
-          section.items.flatMap((record) =>
-            record.images.map((image) => ({ record, image })),
-          ),
-        ),
-    [sections, collapsed],
+      laid.flatMap((section) =>
+        section.shown
+          .filter((entry) => entry.kind === 'image')
+          .map((entry) => ({ record: entry.record, image: entry.image })),
+      ),
+    [laid],
   );
 
   // Infinite scroll: load the next page as the end of the list comes into view.
@@ -679,56 +689,29 @@ export function GalleryScreen() {
     <div className="safe-t px-4 pt-3 pb-6">
       {filterBar}
 
-      {sections.map((section) => {
-        const shut = collapsed.has(section.key);
-        const pictures = section.items.reduce((total, item) => total + item.images.length, 0);
+      {laid.map((section) => (
+        <div key={section.key || 'all'}>
+          {section.key !== '' && (
+            <DayDivider
+              label={section.label}
+              count={section.pictures}
+              shown={section.shown.length}
+              noun={['picture', 'pictures']}
+              open={section.open}
+              onToggle={() => folds.toggle(section.key)}
+            />
+          )}
 
-        return (
-          <div key={section.key || 'all'}>
-            {section.key !== '' && (
-              /*
-                The divider is the control.
-                A separate chevron would be a second thing to aim at on a
-                phone; the line between two days is already the boundary you
-                are thinking about, so tapping it is what folds the day away.
-              */
-              <button
-                type="button"
-                data-testid="day-divider"
-                onClick={() =>
-                  setCollapsed((current) => {
-                    const next = new Set(current);
-                    if (next.has(section.key)) next.delete(section.key);
-                    else next.add(section.key);
-                    return next;
-                  })
-                }
-                aria-expanded={!shut}
-                aria-label={`${section.label}, ${pictures} pictures`}
-                className="mt-2 mb-2 flex w-full items-center gap-2 text-left"
-              >
-                <span aria-hidden className="text-[10px] text-muted">
-                  {shut ? '▸' : '▾'}
-                </span>
-                <span className="shrink-0 text-xs font-medium">{section.label}</span>
-                <span className="shrink-0 text-[11px] text-muted tabular-nums">{pictures}</span>
-                <span className="h-px min-w-0 flex-1 bg-line" />
-              </button>
-            )}
-
-            {!shut && (
-              <SectionGrid
-                items={section.items}
-                settings={settings}
-                firstResultId={firstResultId}
-                firstResult={firstResult}
-                onOpen={openTile}
-                onHold={holdTile}
-              />
-            )}
-          </div>
-        );
-      })}
+          <SectionGrid
+            entries={section.shown}
+            settings={settings}
+            firstResultId={firstResultId}
+            firstResult={firstResult}
+            onOpen={openTile}
+            onHold={holdTile}
+          />
+        </div>
+      ))}
 
       <FilterSheet
         open={showFilters}
@@ -806,6 +789,33 @@ type SectionEntry =
   | { kind: 'placeholder'; record: GenerationRecord };
 
 /**
+ * A day's runs, flattened into the tiles they draw as.
+ *
+ * A run that has produced nothing yet is still one slot — it is queued or
+ * running, and the spinner in its place is how you know it is. Everything else
+ * is one slot per picture.
+ */
+function sectionEntries(items: GenerationRecord[]): SectionEntry[] {
+  return items.flatMap((record): SectionEntry[] =>
+    record.images.length > 0
+      ? record.images.map((image, index) => ({ kind: 'image', record, image, index }))
+      : [{ kind: 'placeholder', record }],
+  );
+}
+
+/**
+ * Whether a slot survives a fold whatever the sample says.
+ *
+ * Rated pictures do, which is the promise that makes folding safe. So does a
+ * run still in flight: it is the thing you are waiting for, and a day whose
+ * newest tile is a spinner is a day that would otherwise fold it out of sight
+ * moments before it finished.
+ */
+function isRatedEntry(entry: SectionEntry): boolean {
+  return entry.kind === 'placeholder' || entry.image.rating > 0;
+}
+
+/**
  * One day's pictures.
  *
  * A component rather than a loop body because the layout has to be worked out
@@ -814,30 +824,27 @@ type SectionEntry =
  * the shape the data arrives in, where pictures are nested inside their runs.
  */
 function SectionGrid({
-  items,
+  entries,
   settings,
   firstResultId,
   firstResult,
   onOpen,
   onHold,
 }: {
-  items: GenerationRecord[];
+  /**
+   * The tiles to draw, already thinned if this day is folded.
+   *
+   * Worked out by the screen rather than here, because a folded day's sample
+   * has to be the same list the viewer swipes through — and the viewer is not
+   * inside one day. See `previewOf`.
+   */
+  entries: SectionEntry[];
   settings: GridSettings;
   firstResultId: string | null;
   firstResult: React.RefObject<HTMLDivElement | null>;
   onOpen: (record: GenerationRecord, image: GenerationImage, index: number) => void;
   onHold: (record: GenerationRecord, image: GenerationImage) => void;
 }) {
-  const entries = useMemo<SectionEntry[]>(
-    () =>
-      items.flatMap((record): SectionEntry[] =>
-        record.images.length > 0
-          ? record.images.map((image, index) => ({ kind: 'image', record, image, index }))
-          : [{ kind: 'placeholder', record }],
-      ),
-    [items],
-  );
-
   /*
    * Re-planned when a picture is measured, not only when the list changes: the
    * shapes of the pictures just made are learned by the browser a moment after

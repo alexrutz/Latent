@@ -31,6 +31,7 @@ import type {
   ParamValues,
   PromptBlock,
   PromptBlockInput,
+  ServiceConfig,
   StudyDetail,
   StudyRating,
   StudySamplingName,
@@ -52,6 +53,8 @@ import {
   DEFAULT_RANDOM_PROMPT_CONFIG,
   DEFAULT_WANDER_DRAW,
   defaultSampling,
+  DEFAULT_FAVORITE_PREVIEW_EVERY,
+  DEFAULT_GALLERY_PREVIEW_EVERY,
   IDLE_RUN,
   mediaKindOf,
   normaliseRandomPromptConfig,
@@ -776,6 +779,40 @@ function toChatMessage(row: ChatMessageRow): ChatMessage {
   };
 }
 
+interface ServiceRow {
+  id: string;
+  kind: string;
+  name: string;
+  config_json: string;
+  created_at: number;
+}
+
+/**
+ * The stored blob, with the columns beside it winning where they overlap.
+ *
+ * `name` is both a column and a field of the blob — the column so the list can
+ * be read and sorted without parsing every row, the field so the blob is a
+ * complete record on its own. The column is the one that was written last, so
+ * it is the one that is right.
+ */
+function toService(row: ServiceRow): ServiceConfig {
+  const stored = parseJson<Partial<ServiceConfig>>(row.config_json, {});
+  return {
+    values: {},
+    extraArgs: '',
+    env: {},
+    launcher: null,
+    root: '',
+    autoRestart: true,
+    autoStart: false,
+    ...stored,
+    id: row.id,
+    kind: row.kind,
+    name: row.name,
+    createdAt: row.created_at,
+  };
+}
+
 interface WorkflowRow {
   id: string;
   name: string;
@@ -1192,9 +1229,49 @@ const DEFAULT_SETTINGS: AppSettings = {
    * empty to go back to reading the whole installation.
    */
   workflowPrefix: 'API_',
-  browseFavorites: [],
   fieldArrangement: [],
+  /*
+   * The cover is on, because the moment it is for is the unplanned one.
+   * See `PrivacySettings`.
+   */
+  privacy: { cover: true },
+  /*
+   * Twenty and five.
+   *
+   * A day of generating is hundreds of pictures — most of them the same idea
+   * four seeds apart — so one in twenty is where the strip stops repeating
+   * itself and starts reading as the shape of that evening. A day of
+   * favouriting is a handful by definition, and one in twenty of a handful is
+   * one picture, which says nothing; five leaves a folded day looking like
+   * something you chose rather than something that was left.
+   */
+  dayPreview: { gallery: DEFAULT_GALLERY_PREVIEW_EVERY, favorites: DEFAULT_FAVORITE_PREVIEW_EVERY },
 };
+
+/*
+ * The utility processes Latent starts and watches.
+ *
+ * A table rather than a settings blob, because these are records with a
+ * lifetime: one is added, edited over months, and eventually removed, and two
+ * of them are independent of each other in a way that the chat's settings and
+ * the queue policy are not. `config_json` holds the arguments as the catalogue
+ * describes them — see `shared/src/supervisor.ts` — because the set of flags a
+ * service understands changes when the service does, and a column per flag
+ * would be a migration every time llama.cpp gained one.
+ *
+ * Nothing about *running* is stored. Whether a process is up is a fact about
+ * this moment and this machine, and a database that remembered it would come
+ * back after a reboot claiming a PID that now belongs to something else.
+ */
+MIGRATIONS.push(`
+CREATE TABLE IF NOT EXISTS services (
+  id           TEXT PRIMARY KEY,
+  kind         TEXT NOT NULL,
+  name         TEXT NOT NULL,
+  config_json  TEXT NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+`);
 
 export class Store {
   private readonly db: Database.Database;
@@ -3066,6 +3143,73 @@ export class Store {
 
   deleteModelNote(folder: ModelFolder, name: string): void {
     this.db.prepare('DELETE FROM model_notes WHERE folder = ? AND name = ?').run(folder, name);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Supervised services                                               */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Every configured service, oldest first.
+   *
+   * Oldest first because the list is a list of things you set up, and the order
+   * you set them up in is the order you think of them in — ComfyUI, then the
+   * model server, then whatever came after. Nothing here is time-sensitive, so
+   * there is no argument for putting the newest at the top.
+   */
+  listServices(): ServiceConfig[] {
+    return this.db
+      .prepare<[], ServiceRow>('SELECT * FROM services ORDER BY created_at ASC')
+      .all()
+      .map(toService);
+  }
+
+  getService(id: string): ServiceConfig | null {
+    const row = this.db
+      .prepare<[string], ServiceRow>('SELECT * FROM services WHERE id = ?')
+      .get(id);
+    return row ? toService(row) : null;
+  }
+
+  insertService(config: ServiceConfig): void {
+    this.db
+      .prepare(
+        `INSERT INTO services (id, kind, name, config_json, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(config.id, config.kind, config.name, JSON.stringify(config), config.createdAt);
+  }
+
+  /**
+   * Patch a service, one field at a time.
+   *
+   * Merged over what is stored rather than replacing it, because the screen
+   * edits one thing at a time — a switch, a single argument — and a client that
+   * had to send the whole configuration back would overwrite anything another
+   * device changed in between. `id`, `kind` and `createdAt` are fixed: they are
+   * what the record *is*, and a patch that could change them would be a
+   * different record wearing the same row.
+   */
+  updateService(id: string, patch: Partial<ServiceConfig>): ServiceConfig | null {
+    const current = this.getService(id);
+    if (!current) return null;
+
+    const next: ServiceConfig = {
+      ...current,
+      ...patch,
+      id: current.id,
+      kind: current.kind,
+      createdAt: current.createdAt,
+    };
+
+    this.db
+      .prepare('UPDATE services SET name = ?, config_json = ? WHERE id = ?')
+      .run(next.name, JSON.stringify(next), id);
+    return next;
+  }
+
+  deleteService(id: string): void {
+    this.db.prepare('DELETE FROM services WHERE id = ?').run(id);
   }
 
   getSettings(): AppSettings {

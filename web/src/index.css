@@ -284,6 +284,32 @@
   animation: latent-fade 0.15s ease-out;
 }
 
+/*
+ * The only movement on the privacy cover.
+ *
+ * Two soft washes of colour drifting a few per cent of their own size, over
+ * most of a minute. It is slow enough that you never catch it moving and only
+ * notice that the screen is not a still — which is the whole job: a cover that
+ * does not move looks like an app that has hung, and one that animates looks
+ * like a screensaver. Reduced motion takes it away and loses nothing.
+ */
+@keyframes latent-drift {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(6%, -4%, 0) scale(1.08);
+  }
+}
+
+@utility animate-cover-drift {
+  animation: latent-drift 34s ease-in-out infinite alternate;
+}
+
+@utility animate-cover-drift-slow {
+  animation: latent-drift 52s ease-in-out infinite alternate-reverse;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

@@ -1,6 +1,7 @@
 import { NavLink, useLocation } from 'react-router-dom';
 
 import { useLiveStore } from '../state/live';
+import { usePrivacyStore } from '../state/privacy';
 import { scrollToTop } from '../state/scroll';
 import { ChatMark, MORE, TABS, type Tab } from './BottomTabs';
 import { cn } from './ui';
@@ -139,6 +140,12 @@ function RailItem({
         // Tapping the destination you are already on goes back to the top, as
         // it does on the bar. A long gallery is a one-way trip without it.
         onClick={(event) => {
+          // The rail is a tablet's tab bar, and behaves like one under the
+          // cover: it lifts it and goes where it says. See `BottomTabs`.
+          if (usePrivacyStore.getState().covered) {
+            usePrivacyStore.getState().uncover();
+            return;
+          }
           if (!active) return;
           event.preventDefault();
           scrollToTop();

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-import type { ParamValues } from '@latent/shared';
+import type { InputBatches, ParamValues } from '@latent/shared';
 
 /** What is set up on the Generate screen for one workflow, ready to submit. */
 export interface FormDraft {
@@ -8,6 +8,18 @@ export interface FormDraft {
   /** Seed fields the user pinned, so a run reproduces rather than varies. */
   lockedSeeds: string[];
   batchCount: number;
+  /**
+   * The pictures each image slot is working through, by field id.
+   *
+   * Which one it is *on* is not here — that is the field's own value, in
+   * `values`. See `advanceBatch` for why the position is deliberately not
+   * stored twice.
+   *
+   * Optional because a draft written before this existed does not have it, and
+   * an image slot with no list is the ordinary single-picture case rather than
+   * a special one.
+   */
+  batchInputs?: InputBatches;
 }
 
 interface DraftStore {

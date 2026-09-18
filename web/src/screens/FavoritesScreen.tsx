@@ -1,17 +1,34 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import {
+  DEFAULT_FAVORITE_PREVIEW_EVERY,
+  groupByDay,
+  previewEveryOf,
+  previewOf,
+} from '@latent/shared';
 import type { Favorite, FavoriteSort, GenerationImage, GenerationRecord } from '@latent/shared';
 
-import { useFavorites, useGeneration } from '../api/queries';
+import { useFavorites, useGeneration, useSettings } from '../api/queries';
 import { Thumb, type ViewerEntry } from '../components/ImageViewer';
 import { shapeOf, ThumbGrid, useTileStyle } from '../components/ThumbGrid';
 import { useMeasuredVersion } from '../state/measured';
 import { Toggle } from '../components/ParamControl';
 import { cn, EmptyState, Spinner } from '../components/ui';
+import { DayDivider } from '../components/DayDivider';
 import { ViewerWithActions } from '../components/ViewerWithActions';
+import { useDayFolds } from '../state/dayFolds';
 import { useGridSettings } from '../state/grid';
 import { showInGallery } from '../state/galleryTarget';
+
+/**
+ * Days the user opened or shut by hand. See `useDayFolds`.
+ *
+ * Its own key rather than the gallery's, because the two lists are folded for
+ * different reasons and on different days — you finish looking at an evening's
+ * renders long before you finish with the three of them you kept.
+ */
+const FOLDS_KEY = 'latent.favoritesDayFolds';
 
 const SORTS: { label: string; value: FavoriteSort }[] = [
   { label: 'Rating', value: 'rating' },
@@ -41,20 +58,67 @@ export function FavoritesScreen() {
   /** Which favourite is open in the viewer, by its id. */
   const [viewing, setViewing] = useState<string | null>(null);
 
+  const folds = useDayFolds(FOLDS_KEY);
+  const appSettings = useSettings();
+  /** One in how many a folded day shows. See `previewOf`. */
+  const previewEvery = previewEveryOf(
+    appSettings.data?.dayPreview.favorites,
+    DEFAULT_FAVORITE_PREVIEW_EVERY,
+  );
+
   const items = favorites.data ?? [];
+
+  /**
+   * The list, cut into the days things were kept on.
+   *
+   * The same argument as the gallery's, at a smaller scale that still gets
+   * away from you: a year of keeping the good ones is several hundred pictures
+   * in one column, and the ones from a particular week are somewhere in the
+   * middle of it.
+   *
+   * Not for the rating order, which deliberately crosses days — a list headed
+   * by dates whose contents are in a completely different order would be a
+   * heading that lies. That case is one unnamed, unfoldable section.
+   */
+  const sections = useMemo(() => {
+    if (sort === 'rating') return [{ key: '', label: '', items }];
+    return groupByDay(items, (favorite) => favorite.createdAt);
+  }, [items, sort]);
+
+  /**
+   * Each day, and the part of it that is on screen.
+   *
+   * A folded day shows every n-th favourite plus everything rated — and
+   * "rated" here is the favourite's own rating, not the gallery star the same
+   * picture may or may not carry. The two are deliberately separate judgements
+   * (see the note on this screen), and on this screen it is this one that means
+   * "worth keeping in view".
+   */
+  const laid = useMemo(
+    () =>
+      sections.map((section) => {
+        const open = section.key === '' || folds.isOpen(section.key);
+        return {
+          ...section,
+          open,
+          shown: open
+            ? section.items
+            : previewOf(section.items, previewEvery, (favorite) => favorite.rating > 0),
+        };
+      }),
+    [sections, folds, previewEvery],
+  );
+
+  /** Every favourite currently drawn, in the order it is drawn. */
+  const visible = useMemo(() => laid.flatMap((section) => section.shown), [laid]);
+
   // The grid works its rows out from the whole list at once, so it needs the
   // shapes in the order they are shown. A favourite with no picture is a slot
   // like any other.
   const measured = useMeasuredVersion();
-  const shapes = useMemo(
-    () => items.map((favorite) => shapeOf(favorite.image)),
-    // `measured` is a signal rather than a value: it changes when a picture's
-    // size becomes known, which is when the rows need working out again.
-    [items, measured],
-  );
 
   /*
-   * Every favourite, in the order they are listed, as viewer entries.
+   * Every favourite on screen, in the order they are listed, as viewer entries.
    *
    * Tapping one used to open a page about it, with the viewer a tap further
    * in — so the picture took two taps to see properly, and the swipe when you
@@ -62,22 +126,29 @@ export function FavoritesScreen() {
    * through the favourites you were looking at. This is the gallery's
    * behaviour instead: one tap opens it full-screen, and a swipe is the next
    * favourite.
+   *
+   * On screen, rather than all of them: swiping out of a folded day's sample
+   * and into the hundred it was standing for would make the fold a lie.
    */
+  const withImages = useMemo(
+    () =>
+      visible.filter((favorite): favorite is Favorite & { image: GenerationImage } =>
+        Boolean(favorite.image),
+      ),
+    [visible],
+  );
+
   const entries = useMemo<ViewerEntry[]>(
     () =>
-      items
-        .filter((favorite): favorite is Favorite & { image: GenerationImage } =>
-          Boolean(favorite.image),
-        )
-        .map((favorite) => ({
-          record: standInRecord(favorite, favorite.image),
-          image: favorite.image,
-        })),
-    [items],
+      withImages.map((favorite) => ({
+        record: standInRecord(favorite, favorite.image),
+        image: favorite.image,
+      })),
+    [withImages],
   );
 
   const viewerIndex = viewing
-    ? items.filter((favorite) => favorite.image).findIndex((favorite) => favorite.id === viewing)
+    ? withImages.findIndex((favorite) => favorite.id === viewing)
     : -1;
 
   const header = (
@@ -144,42 +215,29 @@ export function FavoritesScreen() {
     <div className="safe-t px-4 pt-3 pb-6">
       {header}
 
-      {settings.favoriteThumbnails ? (
-        <ThumbGrid columns={settings.columns} shapes={shapes} uniform={settings.uniformTiles}>
-          {items.map((favorite, at) => (
-            <FavoriteTile
-              key={favorite.id}
-              favorite={favorite}
-              at={at}
-              onOpen={() => setViewing(favorite.id)}
+      {laid.map((section) => (
+        <div key={section.key || 'all'}>
+          {section.key !== '' && (
+            <DayDivider
+              label={section.label}
+              count={section.items.length}
+              shown={section.shown.length}
+              noun={['favourite', 'favourites']}
+              open={section.open}
+              onToggle={() => folds.toggle(section.key)}
             />
-          ))}
-        </ThumbGrid>
-      ) : (
-        <ul className="space-y-2">
-          {items.map((favorite) => (
-            <li key={favorite.id}>
-              <button
-                type="button"
-                onClick={() => setViewing(favorite.id)}
-                className="w-full rounded-xl border border-line bg-surface px-3 py-3 text-left active:bg-surface-2"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <span className="min-w-0 flex-1 truncate text-sm">
-                    {favorite.title || 'Untitled'}
-                  </span>
-                  <span className="shrink-0 text-xs text-warn">
-                    {favorite.rating > 0 ? '★'.repeat(favorite.rating) : '—'}
-                  </span>
-                </div>
-                {favorite.note && (
-                  <p className="mt-1 truncate text-xs text-muted">{favorite.note}</p>
-                )}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+          )}
+
+          <DaySection
+            favorites={section.shown}
+            thumbnails={settings.favoriteThumbnails}
+            columns={settings.columns}
+            uniform={settings.uniformTiles}
+            measured={measured}
+            onOpen={setViewing}
+          />
+        </div>
+      ))}
 
       {viewerIndex >= 0 && (
         <FavoriteViewer
@@ -200,6 +258,80 @@ export function FavoritesScreen() {
         />
       )}
     </div>
+  );
+}
+
+/**
+ * One day's favourites, as a grid or as a list.
+ *
+ * A component rather than a loop body for the same reason the gallery's is: a
+ * tile's shape belongs to its row, and rows are worked out from a whole grid at
+ * once. Laying every day out in one grid would put the last picture of Tuesday
+ * and the first of Monday in the same row, which is a row that straddles a
+ * heading — so each day gets its own.
+ */
+function DaySection({
+  favorites,
+  thumbnails,
+  columns,
+  uniform,
+  measured,
+  onOpen,
+}: {
+  favorites: Favorite[];
+  thumbnails: boolean;
+  columns: number;
+  uniform: boolean;
+  /**
+   * A signal rather than a value: it changes when a picture's size becomes
+   * known, which is when the rows need working out again.
+   */
+  measured: number;
+  onOpen: (id: string) => void;
+}) {
+  const shapes = useMemo(
+    () => favorites.map((favorite) => shapeOf(favorite.image)),
+    // `measured` is a dependency on purpose, not an oversight: see above.
+    [favorites, measured],
+  );
+
+  if (!thumbnails) {
+    return (
+      <ul className="space-y-2">
+        {favorites.map((favorite) => (
+          <li key={favorite.id}>
+            <button
+              type="button"
+              onClick={() => onOpen(favorite.id)}
+              className="w-full rounded-xl border border-line bg-surface px-3 py-3 text-left active:bg-surface-2"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="min-w-0 flex-1 truncate text-sm">
+                  {favorite.title || 'Untitled'}
+                </span>
+                <span className="shrink-0 text-xs text-warn">
+                  {favorite.rating > 0 ? '★'.repeat(favorite.rating) : '—'}
+                </span>
+              </div>
+              {favorite.note && <p className="mt-1 truncate text-xs text-muted">{favorite.note}</p>}
+            </button>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  return (
+    <ThumbGrid columns={columns} shapes={shapes} uniform={uniform}>
+      {favorites.map((favorite, at) => (
+        <FavoriteTile
+          key={favorite.id}
+          favorite={favorite}
+          at={at}
+          onOpen={() => onOpen(favorite.id)}
+        />
+      ))}
+    </ThumbGrid>
   );
 }
 

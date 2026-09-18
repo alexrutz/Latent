@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 
-import { browseKindOf } from '@latent/shared';
+import { batchPosition, browseKindOf, pruneBatches } from '@latent/shared';
 import type { InputImage, ParamField, WidgetValue } from '@latent/shared';
 
 import { api, browseThumbUrl, imageUrl, inputImageUrl } from '../api/client';
@@ -11,6 +11,15 @@ import { NumericInput } from './NumericInput';
 import { FolderImagePicker } from './FolderImagePicker';
 import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
 import { useFileDrop } from '../state/dropFiles';
+import { useFormDrafts } from '../state/formDraft';
+
+/**
+ * One frozen empty list, so a slot with no batch is referentially stable.
+ *
+ * A fresh `[]` out of a zustand selector is a new object every render, which
+ * makes the store believe the value changed and re-render forever.
+ */
+const EMPTY_BATCH: string[] = [];
 
 /**
  * Which workflow the surrounding form belongs to.
@@ -160,6 +169,44 @@ export function ImageField({ field, value, onChange }: ControlProps) {
   const stored = typeof value === 'string' ? value : '';
 
   /*
+   * The pictures this slot is working through, if more than one was ticked.
+   *
+   * Read straight out of the form's draft rather than passed in, because it
+   * belongs to the workflow and outlives this screen exactly as the values do —
+   * and because threading a second value and a second setter through every
+   * caller of `ImageField` would put a batch list in the signature of the one
+   * control in six that has one. See `advanceBatch` for what it is for.
+   */
+  const workflowId = useContext(WorkflowContext);
+  const batch = useFormDrafts(
+    (state) => (workflowId ? state.drafts[workflowId]?.batchInputs?.[field.id] : undefined) ?? EMPTY_BATCH,
+  );
+  const patchDraft = useFormDrafts((state) => state.patch);
+
+  const setBatch = (list: string[]) => {
+    if (!workflowId) return;
+    const current = useFormDrafts.getState().drafts[workflowId]?.batchInputs ?? {};
+    patchDraft(workflowId, { batchInputs: pruneBatches({ ...current, [field.id]: list }) });
+  };
+
+  /*
+   * Ticking a list sets the slot to the first of it.
+   *
+   * Otherwise the field would still be holding whatever it held, the strip
+   * underneath would be highlighting nothing, and the first Generate would run
+   * the old picture before the list started — which reads as the tick having
+   * been ignored.
+   */
+  const useBatch = (list: string[]) => {
+    setBatch(list);
+    const first = list[0];
+    if (first !== undefined && first !== stored) onChange(first);
+  };
+
+  /** Where in the list the slot is, counting from one. `0` when it is not in it. */
+  const position = batchPosition(batch, stored || null);
+
+  /*
    * The same field, with a different folder behind the second button.
    *
    * comfyllama's browser holds `output/monday/render.png` and can reach the
@@ -273,6 +320,19 @@ export function ImageField({ field, value, onChange }: ControlProps) {
         <span className="min-w-0 flex-1 truncate text-xs font-medium tracking-wide text-muted uppercase">
           {field.label}
         </span>
+        {/*
+          The position, even folded away.
+
+          A folded field says which picture is loaded; with a list running, the
+          thing you actually want to know from across the form is how far
+          through it you are — and that is precisely the state that changes
+          under you between runs.
+        */}
+        {batch.length > 1 && (
+          <span className="shrink-0 rounded-md bg-surface-2 px-1.5 text-[10px] text-muted tabular-nums">
+            {position > 0 ? `${position}/${batch.length}` : `–/${batch.length}`}
+          </span>
+        )}
         {!open && (
           <span className="min-w-0 max-w-[55%] truncate text-[11px] text-muted">
             {filename || 'none'}
@@ -319,11 +379,36 @@ export function ImageField({ field, value, onChange }: ControlProps) {
         </div>
       </div>
 
+      {/*
+        The list itself, when there is one worth drawing.
+
+        Under the field rather than inside the picker, because it is not a thing
+        you set up and forget: it is what the slot is going to do over the next
+        twelve renders, the tile it is on moves after every one of them, and
+        watching that happen is how you know the batch is running at all.
+
+        Only above one, because a list of one is the ordinary case and drawing a
+        strip of a single picture underneath the preview of that same picture
+        would be saying the same thing twice.
+      */}
+      {batch.length > 1 && open && (
+        <BatchStrip
+          batch={batch}
+          current={stored}
+          folder={browsesFolders}
+          onPick={onChange}
+          onRemove={(reference) => setBatch(batch.filter((entry) => entry !== reference))}
+          onClear={() => setBatch([])}
+        />
+      )}
+
       {browsesFolders ? (
         <FolderImagePicker
           open={picking}
           onClose={() => setPicking(false)}
           onPicked={onChange}
+          batch={batch}
+          onBatch={useBatch}
           kind={browseKindOf(field)}
         />
       ) : (
@@ -368,6 +453,104 @@ export function ImageField({ field, value, onChange }: ControlProps) {
 
       <ErrorNote>{error}</ErrorNote>
       {uploading && <Spinner className="size-4 text-muted" />}
+    </div>
+  );
+}
+
+/**
+ * The pictures a slot is working through, as a strip you can scroll.
+ *
+ * The one on deck is ringed; tapping any other jumps to it, which is what you
+ * want when a run went wrong and you would like that photograph again rather
+ * than eleven more presses of Generate to come back round to it. Jumping does
+ * not reorder anything — the next run is still the one after whatever you
+ * landed on, so the list keeps its order and only your place in it moves.
+ *
+ * Horizontal, and deliberately not a grid: this is a queue, and a queue reads
+ * as a line. A grid of twelve thumbnails under an image field would also be
+ * most of a phone screen for something that is not the picture you are
+ * currently working on.
+ */
+function BatchStrip({
+  batch,
+  current,
+  folder,
+  onPick,
+  onRemove,
+  onClear,
+}: {
+  batch: string[];
+  current: string;
+  /** Folder references and plain input filenames are addressed differently. */
+  folder: boolean;
+  onPick: (reference: string) => void;
+  onRemove: (reference: string) => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="space-y-1.5" data-testid="batch-strip">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[11px] text-muted">
+          {batch.length} pictures, one per run
+        </span>
+        <button type="button" onClick={onClear} className="shrink-0 text-[11px] text-accent">
+          Clear
+        </button>
+      </div>
+
+      {/*
+        `touch-pan-x` so a sideways drag scrolls the strip and a vertical one
+        still scrolls the form underneath it, rather than the strip swallowing
+        both and pinning the page.
+      */}
+      <ul className="flex touch-pan-x gap-1.5 overflow-x-auto pb-1">
+        {batch.map((reference, at) => {
+          const on = reference === current;
+          const name = reference.split('/').pop() ?? reference;
+          return (
+            <li key={`${reference}-${at}`} className="relative shrink-0">
+              <button
+                type="button"
+                onClick={() => onPick(reference)}
+                title={reference}
+                aria-current={on}
+                aria-label={`Use ${name} next`}
+                className={cn(
+                  'block size-14 overflow-hidden rounded-lg border bg-surface-2',
+                  on ? 'border-accent ring-2 ring-accent/50' : 'border-line',
+                )}
+              >
+                <img
+                  src={
+                    folder
+                      ? browseThumbUrl(reference)
+                      : imageUrl({ filename: reference, subfolder: '', type: 'input' }, 'webp;70')
+                  }
+                  alt=""
+                  loading="lazy"
+                  className="size-full object-cover"
+                  onError={(event) => {
+                    event.currentTarget.style.visibility = 'hidden';
+                  }}
+                />
+              </button>
+              {/*
+                The remove control is a sibling of the tile, not a child: a
+                button inside a button is invalid, and the browsers that render
+                it anyway disagree about which one a tap belongs to.
+              */}
+              <button
+                type="button"
+                onClick={() => onRemove(reference)}
+                aria-label={`Remove ${name} from the batch`}
+                className="absolute -top-1 -right-1 grid size-4 place-items-center rounded-full bg-ink/80 text-[10px] leading-none text-muted"
+              >
+                ×
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

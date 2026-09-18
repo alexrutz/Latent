@@ -13,6 +13,7 @@ import type {
   ChatRun,
   GalleryPage,
   GenerateResponse,
+  FavoriteReference,
   GenerationRecord,
   ImportResult,
   ImportScanResult,
@@ -22,6 +23,8 @@ import type {
   QueueEntry,
   QueueState,
   ServerEvent,
+  ServiceDefinition,
+  ServiceView,
   StatusResponse,
   StudyDetail,
   StudyPreview,
@@ -8103,4 +8106,281 @@ describe('browsing folders on the ComfyUI machine', () => {
       await server.dispose();
     }
   }, 30_000);
+});
+
+describe('the supervisor', () => {
+  /**
+   * The catalogue is what makes the screen modular, so it has to arrive whole.
+   *
+   * The client builds every control, group and piece of help text from this —
+   * it knows nothing about ComfyUI or llama.cpp itself — so a definition that
+   * came back without its arguments would be a form with no fields in it.
+   */
+  it('publishes what it knows how to run', async () => {
+    const { definitions } = await json<{ definitions: ServiceDefinition[] }>(
+      api('/api/supervisor/definitions'),
+    );
+
+    const kinds = definitions.map((definition) => definition.kind);
+    expect(kinds).toContain('comfyui');
+    expect(kinds).toContain('llama-server');
+
+    const comfy = definitions.find((definition) => definition.kind === 'comfyui')!;
+    expect(comfy.args.some((arg) => arg.flag === '--listen')).toBe(true);
+    expect(comfy.launchers.some((launcher) => launcher.file.includes('python_embeded'))).toBe(true);
+  });
+
+  it('refuses a kind it has never heard of', async () => {
+    const response = await api('/api/supervisor/services', {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'something-else' }),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it('adds a service, edits it a field at a time, and removes it', async () => {
+    const created = await json<ServiceView>(
+      api('/api/supervisor/services', {
+        method: 'POST',
+        body: JSON.stringify({ kind: 'comfyui', name: 'Main box' }),
+      }),
+    );
+
+    expect(created.config.name).toBe('Main box');
+    // Nothing is set, so the command is nothing until there is a root.
+    expect(created.config.values).toEqual({});
+    expect(created.status.state).toBe('stopped');
+    expect(created.status.error).toMatch(/root directory/i);
+
+    const withRoot = await json<ServiceView>(
+      api(`/api/supervisor/services/${created.config.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ root: '/opt/comfy', launcher: 'system' }),
+      }),
+    );
+    expect(withRoot.status.command).toBe('python3 main.py');
+
+    /*
+     * A patch touches what it names and nothing else. The screen edits one
+     * switch at a time, so anything less would have two devices overwriting
+     * each other's settings.
+     */
+    const withArgs = await json<ServiceView>(
+      api(`/api/supervisor/services/${created.config.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ values: { '--listen': '0.0.0.0', '--port': 8189 } }),
+      }),
+    );
+    expect(withArgs.config.root).toBe('/opt/comfy');
+    expect(withArgs.config.name).toBe('Main box');
+    expect(withArgs.status.command).toBe('python3 main.py --listen 0.0.0.0 --port 8189');
+
+    // The identity of the record is not editable, whatever the body says.
+    const renamed = await json<ServiceView>(
+      api(`/api/supervisor/services/${created.config.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ id: 'somewhere-else', kind: 'llama-server', name: 'Renamed' }),
+      }),
+    );
+    expect(renamed.config.id).toBe(created.config.id);
+    expect(renamed.config.kind).toBe('comfyui');
+    expect(renamed.config.name).toBe('Renamed');
+
+    const listed = await json<{ services: ServiceView[] }>(api('/api/supervisor/services'));
+    expect(listed.services.some((entry) => entry.config.id === created.config.id)).toBe(true);
+
+    const removed = await api(`/api/supervisor/services/${created.config.id}`, {
+      method: 'DELETE',
+    });
+    expect(removed.status).toBe(204);
+
+    const after = await json<{ services: ServiceView[] }>(api('/api/supervisor/services'));
+    expect(after.services.some((entry) => entry.config.id === created.config.id)).toBe(false);
+  });
+
+  /**
+   * A start that cannot work answers 409 with the reason, not 500.
+   *
+   * Every way it fails is a thing about the configuration the person reading
+   * the screen has to change — a root pointing at the wrong folder, a binary
+   * that is not there — and those are conflicts with the current state rather
+   * than a server that broke.
+   */
+  it('says why it will not start, rather than failing', async () => {
+    const created = await json<ServiceView>(
+      api('/api/supervisor/services', {
+        method: 'POST',
+        body: JSON.stringify({ kind: 'llama-server', root: join(dataDir, 'not-a-build') }),
+      }),
+    );
+
+    const response = await api(`/api/supervisor/services/${created.config.id}/start`, {
+      method: 'POST',
+    });
+    expect(response.status).toBe(409);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toContain('llama-server');
+
+    await api(`/api/supervisor/services/${created.config.id}`, { method: 'DELETE' });
+  });
+
+  it('has a log for a service that has never run, rather than a 500', async () => {
+    const created = await json<ServiceView>(
+      api('/api/supervisor/services', {
+        method: 'POST',
+        body: JSON.stringify({ kind: 'comfyui' }),
+      }),
+    );
+
+    const tail = await json<{ lines: unknown[]; seq: number; running: boolean }>(
+      api(`/api/supervisor/services/${created.config.id}/log?since=0`),
+    );
+    expect(tail.lines).toEqual([]);
+    expect(tail.seq).toBe(0);
+    expect(tail.running).toBe(false);
+
+    await api(`/api/supervisor/services/${created.config.id}`, { method: 'DELETE' });
+  });
+
+  it('is 404 for a service that is not there', async () => {
+    for (const path of ['start', 'stop', 'restart', 'log']) {
+      const method = path === 'log' ? 'GET' : 'POST';
+      const response = await api(`/api/supervisor/services/nobody/${path}`, { method });
+      expect(response.status).toBe(404);
+    }
+  });
+});
+
+/**
+ * The gallery's favourites, offered to the node that browses folders.
+ *
+ * The picker in a `LoadImageFromFolder` slot lists these beside `output` and
+ * `input`, because "the pictures I keep coming back to" is the same list
+ * whether you are looking at one or feeding one back in. A favourite is a row
+ * in Latent's database and the node takes a path on the ComfyUI machine, so
+ * something has to turn one into the other — and which answer it gives depends
+ * on where the picture still is.
+ */
+describe('a favourite as somewhere to load from', () => {
+  it('points at the file where it lies, when it is still there', async () => {
+    const workflow = await json<WorkflowDetail>(
+      api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'reference', graph: sd15Txt2Img }),
+      }),
+    );
+
+    await api('/api/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        workflowId: workflow.id,
+        values: { '6.text': 'one to keep', '3.steps': 3 },
+      }),
+    });
+
+    const finished = await waitFor(async () => {
+      const page = await json<GalleryPage>(api('/api/gallery?limit=5'));
+      const record = page.items.find(
+        (item) => item.title === 'one to keep' && item.status === 'completed' && item.images.length > 0,
+      );
+      return record ?? null;
+    }, 20_000);
+
+    const image = finished.images[0]!;
+    const favorite = await json<{ id: string }>(
+      api('/api/favorites', {
+        method: 'POST',
+        body: JSON.stringify({ generationId: finished.id, image }),
+      }),
+    );
+
+    const reference = await json<FavoriteReference>(
+      api(`/api/favorites/${favorite.id}/reference`, { method: 'POST' }),
+    );
+
+    /*
+     * Nothing was copied, and the path is the one the file is actually at.
+     * This is the common case by a long way — a render from this instance,
+     * still in its output folder — and it has to cost nothing.
+     */
+    expect(reference.copied).toBe(false);
+    expect(reference.reference).toBe(
+      `output/${image.subfolder ? `${image.subfolder}/` : ''}${image.filename}`,
+    );
+
+    await api(`/api/favorites/${favorite.id}`, { method: 'DELETE' });
+  }, 40_000);
+
+  it('sends its stored copy over when the picture was never on the far machine', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-favref-'));
+    mkdirSync(join(dir, 'outputs'), { recursive: true });
+    writeFileSync(join(dir, 'outputs', 'from-elsewhere.png'), renderPlaceholder(64, 64, 'x'));
+
+    await api('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ importRoot: join(dir, 'outputs') }),
+    });
+
+    try {
+      const outcome = await json<ImportResult>(
+        api('/api/import', {
+          method: 'POST',
+          // The root of the configured folder, named as the empty path — the
+          // same thing the browser sends when you import what you are looking
+          // at without opening anything.
+          body: JSON.stringify({ folder: '', recursive: false }),
+        }),
+      );
+      expect(outcome.imported).toBe(1);
+
+      const gallery = await json<GalleryPage>(api('/api/gallery?limit=50'));
+      const imported = gallery.items.find((item) =>
+        item.images.some((entry) => entry.filename === 'from-elsewhere.png'),
+      )!;
+      const image = imported.images.find((entry) => entry.filename === 'from-elsewhere.png')!;
+      // An imported picture lives only in Latent's archive; ComfyUI has never
+      // seen it, so there is no path over there to point at.
+      expect(image.type).toBe('import');
+
+      const favorite = await json<{ id: string }>(
+        api('/api/favorites', {
+          method: 'POST',
+          body: JSON.stringify({ generationId: imported.id, image }),
+        }),
+      );
+
+      const reference = await json<FavoriteReference>(
+        api(`/api/favorites/${favorite.id}/reference`, { method: 'POST' }),
+      );
+
+      expect(reference.copied).toBe(true);
+      // Named by content hash, so picking the same favourite twice reuses one
+      // file rather than filling the input directory with copies of it.
+      expect(reference.reference).toMatch(/^input\/latent-favorite-[0-9a-f]{12}\.png$/);
+
+      const again = await json<FavoriteReference>(
+        api(`/api/favorites/${favorite.id}/reference`, { method: 'POST' }),
+      );
+      expect(again.reference).toBe(reference.reference);
+
+      // And it is genuinely there now, which is the whole point of copying it.
+      const params = new URLSearchParams({
+        filename: reference.reference.replace('input/', ''),
+        subfolder: '',
+        type: 'input',
+      });
+      const fetched = await api(`/api/view?${params}`);
+      expect(fetched.status).toBe(200);
+
+      await api(`/api/favorites/${favorite.id}`, { method: 'DELETE' });
+    } finally {
+      await api('/api/settings', { method: 'PATCH', body: JSON.stringify({ importRoot: null }) });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 40_000);
+
+  it('is 404 for a favourite that does not exist', async () => {
+    const response = await api('/api/favorites/nobody/reference', { method: 'POST' });
+    expect(response.status).toBe(404);
+  });
 });

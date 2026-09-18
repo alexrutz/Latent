@@ -12,6 +12,7 @@ import type { InputLibrary } from '../inputLibrary.js';
 import type { Orchestrator } from '../orchestrator.js';
 import type { StateFiles } from '../statefile.js';
 import type { StudyRunner } from '../study.js';
+import type { Supervisor } from '../supervisor.js';
 import type { Sweeper } from '../sweeper.js';
 import type { Taste } from '../taste.js';
 import type { Updater } from '../update.js';
@@ -51,6 +52,11 @@ export interface AppContext {
   endless: Endless;
   /** Walks a parameter study's plan, one shot at a time. */
   studyRunner: StudyRunner;
+  /**
+   * The utility processes Latent hosts: starting them, watching them, and
+   * bringing them back when they fall over. See `server/src/supervisor.ts`.
+   */
+  supervisor: Supervisor;
   /**
    * Small copies of big pictures, so the gallery never sends full-size ones.
    *

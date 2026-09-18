@@ -145,7 +145,10 @@ async function dismissResult(page: Page) {
  * is two taps rather than one. In its own helper because every test that uses
  * those screens would otherwise repeat it.
  */
-async function openModule(page: Page, label: 'Blocks' | 'Models' | 'Random' | 'Monitor' | 'Study') {
+async function openModule(
+  page: Page,
+  label: 'Blocks' | 'Models' | 'Random' | 'Monitor' | 'Supervisor' | 'Study',
+) {
   await page.getByRole('button', { name: 'More modules' }).click();
   await page.getByTestId('more-menu').getByRole('button', { name: label }).click();
   await expect(page.getByTestId('more-menu')).toHaveCount(0);
@@ -289,10 +292,6 @@ async function resetState() {
         importRoot: null,
         inputRoot: null,
         queuePolicy: 'append',
-        // Starred folders and pictures are settings too, and they survive the
-        // portable file being deleted — one test's stars would otherwise be
-        // sitting in the next test's browser.
-        browseFavorites: [],
       },
     });
 
@@ -5389,6 +5388,17 @@ test.describe('the twenty-third wave', () => {
    * Straight into the same database the server is reading, which SQLite is
    * happy to allow.
    */
+  /*
+   * The folded-day sample is a server setting, so the two tests below that
+   * change it would otherwise leave it changed for everything after them — and
+   * for the next run, since it outlives the process.
+   */
+  test.afterEach(async () => {
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', { data: { dayPreview: { gallery: 20, favorites: 5 } } }),
+    );
+  });
+
   async function backdateEverything(days: number) {
     const { default: Database } = await import('better-sqlite3');
     const db = new Database(join('data/e2e', 'latent.db'));
@@ -5520,38 +5530,105 @@ test.describe('the twenty-third wave', () => {
   });
 
   test('cuts the gallery into days you can fold away', async ({ page }) => {
+    // Every other picture in a folded day, so folding one of two leaves one.
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', { data: { dayPreview: { gallery: 2, favorites: 5 } } }),
+    );
+
     await makePicture(page, 'a lighthouse in fog', 1);
     await backdateEverything(1);
     await makePicture(page, 'a lighthouse at noon', 2);
+    await makePicture(page, 'a lighthouse at noon again', 3);
 
     await open(page, '/gallery');
 
     // Two days, most recent first, each counting its own pictures.
     const dividers = page.getByTestId('day-divider');
     await expect(dividers).toHaveCount(2);
-    await expect(dividers.nth(0)).toHaveAttribute('aria-label', 'Today, 1 pictures');
-    await expect(dividers.nth(1)).toHaveAttribute('aria-label', 'Yesterday, 1 pictures');
+    await expect(dividers.nth(0)).toHaveAttribute('aria-label', 'Today, 2 pictures');
+    await expect(dividers.nth(1)).toHaveAttribute('aria-label', 'Yesterday, 1 picture');
 
     const today = page.locator('img[alt*="at noon"]');
     const yesterday = page.locator('img[alt*="in fog"]');
-    await expect(today.first()).toBeVisible();
+    await expect(today).toHaveCount(2);
     await expect(yesterday.first()).toBeVisible();
     await page.screenshot({ path: 'test-results/65-gallery-days.png' });
 
-    // Tapping the divider folds that day away, and only that day.
+    /*
+     * Tapping the divider folds that day, and only that day.
+     *
+     * Folded is not empty: a folded day keeps every n-th picture, so it is
+     * still something you can recognise rather than a date you have to open.
+     * See the fold-by-default test below for the rule that decides which days
+     * start that way.
+     */
     await dividers.nth(0).click();
     await expect(dividers.nth(0)).toHaveAttribute('aria-expanded', 'false');
-    await expect(today).toHaveCount(0);
+    await expect(today).toHaveCount(1);
+    await expect(dividers.nth(0)).toContainText('1 shown');
     await expect(yesterday.first()).toBeVisible();
 
     // And it stays folded across a reload — the point of remembering it.
     await open(page, '/gallery');
     await expect(page.getByTestId('day-divider').nth(0)).toHaveAttribute('aria-expanded', 'false');
-    await expect(page.locator('img[alt*="at noon"]')).toHaveCount(0);
+    await expect(page.locator('img[alt*="at noon"]')).toHaveCount(1);
 
-    // Tapping again brings it back.
+    // Tapping again brings the whole day back.
     await page.getByTestId('day-divider').nth(0).click();
-    await expect(page.locator('img[alt*="at noon"]').first()).toBeVisible();
+    await expect(page.locator('img[alt*="at noon"]')).toHaveCount(2);
+  });
+
+  /**
+   * Days you have finished with start folded, and still show what they were.
+   *
+   * The old rule was "everything open until you fold it", which costs one tap
+   * per day forever and is a decision nobody wants to make daily. The new one
+   * is that today and yesterday are open and the rest are not — and that a
+   * folded day is not blank: it keeps every n-th picture, so it is still
+   * something you can recognise rather than a date you have to open.
+   */
+  test('folds older days by itself, and leaves a sample of each showing', async ({ page }) => {
+    // One in every two, so three pictures make a sample of two — enough to
+    // prove it is a sample and not the lot, at three renders rather than forty.
+    await withApi((ctx) =>
+      ctx.patch('/api/settings', { data: { dayPreview: { gallery: 2, favorites: 5 } } }),
+    );
+
+    await makePicture(page, 'the first of the old day', 1);
+    await makePicture(page, 'the second of the old day', 2);
+    await makePicture(page, 'the third of the old day', 3);
+    await backdateEverything(3);
+    await makePicture(page, 'one from today', 4);
+
+    await open(page, '/gallery');
+
+    const dividers = page.getByTestId('day-divider');
+    await expect(dividers).toHaveCount(2);
+
+    // Today is open without being asked; the older day is not.
+    await expect(dividers.nth(0)).toHaveAttribute('aria-expanded', 'true');
+    await expect(dividers.nth(1)).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('img[alt*="from today"]').first()).toBeVisible();
+
+    /*
+     * Two of the three, and the heading says so.
+     *
+     * The count beside the date is the whole day — folding must not make a day
+     * look smaller than it is — and "2 shown" is what stops the strip below
+     * being mistaken for all of it.
+     */
+    // Named by its weekday, which moves with the calendar — what is being
+    // asserted is the count, and that it is the whole day rather than the
+    // sample.
+    await expect(dividers.nth(1)).toHaveAttribute('aria-label', /, 3 pictures$/);
+    await expect(dividers.nth(1)).toContainText('2 shown');
+    await expect(page.locator('img[alt*="old day"]')).toHaveCount(2);
+    await page.screenshot({ path: 'test-results/102-folded-day-preview.png' });
+
+    // Opening it shows the day entire, and the note about the sample goes.
+    await dividers.nth(1).click();
+    await expect(page.locator('img[alt*="old day"]')).toHaveCount(3);
+    await expect(dividers.nth(1)).not.toContainText('shown');
   });
 
   test('sorts the gallery, and drops the day headings when the order crosses them', async ({
@@ -7345,12 +7422,15 @@ test.describe('running without the picture', () => {
 /**
  * The folder browser, and the favourites inside it.
  *
- * Everything here comes from the ComfyUI machine through Latent's proxy —
- * which is why none of it had ever been driven through a browser: without a far
- * end that answers the browse routes there is nothing to open. The mock answers
- * them now, and what is worth proving is the part that shipped invisible: the
- * category the starred entries live in has to be *there* before anything is
- * starred, or nobody ever learns where a star puts things.
+ * Everything the browser lists comes from the ComfyUI machine through Latent's
+ * proxy — which is why none of it had ever been driven through a browser:
+ * without a far end that answers the browse routes there is nothing to open.
+ *
+ * The favourites beside those roots are Latent's own, from the Gallery. They
+ * used to be a second, private list you built inside this dialog out of file
+ * paths, which was asking for the same curation twice with worse tools — you
+ * already keep the pictures worth coming back to, and coming back to one is
+ * mostly what a reference slot is for.
  */
 test.describe('picking a picture out of a folder', () => {
   test.beforeEach(async () => {
@@ -7360,7 +7440,7 @@ test.describe('picking a picture out of a folder', () => {
     );
   });
 
-  test('stars a picture and finds it beside the roots', async ({ page }) => {
+  test('browses the far machine, and offers the gallery favourites beside it', async ({ page }) => {
     await open(page, '/');
 
     const picker = page.getByRole('button', { name: 'Browse folders' });
@@ -7372,48 +7452,112 @@ test.describe('picking a picture out of a folder', () => {
     // The chip row, which is not the breadcrumb: both name the root.
     const categories = sheet.getByTestId('browse-categories');
 
-    /*
-     * The roots the far end offers, and the category beside them — before
-     * anything has been starred.
-     *
-     * This is the bug: it used to appear only once it had something in it, so
-     * the star on every row put pictures somewhere that did not visibly exist
-     * and the whole feature read as broken. Empty, it says what a star does.
-     */
     for (const root of ['output', 'input', 'temp']) {
       await expect(categories.getByRole('button', { name: root, exact: true })).toBeVisible();
     }
+
+    /*
+     * The category is there before there is anything in it.
+     *
+     * It used to appear only once something had been starred, so the feature
+     * was invisible until you had already used it. Empty, it says where
+     * favourites come from — which is the other screen, not this dialog.
+     */
     const favourites = categories.getByRole('button', { name: '★ Favourites' });
     await expect(favourites).toBeVisible();
     await favourites.click();
-    await expect(sheet.getByText(/Nothing starred yet/)).toBeVisible();
+    await expect(sheet.getByText(/Nothing in your favourites yet/)).toBeVisible();
 
-    // Back to output, and down into a folder — the browser's actual job.
+    // Back to output, down into a folder, and pick what is in it — the
+    // browser's actual job, unchanged.
     await categories.getByRole('button', { name: 'output', exact: true }).click();
-    await sheet
-      .getByRole('button', { name: /^Keep monday in favourites$/ })
-      .first()
+    await sheet.getByRole('button', { name: 'monday', exact: true }).click();
+    await sheet.locator('img[alt="render_0007.png"]').click();
+
+    // The whole reference, root included: the same path exists under three.
+    await expect(page.getByText('output/monday/render_0007.png')).toBeVisible();
+    await page.screenshot({ path: 'test-results/100-folder-browser.png' });
+  });
+
+  test('picks a favourite kept in the gallery, and batches several at once', async ({ page }) => {
+    /*
+     * Two pictures, both favourited, which is the state this is about: the
+     * dialog has to show what the Favourites tab shows, not a list of its own.
+     *
+     * Made through the API rather than through the form. What is being tested
+     * is the dialog, and driving two full renders through the UI to reach it
+     * would be a minute of this suite spent on a screen with its own tests.
+     */
+    await withApi(async (ctx) => {
+      const made = (await (
+        await ctx.post('/api/workflows', { data: { name: 'For favourites', graph: sd15Txt2Img } })
+      ).json()) as { id: string };
+      for (const prompt of ['a kept lighthouse', 'a kept harbour']) {
+        await ctx.post('/api/generate', {
+          data: { workflowId: made.id, values: { '6.text': prompt, '3.steps': 3 } },
+        });
+      }
+    });
+
+    const finished = async () =>
+      withApi(async (ctx) => {
+        const gallery = (await (await ctx.get('/api/gallery?limit=50')).json()) as {
+          items: { id: string; status: string; images: { filename: string }[] }[];
+        };
+        return gallery.items.filter(
+          (item) => item.status === 'completed' && item.images.length > 0,
+        );
+      });
+
+    await expect.poll(async () => (await finished()).length, { timeout: 60_000 }).toBe(2);
+
+    await withApi(async (ctx) => {
+      for (const item of await finished()) {
+        const image = item.images[0];
+        if (image) await ctx.post('/api/favorites', { data: { generationId: item.id, image } });
+      }
+    });
+
+    // Back to the workflow with the folder-browsing slot in it, which is not
+    // the one the two pictures were just made with.
+    await open(page, '/');
+    await page.getByRole('button', { name: 'Choose workflow' }).click();
+    await page
+      .getByRole('dialog', { name: 'Workflow' })
+      .getByRole('button', { name: 'From a folder' })
       .click();
 
-    await sheet.getByRole('button', { name: 'monday', exact: true }).click();
-    const render = sheet.getByRole('button', { name: 'Keep render_0007.png in favourites' });
-    await expect(render).toBeVisible();
-    await render.click();
-    await page.screenshot({ path: 'test-results/100-folder-browser.png' });
+    await page.getByRole('button', { name: 'Browse folders' }).click();
+    const sheet = page.getByRole('dialog', { name: 'Pick a picture' });
+    await sheet
+      .getByTestId('browse-categories')
+      .getByRole('button', { name: '★ Favourites' })
+      .click();
+
+    // Both favourites are listed, with no star to press: they are already kept,
+    // and this dialog is not where that decision is made any more.
+    await expect(sheet.getByRole('checkbox')).toHaveCount(2);
+    await expect(sheet.getByRole('button', { name: /in favourites$/ })).toHaveCount(0);
 
     /*
-     * Both of them are in the category, and each is what it was starred as: the
-     * folder as a row you can open, the picture as a thumbnail you can pick.
+     * Ticking rather than tapping builds a list instead of picking one — which
+     * is the whole of "batch mode", and it is not a mode: nothing about the
+     * sheet changes until the first box is ticked.
      */
-    await favourites.click();
-    await expect(sheet.getByRole('button', { name: 'output/monday', exact: true })).toBeVisible();
-    const starred = sheet.getByRole('button', { name: 'Keep render_0007.png in favourites' });
-    await expect(starred).toHaveAttribute('aria-pressed', 'true');
+    const use = sheet.getByRole('button', { name: /^Use \d+$/ });
+    await expect(use).toHaveCount(0);
 
-    // And picking one out of the category fills the field with its whole
-    // reference — the root included, because the same path exists under three.
-    await sheet.locator('img[alt="render_0007.png"]').click();
-    await expect(page.getByText('output/monday/render_0007.png')).toBeVisible();
+    await sheet.getByRole('checkbox').nth(0).click();
+    await sheet.getByRole('checkbox').nth(1).click();
+    await expect(sheet.getByRole('button', { name: 'Use 2' })).toBeVisible();
+    await sheet.getByRole('button', { name: 'Use 2' }).click();
+
+    // The field holds one picture and the strip underneath holds the list,
+    // which is what the next two renders will work through.
+    const strip = page.getByTestId('batch-strip');
+    await expect(strip).toBeVisible();
+    await expect(strip.getByText('2 pictures, one per run')).toBeVisible();
+    await page.screenshot({ path: 'test-results/101-favourite-batch.png' });
   });
 });
 
@@ -7826,5 +7970,207 @@ test.describe('at a desk', () => {
     await expect
       .poll(async () => link.evaluate((el) => getComputedStyle(el).backgroundColor))
       .not.toBe(before);
+  });
+});
+
+/**
+ * The cover that goes up when you are no longer looking at the app.
+ *
+ * The moment it is for is the one you did not plan: the phone locked and handed
+ * back, the screen shared, the laptop turned round. What has to be true is
+ * narrow and testable — the cover is opaque, it stops at the tab bar, and the
+ * way back in is a tap.
+ */
+test.describe('the privacy cover', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+  });
+
+  /** Leaving the app, as the browser reports it. */
+  const leave = (page: Page) =>
+    page.evaluate(() => {
+      window.dispatchEvent(new Event('blur'));
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        get: () => 'hidden',
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+  test('covers everything but the tab bar, and a tap brings it back', async ({ page }) => {
+    await open(page, '/gallery');
+
+    const cover = page.getByTestId('privacy-cover');
+    await expect(cover).toHaveCount(0);
+
+    await leave(page);
+    await expect(cover).toBeVisible();
+    await page.screenshot({ path: 'test-results/103-privacy-cover.png' });
+
+    /*
+     * Opaque, and nothing of the app is visible through it.
+     *
+     * Asserted by measurement rather than by reading a class: a frosted pane
+     * over the gallery is still a gallery you can read the shape of, and the
+     * shape is the part somebody recognises across a room.
+     */
+    const solid = await cover.evaluate((node) => {
+      const style = getComputedStyle(node);
+      const match = /rgba?\(([^)]+)\)/.exec(style.backgroundColor);
+      const alpha = match ? Number(match[1]!.split(',')[3] ?? '1') : 1;
+      return alpha === 1 && style.opacity === '1';
+    });
+    expect(solid).toBe(true);
+
+    // It stops at the tab bar, which is what makes it feel like part of the app
+    // rather than a crash: the way out is the navigation that was always there.
+    const tab = page.getByRole('link', { name: 'Gallery' });
+    await expect(tab).toBeVisible();
+    const [coverBox, tabBox] = await Promise.all([cover.boundingBox(), tab.boundingBox()]);
+    expect(coverBox!.y + coverBox!.height).toBeLessThanOrEqual(tabBox!.y + 1);
+
+    // A tap anywhere on it puts you back where you were.
+    await cover.click();
+    await expect(cover).toHaveCount(0);
+    await expect(page).toHaveURL(/\/gallery$/);
+  });
+
+  test('a tab lifts it and goes where it says', async ({ page }) => {
+    await open(page, '/gallery');
+    await leave(page);
+    await expect(page.getByTestId('privacy-cover')).toBeVisible();
+
+    await page.getByRole('link', { name: 'Queue' }).click();
+    await expect(page.getByTestId('privacy-cover')).toHaveCount(0);
+    await expect(page).toHaveURL(/\/queue$/);
+  });
+
+  /*
+   * Put back however the test ended.
+   *
+   * The switch below is a server setting, so a test that fails part way through
+   * leaves it off for every test after it — including the two above, which then
+   * fail for a reason that has nothing to do with them. One red test turning
+   * into three is how a suite stops being read.
+   */
+  test.afterEach(async () => {
+    await withApi((ctx) => ctx.patch('/api/settings', { data: { privacy: { cover: true } } }));
+  });
+
+  test('stays down entirely once it is switched off', async ({ page }) => {
+    await withApi((ctx) => ctx.patch('/api/settings', { data: { privacy: { cover: false } } }));
+
+    /*
+     * Waited for, rather than assumed.
+     *
+     * The cover is armed optimistically — it is on by default, so the app
+     * assumes it rather than leaving the first moment after sign-in uncovered.
+     * Leaving before the answer arrives is therefore *expected* to raise it.
+     * What this test is about is the answer: once it is in, the cover comes
+     * down and stays down.
+     */
+    const settled = page.waitForResponse(
+      (response) => response.url().includes('/api/settings') && response.ok(),
+    );
+    await open(page, '/gallery');
+    await settled;
+
+    await leave(page);
+    // Given a moment to be wrong, rather than asserted the instant after.
+    await page.waitForTimeout(400);
+    await expect(page.getByTestId('privacy-cover')).toHaveCount(0);
+  });
+});
+
+/**
+ * Latent as the process that keeps the others running.
+ *
+ * ComfyUI and llama-server fall over; Latent does not. That asymmetry is the
+ * whole argument for the module — the stable process gets the button that
+ * starts the unstable ones — and what is worth proving through a browser is the
+ * part somebody has to trust: that the form builds a command they can read
+ * before anything is run, and that a command which cannot work says so rather
+ * than failing silently.
+ */
+test.describe('the supervisor', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await seedWorkflow();
+    await withApi(async (ctx) => {
+      const listed = (await (await ctx.get('/api/supervisor/services')).json()) as {
+        services: { config: { id: string } }[];
+      };
+      for (const entry of listed.services) {
+        await ctx.delete(`/api/supervisor/services/${entry.config.id}`);
+      }
+    });
+  });
+
+  test('builds a command out of a form, and says why it will not run', async ({ page }) => {
+    await open(page, '/');
+    await openModule(page, 'Supervisor');
+
+    await expect(page.getByRole('heading', { name: 'Supervisor' })).toBeVisible();
+    await expect(page.getByText('Nothing under Latent yet')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Add a service' }).first().click();
+    await page
+      .getByRole('dialog', { name: 'Add a service' })
+      .getByRole('button', { name: /ComfyUI/ })
+      .click();
+
+    // Straight into its settings, because a service with no root cannot start.
+    const settings = page.getByRole('dialog', { name: 'ComfyUI' });
+    await expect(settings).toBeVisible();
+    await expect(settings.getByText(/Set a root directory/)).toBeVisible();
+
+    const root = settings.getByRole('textbox', { name: 'Root directory' });
+    await root.fill('/opt/ComfyUI_windows_portable');
+    // Committed when you have finished with it, not per keystroke: every save
+    // is a request, and a path typed a character at a time would be forty.
+    await root.press('Enter');
+
+    /*
+     * A root that holds none of the expected binaries says so, rather than
+     * repeating the advice for a problem already dealt with. This folder is not
+     * on the machine running the tests, which is exactly the case: somebody has
+     * typed a path and got it wrong.
+     */
+    await expect(settings.getByText(/Nothing to run in/)).toBeVisible();
+
+    /*
+     * Naming the launcher is how you configure a machine whose folder this one
+     * cannot see — and it is what a person with ComfyUI Portable would pick.
+     *
+     * The command appears then, and grows as the form is filled in. Showing it
+     * is the point: a manager that hides the command it produces is a manager
+     * you cannot debug.
+     */
+    await settings
+      .getByLabel('How to start it')
+      .selectOption('portable');
+    const command = settings.getByTestId('service-command');
+    await expect(command).toContainText('ComfyUI/main.py');
+
+    // A flag, set by its switch, lands in the command.
+    await settings.getByRole('switch', { name: "Don't open a browser" }).click();
+    await expect(command).toContainText('--disable-auto-launch');
+    await page.screenshot({ path: 'test-results/104-supervisor-settings.png' });
+
+    await settings.getByRole('button', { name: 'Done' }).click();
+
+    /*
+     * And starting it fails the way a wrong path fails: with the reason, on the
+     * card, rather than a spinner that never resolves.
+     *
+     * The message is the operating system's own — there is no ComfyUI at that
+     * path on this machine — which is deliberately not translated into
+     * something friendlier. "ENOENT" names the file it could not find, and that
+     * is the one piece of information that fixes the problem.
+     */
+    await page.getByRole('button', { name: 'Start' }).click();
+    await expect(page.getByText(/ENOENT|Nothing to run in/i)).toBeVisible();
+    await page.screenshot({ path: 'test-results/105-supervisor-failed.png' });
   });
 });

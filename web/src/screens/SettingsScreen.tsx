@@ -3,6 +3,8 @@ import { useSearchParams } from 'react-router-dom';
 
 import {
   CHAT_IMAGE_SIZES,
+  DEFAULT_FAVORITE_PREVIEW_EVERY,
+  DEFAULT_GALLERY_PREVIEW_EVERY,
   DEFAULT_WANDER_DRAW,
   defaultSampling,
   fieldPoints,
@@ -251,6 +253,71 @@ function useSettingsGroup(): [SettingsGroup, (group: SettingsGroup) => void] {
       );
     },
   ];
+}
+
+/**
+ * How thin a folded day's sample is, as a line of the answers people give.
+ *
+ * Free numeric entry was the obvious control and the wrong one: the difference
+ * between 18 and 20 is nothing you could see, the difference between 5 and 50
+ * is the whole feature, and a keyboard on a phone for a number with four
+ * plausible values is a sheet nobody wants to open. These are the steps, and
+ * the two lists get the same ladder because the question is the same one — only
+ * the answer differs.
+ */
+const PREVIEW_STEPS = [1, 2, 5, 10, 20, 50, 100] as const;
+
+function PreviewEvery({
+  label,
+  hint,
+  value,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm">{label}</span>
+        <span className="text-xs text-muted">
+          {value <= 1 ? 'every one' : `every ${value}${nth(value)}`}
+        </span>
+      </div>
+      <div role="radiogroup" aria-label={`${label}: show every nth`} className="flex flex-wrap gap-1">
+        {PREVIEW_STEPS.map((step) => {
+          const active = value === step;
+          return (
+            <button
+              key={step}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => onChange(step)}
+              className={cn(
+                'min-w-10 rounded-lg px-2.5 py-1.5 text-xs tabular-nums',
+                active ? 'bg-accent text-white' : 'bg-surface-2 text-muted',
+              )}
+            >
+              {step === 1 ? 'all' : step}
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-muted">{hint}</p>
+    </div>
+  );
+}
+
+/** `st`, `nd`, `rd`, `th` — so the label reads as English rather than as a sum. */
+function nth(value: number): string {
+  if (value % 100 >= 11 && value % 100 <= 13) return 'th';
+  if (value % 10 === 1) return 'st';
+  if (value % 10 === 2) return 'nd';
+  if (value % 10 === 3) return 'rd';
+  return 'th';
 }
 
 function describeHours(hours: number): string {
@@ -523,6 +590,12 @@ export function SettingsScreen() {
   const archive = useArchiveStats();
   const blurred = useBlur((state) => state.blurred);
   const setBlurred = useBlur((state) => state.set);
+
+  /** Both strides, defaulted, so the two controls below can patch either. */
+  const dayPreview = settings.data?.dayPreview ?? {
+    gallery: DEFAULT_GALLERY_PREVIEW_EVERY,
+    favorites: DEFAULT_FAVORITE_PREVIEW_EVERY,
+  };
 
   const [importError, setImportError] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -837,7 +910,7 @@ export function SettingsScreen() {
             {/* Display ---------------------------------------------------- */}
             <section className="space-y-2">
               <h2 className="text-xs font-medium tracking-wide text-muted uppercase">Display</h2>
-              <Card>
+              <Card className="space-y-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <p className="text-sm">Blur every image</p>
@@ -847,6 +920,66 @@ export function SettingsScreen() {
                   </div>
                   <Toggle checked={blurred} onChange={setBlurred} label="Blur every image" />
                 </div>
+
+                {/*
+                  The blur's sibling, and the reason they sit together: they are
+                  the same worry answered at two different moments. The blur is
+                  for while you are looking; this is for once you are not.
+                */}
+                <div className="flex items-center justify-between gap-3 border-t border-line pt-3">
+                  <div className="min-w-0">
+                    <p className="text-sm">Cover the app when you leave it</p>
+                    <p className="text-xs text-muted">
+                      Locking the phone or switching away puts a cover over everything but the tab
+                      bar. Tap it, or a tab, to come back.
+                    </p>
+                  </div>
+                  <Toggle
+                    checked={settings.data?.privacy.cover ?? true}
+                    onChange={(cover) => updateSettings.mutate({ privacy: { cover } })}
+                    label="Cover the app when you leave it"
+                  />
+                </div>
+              </Card>
+            </section>
+
+            {/* Days ------------------------------------------------------- */}
+            <section className="space-y-2">
+              <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
+                Folded days
+              </h2>
+              <Card className="space-y-3">
+                <p className="text-xs text-muted">
+                  The gallery and the favourites are listed by day, with today and yesterday open
+                  and everything older folded. A folded day shows a sample of itself — one in every
+                  so many — so you can still recognise it without opening it.
+                </p>
+                {/*
+                  Both numbers on every write, rather than the one that changed.
+                  The server merges a group one level deep, so half of it would
+                  in fact survive — but a patch that relies on that is a patch
+                  that breaks the day somebody reads this type and believes it.
+                */}
+                <PreviewEvery
+                  label="Gallery"
+                  hint="A day of generating is hundreds of pictures, most of them one idea a few seeds apart."
+                  value={dayPreview.gallery}
+                  onChange={(gallery) =>
+                    updateSettings.mutate({ dayPreview: { ...dayPreview, gallery } })
+                  }
+                />
+                <PreviewEvery
+                  label="Favourites"
+                  hint="A day of favouriting is a handful, so it wants a much finer sample than the gallery."
+                  value={dayPreview.favorites}
+                  onChange={(favorites) =>
+                    updateSettings.mutate({ dayPreview: { ...dayPreview, favorites } })
+                  }
+                />
+                <p className="text-[11px] text-muted">
+                  Anything you rated is shown whatever the sample says, so folding a day can never
+                  hide the one picture of it that was any good.
+                </p>
               </Card>
             </section>
 

@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react';
 import { Route, Routes, useLocation } from 'react-router-dom';
 
 import { setArchiveLockedHandler } from './api/client';
-import { useLiveCacheSync, useStatus } from './api/queries';
+import { useLiveCacheSync, useSettings, useStatus } from './api/queries';
 import { BottomTabs } from './components/BottomTabs';
 import { Dock } from './components/Dock';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { KeyMap } from './components/KeyMap';
 import { LiveBar } from './components/LiveBar';
 import { SideRail } from './components/SideRail';
+import { PrivacyCover } from './components/PrivacyCover';
 import { ArchiveLockedBar, UnlockArchiveDialog } from './components/UnlockArchive';
 import { cn, Spinner } from './components/ui';
 import { BlocksScreen } from './screens/BlocksScreen';
@@ -22,12 +23,14 @@ import { MonitorScreen } from './screens/MonitorScreen';
 import { StudyScreen } from './screens/StudyScreen';
 import { QueueScreen } from './screens/QueueScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
+import { SupervisorScreen } from './screens/SupervisorScreen';
 import { SetupScreen } from './screens/SetupScreen';
 import { VariationScreen } from './screens/VariationScreen';
 import { useDock } from './state/dock';
 import { useRefuseStrayDrops } from './state/dropFiles';
 import { useHotkeys } from './state/hotkeys';
 import { useDesk, useTablet } from './state/layout';
+import { useCovered, usePrivacyCover } from './state/privacy';
 import { registerScrollContainer, useDocumentScrollAnchor } from './state/scroll';
 import { useLiveSocket } from './state/useLiveSocket';
 
@@ -70,6 +73,25 @@ export function App() {
    * had set up with it. See `useRefuseStrayDrops`.
    */
   useRefuseStrayDrops();
+
+  /*
+   * The app puts itself away when you stop looking at it.
+   *
+   * Armed as soon as there is a session, and *before* the settings that govern
+   * it have arrived — which is why the fallback here is `true` rather than
+   * `false`. The setting is on by default, so assuming it during the moment it
+   * takes to fetch is assuming the truth for nearly everybody; assuming the
+   * other way would leave the app uncovered for exactly the first second after
+   * it is opened, which is a second somebody could spend switching apps. If the
+   * setting turns out to be off the hook lowers the cover and stands down, so
+   * the cost of guessing wrong is at most one frame nobody was looking at.
+   *
+   * Not armed at all without a session: a login screen has nothing on it worth
+   * covering. See `PrivacySettings`.
+   */
+  const settings = useSettings(authenticated);
+  usePrivacyCover(authenticated && (settings.data?.privacy.cover ?? true));
+  const covered = useCovered();
 
   // Only hold a socket open once we're allowed to use the API.
   useLiveSocket(authenticated);
@@ -148,6 +170,7 @@ export function App() {
             <Route path="/monitor" element={<MonitorScreen />} />
             <Route path="/study" element={<StudyScreen />} />
             <Route path="/queue" element={<QueueScreen />} />
+            <Route path="/supervisor" element={<SupervisorScreen />} />
             <Route path="/settings" element={<SettingsScreen />} />
             <Route path="*" element={<GenerateScreen />} />
           </Routes>
@@ -181,15 +204,28 @@ export function App() {
         the reading order and the tab order match what you can see.
       */}
       {tablet && <SideRail />}
-      {column}
       {/*
-        The third column, and the one that is not a screen. See `Dock`.
+        Everything the cover covers, in one positioned box.
 
-        Last in the document as well as on the right, so reading order and tab
-        order still run navigation → what you are doing → what the machine is
-        doing, which is the order of importance too.
+        The cover is "the app, minus the way out of it", and the way out is the
+        navigation — the bar along the bottom of a phone, the rail down the side
+        of a tablet. Both of those sit outside this box, so an absolutely
+        positioned child of it reaches exactly the screen, the progress bar and
+        the bench, and stops at the navigation without anything having to
+        measure where the navigation is.
       */}
-      {desk && <Dock />}
+      <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        {column}
+        {/*
+          The third column, and the one that is not a screen. See `Dock`.
+
+          Last in the document as well as on the right, so reading order and tab
+          order still run navigation → what you are doing → what the machine is
+          doing, which is the order of importance too.
+        */}
+        {desk && <Dock />}
+        {covered && <PrivacyCover />}
+      </div>
       {!tablet && <BottomTabs />}
 
       <UnlockArchiveDialog open={unlocking} onClose={() => setUnlocking(false)} />

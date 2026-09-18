@@ -161,55 +161,46 @@ describe('settings held as a list', () => {
 
   it('comes back as a list, in order', () => {
     const subject = store();
-    expect(subject.getSettings().browseFavorites).toEqual([]);
+    expect(subject.getSettings().fieldArrangement).toEqual([]);
 
     subject.updateSettings({
-      browseFavorites: [
-        { ref: 'output/monday', kind: 'folder', addedAt: 2 },
-        { ref: 'input/face.png', kind: 'file', addedAt: 1 },
+      fieldArrangement: [
+        { name: 'steps', group: 'main' },
+        { name: 'cfg', hidden: true },
       ],
     });
 
-    const stored = subject.getSettings().browseFavorites;
+    const stored = subject.getSettings().fieldArrangement;
     expect(Array.isArray(stored)).toBe(true);
-    expect(stored.map((entry) => entry.ref)).toEqual(['output/monday', 'input/face.png']);
-    expect(stored[1]?.kind).toBe('file');
+    expect(stored.map((entry) => entry.name)).toEqual(['steps', 'cfg']);
+    expect(stored[1]?.hidden).toBe(true);
   });
 
   it('replaces rather than merges, so the last one can be removed', () => {
     const subject = store();
     subject.updateSettings({
-      browseFavorites: [
-        { ref: 'output/a.png', kind: 'file', addedAt: 1 },
-        { ref: 'output/b.png', kind: 'file', addedAt: 2 },
-      ],
+      fieldArrangement: [{ name: 'steps' }, { name: 'cfg' }],
     });
 
-    subject.updateSettings({
-      browseFavorites: [{ ref: 'output/b.png', kind: 'file', addedAt: 2 }],
-    });
-    expect(subject.getSettings().browseFavorites.map((entry) => entry.ref)).toEqual([
-      'output/b.png',
-    ]);
+    subject.updateSettings({ fieldArrangement: [{ name: 'cfg' }] });
+    expect(subject.getSettings().fieldArrangement.map((entry) => entry.name)).toEqual(['cfg']);
 
-    subject.updateSettings({ browseFavorites: [] });
-    expect(subject.getSettings().browseFavorites).toEqual([]);
+    subject.updateSettings({ fieldArrangement: [] });
+    expect(subject.getSettings().fieldArrangement).toEqual([]);
   });
 
   it('survives a restore from the mirror when the database has none', () => {
     const subject = store();
-    const favorites = [{ ref: 'output/keep', kind: 'folder' as const, addedAt: 7 }];
+    const arrangement = [{ name: 'steps', group: 'main' as const }];
 
-    subject.importUiState({ settings: { browseFavorites: favorites } } as never, () => 'id');
-    expect(subject.getSettings().browseFavorites).toEqual(favorites);
+    subject.importUiState({ settings: { fieldArrangement: arrangement } } as never, () => 'id');
+    expect(subject.getSettings().fieldArrangement).toEqual(arrangement);
 
     // Additive, as everywhere else: what is already stored wins.
     subject.importUiState(
-      {
-        settings: { browseFavorites: [{ ref: 'output/other', kind: 'folder', addedAt: 8 }] },
-      } as never,
+      { settings: { fieldArrangement: [{ name: 'cfg' }] } } as never,
       () => 'id',
     );
-    expect(subject.getSettings().browseFavorites).toEqual(favorites);
+    expect(subject.getSettings().fieldArrangement).toEqual(arrangement);
   });
 });

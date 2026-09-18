@@ -24,6 +24,7 @@ import { Orchestrator } from './orchestrator.js';
 import { StateFiles } from './statefile.js';
 import { Endless } from './endless.js';
 import { StudyRunner } from './study.js';
+import { Supervisor } from './supervisor.js';
 import { Sweeper } from './sweeper.js';
 import { WorkflowScanner } from './workflowScan.js';
 import { registerBrowseRoutes } from './routes/browse.js';
@@ -43,6 +44,7 @@ import { registerPromptBlockRoutes } from './routes/promptBlocks.js';
 import { registerPresetRoutes } from './routes/presets.js';
 import { registerQueueRoutes } from './routes/queue.js';
 import { registerModelRoutes } from './routes/models.js';
+import { registerSupervisorRoutes } from './routes/supervisor.js';
 import { registerSystemRoutes } from './routes/system.js';
 import { registerSystemPromptRoutes } from './routes/systemPrompts.js';
 import { registerTasteRoutes } from './routes/taste.js';
@@ -178,6 +180,15 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   const endless = new Endless(store, orchestrator, () => ctx, app.log);
   const studyRunner = new StudyRunner(store, orchestrator, app.log);
   /*
+   * The other processes on this machine.
+   *
+   * Built here and started below, after the routes: nothing it launches can be
+   * managed until there is an API to manage it with, and a ComfyUI started
+   * during boot that Latent then failed to finish booting around would be a
+   * process with no parent that knows about it.
+   */
+  const supervisor = new Supervisor(store, app.log);
+  /*
    * The runner has to hear about every run that settles, not only its own: it
    * is how a shot moves from queued to done, and how the last shot of a study
    * turns the study over to its rating phase. Filtering to study runs happens
@@ -208,6 +219,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
     workflowScanner,
     endless,
     studyRunner,
+    supervisor,
     thumbnails: new ThumbnailCache(),
     views: new ViewRenderer(),
   };
@@ -268,6 +280,7 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   registerBrowseRoutes(app, ctx);
   registerMediaRoutes(app, ctx);
   registerStudyRoutes(app, ctx);
+  registerSupervisorRoutes(app, ctx);
 
   /**
    * Installing a new version, when the routes are wanted at all.
@@ -318,6 +331,13 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   await registerWebApp(app, config);
 
   app.addHook('onClose', async () => {
+    /*
+     * Before anything else: a child process outlives the parent that started it
+     * unless the parent says otherwise, and a ComfyUI left holding a GPU with
+     * nothing to stop it is the one failure of this whole module that somebody
+     * would have to fix with Task Manager.
+     */
+    supervisor.stopAll();
     await orchestrator.stop();
     stateFiles.stop();
     endless.stop();
@@ -344,6 +364,15 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
    * the kind of unreliability this module was rebuilt to remove.
    */
   chatEngine.resume();
+  /*
+   * And anything that asked to come up with Latent.
+   *
+   * Last, and only for the services that opted in — see `blankConfig` for why
+   * that is off by default. A supervisor that started processes on a machine
+   * because it happened to be installed there would be a nasty surprise; one
+   * that brings back the two you told it to is the point.
+   */
+  supervisor.startAutomatic();
 
   return { app, ctx, config };
 }

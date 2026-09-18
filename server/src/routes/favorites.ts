@@ -1,9 +1,27 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 
-import type { ComfyImageRef, CreateFavoriteRequest, Favorite, FavoriteSort } from '@latent/shared';
+import { contentTypeOf } from '@latent/shared';
+import type {
+  ComfyImageRef,
+  CreateFavoriteRequest,
+  Favorite,
+  FavoriteReference,
+  FavoriteSort,
+} from '@latent/shared';
 
+import { ArchiveUnreadableError, VaultLockedError } from '../vault.js';
 import type { AppContext } from './context.js';
+
+/**
+ * ComfyUI's own directories, which the folder browser also serves as roots.
+ *
+ * A favourite whose picture is still in one of them can be referenced where it
+ * lies — `output/monday/render_0007.png` — with nothing copied anywhere. The
+ * fourth type Latent uses, `import`, is not one of these: an imported file
+ * exists only in the local archive, and the node has never heard of it.
+ */
+const IN_PLACE_TYPES = new Set(['output', 'input', 'temp']);
 
 const SORTS = new Set<FavoriteSort>(['rating', 'newest', 'oldest']);
 
@@ -153,6 +171,107 @@ export function registerFavoriteRoutes(app: FastifyInstance, ctx: AppContext): v
   });
 
   /**
+   * A favourite, as something the folder-browsing node can actually load.
+   *
+   * The picker in a `LoadImageFromFolder` slot lists the gallery's favourites
+   * beside `output` and `input`, because "the pictures I keep coming back to"
+   * is the same list whether you are admiring one or feeding one back in. But a
+   * favourite is a row in Latent's database, and the node takes a path on the
+   * ComfyUI machine — so something has to turn one into the other, and that is
+   * this.
+   *
+   * Two answers, and which one you get depends on where the picture still is:
+   *
+   * - **Where it lies.** The commonest case by far: the favourite is a render
+   *   from this instance and is still sitting in its output folder. Then the
+   *   reference is just that, nothing is copied, and the node reads the file
+   *   that was already there. Checked rather than assumed — the whole point of
+   *   favouriting is to outlive the folder.
+   * - **Copied into `input`.** Anything else: a picture imported from a folder,
+   *   one whose original was swept up, one from a vast.ai box that no longer
+   *   exists. Latent has the bytes in its archive, so it sends them over and
+   *   hands back where they landed.
+   *
+   * Named by content hash on that second path, so picking the same favourite
+   * twice reuses one file instead of filling the input directory with copies of
+   * one picture.
+   */
+  app.post<{ Params: { id: string } }>('/api/favorites/:id/reference', async (request, reply) => {
+    const favorite = ctx.store.getFavorite(request.params.id);
+    if (!favorite) return reply.code(404).send({ error: 'No such favourite' });
+    if (!favorite.image) {
+      return reply.code(409).send({ error: 'That favourite has no picture to load.' });
+    }
+
+    const image = favorite.image;
+    const type = image.type || 'output';
+    const within = image.subfolder ? `${image.subfolder}/${image.filename}` : image.filename;
+
+    if (IN_PLACE_TYPES.has(type)) {
+      try {
+        /*
+         * Asked for, not assumed.
+         *
+         * `view` throws on a 404, which is precisely the answer that matters
+         * here: the row still says `output/monday/render.png` long after the
+         * output folder was emptied, and handing that to the node would be a
+         * reference that fails at render time rather than at pick time.
+         */
+        const upstream = await ctx.orchestrator.client.view({
+          filename: image.filename,
+          subfolder: image.subfolder,
+          type,
+        });
+        // The body is never read; releasing it keeps the socket from being held
+        // open until the timeout for a file we only wanted to know exists.
+        await upstream.body?.cancel();
+        if (upstream.ok) {
+          return { reference: `${type}/${within}`, copied: false } satisfies FavoriteReference;
+        }
+      } catch {
+        // Gone, or the instance is unreachable. Either way there is a copy to
+        // fall back on, and falling back is better than refusing.
+      }
+    }
+
+    const row = ctx.store.findImage(image, favorite.generationId ?? undefined);
+    let bytes: Buffer | null = null;
+    try {
+      if (row?.archived_path) bytes = await ctx.archive.read(row.archived_path);
+    } catch (error) {
+      if (error instanceof VaultLockedError) {
+        return reply.code(423).send({ error: error.message, locked: true });
+      }
+      if (error instanceof ArchiveUnreadableError) {
+        return reply.code(409).send({ error: error.message });
+      }
+      throw error;
+    }
+
+    if (!bytes) {
+      return reply.code(409).send({
+        error:
+          'That picture is not stored here and is no longer on the ComfyUI machine, so there ' +
+          'is nothing to load. Open it in Favourites and fetch a copy first.',
+      });
+    }
+
+    try {
+      const uploaded = await ctx.orchestrator.client.uploadImage(bytes, stableName(bytes, image.filename), {
+        contentType: contentTypeOf(image.filename),
+        type: 'input',
+      });
+      const name = uploaded.subfolder ? `${uploaded.subfolder}/${uploaded.name}` : uploaded.name;
+      return { reference: `input/${name}`, copied: true } satisfies FavoriteReference;
+    } catch (error) {
+      app.log.warn({ err: error }, 'Could not send a favourite to ComfyUI as an input');
+      return reply.code(502).send({
+        error: error instanceof Error ? error.message : 'Could not send that picture to ComfyUI',
+      });
+    }
+  });
+
+  /**
    * Removing a favourite leaves the archived image alone. The gallery rating is
    * a separate decision, and silently deleting a picture because someone
    * un-starred it here would be the wrong kind of surprise.
@@ -164,4 +283,24 @@ export function registerFavoriteRoutes(app: FastifyInstance, ctx: AppContext): v
     ctx.store.deleteFavorite(request.params.id);
     return reply.code(204).send();
   });
+}
+
+/**
+ * A name derived from the bytes, so the same picture is uploaded once.
+ *
+ * ComfyUI's input directory is a flat namespace shared by everything anybody
+ * has ever sent it, and a favourite that is picked for every render of an
+ * afternoon would otherwise leave thirty identical files behind under thirty
+ * different names. The hash also means the *contents* decide: a picture that
+ * genuinely differs gets its own file even if it is called the same thing.
+ *
+ * Twelve characters of SHA-256 is far more than enough to keep one input
+ * directory's worth of pictures apart, and short enough to still read as a
+ * filename rather than as a key somebody pasted in.
+ */
+function stableName(data: Buffer, original: string): string {
+  const hash = createHash('sha256').update(data).digest('hex').slice(0, 12);
+  const dot = original.lastIndexOf('.');
+  const extension = dot > 0 ? original.slice(dot) : '.png';
+  return `latent-favorite-${hash}${extension}`;
 }

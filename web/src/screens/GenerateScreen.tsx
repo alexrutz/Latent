@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import {
+  advanceBatches,
   applyPresetChat,
+  batchLength,
   defaultValues,
   findFieldByRole,
   groupByNode,
@@ -13,6 +15,7 @@ import {
 } from '@latent/shared';
 import type {
   ConnectionSummary,
+  InputBatches,
   ParamField,
   ParamValues,
   SystemPrompt,
@@ -182,6 +185,14 @@ function MainField({
   }
 }
 
+/**
+ * One frozen empty map, so a form with no picture lists is stable.
+ *
+ * A fresh `{}` per render would make every memo that depends on it recompute,
+ * and the submit path close over a new object on every keystroke.
+ */
+const EMPTY_BATCHES: InputBatches = {};
+
 export function GenerateScreen() {
   const navigate = useNavigate();
   const workflows = useVisibleWorkflows();
@@ -350,6 +361,10 @@ function GenerateForm({
   const values = draft?.values ?? {};
   const lockedSeeds = draft?.lockedSeeds ?? [];
   const batchCount = draft?.batchCount ?? 1;
+  /** The pictures each image slot is working through. See `advanceBatch`. */
+  const batchInputs = draft?.batchInputs ?? EMPTY_BATCHES;
+  /** How many runs it takes to get through the longest list once. */
+  const batchRuns = batchLength(batchInputs);
 
   /**
    * Seed the form from the workflow's last-used values, then apply any pending
@@ -409,6 +424,14 @@ function GenerateForm({
       values: base,
       lockedSeeds: stored?.lockedSeeds ?? [],
       batchCount: stored?.batchCount ?? 1,
+      /*
+       * The batch survives "reuse these settings" and everything else that
+       * reseeds the form. It is a list of pictures somebody ticked, not a
+       * value a run produced, and rebuilding the form is not a reason to
+       * throw it away — the slot's *value* is reseeded above either way, so
+       * the next Generate simply starts the list from its beginning.
+       */
+      ...(stored?.batchInputs ? { batchInputs: stored.batchInputs } : {}),
     });
   }, [detail, consumePending, setDraft]);
 
@@ -512,9 +535,50 @@ function GenerateForm({
        */
       if (endless.data?.enabled) {
         await setEndless.mutateAsync({ ...currentRequest(), enabled: true });
-      } else {
-        await generate.mutateAsync(currentRequest());
+        setJustQueued(Date.now());
+        return;
       }
+
+      /*
+       * One run per picture, when a picture list is running.
+       *
+       * `batchCount` is "make me four of this", and a list of images is "make
+       * me one of each of these" — which are different questions, and asking
+       * both at once means four runs that each need their own picture. The
+       * server's own batch takes one set of values and repeats it, so it
+       * cannot answer the second question; the only place that can is here,
+       * where the list lives.
+       *
+       * So with a list of more than one, this queues the runs itself and walks
+       * the slot forward between them. Without one it is a single request with
+       * `batchCount` on it, exactly as before — the ordinary case never pays
+       * for the unusual one.
+       */
+      const stepping = batchRuns > 1 && batchCount > 1;
+      const runs = stepping ? batchCount : 1;
+      let next = values;
+
+      for (let run = 0; run < runs; run += 1) {
+        await generate.mutateAsync({
+          workflowId: detail.id,
+          values: next,
+          randomizeSeeds: anySeedUnlocked,
+          lockedSeedFields: lockedSeeds,
+          batchCount: stepping ? 1 : batchCount,
+        });
+        next = advanceBatches(next, batchInputs);
+      }
+
+      /*
+       * The slot moves on after the run, not before it.
+       *
+       * Which means what is on screen is always the picture the last Generate
+       * *used* right up until it succeeds, and then becomes the one the next
+       * Generate will use. Advancing first would have the form showing a
+       * picture that has not been rendered yet, and a failed queue would have
+       * skipped one.
+       */
+      if (next !== values) patchDraft(detail.id, { values: next });
       setJustQueued(Date.now());
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not queue the prompt');
@@ -814,6 +878,23 @@ function GenerateForm({
             ))}
           </div>
         </div>
+
+        {/*
+          What a picture list does to the button above it.
+
+          Worth one line, because the interaction between the two is the only
+          thing about batching that is not obvious from looking at it: "queue
+          four" with a list running is four runs over four different pictures,
+          not four copies of the one on screen. Said here rather than in the
+          image field, because this is the control it qualifies.
+        */}
+        {batchRuns > 1 && (
+          <p className="-mt-2 text-xs text-muted">
+            {batchCount > 1
+              ? `Each run takes the next of the ${batchRuns} pictures, so this queues ${batchCount} of them.`
+              : `Each run takes the next of the ${batchRuns} pictures, then starts again at the first.`}
+          </p>
+        )}
 
         {advancedFields.length > 0 && (
           <>

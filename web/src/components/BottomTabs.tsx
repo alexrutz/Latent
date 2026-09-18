@@ -3,6 +3,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 import { useKeyboardOpen } from '../state/keyboard';
 import { useLiveStore } from '../state/live';
+import { usePrivacyStore } from '../state/privacy';
 import { scrollToTop } from '../state/scroll';
 import { cn } from './ui';
 
@@ -52,6 +53,7 @@ export const MORE: Tab[] = [
   { to: '/models', label: 'Models', icon: '◈' },
   { to: '/variation', label: 'Random', icon: '⁂' },
   { to: '/monitor', label: 'Monitor', icon: '∿' },
+  { to: '/supervisor', label: 'Supervisor', icon: '⎔' },
   { to: '/study', label: 'Study', icon: '⊞' },
 ];
 
@@ -180,6 +182,18 @@ export function BottomTabs() {
                    * scroll is a one-way trip.
                    */
                   onClick={(event) => {
+                    /*
+                     * While the cover is up, a tab is the way back in.
+                     *
+                     * It lifts the cover *and* goes where it says, including
+                     * when that is the tab you are already on — there, the
+                     * scroll-to-top below would answer "take me back to what I
+                     * was doing" by throwing away where you were in it.
+                     */
+                    if (usePrivacyStore.getState().covered) {
+                      usePrivacyStore.getState().uncover();
+                      return;
+                    }
                     if (!active) return;
                     event.preventDefault();
                     scrollToTop();
@@ -240,7 +254,11 @@ export function BottomTabs() {
                 <li className="min-w-0 flex-1">
                   <button
                     type="button"
-                    onClick={() => setMoreOpen((open) => !open)}
+                    onClick={() => {
+                      // The menu is navigation too, so it is also a way back in.
+                      usePrivacyStore.getState().uncover();
+                      setMoreOpen((open) => !open);
+                    }}
                     aria-expanded={moreOpen}
                     aria-label="More modules"
                     className={cn(
