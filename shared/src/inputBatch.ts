@@ -69,6 +69,37 @@ export function advanceBatches(values: ParamValues, batches: InputBatches): Para
 }
 
 /**
+ * Queue `runs` runs, moving every batched slot on after each one that queued.
+ *
+ * Always says how far it got, failure included. The slot moves on after a run
+ * and not before it, so what the form shows is the picture the last queued
+ * run used — and that has to hold when the third of four fails as much as
+ * when all four go. Throwing away the progress on a failure left the form on
+ * the first picture with three runs already queued, and the next Generate
+ * rendered pictures one and two a second time.
+ *
+ * `values` is what the next Generate should start from; `error` is whatever
+ * stopped it, or `null` when every run was queued.
+ */
+export async function queueThroughBatch(
+  values: ParamValues,
+  batches: InputBatches,
+  runs: number,
+  send: (values: ParamValues) => Promise<unknown>,
+): Promise<{ values: ParamValues; queued: number; error: unknown }> {
+  let next = values;
+  for (let run = 0; run < runs; run += 1) {
+    try {
+      await send(next);
+    } catch (error) {
+      return { values: next, queued: run, error };
+    }
+    next = advanceBatches(next, batches);
+  }
+  return { values: next, queued: runs, error: null };
+}
+
+/**
  * How many runs it takes to get through every list once.
  *
  * The longest list, not the total and not the product: two slots of four are

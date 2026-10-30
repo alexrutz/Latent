@@ -6,6 +6,7 @@ import {
   batchLength,
   batchPosition,
   pruneBatches,
+  queueThroughBatch,
 } from './inputBatch.js';
 
 describe('advanceBatch', () => {
@@ -97,5 +98,43 @@ describe('batchPosition', () => {
 describe('pruneBatches', () => {
   it('drops the slots whose list was emptied', () => {
     expect(pruneBatches({ a: ['1'], b: [] })).toEqual({ a: ['1'] });
+  });
+});
+
+describe('queueThroughBatch', () => {
+  const batches = { image: ['a.png', 'b.png', 'c.png', 'd.png'] };
+
+  it('moves the slot on once per queued run', async () => {
+    const sent: unknown[] = [];
+    const outcome = await queueThroughBatch({ image: 'a.png' }, batches, 3, async (values) => {
+      sent.push(values.image);
+    });
+    expect(sent).toEqual(['a.png', 'b.png', 'c.png']);
+    expect(outcome).toEqual({ values: { image: 'd.png' }, queued: 3, error: null });
+  });
+
+  /*
+   * The case this exists for. The third of four failing used to throw the
+   * progress away, leaving the form on the first picture with two runs
+   * already queued — so the next Generate made those two again.
+   */
+  it('keeps the progress when a run part way through fails', async () => {
+    const failure = new Error('ComfyUI went away');
+    let calls = 0;
+    const outcome = await queueThroughBatch({ image: 'a.png' }, batches, 4, async () => {
+      calls += 1;
+      if (calls === 3) throw failure;
+    });
+    // Two queued, so the slot holds the third: the one that did not go.
+    expect(outcome).toEqual({ values: { image: 'c.png' }, queued: 2, error: failure });
+  });
+
+  it('leaves the values alone when the first run fails', async () => {
+    const values = { image: 'a.png' };
+    const outcome = await queueThroughBatch(values, batches, 2, async () => {
+      throw new Error('no');
+    });
+    expect(outcome.values).toBe(values);
+    expect(outcome.queued).toBe(0);
   });
 });

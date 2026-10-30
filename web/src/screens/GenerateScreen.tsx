@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import {
-  advanceBatches,
   applyPresetChat,
   batchLength,
   defaultValues,
@@ -11,6 +10,7 @@ import {
   isLlamaServerField,
   matchSystemPrompt,
   planFormRuns,
+  queueThroughBatch,
   usesPointLine,
 } from '@latent/shared';
 import type {
@@ -556,30 +556,24 @@ function GenerateForm({
        */
       const stepping = batchRuns > 1 && batchCount > 1;
       const runs = stepping ? batchCount : 1;
-      let next = values;
 
-      for (let run = 0; run < runs; run += 1) {
-        await generate.mutateAsync({
+      const outcome = await queueThroughBatch(values, batchInputs, runs, (next) =>
+        generate.mutateAsync({
           workflowId: detail.id,
           values: next,
           randomizeSeeds: anySeedUnlocked,
           lockedSeedFields: lockedSeeds,
           batchCount: stepping ? 1 : batchCount,
-        });
-        next = advanceBatches(next, batchInputs);
-      }
+        }),
+      );
 
       /*
-       * The slot moves on after the run, not before it.
-       *
-       * Which means what is on screen is always the picture the last Generate
-       * *used* right up until it succeeds, and then becomes the one the next
-       * Generate will use. Advancing first would have the form showing a
-       * picture that has not been rendered yet, and a failed queue would have
-       * skipped one.
+       * The slot moves on after the run, not before it — and by as many runs
+       * as were queued, even when one failed part way. See `queueThroughBatch`.
        */
-      if (next !== values) patchDraft(detail.id, { values: next });
-      setJustQueued(Date.now());
+      if (outcome.values !== values) patchDraft(detail.id, { values: outcome.values });
+      if (outcome.queued > 0) setJustQueued(Date.now());
+      if (outcome.error) throw outcome.error;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not queue the prompt');
     }
