@@ -753,6 +753,92 @@ async function bootIsolated(overrides: Parameters<typeof buildApp>[0] = {}) {
   };
 }
 
+describe('the session check, however the path is spelled', () => {
+  /**
+   * The router routes on the *decoded* path; the check used to read the raw
+   * one. So `/%61pi/settings` skipped the login and was then routed to
+   * `/api/settings` like any other request — reproduced against a real server
+   * before the fix, answering 200 with the settings to a request carrying no
+   * cookie at all.
+   *
+   * Spelled several ways, against routes chosen for what they would give away:
+   * the settings, the gallery, and the supervisor, which starts processes.
+   */
+  const protectedRoutes = [
+    { method: 'GET', path: 'settings' },
+    { method: 'GET', path: 'gallery' },
+    { method: 'GET', path: 'supervisor/services' },
+    { method: 'POST', path: 'supervisor/services' },
+  ];
+
+  const spellings = (path: string) => [
+    `/api/${path}`,
+    `/%61pi/${path}`,
+    `/%61%70%69/${path}`,
+    `/%41pi/${path}`,
+    `/ap%69/${path}`,
+  ];
+
+  it('refuses every spelling of a protected route without a session', async () => {
+    const server = await bootIsolated();
+    try {
+      await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'spelled differently' }),
+      });
+
+      for (const route of protectedRoutes) {
+        for (const spelled of spellings(route.path)) {
+          const response = await server.call(spelled, {
+            method: route.method,
+            ...(route.method === 'POST' ? { body: JSON.stringify({ kind: 'comfyui' }) } : {}),
+          });
+          // 401 when it reached an API route; 404 when the spelling routes to
+          // nothing at all. Never a 2xx.
+          expect({ spelled, status: response.status }).toEqual({
+            spelled,
+            status: expect.toBeOneOf([401, 404]),
+          });
+        }
+      }
+
+      // And the bypass that was reproduced specifically is a 401, not a 404:
+      // it does reach the route, and the route turns it away.
+      expect((await server.call('/%61pi/settings')).status).toBe(401);
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  it('still answers the public routes however they are spelled', async () => {
+    const server = await bootIsolated();
+    try {
+      // Unclaimed and unauthenticated: status has to answer either way, or a
+      // client could never find out that it needs to sign in.
+      expect((await server.call('/api/status')).status).toBe(200);
+      expect((await server.call('/%61pi/status')).status).toBe(200);
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+
+  it('lets a signed-in session through every spelling', async () => {
+    const server = await bootIsolated();
+    try {
+      const claim = await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'signed in' }),
+      });
+      const cookie = claim.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      expect((await server.call('/api/settings', { cookie })).status).toBe(200);
+      expect((await server.call('/%61pi/settings', { cookie })).status).toBe(200);
+    } finally {
+      await server.dispose();
+    }
+  }, 30_000);
+});
+
 describe('first-run setup', () => {
   it('locks everything until someone claims the server, then lets only them back in', async () => {
     const server = await bootIsolated();

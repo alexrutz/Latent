@@ -65,6 +65,22 @@ const PUBLIC_API_PATHS = new Set([
 ]);
 
 /**
+ * A raw request path, without its query, decoded the way the router decodes it.
+ *
+ * Only the fallback for a request no route matched. A path that will not decode
+ * — a stray `%` — is returned as it arrived: it cannot have matched a route
+ * either, and guarding the raw text is the safe reading of it.
+ */
+function decodedPath(url: string): string {
+  const raw = url.split('?')[0] ?? '';
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
  * Decide which ComfyUI to talk to at boot.
  *
  * A fresh install seeds a preset from `COMFY_URL`, so an existing v1 deployment
@@ -254,9 +270,31 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
   await app.register(fastifyMultipart);
   await app.register(fastifyWebsocket);
 
+  /*
+   * The session check, keyed to the route the router actually matched.
+   *
+   * It used to read `request.url`, the path exactly as the client sent it, and
+   * guard whatever began with the text `/api/`. The router does not route on
+   * that text: it percent-decodes the path first. So `/%61pi/settings` failed
+   * the prefix test, skipped the check, and was then routed to
+   * `/api/settings` like any other request — every route behind the login,
+   * the supervisor that starts processes included, answered anyone who knew
+   * to spell one letter in hex.
+   *
+   * `routeOptions.url` is the template of the route that was matched (`/api/
+   * favorites/:id`), decided after the router's own decoding, so this check and
+   * the router cannot disagree about which path was asked for whatever the
+   * client does to the spelling. It is also what the public list is compared
+   * against, which keeps `/api/status` reachable however it is spelled.
+   *
+   * A request that matched nothing has no route to protect — it ends in the
+   * not-found handler — but rather than trust that, it falls back to the
+   * decoded path, so a request this cannot classify is guarded, not waved
+   * through.
+   */
   app.addHook('onRequest', async (request, reply) => {
-    if (!request.url.startsWith('/api/')) return;
-    const path = request.url.split('?')[0] ?? '';
+    const path = request.routeOptions.url ?? decodedPath(request.url);
+    if (!path.startsWith('/api/')) return;
     if (PUBLIC_API_PATHS.has(path)) return;
     await auth.guard(request, reply);
   });
