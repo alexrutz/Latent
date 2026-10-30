@@ -89,12 +89,43 @@ export function usePrivacyCover(enabled: boolean): void {
       if (document.visibilityState === 'hidden') raise();
     };
 
+    /*
+     * Two blurs that are not leaving.
+     *
+     * Opening the file chooser — attaching a picture, picking an input — blurs
+     * the window while the app is exactly what you are using, and so does
+     * focus moving into an embedded frame. Covering the app for either put a
+     * cover over the thing you had just reached for. Actually leaving while
+     * the chooser is open still raises it, through the visibility change.
+     */
+    let choosingFile = false;
+    const onClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement && target.type === 'file') choosingFile = true;
+    };
+    const onFocus = () => {
+      choosingFile = false;
+    };
+    const onBlur = () => {
+      if (choosingFile) return;
+      // Checked after the event: the frame takes focus once the blur is done.
+      window.setTimeout(() => {
+        if (document.activeElement instanceof HTMLIFrameElement) return;
+        if (document.hasFocus()) return;
+        raise();
+      }, 0);
+    };
+
     document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('blur', raise);
+    document.addEventListener('click', onClick, true);
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('blur', onBlur);
     window.addEventListener('pagehide', raise);
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('blur', raise);
+      document.removeEventListener('click', onClick, true);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('blur', onBlur);
       window.removeEventListener('pagehide', raise);
     };
   }, [enabled]);

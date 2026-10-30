@@ -349,6 +349,12 @@ export const useChatStore = create<ChatStore>((set, get) => {
       const { chat, draft, attachments } = get();
       const content = draft.trim();
       if (!chat || (content === '' && attachments.length === 0)) return;
+      /*
+       * Not while a picture is still being shrunk. It was sent as it stood —
+       * an empty image — and the shrinking, finishing after, had nothing left
+       * to fill in. The button says the same; this covers the keyboard.
+       */
+      if (attachments.some((entry) => entry.dataUrl === '')) return;
 
       get().setDraft('');
       set({ error: null, attachments: [], pendingCall: null, callMinimized: false });

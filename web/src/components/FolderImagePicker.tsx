@@ -140,7 +140,7 @@ export function FolderImagePicker({
    * kept, and nothing needs it until somebody taps the ★ chip. Newest first
    * because a reference slot is overwhelmingly filled from recent work.
    */
-  const galleryFavorites = useFavorites('newest');
+  const galleryFavorites = useFavorites('newest', { enabled: open });
 
   /*
    * The ones this slot could actually load.

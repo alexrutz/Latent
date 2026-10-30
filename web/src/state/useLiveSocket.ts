@@ -45,12 +45,28 @@ export function useLiveSocket(enabled: boolean): void {
       socket.binaryType = 'blob';
       socketRef.current = socket;
 
+      /*
+       * Every handler checks it is still the current socket.
+       *
+       * A reconnect can start while the last socket is still closing, and that
+       * one's `onclose` then arrives after the new one exists. Acting on it
+       * cleared the reference to the new socket and scheduled a third — two
+       * left open, every event arriving twice, and "disconnected" shown over a
+       * connection that was fine.
+       */
+      const current = () => socketRef.current === socket;
+
       socket.onopen = () => {
+        if (!current()) {
+          socket.close();
+          return;
+        }
         retryRef.current = INITIAL_RETRY_MS;
         setSocketConnected(true);
       };
 
       socket.onmessage = (event) => {
+        if (!current()) return;
         // Binary frames are sampler previews; everything else is JSON.
         if (event.data instanceof Blob) {
           setPreview(event.data);
@@ -64,6 +80,7 @@ export function useLiveSocket(enabled: boolean): void {
       };
 
       socket.onclose = () => {
+        if (!current()) return;
         socketRef.current = null;
         setSocketConnected(false);
         scheduleReconnect();

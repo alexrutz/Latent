@@ -160,10 +160,17 @@ export function useRescanWorkflow() {
  */
 export function useVisibleWorkflows() {
   const query = useWorkflows();
-  return useMemo(
-    () => ({ ...query, data: query.data?.filter((workflow) => workflow.visible) }),
-    [query],
+  /*
+   * On the data, not on the query result: TanStack Query hands back a new
+   * result object every render, so a memo keyed on it never held, and every
+   * consumer got a new list each time — the Generate screen pruned its
+   * drafts on every render as a result.
+   */
+  const data = useMemo(
+    () => query.data?.filter((workflow) => workflow.visible),
+    [query.data],
   );
+  return { ...query, data };
 }
 
 /**
@@ -549,10 +556,15 @@ export function useDeleteImage() {
 /* Favourites                                                          */
 /* ------------------------------------------------------------------ */
 
-export function useFavorites(sort: FavoriteSort = 'rating') {
+/**
+ * `enabled: false` for a list nobody is looking at yet: the folder picker is
+ * mounted with every image field and only needs this once its sheet is open.
+ */
+export function useFavorites(sort: FavoriteSort = 'rating', { enabled = true } = {}) {
   return useQuery({
     queryKey: [...queryKeys.favorites, sort],
     queryFn: () => api.favorites(sort),
+    enabled,
   });
 }
 
@@ -926,7 +938,8 @@ export function useDeleteStudy() {
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: queryKeys.studies });
       // A deleted study takes its pictures with it, and a kept one stays.
-      void client.invalidateQueries({ queryKey: queryKeys.gallery() });
+      // Every gallery view, filtered or not, as every other mutation does.
+      void client.invalidateQueries({ queryKey: ['gallery'] });
     },
   });
 }
@@ -968,7 +981,7 @@ export function useKeepStudyShot(studyId: string) {
     mutationFn: (shotId: string) => api.keepStudyShot(studyId, shotId),
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: queryKeys.favorites });
-      void client.invalidateQueries({ queryKey: queryKeys.gallery() });
+      void client.invalidateQueries({ queryKey: ['gallery'] });
     },
   });
 }

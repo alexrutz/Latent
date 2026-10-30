@@ -8225,6 +8225,31 @@ test.describe('the privacy cover', () => {
     await expect(page).toHaveURL(/\/queue$/);
   });
 
+  /*
+   * Opening the file chooser blurs the window while the app is the thing in
+   * use. Covering it then put the cover over the picture being attached.
+   */
+  test('stays down while a file is being chosen', async ({ page }) => {
+    await open(page, '/gallery');
+    await page.evaluate(() => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.dataset.testid = 'probe-file';
+      document.body.append(input);
+    });
+    const chooser = page.waitForEvent('filechooser');
+    await page.locator('[data-testid="probe-file"]').click();
+    await chooser;
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await page.waitForTimeout(300);
+    await expect(page.getByTestId('privacy-cover')).toHaveCount(0);
+
+    // Back from the chooser, a blur is a blur again.
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await leave(page);
+    await expect(page.getByTestId('privacy-cover')).toBeVisible();
+  });
+
   test('a tab lifts it and goes where it says', async ({ page }) => {
     await open(page, '/gallery');
     await leave(page);

@@ -532,7 +532,15 @@ function ServiceSettings({
                 setConfirmDelete(true);
                 return;
               }
-              remove.mutate(config.id, { onSuccess: onClose });
+              setError(null);
+              remove.mutate(config.id, {
+                onSuccess: onClose,
+                // Said, rather than the button just going back to how it was.
+                onError: (cause) => {
+                  setConfirmDelete(false);
+                  setError(cause instanceof Error ? cause.message : 'Could not remove it');
+                },
+              });
             }}
           >
             {confirmDelete ? 'Really remove it?' : 'Remove this service'}

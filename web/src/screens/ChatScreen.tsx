@@ -299,16 +299,20 @@ export function ChatScreen() {
   const attach = async (files: File[] | FileList) => {
     store().setError(null);
     for (const file of [...files].slice(0, 4)) {
+      /*
+       * The placeholder itself is how it is found again, not its name. Two
+       * pasted pictures are both `image.png`, and matching by name filled the
+       * wrong one in — or, when one failed, took both away.
+       */
+      const placeholder = { dataUrl: '', name: file.name };
       try {
-        store().setAttachments((current) => [...current, { dataUrl: '', name: file.name }]);
+        store().setAttachments((current) => [...current, placeholder]);
         const dataUrl = await downscale(file);
         store().setAttachments((current) =>
-          current.map((entry) =>
-            entry.name === file.name && entry.dataUrl === '' ? { ...entry, dataUrl } : entry,
-          ),
+          current.map((entry) => (entry === placeholder ? { ...entry, dataUrl } : entry)),
         );
       } catch {
-        store().setAttachments((current) => current.filter((entry) => entry.name !== file.name));
+        store().setAttachments((current) => current.filter((entry) => entry !== placeholder));
         store().setError(`${file.name} could not be read as an image.`);
       }
     }
@@ -804,7 +808,10 @@ export function ChatScreen() {
               change your mind, and taking over is what the composer is for.
             */
               disabled={
-                run.phase === 'thinking' || (draft.trim() === '' && attachments.length === 0)
+                run.phase === 'thinking' ||
+                (draft.trim() === '' && attachments.length === 0) ||
+                // A picture still being shrunk would go up empty.
+                attachments.some((entry) => entry.dataUrl === '')
               }
               aria-label="Send"
             >
