@@ -10,7 +10,7 @@ import { useEffect, useMemo } from 'react';
 
 import type {
   AppSettings,
-  ServiceConfig,
+  ServicePatch,
   GenerationRecord,
   ComfyImageRef,
   FavoriteSort,
@@ -1046,7 +1046,7 @@ export const useAddService = () =>
   );
 
 export const useUpdateService = () =>
-  useServiceMutation(({ id, patch }: { id: string; patch: Partial<ServiceConfig> }) =>
+  useServiceMutation(({ id, patch }: { id: string; patch: ServicePatch }) =>
     api.updateService(id, patch),
   );
 

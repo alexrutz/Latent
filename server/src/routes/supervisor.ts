@@ -9,6 +9,7 @@ import {
   definitionFor,
   SERVICE_DEFINITIONS,
   type ServiceConfig,
+  type ServicePatch,
   type ServiceFile,
   type ServiceView,
 } from '@latent/shared';
@@ -64,13 +65,13 @@ export function registerSupervisorRoutes(app: FastifyInstance, ctx: AppContext):
     },
   );
 
-  app.patch<{ Params: { id: string }; Body: Partial<ServiceConfig> }>(
+  app.patch<{ Params: { id: string }; Body: ServicePatch }>(
     '/api/supervisor/services/:id',
     async (request, reply) => {
       const current = ctx.store.getService(request.params.id);
       if (!current) return reply.code(404).send({ error: 'No such service' });
 
-      const patch = { ...(request.body ?? {}) };
+      const { setValues, ...patch } = request.body ?? {};
       /*
        * The record's identity is not editable, whatever the body says.
        *
@@ -81,6 +82,16 @@ export function registerSupervisorRoutes(app: FastifyInstance, ctx: AppContext):
       delete patch.id;
       delete patch.kind;
       delete patch.createdAt;
+
+      // One argument at a time, onto what is stored now. See `ServicePatch`.
+      if (setValues && typeof setValues === 'object') {
+        const values = { ...(patch.values ?? current.values) };
+        for (const [flag, value] of Object.entries(setValues)) {
+          if (value === null) delete values[flag];
+          else values[flag] = value;
+        }
+        patch.values = values;
+      }
 
       const next = ctx.store.updateService(request.params.id, patch);
       if (!next) return reply.code(404).send({ error: 'No such service' });

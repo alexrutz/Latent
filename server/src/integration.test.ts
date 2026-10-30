@@ -8452,6 +8452,39 @@ describe('the supervisor', () => {
     expect(after.services.some((entry) => entry.config.id === created.config.id)).toBe(false);
   });
 
+  /*
+   * Two switches flipped before the first save comes back.
+   *
+   * The form sent the whole `values` object, rebuilt from the copy it had last
+   * been shown, so the second change went out without the first and undid it.
+   * `setValues` names only the flag that changed, merged onto what is stored.
+   */
+  it('keeps both of two argument changes sent one after the other', async () => {
+    const created = await json<ServiceView>(
+      api('/api/supervisor/services', {
+        method: 'POST',
+        body: JSON.stringify({ kind: 'llama-server', name: 'Two at once' }),
+      }),
+    );
+    const id = created.config.id;
+    const change = (setValues: Record<string, unknown>) =>
+      api(`/api/supervisor/services/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ setValues }),
+      });
+
+    // Sent together, neither waiting for the other's answer.
+    await Promise.all([change({ '-np': 1 }), change({ '-fit': 'off' })]);
+    const after = await json<ServiceView>(change({ '--jinja': true }));
+    expect(after.config.values).toEqual({ '-np': 1, '-fit': 'off', '--jinja': true });
+
+    // And `null` takes one out, leaving the rest.
+    const cleared = await json<ServiceView>(change({ '-fit': null }));
+    expect(cleared.config.values).toEqual({ '-np': 1, '--jinja': true });
+
+    await api(`/api/supervisor/services/${id}`, { method: 'DELETE' });
+  });
+
   /**
    * A start that cannot work answers 409 with the reason, not 500.
    *

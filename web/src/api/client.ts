@@ -29,7 +29,7 @@ import type {
   PromptBlockInput,
   RandomPromptConfig,
   RandomPromptRoll,
-  ServiceConfig,
+  ServicePatch,
   ServiceDefinition,
   ServiceFile,
   ServiceLogLine,
@@ -455,7 +455,7 @@ export const api = {
       body: JSON.stringify({ kind, name, root }),
     }),
 
-  updateService: (id: string, patch: Partial<ServiceConfig>) =>
+  updateService: (id: string, patch: ServicePatch) =>
     request<ServiceView>(`/api/supervisor/services/${id}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),

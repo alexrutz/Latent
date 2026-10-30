@@ -987,6 +987,19 @@ export interface ServiceStatus {
   restartAt: number | null;
 }
 
+/**
+ * A change to a service, as the form sends it.
+ *
+ * `setValues` is how one argument changes: by flag, merged into what is stored
+ * at the moment the server applies it, with `null` taking the flag out. The
+ * form used to send the whole `values` object rebuilt from the copy it had
+ * last been shown — so two arguments changed before the first save came back
+ * each sent a copy missing the other, and the second undid the first.
+ */
+export interface ServicePatch extends Partial<ServiceConfig> {
+  setValues?: Record<string, ServiceArgValue | null>;
+}
+
 export interface ServiceView {
   config: ServiceConfig;
   status: ServiceStatus;

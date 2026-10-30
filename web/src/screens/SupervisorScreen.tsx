@@ -4,6 +4,7 @@ import {
   portOf,
   type ServiceArg,
   type ServiceConfig,
+  type ServicePatch,
   type ServiceDefinition,
   type ServiceLogLine,
   type ServiceState,
@@ -318,7 +319,7 @@ function ServiceSettings({
   /** Which argument is being filled in from the folder, if any. */
   const [browsing, setBrowsing] = useState<string | null>(null);
 
-  const patch = (change: Partial<ServiceConfig>) => {
+  const patch = (change: ServicePatch) => {
     setError(null);
     update.mutate(
       { id: config.id, patch: change },
@@ -329,11 +330,13 @@ function ServiceSettings({
     );
   };
 
+  /*
+   * Only the flag that changed. Merged into what is stored by the server, so
+   * two changes made before the first one is saved both survive.
+   */
   const setValue = (flag: string, value: ServiceConfig['values'][string] | undefined) => {
-    const values = { ...config.values };
-    if (value === undefined || value === '' || value === false) delete values[flag];
-    else values[flag] = value;
-    patch({ values });
+    const cleared = value === undefined || value === '' || value === false;
+    patch({ setValues: { [flag]: cleared ? null : value } });
   };
 
   /** The arguments, grouped the way the definition groups them. */
