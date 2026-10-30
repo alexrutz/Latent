@@ -2794,10 +2794,31 @@ export class Store {
     return { images: row?.images ?? 0, bytes: row?.bytes ?? 0 };
   }
 
-  /** Archived images nobody rated, offered up for cleanup. */
+  /**
+   * Archived images nobody rated, offered up for cleanup.
+   *
+   * The same protection the sweep gives (see `listSweepable`): a star, a keep
+   * or a favourite anywhere in the run spares the whole run, and imports are
+   * never touched. The archived copy is often the only one left, so "unrated"
+   * cannot mean only "rating is zero" — a favourite would lose its picture.
+   */
   listUnratedArchived(): ImageRow[] {
     return this.db
-      .prepare<[], ImageRow>('SELECT * FROM images WHERE archived_path IS NOT NULL AND rating = 0')
+      .prepare<[], ImageRow>(
+        `SELECT i.* FROM images i
+           JOIN generations g ON g.id = i.generation_id
+          WHERE i.archived_path IS NOT NULL
+            AND g.source != 'import'
+            AND NOT EXISTS (
+              SELECT 1 FROM images s
+               WHERE s.generation_id = i.generation_id AND (s.rating > 0 OR s.kept = 1)
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM favorites f
+               WHERE f.generation_id = i.generation_id
+                  OR f.image_id IN (SELECT s.id FROM images s WHERE s.generation_id = i.generation_id)
+            )`,
+      )
       .all();
   }
 
@@ -2991,6 +3012,17 @@ export class Store {
       .prepare<[string], { value: string }>('SELECT value FROM settings WHERE key = ?')
       .get(key);
     return row?.value ?? null;
+  }
+
+  /**
+   * Run `fn` as one transaction: every write in it lands, or none does.
+   *
+   * For changes that span several of the methods here and would be worse than
+   * useless half-done — a password whose archive key was never re-wrapped.
+   * Throwing out of `fn` rolls it back.
+   */
+  atomically<T>(fn: () => T): T {
+    return this.db.transaction(fn)();
   }
 
   setSecretSetting(key: string, value: string): void {

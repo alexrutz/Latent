@@ -227,20 +227,37 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
     '/api/auth/password',
     async (request, reply) => {
       const { currentPassword, newPassword } = request.body ?? {};
-      const result = ctx.auth.changePassword(currentPassword, newPassword);
+
+      /*
+       * The new hash and the re-wrapped archive key are written in one
+       * transaction. Saving the hash first and re-wrapping after used to leave,
+       * on any failure in between, an archive keyed to a password the server no
+       * longer accepts — every image unreadable for good. Re-wrapping rather
+       * than re-encrypting every file is what makes this cheap enough to do
+       * inside a transaction at all.
+       */
+      let result: ReturnType<typeof ctx.auth.changePassword>;
+      try {
+        result = ctx.store.atomically(() => {
+          const changed = ctx.auth.changePassword(currentPassword, newPassword);
+          if (!changed.ok) return changed;
+          if (!ctx.vault.rewrap(currentPassword as string, newPassword as string)) {
+            throw new ArchiveNotOpened();
+          }
+          return changed;
+        });
+      } catch (cause) {
+        if (!(cause instanceof ArchiveNotOpened)) throw cause;
+        return reply.code(409).send({
+          error:
+            'Nothing was changed: the current password does not open the image archive, so ' +
+            'it could not be re-keyed to the new one.',
+        });
+      }
       if (!result.ok) return reply.code(400).send({ error: result.error });
 
-      // Re-wrap the archive key rather than re-encrypting every file. If this
-      // ever failed the images would become unreadable, so it is not optional.
-      if (typeof currentPassword === 'string' && typeof newPassword === 'string') {
-        if (!ctx.vault.rewrap(currentPassword, newPassword)) {
-          return reply.code(500).send({
-            error: 'The password changed but the image archive could not be re-keyed.',
-          });
-        }
-        // Two small files, so they are simply rewritten under the new key.
-        ctx.stateFiles.rekey(newPassword);
-      }
+      // Two small files, so they are simply rewritten under the new key.
+      ctx.stateFiles.rekey(currentPassword as string, newPassword as string);
 
       // The session token is derived from the password hash, so the caller's
       // own cookie has just been invalidated too. Re-issue it.
@@ -314,3 +331,6 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
     return ctx.orchestrator.monitor.snapshot(Number.isFinite(since) ? since : undefined);
   });
 }
+
+/** Thrown inside the password-change transaction to roll it back. */
+class ArchiveNotOpened extends Error {}

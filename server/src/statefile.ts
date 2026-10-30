@@ -104,8 +104,9 @@ export class StateFiles {
    * the next flush catches up.
    */
   unlock(password: string): void {
-    this.salt = this.readSalt() ?? randomBytes(SALT_LENGTH);
-    this.key = scryptSync(password, this.salt, KEY_LENGTH, SCRYPT);
+    const { salt, key } = this.deriveKey(password);
+    this.salt = salt;
+    this.key = key;
     this.blocked.clear();
     this.restore();
   }
@@ -115,23 +116,59 @@ export class StateFiles {
    *
    * Unlike the image archive there is no wrapped master key to re-wrap: these
    * are two small files, so they are simply rewritten.
+   *
+   * Only the ones the current password opens, though. A file left by another
+   * install under another password is still somebody's prompt library, and
+   * this is a rewrite of what is ours, not a licence to replace what is not —
+   * so the files are read under the current password first, which is what
+   * finds the ones to leave alone, and the block survives the new key.
    */
-  rekey(password: string): void {
+  rekey(currentPassword: string, newPassword: string): void {
+    this.unlock(currentPassword);
+
     const ui = this.store.exportUiState();
     const blocks = this.store.exportPromptBlocks();
 
     this.salt = randomBytes(SALT_LENGTH);
-    this.key = scryptSync(password, this.salt, KEY_LENGTH, SCRYPT);
-    this.blocked.clear();
+    this.key = scryptSync(newPassword, this.salt, KEY_LENGTH, SCRYPT);
 
     try {
-      this.write(this.paths.ui, serialise(ui));
-      this.write(this.paths.blocks, serialise(blocks));
-      this.lastUi = serialise(ui);
-      this.lastBlocks = serialise(blocks);
+      if (this.write(this.paths.ui, serialise(ui))) this.lastUi = serialise(ui);
+      if (this.write(this.paths.blocks, serialise(blocks))) this.lastBlocks = serialise(blocks);
     } catch (cause) {
       this.log.warn({ err: cause }, 'Could not re-encrypt the settings files');
     }
+  }
+
+  /**
+   * The key for this password, and the salt it goes with.
+   *
+   * The two files normally share a salt, but they need not: one may be ours
+   * and the other left by an install with a different password. Taking the
+   * first file's salt blindly would, when that first file is the stranger,
+   * derive a key that opens neither — and then our own file is blocked too.
+   * So each salt on disk is tried, and the one whose key actually opens its
+   * file wins. At most two derivations, once per sign-in.
+   */
+  private deriveKey(password: string): { salt: Buffer; key: Buffer } {
+    const envelopes = [this.paths.ui, this.paths.blocks]
+      .map(readEnvelope)
+      .filter((envelope): envelope is Envelope => envelope !== null);
+
+    const tried = new Set<string>();
+    for (const envelope of envelopes) {
+      if (tried.has(envelope.kdf.salt)) continue;
+      tried.add(envelope.kdf.salt);
+      const salt = Buffer.from(envelope.kdf.salt, 'base64');
+      const key = scryptSync(password, salt, KEY_LENGTH, SCRYPT);
+      if (opens(envelope, key)) return { salt, key };
+    }
+
+    // Nothing on disk opens: keep the old behaviour of adopting the first salt,
+    // so a file we cannot read is blocked rather than silently orphaned.
+    const first = envelopes[0];
+    const salt = first ? Buffer.from(first.kdf.salt, 'base64') : randomBytes(SALT_LENGTH);
+    return { salt, key: scryptSync(password, salt, KEY_LENGTH, SCRYPT) };
   }
 
   /** Read the files into anything the database does not already have. */
@@ -210,15 +247,6 @@ export class StateFiles {
     }
   }
 
-  /** The salt already in use, so re-deriving the key produces the same one. */
-  private readSalt(): Buffer | null {
-    for (const path of [this.paths.ui, this.paths.blocks]) {
-      const envelope = readEnvelope(path);
-      if (envelope) return Buffer.from(envelope.kdf.salt, 'base64');
-    }
-    return null;
-  }
-
   private read<T>(path: string): T | null {
     let raw: string;
     try {
@@ -241,15 +269,7 @@ export class StateFiles {
 
     if (!this.key) return null;
     try {
-      const iv = Buffer.from(parsed.iv, 'base64');
-      const payload = Buffer.from(parsed.data, 'base64');
-      const tag = payload.subarray(payload.length - 16);
-      const body = payload.subarray(0, payload.length - 16);
-
-      const decipher = createDecipheriv('aes-256-gcm', this.key, iv);
-      decipher.setAuthTag(tag);
-      const plain = Buffer.concat([decipher.update(body), decipher.final()]);
-      return JSON.parse(plain.toString('utf8')) as T;
+      return JSON.parse(decrypt(parsed, this.key).toString('utf8')) as T;
     } catch {
       this.block(
         path,
@@ -316,6 +336,27 @@ function isEnvelope(value: unknown): value is Envelope {
     typeof candidate.data === 'string' &&
     typeof candidate.kdf?.salt === 'string'
   );
+}
+
+/** Throws when `key` is not the one the envelope was sealed with. */
+function decrypt(envelope: Envelope, key: Buffer): Buffer {
+  const iv = Buffer.from(envelope.iv, 'base64');
+  const payload = Buffer.from(envelope.data, 'base64');
+  const tag = payload.subarray(payload.length - 16);
+  const body = payload.subarray(0, payload.length - 16);
+
+  const decipher = createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(body), decipher.final()]);
+}
+
+function opens(envelope: Envelope, key: Buffer): boolean {
+  try {
+    decrypt(envelope, key);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** The header of an existing file, without needing a key to read it. */

@@ -204,3 +204,109 @@ describe('settings held as a list', () => {
     expect(subject.getSettings().fieldArrangement).toEqual(arrangement);
   });
 });
+
+/**
+ * "Remove unrated copies" deletes the archived file, which is often the only
+ * copy left once ComfyUI's output folder has been emptied. It has to spare
+ * exactly what the sweep spares, or a favourite loses its picture.
+ */
+describe('which archived copies the prune offers up', () => {
+  const dirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const store = (): Store => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-db-'));
+    dirs.push(dir);
+    return new Store(join(dir, 'test.db'));
+  };
+
+  /** One run with `count` archived pictures; returns their ids. */
+  const run = (subject: Store, id: string, count = 2): number[] => {
+    subject.insertGeneration({
+      id,
+      promptId: `prompt-${id}`,
+      workflowId: null,
+      workflowName: 'Test',
+      title: id,
+      values: {},
+      seeds: {},
+    });
+    subject.addImages(
+      `prompt-${id}`,
+      '9',
+      Array.from({ length: count }, (_, index) => ({
+        filename: `${id}-${index}.png`,
+        subfolder: '',
+        type: 'output',
+      })),
+    );
+    const ids = (subject.getGeneration(id)?.images ?? [])
+      .map((image) => image.id)
+      .filter((imageId): imageId is number => typeof imageId === 'number')
+      .sort((a, b) => a - b);
+    for (const imageId of ids) {
+      subject.setImageArchive(imageId, { path: `ab/${imageId}.bin`, bytes: 10, encrypted: false });
+    }
+    return ids;
+  };
+
+  const offered = (subject: Store): number[] =>
+    subject
+      .listUnratedArchived()
+      .map((row) => row.id)
+      .sort((a, b) => a - b);
+
+  it('offers a run nobody marked', () => {
+    const subject = store();
+    const ids = run(subject, 'plain');
+    expect(offered(subject)).toEqual(ids);
+  });
+
+  it('spares a run with a star, a keep, or a favourite anywhere in it', () => {
+    const subject = store();
+    const [rated] = run(subject, 'rated');
+    const [kept] = run(subject, 'kept');
+    const [favourite] = run(subject, 'favourite');
+    run(subject, 'run-favourite');
+    subject.setImageRating(rated!, 3);
+    subject.setImageKept(kept!, true);
+    subject.insertFavorite({
+      id: 'fav-image',
+      imageId: favourite!,
+      generationId: null,
+      workflowId: null,
+      title: '',
+      note: null,
+      values: {},
+      image: null,
+    });
+    subject.insertFavorite({
+      id: 'fav-run',
+      imageId: null,
+      generationId: 'run-favourite',
+      workflowId: null,
+      title: '',
+      note: null,
+      values: {},
+      image: null,
+    });
+    expect(offered(subject)).toEqual([]);
+  });
+
+  it('never offers an imported picture', () => {
+    const subject = store();
+    const imageId = subject.insertImportedImage({
+      generationId: 'import-1',
+      promptId: 'import-1',
+      title: 'From a folder',
+      filename: 'holiday.png',
+      subfolder: '',
+      modifiedAt: Date.now(),
+    });
+    subject.setImageArchive(imageId, { path: 'cd/holiday.bin', bytes: 10, encrypted: false });
+    expect(offered(subject)).toEqual([]);
+  });
+});

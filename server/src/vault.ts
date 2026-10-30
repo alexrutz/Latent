@@ -137,16 +137,23 @@ export class Vault {
       this.initialise(newPassword);
       return true;
     }
-    if (!this.unlock(currentPassword)) return false;
+    // A failed unlock clears the key; a refused change must not also lock the
+    // archive that was open a moment ago.
+    const before = this.masterKey;
+    if (!this.unlock(currentPassword)) {
+      this.masterKey = before;
+      return false;
+    }
     const masterKey = this.masterKey;
     if (!masterKey) return false;
 
     const salt = randomBytes(16);
-    this.store.setSecretSetting(SALT_SETTING, salt.toString('base64'));
-    this.store.setSecretSetting(
-      WRAPPED_SETTING,
-      this.seal(this.deriveKek(newPassword, salt), masterKey).toString('base64'),
-    );
+    const wrapped = this.seal(this.deriveKek(newPassword, salt), masterKey);
+    // Together or not at all: a new salt beside the old wrapper opens nothing.
+    this.store.atomically(() => {
+      this.store.setSecretSetting(SALT_SETTING, salt.toString('base64'));
+      this.store.setSecretSetting(WRAPPED_SETTING, wrapped.toString('base64'));
+    });
     return true;
   }
 

@@ -746,6 +746,7 @@ async function bootIsolated(overrides: Parameters<typeof buildApp>[0] = {}) {
   return {
     url,
     call,
+    ctx: built.ctx,
     async dispose() {
       await built.app.close();
       rmSync(dir, { recursive: true, force: true });
@@ -1066,6 +1067,51 @@ describe('a client this server did not ship', () => {
       expect((await server.call('/api/workflows', { headers: bearer })).status).toBe(401);
     } finally {
       await server.dispose();
+    }
+  }, 30_000);
+
+  /*
+   * The hash and the archive key change together or not at all. Saving the
+   * hash first and re-wrapping after left, on a failed re-wrap, an archive
+   * keyed to a password the server no longer took — every image gone.
+   */
+  it('changes nothing when the archive cannot be re-keyed', async () => {
+    const server = await bootIsolated();
+    const elsewhere = mkdtempSync(join(tmpdir(), 'latent-foreign-vault-'));
+    try {
+      await server.call('/api/auth/setup', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+      const login = await server.call('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+      const cookie = login.headers.get('set-cookie')?.split(';')[0] ?? '';
+
+      // An archive written under some other password: the state the 409 on
+      // unlock already describes, and the one a re-wrap cannot get past.
+      const foreign = new Store(join(elsewhere, 'foreign.db'));
+      new Vault(foreign).initialise('someone else');
+      for (const key of ['vault_salt', 'vault_key']) {
+        server.ctx.store.setSecretSetting(key, foreign.getSecretSetting(key)!);
+      }
+      foreign.close();
+
+      const changed = await server.call('/api/auth/password', {
+        method: 'POST',
+        cookie,
+        body: JSON.stringify({ currentPassword: 'correct horse', newPassword: 'a different one' }),
+      });
+      expect(changed.status).toBe(409);
+
+      const signIn = (password: string) =>
+        server.call('/api/auth/login', { method: 'POST', body: JSON.stringify({ password }) });
+      expect((await signIn('correct horse')).status).toBe(200);
+      expect((await signIn('a different one')).status).toBe(401);
+    } finally {
+      await server.dispose();
+      rmSync(elsewhere, { recursive: true, force: true });
     }
   }, 30_000);
 
@@ -3213,6 +3259,128 @@ describe('encrypted settings files', () => {
       expect(readFileSync(join(stateDir, 'latent-prompt-blocks.json'))).toEqual(beforeBytes);
     } finally {
       await three.instance.app.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+/**
+ * A password change rewrites the settings files under the new key — but only
+ * the ones that were ours. A file another install left under another password
+ * is somebody's prompt library; it used to be overwritten on the spot.
+ */
+describe('changing the password with a stranger\'s settings file present', () => {
+  it('re-keys our file and leaves the other one as it was', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'latent-rekey-files-'));
+    const stateDir = join(root, 'above');
+    const uiFile = join(stateDir, 'latent-settings.json');
+    const blocksFile = join(stateDir, 'latent-prompt-blocks.json');
+
+    const boot = async (dir: string, password: string) => {
+      const instance = await buildApp({
+        comfyUrl: 'http://127.0.0.1:1',
+        dbPath: join(dir, 'latent.db'),
+        dataDir: dir,
+        stateDir,
+        webDir: join(dir, 'no-web'),
+        password,
+        logLevel: 'silent',
+      });
+      await instance.app.listen({ port: 0, host: '127.0.0.1' });
+      const address = instance.app.server.address();
+      if (!address || typeof address === 'string') throw new Error('No port');
+      return { instance, url: `http://127.0.0.1:${address.port}` };
+    };
+    const signIn = async (url: string, password: string) => {
+      const response = await fetch(`${url}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password }),
+      });
+      return response.headers.get('set-cookie')?.split(';')[0] ?? '';
+    };
+
+    try {
+      // An earlier install, under its own password, leaves a prompt library.
+      const one = await boot(join(root, 'one'), 'first-install');
+      try {
+        const session = await signIn(one.url, 'first-install');
+        await fetch(`${one.url}/api/prompt-blocks`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie: session },
+          body: JSON.stringify({ name: 'Theirs', category: 'Style', text: 'keep me' }),
+        });
+        one.instance.ctx.stateFiles.flush();
+      } finally {
+        await one.instance.app.close();
+      }
+      rmSync(uiFile, { force: true });
+      const strangerBytes = readFileSync(blocksFile);
+
+      // A new install with another password writes its own settings file
+      // beside it, then changes its password. No LATENT_PASSWORD here: one set
+      // in the environment cannot be changed at all.
+      const twoDir = join(root, 'two');
+      const two = await buildApp({
+        comfyUrl: 'http://127.0.0.1:1',
+        dbPath: join(twoDir, 'latent.db'),
+        dataDir: twoDir,
+        stateDir,
+        webDir: join(twoDir, 'no-web'),
+        password: null,
+        logLevel: 'silent',
+      });
+      await two.app.listen({ port: 0, host: '127.0.0.1' });
+      const address = two.app.server.address();
+      if (!address || typeof address === 'string') throw new Error('No port');
+      const twoUrl = `http://127.0.0.1:${address.port}`;
+      try {
+        await fetch(`${twoUrl}/api/auth/setup`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ password: 'second-install' }),
+        });
+        const session = await signIn(twoUrl, 'second-install');
+        // Any change to the settings, so there is a file of ours to write.
+        await fetch(`${twoUrl}/api/settings`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json', cookie: session },
+          body: JSON.stringify({ privacy: { cover: false } }),
+        });
+        two.ctx.stateFiles.flush();
+        const oursBefore = readFileSync(uiFile, 'utf8');
+
+        const changed = await fetch(`${twoUrl}/api/auth/password`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie: session },
+          body: JSON.stringify({
+            currentPassword: 'second-install',
+            newPassword: 'second-install-renamed',
+          }),
+        });
+        expect(changed.status).toBe(200);
+
+        expect(readFileSync(blocksFile)).toEqual(strangerBytes);
+        const oursAfter = readFileSync(uiFile, 'utf8');
+        expect(oursAfter).not.toBe(oursBefore);
+        expect(JSON.parse(oursAfter).latent).toBe('encrypted');
+      } finally {
+        await two.app.close();
+      }
+
+      // And the stranger's library still opens under the password it was
+      // written with.
+      const three = await boot(join(root, 'three'), 'first-install');
+      try {
+        const session = await signIn(three.url, 'first-install');
+        const blocks = await json<{ name: string }[]>(
+          fetch(`${three.url}/api/prompt-blocks`, { headers: { cookie: session } }),
+        );
+        expect(blocks.map((block) => block.name)).toContain('Theirs');
+      } finally {
+        await three.instance.app.close();
+      }
+    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   }, 60_000);
