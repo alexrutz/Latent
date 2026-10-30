@@ -2883,6 +2883,11 @@ describe('losing the connection with work outstanding', () => {
         },
       });
 
+    // What a study or a waiting chat listens for. Recovering a run used to set
+    // its status without telling them, so they waited on it forever.
+    const settled: [string, boolean][] = [];
+    built.ctx.orchestrator.onSettled((generationId, ok) => settled.push([generationId, ok]));
+
     try {
       const workflow = await json<WorkflowDetail>(
         call('/api/workflows', {
@@ -2926,6 +2931,7 @@ describe('losing the connection with work outstanding', () => {
 
         const gallery = await json<GalleryPage>(call('/api/gallery?limit=50'));
         expect(gallery.items.some((item) => item.id === id)).toBe(false);
+        expect(settled).toContainEqual([id, false]);
       } finally {
         await replacement.close();
       }

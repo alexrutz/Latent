@@ -977,22 +977,23 @@ export class Orchestrator {
           for (const [nodeId, refs] of images) this.store.addImages(record.promptId, nodeId, refs);
         }
         const failed = entry.status?.status_str === 'error';
-        this.store.setGenerationStatus(
+        /*
+         * Through `markFinished`, like any other ending.
+         *
+         * Setting the status directly recorded it and told nobody else: a
+         * parameter study waiting for this shot to queue its next one, and a
+         * chat waiting on the picture it asked for, both waited forever for a
+         * run that had long since finished while the connection was down.
+         */
+        this.markFinished(
           record.promptId,
           failed ? 'failed' : 'completed',
           failed ? 'ComfyUI reported an error while this app was disconnected.' : null,
         );
         this.log.info(`Recovered ${record.promptId} from the ComfyUI history`);
       } else {
-        this.store.setGenerationStatus(
-          record.promptId,
-          'cancelled',
-          'Lost when the connection to ComfyUI dropped.',
-        );
+        this.markFinished(record.promptId, 'cancelled', 'Lost when the connection to ComfyUI dropped.');
       }
-
-      this.emitGeneration(record.promptId);
-      this.tracked.delete(record.promptId);
     }
 
     // The badge counts what ComfyUI says is waiting, which after all that is
