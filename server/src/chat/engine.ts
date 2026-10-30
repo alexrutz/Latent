@@ -648,8 +648,19 @@ class Runner {
       },
     });
 
-    this.turn = null;
-    this.partial = null;
+    /*
+     * Cut off to make way for something else — a new message, or Stop.
+     *
+     * Whoever aborted it has already set the state it wanted, and this turn
+     * has no say in what happens next. It used to carry on regardless, see
+     * `stopped`, and set the conversation to idle over the top of what the
+     * new message had just asked for, so that message was never answered.
+     */
+    const superseded = this.turn !== controller;
+    if (!superseded) {
+      this.turn = null;
+      this.partial = null;
+    }
     /*
      * The process went away while the model was answering.
      *
@@ -660,6 +671,7 @@ class Runner {
      */
     if (this.closed) return false;
     if (result.messageId) this.emit({ type: 'message', messageId: result.messageId });
+    if (superseded) return false;
 
     if (result.stopped) {
       this.setRun({ ...IDLE_RUN, mode: 'manual' });

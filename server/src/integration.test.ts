@@ -4970,6 +4970,56 @@ describe('chat', () => {
     return id;
   }
 
+  /*
+   * Saying something while the last reply is still coming.
+   *
+   * The new message cuts the old turn off and asks for a reply to itself. The
+   * old turn then came back "stopped" and set the conversation to idle on its
+   * way out — over the top of the state the new message had just set — so
+   * the second thing said was never answered.
+   */
+  it('answers what was said while the last reply was still streaming', async () => {
+    const llama = createMockLlama();
+    const url = await llama.listen(0);
+
+    try {
+      await useLlama(url);
+      const chat = await json<{ id: string }>(
+        api('/api/chat/conversations', { method: 'POST' }),
+      );
+
+      llama.script(
+        { content: 'Let me think about that for a long', holdMs: 3_000 },
+        { content: 'Second answer.' },
+      );
+
+      await api(`/api/chat/conversations/${chat.id}/say`, {
+        method: 'POST',
+        body: JSON.stringify({ content: 'first' }),
+      });
+      // Until the first reply is under way, so the second really cuts it off.
+      await waitFor(async () => (llama.requests.length >= 1 ? true : null), 5_000);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      await api(`/api/chat/conversations/${chat.id}/say`, {
+        method: 'POST',
+        body: JSON.stringify({ content: 'second' }),
+      });
+
+      await waitFor(async () => (llama.requests.length >= 2 ? true : null), 10_000);
+      const run = await settled(chat.id);
+      expect(run.phase).toBe('idle');
+
+      const stored = await json<{ messages: ChatMessage[] }>(
+        api(`/api/chat/conversations/${chat.id}`),
+      );
+      expect(stored.messages.at(-1)?.role).toBe('assistant');
+      expect(stored.messages.at(-1)?.content).toBe('Second answer.');
+    } finally {
+      await llama.close();
+    }
+  }, 30_000);
+
   it('streams a reply, keeps the reasoning apart, and stores both', async () => {
     const llama = createMockLlama();
     const url = await llama.listen(0);

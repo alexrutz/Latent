@@ -20,6 +20,13 @@ export interface ScriptedReply {
   /** Wrapped in Gemma 4's thought channel, which leaks into content routinely. */
   channelThinking?: string;
   toolCall?: { name: string; arguments: unknown };
+  /**
+   * Wait this long after the content before finishing, as a slow model does.
+   *
+   * What makes "say something while it is still answering" reproducible: the
+   * reply is half out and the stream still open for that long.
+   */
+  holdMs?: number;
 }
 
 export function createMockLlama(
@@ -86,6 +93,11 @@ export function createMockLlama(
     }
     if (script.content) {
       for (const chunk of split(script.content)) frame({ content: chunk });
+    }
+    if (script.holdMs) {
+      await new Promise((resolve) => setTimeout(resolve, script.holdMs));
+      // Cut off by the client in the meantime: nothing left to write to.
+      if (reply.raw.destroyed || reply.raw.writableEnded) return;
     }
     if (script.toolCall) {
       // Split across deltas the way a real server sends them: the name first,
