@@ -16,6 +16,14 @@ struct LatentClient {
     let baseURL: URL
     let token: String?
 
+    /// Called when the server turns the token down part way through a session.
+    ///
+    /// A password changed on the web app invalidates every token at once, and
+    /// each screen used to show "the password was not accepted" on its own
+    /// while staying signed in — with the live socket retrying a handshake that
+    /// could only fail. `Session` sets this to sign out, once, for all of them.
+    var onUnauthorised: (@Sendable () -> Void)?
+
     /// One session for the whole app, not one per client.
     ///
     /// A `URLSession` owns a connection pool, and building a new one every time
@@ -39,7 +47,9 @@ struct LatentClient {
 
     /// The same client, signed in.
     func authenticated(with token: String) -> LatentClient {
-        LatentClient(baseURL: baseURL, token: token)
+        var client = LatentClient(baseURL: baseURL, token: token)
+        client.onUnauthorised = onUnauthorised
+        return client
     }
 
     // MARK: - Errors
@@ -94,7 +104,13 @@ struct LatentClient {
         var base = components.path
         while base.hasSuffix("/") { base.removeLast() }
         components.path = base + (path.hasPrefix("/") ? path : "/" + path)
-        if !query.isEmpty { components.queryItems = query }
+        if !query.isEmpty {
+            components.queryItems = query
+            // `URLComponents` leaves `+` alone in a query, and a server reads a
+            // `+` there as a space — so `a+b.png` was asked for as `a b.png`.
+            components.percentEncodedQuery = components.percentEncodedQuery?
+                .replacingOccurrences(of: "+", with: "%2B")
+        }
         return components.url ?? baseURL
     }
 
@@ -123,7 +139,23 @@ struct LatentClient {
         }
 
         guard let http = response as? HTTPURLResponse else { return data }
-        if http.statusCode == 401 { throw Failure.unauthorised }
+        if http.statusCode == 401 {
+            // Only a client that was signed in has anything to expire.
+            if token != nil { onUnauthorised?() }
+            throw Failure.unauthorised
+        }
+        /*
+         * A rating or a keep that stuck but was not archived answers 207 with a
+         * `warning`. It was counted as plain success, so the phone said nothing
+         * while the server said the picture would not survive the instance.
+         * It is the same case as the 423 below, and the screens already say it.
+         */
+        if http.statusCode == 207 {
+            struct Warning: Decodable { let warning: String? }
+            if let warning = (try? JSONDecoder().decode(Warning.self, from: data))?.warning {
+                throw Failure.savedButNotArchived(warning)
+            }
+        }
         guard (200..<300).contains(http.statusCode) else {
             // The server puts a readable sentence in `error` on every failure
             // path it controls; anything else is a bare status code.
@@ -148,7 +180,16 @@ struct LatentClient {
     /// thing that goes wrong here, and "that is not a Latent server" is a far
     /// better answer than a password box that rejects every password.
     func discover() async throws -> AppInfo {
-        let info = try await get("/api/app", as: AppInfo.self)
+        let info: AppInfo
+        do {
+            info = try await get("/api/app", as: AppInfo.self)
+        } catch is DecodingError {
+            // Something answered with a page that is not ours — a router's
+            // admin screen, another web server. That is what this is for.
+            throw Failure.notLatent
+        } catch Failure.server(let status, _) where status == 404 {
+            throw Failure.notLatent
+        }
         guard info.app == "latent" else { throw Failure.notLatent }
         guard info.isCompatible else {
             throw Failure.tooOld(server: info.api.version, needs: Self.apiVersion)
@@ -206,21 +247,27 @@ struct LatentClient {
         return url("/api/view", query: query)
     }
 
+    /// Which picture a rating or a keep is about, as both routes take it.
+    private struct ImageRef: Encodable {
+        let id: Int?
+        let filename: String
+        let subfolder: String
+        let type: String
+
+        init(_ image: ComfyImage) {
+            id = image.id
+            filename = image.filename
+            subfolder = image.subfolder
+            type = image.type
+        }
+    }
+
     func rate(_ image: ComfyImage, in generationId: String, stars: Int) async throws {
         struct Body: Encodable {
-            let image: Ref
+            let image: ImageRef
             let rating: Int
-            struct Ref: Encodable {
-                let id: Int?
-                let filename: String
-                let subfolder: String
-                let type: String
-            }
         }
-        let body = Body(
-            image: .init(id: image.id, filename: image.filename, subfolder: image.subfolder, type: image.type),
-            rating: stars
-        )
+        let body = Body(image: ImageRef(image), rating: stars)
         _ = try await send(
             request("/api/gallery/\(generationId)/rating", method: "PUT", body: try JSONEncoder().encode(body))
         )
@@ -229,19 +276,10 @@ struct LatentClient {
     /// Keep a picture without passing judgement on it — see the server's route.
     func keep(_ image: ComfyImage, in generationId: String, kept: Bool) async throws {
         struct Body: Encodable {
-            let image: Ref
+            let image: ImageRef
             let kept: Bool
-            struct Ref: Encodable {
-                let id: Int?
-                let filename: String
-                let subfolder: String
-                let type: String
-            }
         }
-        let body = Body(
-            image: .init(id: image.id, filename: image.filename, subfolder: image.subfolder, type: image.type),
-            kept: kept
-        )
+        let body = Body(image: ImageRef(image), kept: kept)
         _ = try await send(
             request("/api/gallery/\(generationId)/keep", method: "PUT", body: try JSONEncoder().encode(body))
         )

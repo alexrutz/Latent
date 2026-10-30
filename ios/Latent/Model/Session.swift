@@ -60,8 +60,15 @@ final class Session {
              * that would mean typing the password again every time — for a
              * server that was never in doubt.
              */
+            /*
+             * So the stored token is kept *and used*: signed in, with the
+             * screens saying the server cannot be reached and the live socket
+             * retrying until it can. Showing the password screen instead threw
+             * the token away in practice — nothing retried with it, and the
+             * only way past was typing the password again.
+             */
+            enter(client)
             problem = error.localizedDescription
-            state = .signedOut
         }
     }
 
@@ -106,9 +113,21 @@ final class Session {
     }
 
     private func enter(_ client: LatentClient) {
+        var client = client
+        // A 401 from any screen, later, signs out everywhere at once.
+        client.onUnauthorised = { [weak self] in
+            Task { @MainActor in self?.expired() }
+        }
         state = .signedIn(client)
         problem = nil
         live.connect(client)
+    }
+
+    /// The token stopped working — the password was changed somewhere else.
+    private func expired() {
+        guard client != nil else { return }
+        signOut()
+        problem = "Signed out: the password was changed, so sign in again with the new one."
     }
 
     // MARK: - Addresses

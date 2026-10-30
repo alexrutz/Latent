@@ -170,47 +170,39 @@ struct LiveState: Decodable {
     let lastError: String?
 }
 
-/// The `{ "data": … }` around every event's payload.
-///
-/// At file scope because Swift will not have a type declared inside a generic
-/// function — it was inside `payload<T>` below, and the app did not compile.
-private struct EventEnvelope<U: Decodable>: Decodable {
-    let data: U
-}
-
 /// A frame off `/api/ws`.
 ///
-/// Decoded by hand rather than as an enum with a synthesised initialiser: the
-/// server sends a tagged union, and the payload's type depends on the tag,
-/// which is exactly the shape `Codable` will not derive for you.
-enum ServerEvent {
+/// The server sends a tagged union, and the payload's type depends on the tag,
+/// which is exactly the shape `Codable` will not derive for you — so the
+/// decoding is written out. Once per frame: it used to parse every frame twice,
+/// once for the tag and again for the payload.
+enum ServerEvent: Decodable {
     case state(LiveState)
     case queue(QueueState)
     case generation(GenerationRecord)
 
+    private enum Keys: String, CodingKey { case type, data }
+    private struct Unknown: Error {}
+
     init?(json data: Data) {
-        struct Tag: Decodable { let type: String }
-        guard let tag = try? JSONDecoder().decode(Tag.self, from: data) else { return nil }
+        guard let event = try? JSONDecoder().decode(ServerEvent.self, from: data) else { return nil }
+        self = event
+    }
 
-        func payload<T: Decodable>(_ type: T.Type) -> T? {
-            try? JSONDecoder().decode(EventEnvelope<T>.self, from: data).data
-        }
-
-        switch tag.type {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: Keys.self)
+        switch try container.decode(String.self, forKey: .type) {
         // `snapshot` is the state a client is sent the moment it connects, and
         // `state` is every change after it. Same payload, same handling: what
         // matters is what is true now.
         case "snapshot", "state":
-            guard let value = payload(LiveState.self) else { return nil }
-            self = .state(value)
+            self = .state(try container.decode(LiveState.self, forKey: .data))
         case "queue":
-            guard let value = payload(QueueState.self) else { return nil }
-            self = .queue(value)
+            self = .queue(try container.decode(QueueState.self, forKey: .data))
         case "generation":
-            guard let value = payload(GenerationRecord.self) else { return nil }
-            self = .generation(value)
+            self = .generation(try container.decode(GenerationRecord.self, forKey: .data))
         default:
-            return nil
+            throw Unknown()
         }
     }
 }

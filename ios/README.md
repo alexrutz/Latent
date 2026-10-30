@@ -32,6 +32,24 @@ The project uses a **synchronized folder group**, so `Latent/` is picked up
 whole and adding a file is adding a file — there is no list in the project to
 keep in step. That needs Xcode 16 or later.
 
+## Known issues in the screens
+
+Found by review, and left for the first build because the screens cannot be
+compiled anywhere but on a Mac — changing SwiftUI blind would trade a known
+bug for an unknown compile error.
+
+- **Gallery** reloads page one on every `generation` event and every time it
+  appears, so a scrolled-down list jumps back to the top and loses the pages it
+  had; overlapping reloads can also finish out of order.
+- **Generate** keeps showing the previous workflow while the next one loads,
+  with Generate still enabled, so a quick tap queues the old one; and a
+  cancelled load reports itself as "could not reach that address".
+- **Pictures** — `RemoteImage` reads every file into memory and decodes it as
+  an image, so videos and sounds show a warning triangle (and a whole video is
+  downloaded to fail); it also builds its own request outside `LatentClient`.
+- **Viewer** rolls a failed rating or keep back from the snapshot taken at the
+  tap, which also undoes any change made since.
+
 ## What it does
 
 | Screen | |

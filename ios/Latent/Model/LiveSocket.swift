@@ -47,6 +47,8 @@ final class LiveSocket {
         listener = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        state = nil
+        queue = nil
     }
 
     /// One connection, from open to close. Returns `true` if it should be retried.
@@ -69,6 +71,10 @@ final class LiveSocket {
                 socket.cancel(with: .abnormalClosure, reason: nil)
                 if task === socket { task = nil }
                 state = nil
+                // The queue too. The Queue tab prefers this over its own fetch,
+                // so a list kept from before the drop hid every newer one — a
+                // cancelled job went on looking as if it were still waiting.
+                queue = nil
                 return true
             }
         }
