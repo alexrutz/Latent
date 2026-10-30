@@ -5,6 +5,7 @@ import type { BrowseListing, Favorite } from '@latent/shared';
 
 import { api, browseThumbUrl, thumbnailUrl } from '../api/client';
 import { useFavorites } from '../api/queries';
+import { BatchBar } from './BatchBar';
 import { ErrorNote, Sheet, Spinner, cn } from './ui';
 
 /**
@@ -462,41 +463,20 @@ export function FolderImagePicker({
         )}
 
         {/*
-          The way out of a batch, and only once there is one.
-
-          Nothing about this sheet changes until the first box is ticked — the
-          bar appears then, and it is the only thing that makes the sheet
-          behave differently from the one-picture sheet it has always been.
-          That is the whole design: picking one picture is tapping one picture,
-          and a batch is the thing you have to opt into a tick at a time.
-
-          Sticky to the bottom of the sheet's own scroll, because ticking the
-          twelfth picture happens a long way down a folder and walking back up
-          to a button at the top would be the point at which somebody gives up.
+          The way out of a batch. Nothing about this sheet changes until the
+          first box is ticked: picking one picture is tapping one picture, and
+          a batch is the thing you opt into a tick at a time. See `BatchBar`.
         */}
-        {multiple && checked.length > 0 && (
-          <div className="sticky bottom-0 -mx-1 flex items-center gap-2 border-t border-line bg-surface/95 px-1 py-2 backdrop-blur">
-            <span className="min-w-0 flex-1 text-xs text-muted">
-              {checked.length} ticked — one per run, then back to the first.
-            </span>
-            <button
-              type="button"
-              onClick={() => setChecked([])}
-              className="shrink-0 px-2 py-1.5 text-xs text-muted"
-            >
-              Clear
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                onBatch?.(checked);
-                onClose();
-              }}
-              className="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white"
-            >
-              Use {checked.length}
-            </button>
-          </div>
+        {multiple && (
+          <BatchBar
+            checked={checked}
+            batch={batch}
+            onChange={(list) => {
+              setChecked(list);
+              onBatch?.(list);
+            }}
+            onClose={onClose}
+          />
         )}
       </div>
     </Sheet>

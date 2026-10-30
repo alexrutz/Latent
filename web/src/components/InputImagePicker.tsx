@@ -4,7 +4,59 @@ import { useEffect, useMemo, useState } from 'react';
 import type { InputImage } from '@latent/shared';
 
 import { api, inputImageUrl } from '../api/client';
+import { BatchBar } from './BatchBar';
 import { Button, cn, ErrorNote, Sheet, Spinner } from './ui';
+
+/**
+ * Which name each picture was copied into ComfyUI under, by its path here.
+ *
+ * A slot's batch holds the copies' names — `latent_<hash>_<name>`, taken from
+ * the bytes — and nothing in a name says which file it came from. This dialog
+ * kept that knowledge in its own state, which went when the sheet closed, so
+ * reopening it showed every box empty while the slot was still working
+ * through the list. Kept here instead, for the tab, and in the browser's
+ * storage, so it outlives a reload; the cap keeps that small.
+ */
+const COPIES_KEY = 'latent-input-copies';
+const COPIES_KEPT = 500;
+const copies = new Map<string, string>(readCopies());
+
+function readCopies(): [string, string][] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(COPIES_KEY) ?? '[]');
+    return Array.isArray(parsed)
+      ? parsed.filter(
+          (entry): entry is [string, string] =>
+            Array.isArray(entry) && typeof entry[0] === 'string' && typeof entry[1] === 'string',
+        )
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberCopy(path: string, name: string): void {
+  copies.delete(path);
+  copies.set(path, name);
+  while (copies.size > COPIES_KEPT) copies.delete(copies.keys().next().value!);
+  try {
+    localStorage.setItem(COPIES_KEY, JSON.stringify([...copies]));
+  } catch {
+    // Private mode, or full: the tab still remembers.
+  }
+}
+
+/** Whether `entry` is a copy the server named `latent_<12 hex>_<key>`. */
+function isCopyNamed(entry: string, key: string): boolean {
+  const base = entry.slice(entry.lastIndexOf('/') + 1);
+  const match = /^latent_[0-9a-f]{12}_(.+)$/.exec(base);
+  return match?.[1] === key;
+}
+
+/** The part of a copy's name that came from the original, as the server writes it. */
+function safeName(original: string): string {
+  return (original || 'input.png').replace(/[^\w.-]+/g, '_').slice(-80);
+}
 
 /**
  * Choose a picture from the folder of inputs on the Latent machine.
@@ -74,13 +126,8 @@ export function InputImagePicker({
   const multiple = Boolean(onBatch);
   const ticked = useMemo(() => new Set(checked), [checked]);
 
-  /**
-   * Which files have been copied into ComfyUI already, by their source path.
-   *
-   * Declared before the function that reads it, which it has to be to read
-   * sensibly even though the closure would have worked either way.
-   */
-  const [copied, setCopied] = useState<Record<string, string>>({});
+  /** Bumped when a copy is remembered, so the boxes redraw. */
+  const [, setCopiedCount] = useState(copies.size);
 
   /**
    * Ticking holds the *uploaded* name, not the path in the input folder.
@@ -91,7 +138,7 @@ export function InputImagePicker({
    * picking one does, and remembers what came back.
    */
   const tick = async (file: InputImage) => {
-    const known = copied[file.path];
+    const known = copyOf(file);
     if (known) {
       setChecked((current) =>
         current.includes(known) ? current.filter((entry) => entry !== known) : [...current, known],
@@ -104,7 +151,8 @@ export function InputImagePicker({
     try {
       const result = await api.useInputImage(file.path);
       const name = result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
-      setCopied((current) => ({ ...current, [file.path]: name }));
+      rememberCopy(file.path, name);
+      setCopiedCount(copies.size);
       setChecked((current) => (current.includes(name) ? current : [...current, name]));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not use that image');
@@ -136,6 +184,31 @@ export function InputImagePicker({
         file.path.startsWith(prefix) && !file.path.slice(prefix.length).includes('/'),
     );
   }, [filter, folder, scan.data]);
+
+  /*
+   * The copy a file stands for in the batch, when it is known.
+   *
+   * Remembered when this browser made the copy. Otherwise read off the name:
+   * a copy ends in the original's name, which identifies the file when it is
+   * the only one in the folder called that — and only then, because ticking
+   * the wrong one of two `portrait.png`s would be worse than ticking neither.
+   */
+  const byName = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const file of scan.data?.files ?? []) {
+      const key = safeName(file.name);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }, [scan.data]);
+
+  const copyOf = (file: InputImage): string | undefined => {
+    const remembered = copies.get(file.path);
+    if (remembered) return remembered;
+    const key = safeName(file.name);
+    if (byName.get(key) !== 1) return undefined;
+    return checked.find((entry) => isCopyNamed(entry, key));
+  };
 
   /** Immediate subfolders of the open one, with how much is under each. */
   const folders = useMemo(() => {
@@ -253,7 +326,9 @@ export function InputImagePicker({
 
             <ul className="grid grid-cols-3 gap-2">
               {files.map((file: InputImage) => (
-                <li key={file.path} className="space-y-1">
+                // Positioned, so the tick box sits on this tile and not on the
+                // corner of whichever ancestor happened to be.
+                <li key={file.path} className="relative space-y-1">
                   <button
                     type="button"
                     disabled={busy !== null}
@@ -291,13 +366,13 @@ export function InputImagePicker({
                     <button
                       type="button"
                       role="checkbox"
-                      aria-checked={ticked.has(copied[file.path] ?? '')}
+                      aria-checked={ticked.has(copyOf(file) ?? '')}
                       aria-label={`Add ${file.name} to the batch`}
                       disabled={busy !== null}
                       onClick={() => void tick(file)}
                       className={cn(
                         'absolute top-1 right-1 grid size-6 place-items-center rounded-md border text-xs leading-none',
-                        ticked.has(copied[file.path] ?? '')
+                        ticked.has(copyOf(file) ?? '')
                           ? 'border-accent bg-accent text-white'
                           : 'border-line bg-ink/70 text-transparent',
                       )}
@@ -337,33 +412,16 @@ export function InputImagePicker({
           </>
         )}
 
-        {/*
-          The way out of a batch, and only once there is one. Nothing about this
-          sheet changes until the first box is ticked.
-        */}
-        {multiple && checked.length > 0 && (
-          <div className="sticky bottom-0 -mx-1 flex items-center gap-2 border-t border-line bg-surface/95 px-1 py-2 backdrop-blur">
-            <span className="min-w-0 flex-1 text-xs text-muted">
-              {checked.length} ticked — one per run, then back to the first.
-            </span>
-            <button
-              type="button"
-              onClick={() => setChecked([])}
-              className="shrink-0 px-2 py-1.5 text-xs text-muted"
-            >
-              Clear
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                onBatch?.(checked);
-                onClose();
-              }}
-              className="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white"
-            >
-              Use {checked.length}
-            </button>
-          </div>
+        {multiple && (
+          <BatchBar
+            checked={checked}
+            batch={batch}
+            onChange={(list) => {
+              setChecked(list);
+              onBatch?.(list);
+            }}
+            onClose={onClose}
+          />
         )}
 
         <div className="border-t border-line pt-3">

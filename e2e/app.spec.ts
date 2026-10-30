@@ -1819,6 +1819,74 @@ test.describe('picking inputs and straightening them', () => {
     expect(fullSize).toHaveLength(0);
   });
 
+  /*
+   * The ticks are the batch, seen from the sheet.
+   *
+   * Three things went wrong here at once: the box was laid over the corner of
+   * the grid rather than its own picture, reopening the sheet showed every box
+   * empty while the slot was still working through the list, and Clear only
+   * unticked the boxes — which hid the bar, so nothing confirmed it and the
+   * list stayed as it was.
+   */
+  test('ticks a batch from the input folder, shows it again, and clears it', async ({ page }) => {
+    const root = seedInputFolder();
+    writeFileSync(join(root, 'lighthouse.png'), renderPlaceholder(700, 700, 'lighthouse'));
+    await withApi(async (ctx) => {
+      await ctx.patch('/api/settings', { data: { inputRoot: root } });
+      await ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } });
+    });
+    await open(page, '/');
+
+    const sheet = page.getByRole('dialog', { name: 'From the input folder' });
+    const box = (name: string) => sheet.getByRole('checkbox', { name: `Add ${name} to the batch` });
+    const openSheet = async () => {
+      await page.getByRole('button', { name: 'From folder' }).click();
+      await expect(sheet.getByRole('img', { name: 'harbour.png' })).toBeVisible();
+    };
+
+    await openSheet();
+
+    // On its own picture: the box's centre is inside that tile.
+    const [tile, tick] = await Promise.all([
+      sheet.getByRole('img', { name: 'lighthouse.png' }).boundingBox(),
+      box('lighthouse.png').boundingBox(),
+    ]);
+    const centre = { x: tick!.x + tick!.width / 2, y: tick!.y + tick!.height / 2 };
+    expect(centre.x).toBeGreaterThan(tile!.x);
+    expect(centre.x).toBeLessThan(tile!.x + tile!.width);
+    expect(centre.y).toBeGreaterThan(tile!.y);
+    expect(centre.y).toBeLessThan(tile!.y + tile!.height);
+
+    await box('harbour.png').click();
+    await expect(box('harbour.png')).toHaveAttribute('aria-checked', 'true');
+    await box('lighthouse.png').click();
+    await expect(box('lighthouse.png')).toHaveAttribute('aria-checked', 'true');
+    await sheet.getByRole('button', { name: 'Use 2' }).click();
+    await expect(sheet).toBeHidden();
+    const strip = page.getByTestId('batch-strip');
+    await expect(strip.getByText('2 pictures, one per run')).toBeVisible();
+
+    // Reopened, the list is still ticked…
+    await openSheet();
+    await expect(box('harbour.png')).toHaveAttribute('aria-checked', 'true');
+    await expect(box('lighthouse.png')).toHaveAttribute('aria-checked', 'true');
+    await sheet.getByRole('button', { name: 'Done' }).click();
+    await expect(sheet).toBeHidden();
+
+    // …and after a reload in a browser that never made the copies, read off
+    // the copies' names, which end in the originals'.
+    await page.evaluate(() => localStorage.removeItem('latent-input-copies'));
+    await page.reload();
+    await openSheet();
+    await expect(box('harbour.png')).toHaveAttribute('aria-checked', 'true');
+    await expect(box('lighthouse.png')).toHaveAttribute('aria-checked', 'true');
+
+    // Clear ends the batch there and then.
+    await sheet.getByRole('button', { name: 'Clear' }).click();
+    await expect(box('harbour.png')).toHaveAttribute('aria-checked', 'false');
+    await expect(strip).toHaveCount(0);
+  });
+
   /** Editing is the opt-in path: only then are the full bytes worth fetching. */
   test('edits a folder picture before using it', async ({ page }) => {
     const root = seedInputFolder();
