@@ -128,6 +128,15 @@ export function uiToApiWorkflow(ui: UiWorkflow, objectInfo: ObjectInfo): ApiWork
       const link = links.get(input.link);
       if (!link) continue;
       const source = resolve(link.origin, link.slot);
+      /*
+       * A primitive node is not a connection in the API format.
+       *
+       * It is the editor's way of typing one value into other nodes' widgets,
+       * and it writes that value into each of them, so the widget's own entry
+       * is the value. Keeping the link pointed it at a node this conversion
+       * leaves out, and ComfyUI refused the prompt over a node id nobody had.
+       */
+      if (byId.get(source.origin)?.type === 'PrimitiveNode') continue;
       inputs[input.name] = [String(source.origin), source.slot];
       connected.add(input.name);
     }
@@ -170,9 +179,17 @@ export function uiToApiWorkflow(ui: UiWorkflow, objectInfo: ObjectInfo): ApiWork
  *
  * The editor stores widget values as a bare array in input order, so the only
  * way to know that `20` is `steps` is to know what came before it. Two things
- * make that walk non-obvious: an input that was dragged out into a socket is
- * absent from the array, and a seed contributes *two* entries because ComfyUI
- * puts its "after generate" control next to it.
+ * make that walk non-obvious: a seed contributes *two* entries because ComfyUI
+ * puts its "after generate" control next to it, and a widget that was
+ * connected to another node still has its entry.
+ *
+ * That second one used to be read the other way round — a connected widget
+ * taken to be missing from the list — which shifted every value after it onto
+ * the wrong input: `cfg` got the steps, the sampler got the cfg. The editor
+ * keeps a connected widget in its widget list and saves it like any other
+ * (only `serialize: false` leaves one out). A file written the other way is
+ * still read correctly: the walk that accounts for the list exactly is the
+ * one used, and when neither does, the editor's own layout wins.
  */
 function assignWidgets(
   node: UiNode,
@@ -191,15 +208,39 @@ function assignWidgets(
   }
   if (!Array.isArray(values)) return;
 
-  let index = 0;
-  const specs = {
+  const specs = Object.entries({
     ...(definition.input?.required ?? {}),
     ...(definition.input?.optional ?? {}),
-  };
+  }).filter(([, spec]) => isWidgetInput(spec));
 
-  for (const [name, spec] of Object.entries(specs)) {
-    if (!isWidgetInput(spec)) continue;
-    if (connected.has(name)) continue;
+  const withConnected = walkWidgets(specs, values, connected, true);
+  const without = walkWidgets(specs, values, connected, false);
+  const fits = (reading: { consumed: number; short: number }) =>
+    reading.consumed === values.length && reading.short === 0;
+  const chosen = !fits(withConnected) && fits(without) ? without : withConnected;
+  Object.assign(inputs, chosen.assigned);
+}
+
+/**
+ * One reading of the positional list.
+ *
+ * `consumed` is how much of it that reading used and `short` how many inputs
+ * it ran out before; a reading fits when it uses all of it and runs out of
+ * nothing.
+ */
+function walkWidgets(
+  specs: [string, unknown][],
+  values: unknown[],
+  connected: Set<string>,
+  connectedHaveEntries: boolean,
+): { assigned: Record<string, WidgetValue>; consumed: number; short: number } {
+  const assigned: Record<string, WidgetValue> = {};
+  let index = 0;
+  let short = 0;
+
+  for (const [name, spec] of specs) {
+    const linked = connected.has(name);
+    if (linked && !connectedHaveEntries) continue;
 
     /*
      * The positional list can be shorter than the node's declared widgets.
@@ -213,17 +254,21 @@ function assignWidgets(
      * a workflow that cannot run at all.
      */
     if (index >= values.length) {
+      short += 1;
       const fallback = declaredDefault(spec);
-      if (fallback !== undefined) inputs[name] = fallback;
+      if (fallback !== undefined && !linked) assigned[name] = fallback;
       continue;
     }
 
     const value = values[index];
     index += 1;
-    if (isWidgetValue(value)) inputs[name] = value;
-    else {
-      const fallback = declaredDefault(spec);
-      if (fallback !== undefined) inputs[name] = fallback;
+    // A connected widget's entry is consumed, not used: the link supplies it.
+    if (!linked) {
+      if (isWidgetValue(value)) assigned[name] = value;
+      else {
+        const fallback = declaredDefault(spec);
+        if (fallback !== undefined) assigned[name] = fallback;
+      }
     }
 
     // The control that follows a seed: consume it so the next widget lines up.
@@ -233,6 +278,8 @@ function assignWidgets(
       index += 1;
     }
   }
+
+  return { assigned, consumed: index, short };
 }
 
 /**
@@ -269,6 +316,8 @@ function declaredDefault(spec: unknown): WidgetValue | undefined {
 function isWidgetInput(spec: unknown): boolean {
   if (!Array.isArray(spec)) return false;
   const type = spec[0];
+  // Declared as a socket only: it never had a widget, so it has no entry.
+  if ((spec[1] as Record<string, unknown> | undefined)?.forceInput === true) return false;
   if (Array.isArray(type)) return true;
   return type === 'INT' || type === 'FLOAT' || type === 'STRING' || type === 'BOOLEAN';
 }

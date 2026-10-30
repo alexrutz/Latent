@@ -35,7 +35,8 @@ describe('uiToApiWorkflow', () => {
   it('keeps a widget that was dragged out into a socket as a connection', () => {
     const dragged: UiWorkflow = JSON.parse(JSON.stringify(ui));
     const sampler = dragged.nodes.find((node) => node.id === 3)!;
-    // `steps` promoted to an input, so it is missing from the positional list.
+    // `steps` promoted to an input, and missing from the positional list — not
+    // what the editor writes, but a file written that way still reads right.
     sampler.inputs!.push({ name: 'steps', type: 'INT', link: 20, widget: { name: 'steps' } });
     sampler.widgets_values = [156680208700286, 'randomize', 8, 'euler', 'normal', 1];
     dragged.links!.push([20, 5, 0, 3, 4, 'INT']);
@@ -45,6 +46,48 @@ describe('uiToApiWorkflow', () => {
     // Everything after it still lines up.
     expect(converted?.inputs.cfg).toBe(8);
     expect(converted?.inputs.sampler_name).toBe('euler');
+  });
+
+  /*
+   * What the editor actually writes: a connected widget keeps its entry.
+   *
+   * Read as missing, every value after it moved one input up — `cfg` took the
+   * steps, the sampler took the cfg — in any workflow with a widget wired to
+   * another node.
+   */
+  it('reads past the entry a connected widget still has', () => {
+    const wired: UiWorkflow = JSON.parse(JSON.stringify(ui));
+    const sampler = wired.nodes.find((node) => node.id === 3)!;
+    sampler.inputs!.push({ name: 'steps', type: 'INT', link: 20, widget: { name: 'steps' } });
+    // Unchanged from before it was wired: the 20 is still there.
+    sampler.widgets_values = [156680208700286, 'randomize', 20, 7.5, 'dpmpp_2m', 'karras', 0.6];
+    wired.links!.push([20, 5, 0, 3, 4, 'INT']);
+
+    const converted = uiToApiWorkflow(wired, objectInfoFixture)['3'];
+    expect(converted?.inputs.steps).toEqual(['5', 0]);
+    expect(converted?.inputs.cfg).toBe(7.5);
+    expect(converted?.inputs.sampler_name).toBe('dpmpp_2m');
+    expect(converted?.inputs.scheduler).toBe('karras');
+    expect(converted?.inputs.denoise).toBe(0.6);
+  });
+
+  /*
+   * A primitive node types its value into the widgets it feeds, and is left
+   * out of the conversion. The link to it used to be kept, pointing at a node
+   * that was no longer in the graph.
+   */
+  it('takes a primitive node’s value from the widget it feeds, not a link', () => {
+    const shared: UiWorkflow = JSON.parse(JSON.stringify(ui));
+    const sampler = shared.nodes.find((node) => node.id === 3)!;
+    sampler.inputs!.push({ name: 'seed', type: 'INT', link: 30, widget: { name: 'seed' } });
+    shared.nodes.push({ id: 70, type: 'PrimitiveNode', outputs: [{ links: [30] }], widgets_values: [42, 'fixed'] } as never);
+    shared.links!.push([30, 70, 0, 3, 5, 'INT']);
+    sampler.widgets_values = [42, 'fixed', 20, 8, 'euler', 'normal', 1];
+
+    const converted = uiToApiWorkflow(shared, objectInfoFixture);
+    expect(converted['3']?.inputs.seed).toBe(42);
+    expect(converted['3']?.inputs.steps).toBe(20);
+    expect(converted['70']).toBeUndefined();
   });
 
   it('follows a reroute back to what actually produces the value', () => {
