@@ -26,7 +26,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 
 from ..refdesk import (MAX_AUDIOS, MAX_IMAGES, MAX_VIDEOS, Slot, SlotError,
-                       describe, plan, reference_groups)
+                       describe, normalise_tag, plan, reference_groups)
 
 CATEGORY_MINIMAX = "comfyllama/minimax"
 
@@ -196,9 +196,32 @@ class MiniMaxH3ReferencesFlat:
 
     @classmethod
     def VALIDATE_INPUTS(cls, **kwargs) -> Any:
-        """Catch a tag mistake before the queue rather than after the encode."""
+        """Catch a tag mistake before the queue rather than after the encode.
+
+        Only the mistake that can be seen from here. ComfyUI validates before
+        anything has run, so every connected input arrives as `None` — the
+        references are links, so all of them do. Read as they stand, every
+        slot was empty, and any `@tag` in the prompt was refused as naming
+        nothing. So here a switched-on slot counts as holding something, and
+        the check is the one that needs no values: a `@tag` that no
+        switched-on slot is tagged with. Everything else, duplicates included,
+        is checked again in `build` with what actually arrived.
+        """
+        slots: List[Slot] = []
+        seen = set()
+        for slot in cls._slots(kwargs):
+            tag = normalise_tag(slot.tag).lower()
+            if tag and slot.on:
+                if tag in seen:
+                    continue  # Refused in `build` if both turn out connected.
+                seen.add(tag)
+            slots.append(slot._replace(
+                value=slot.value if slot.value is not None else _CONNECTED,
+                audio=(slot.audio if slot.audio is not None else _CONNECTED)
+                if slot.kind == "video" and slot.on else slot.audio,
+            ))
         try:
-            plan(cls._slots(kwargs), str(kwargs.get("prompt", "") or ""))
+            plan(slots, str(kwargs.get("prompt", "") or ""))
         except SlotError as error:
             return str(error)
         return True
@@ -252,6 +275,10 @@ class MiniMaxH3ReferencesFlat:
 
         conditioning, latent = _unpack(result)
         return (conditioning, latent, arrangement.prompt)
+
+
+# Stands in for a value validation is not shown: a link, not yet run.
+_CONNECTED = object()
 
 
 def _unpack(result: Any):

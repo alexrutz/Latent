@@ -228,6 +228,34 @@ class TestTheNode(unittest.TestCase):
             True,
         )
 
+    def test_connected_references_validate_although_they_arrive_empty(self):
+        """What ComfyUI actually passes: nothing for a link, before it has run.
+
+        Read as empty, every slot was empty and every `@tag` named nothing, so
+        the node refused any prompt that used one.
+        """
+        from comfyllama.nodes.minimax_ref import MiniMaxH3ReferencesFlat
+
+        self.assertIs(
+            MiniMaxH3ReferencesFlat.VALIDATE_INPUTS(
+                prompt="@woman walks down @street, to @street-audio",
+                image_1=None, image_1_on=True, image_1_tag="woman",
+                video_1=None, video_1_on=True, video_1_tag="street", video_1_audio=None,
+            ),
+            True,
+        )
+
+    def test_a_tag_on_no_switched_on_slot_is_still_refused_before_the_queue(self):
+        from comfyllama.nodes.minimax_ref import MiniMaxH3ReferencesFlat
+
+        result = MiniMaxH3ReferencesFlat.VALIDATE_INPUTS(
+            prompt="@woman and @hat",
+            image_1=None, image_1_on=True, image_1_tag="woman",
+            image_2=None, image_2_on=False, image_2_tag="hat",
+        )
+        self.assertIsInstance(result, str)
+        self.assertIn("@hat", result)
+
     def test_every_slot_the_upstream_node_offers_has_one_here(self):
         from comfyllama.nodes.minimax_ref import MiniMaxH3ReferencesFlat
 
