@@ -821,3 +821,21 @@ describe('the MiniMax H3 reference picker', () => {
     expect(field('1.video_seconds')?.control).toBe('int');
   });
 });
+
+describe('two pictures, two switches', () => {
+  /*
+   * Both pictures have the same role and so the same order, and each switch's
+   * order is its picture's plus a half — so both switches sorted after both
+   * pictures, and the first sat under the second picture as if it were its.
+   */
+  it('puts each switch straight after its own picture', () => {
+    const graph = structuredClone(img2img) as Record<string, { class_type: string; inputs: Record<string, unknown>; _meta?: { title: string } }>;
+    const [loaderId, loader] = Object.entries(graph).find(([, node]) => node.class_type === 'LoadImage')!;
+    graph['99'] = { ...structuredClone(loader), _meta: { title: 'Second' } };
+    graph['98'] = { class_type: 'PreviewImage', inputs: { images: ['99', 0] } };
+
+    const ids = build(graph as never).fields.filter((field) => field.group === 'main').map((field) => field.id);
+    expect(ids.indexOf(`${loaderId}.__image`)).toBe(ids.indexOf(`${loaderId}.image`) + 1);
+    expect(ids.indexOf('99.__image')).toBe(ids.indexOf('99.image') + 1);
+  });
+});

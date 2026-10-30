@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseMarkdown, parseSpans } from './markdown.js';
+import { parseMarkdown, parseSpans, safeHref } from './markdown.js';
 
 /**
  * Models write Markdown whether or not you ask them to, and a chat that shows
@@ -128,5 +128,36 @@ describe('inline marks', () => {
 
   it('returns plain text unchanged', () => {
     expect(parseSpans('nothing to see')).toEqual([{ text: 'nothing to see' }]);
+  });
+});
+
+describe('what follows a list', () => {
+  it('keeps the line straight after a list', () => {
+    const blocks = parseMarkdown('- a\n- b\nThat is it.');
+    expect(blocks.map((block) => block.kind)).toEqual(['list', 'paragraph']);
+  });
+
+  it('keeps a heading or another kind of list after one', () => {
+    expect(parseMarkdown('- a\n# Next').map((block) => block.kind)).toEqual(['list', 'heading']);
+    expect(parseMarkdown('- a\n1. one').map((block) => block.kind)).toEqual(['list', 'list']);
+  });
+});
+
+describe('links', () => {
+  it('links to the web, to mail and within the app', () => {
+    expect(safeHref('https://example.com')).toBe('https://example.com');
+    expect(safeHref('mailto:a@b.c')).toBe('mailto:a@b.c');
+    expect(safeHref('/gallery')).toBe('/gallery');
+    expect(safeHref('#top')).toBe('#top');
+  });
+
+  it('keeps a script link as text rather than a link', () => {
+    expect(safeHref('javascript:alert(1)')).toBeNull();
+    expect(safeHref(' JavaScript:alert(1)')).toBeNull();
+    expect(safeHref('data:text/html,<b>x</b>')).toBeNull();
+    expect(safeHref('//elsewhere.example')).toBeNull();
+    const spans = parseSpans('[click](javascript:alert(1))');
+    expect(spans.some((span) => span.href)).toBe(false);
+    expect(spans.map((span) => span.text).join('')).toContain('click');
   });
 });

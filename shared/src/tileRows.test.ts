@@ -172,3 +172,24 @@ describe('tileUnits', () => {
     expect(tileUnits({ cols: 1, ratio: 2 }, 0, 8)).toBeGreaterThan(0);
   });
 });
+
+describe('a row with a hand-sized tile of more than one column', () => {
+  /*
+   * Every tile in the row used to get the same overall ratio, so a two-column
+   * tile beside a square one was drawn twice as tall as it.
+   */
+  it('keeps every tile in the row the same height', () => {
+    const plans = planTiles(
+      [
+        { width: 1024, height: 512, tileSpan: { cols: 2, rows: 1 } },
+        { width: 512, height: 512 },
+      ],
+      3,
+    );
+    expect(plans.map((plan) => plan.cols)).toEqual([2, 1]);
+    const [wide, square] = plans.map((plan) => tileUnits(plan, 100, 0));
+    expect(wide).toBe(square);
+    // And the hand-picked tile is still the shape that was picked.
+    expect(plans[0]!.ratio).toBe(2);
+  });
+});

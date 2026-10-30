@@ -764,6 +764,30 @@ function nodeTitleOf(node: ApiWorkflowNode, objectInfo: ObjectInfo): string {
  * ever dropped. Recognised roles go to the main screen in a fixed order,
  * everything else lands in Advanced where the user can promote it.
  */
+/**
+ * Each "Use this picture" switch moved to straight after its own picture.
+ *
+ * Its order is its picture's plus a half, which is enough with one picture.
+ * With two, both pictures share an order — they have the same role — so both
+ * switches sorted after both pictures, and the first switch sat under the
+ * second picture as if it were that one's.
+ */
+function besideTheirPictures(sorted: ParamField[]): ParamField[] {
+  const switches = sorted.filter((field) => isImageOffField(field));
+  if (switches.length === 0) return sorted;
+  const out = sorted.filter((field) => !isImageOffField(field));
+  for (const toggle of switches) {
+    const picture = out.findIndex(
+      (field) =>
+        field.nodeId === toggle.nodeId &&
+        (field.role === 'image_input' || field.role === 'folder_image'),
+    );
+    if (picture < 0) out.push(toggle);
+    else out.splice(picture + 1, 0, toggle);
+  }
+  return out;
+}
+
 export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo = {}): ParamSchema {
   const prompts = classifyPrompts(workflow);
   const fields: ParamField[] = [];
@@ -886,8 +910,12 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
   }
 
   // Renumber so main fields follow MAIN_ROLE_ORDER and advanced keeps graph order.
-  const main = fields.filter((f) => f.group === 'main').sort((a, b) => a.order - b.order);
-  const advanced = fields.filter((f) => f.group === 'advanced').sort((a, b) => a.order - b.order);
+  const main = besideTheirPictures(
+    fields.filter((f) => f.group === 'main').sort((a, b) => a.order - b.order),
+  );
+  const advanced = besideTheirPictures(
+    fields.filter((f) => f.group === 'advanced').sort((a, b) => a.order - b.order),
+  );
   main.forEach((f, i) => (f.order = i));
   advanced.forEach((f, i) => (f.order = i));
 

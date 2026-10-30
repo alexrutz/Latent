@@ -135,7 +135,14 @@ export function parseMarkdown(source: string): MarkdownBlock[] {
           text.push(lines[at]!.trim());
         }
         items.push(parseSpans(text.join(' ')));
-        if (at + 1 >= lines.length) break;
+        /*
+         * Only step onto the next line when it continues the list. Stepping
+         * first and finding out after left `at` on a line the outer loop then
+         * skipped, so whatever came straight after a list — a sentence, a
+         * heading — disappeared.
+         */
+        const next = lines[at + 1];
+        if (next === undefined || !(ordered ? NUMBERED : BULLET).test(next)) break;
         at += 1;
       }
       blocks.push({ kind: 'list', ordered, items });
@@ -175,6 +182,21 @@ const INLINE: { pattern: RegExp; marks: Omit<MarkdownSpan, 'text'> }[] = [
 const LINK = /\[([^\]\n]+)\]\(([^)\s]+)\)/;
 
 /**
+ * The link target, if it is one a chat reply may hand out.
+ *
+ * The text comes from a model, which repeats whatever it was shown — a
+ * `javascript:` or `data:` link is a script on Latent's own origin when
+ * clicked. React refuses `javascript:` today; this does not rely on it.
+ * Web addresses, mail and links within the page or the app are allowed.
+ */
+export function safeHref(href: string): string | null {
+  const target = href.trim();
+  if (/^(https?:|mailto:)/i.test(target)) return target;
+  if (/^[#/?]/.test(target) && !target.startsWith('//')) return target;
+  return null;
+}
+
+/**
  * Split one run of text into marked spans.
  *
  * Recursive on purpose: the earliest mark wins, its contents are parsed again
@@ -206,11 +228,13 @@ export function parseSpans(text: string, inherited: Omit<MarkdownSpan, 'text'> =
   }
   const link = LINK.exec(text);
   if (link) {
+    const href = safeHref(link[2] ?? '');
     candidates.push({
       at: link.index,
       length: link[0].length,
       inner: link[1] ?? '',
-      extra: { href: link[2] },
+      // A link to somewhere it should not go is kept as its text, unlinked.
+      extra: href ? { href } : {},
     });
   }
 

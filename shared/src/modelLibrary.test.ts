@@ -146,6 +146,11 @@ describe('reducing Civitai’s HTML to text', () => {
     expect(plainText('a &amp; b &quot;c&quot; &#39;d&#39; &lt;e&gt;')).toBe('a & b "c" \'d\' <e>');
   });
 
+  it('decodes an escaped entity once, not twice', () => {
+    // A description writing about HTML: `&amp;lt;` is the text `&lt;`.
+    expect(plainText('use &amp;lt;lora&amp;gt; tags')).toBe('use &lt;lora&gt; tags');
+  });
+
   it('is nothing for nothing', () => {
     expect(plainText(null)).toBeNull();
     expect(plainText('')).toBeNull();

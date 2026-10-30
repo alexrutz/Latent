@@ -244,6 +244,15 @@ function isWordish(character: string): boolean {
  * rendering it would mean rendering arbitrary HTML from a public site into the
  * app — so it is reduced to text here, on the way in, and stored as text.
  */
+const ENTITIES: Record<string, string> = {
+  nbsp: ' ',
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  '#39': "'",
+};
+
 export function plainText(html: string | null | undefined, limit = 1200): string | null {
   if (typeof html !== 'string' || html.trim() === '') return null;
 
@@ -257,12 +266,9 @@ export function plainText(html: string | null | undefined, limit = 1200): string
     .replace(/<\/\s*li\s*>/gi, '\n')
     .replace(/<\s*li[^>]*>/gi, '• ')
     .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/g, "'")
+    // One pass, so an entity is decoded once: `&amp;lt;` is the text `&lt;`.
+    // Decoding `&amp;` first and `&lt;` after turned it into `<`.
+    .replace(/&(nbsp|amp|lt|gt|quot|#39);/gi, (_whole, name: string) => ENTITIES[name.toLowerCase()] ?? '')
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();

@@ -124,6 +124,20 @@ describe('randomPromptPool', () => {
 });
 
 describe('pickRandomBlocks', () => {
+  it('leaves out what is already typed, when the typed text is kept', () => {
+    const typed = library.map((entry) => entry.text).join(', ');
+    const kept = pickRandomBlocks(library, config({ minBlocks: 4, maxBlocks: 4, onePerGroup: false, keepTyped: true }), typed, rng(0.5));
+    expect(kept).toEqual([]);
+  });
+
+  it('draws from everything when the typed text is about to be replaced', () => {
+    // The box usually still holds the last drawn prompt; excluding that made
+    // its blocks undrawable in replace mode.
+    const typed = library.map((entry) => entry.text).join(', ');
+    const replaced = pickRandomBlocks(library, config({ minBlocks: 4, maxBlocks: 4, onePerGroup: false, keepTyped: false }), typed, rng(0.5));
+    expect(replaced).toHaveLength(4);
+  });
+
   it('draws between the configured bounds', () => {
     for (let seed = 0; seed < 20; seed += 1) {
       const drawn = pickRandomBlocks(library, config({ minBlocks: 1, maxBlocks: 2, onePerGroup: false }), '', () =>

@@ -208,6 +208,9 @@ export function randomPromptPool(
  *
  * `base` is what is already typed: anything it already contains is excluded, so a
  * draw never appends a phrase that is sitting there twenty characters earlier.
+ * Only when the typed text is kept, though. In replace mode it is about to be
+ * thrown away, and excluding what it held made every block of the last drawn
+ * prompt undrawable — the prompt box usually still holds exactly that.
  */
 export function pickRandomBlocks(
   blocks: PromptBlock[],
@@ -215,8 +218,9 @@ export function pickRandomBlocks(
   base = '',
   random: () => number = Math.random,
 ): PromptBlock[] {
+  const kept = config.keepTyped ? base : '';
   const pool = randomPromptPool(blocks, config).filter(
-    (block) => block.text.trim() !== '' && !promptContainsFragment(base, block.text),
+    (block) => block.text.trim() !== '' && !promptContainsFragment(kept, block.text),
   );
   if (pool.length === 0) return [];
 

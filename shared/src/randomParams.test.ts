@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   candidateValues,
   defaultRuleFor,
+  discreteValues,
   drawRandomParams,
   fieldPointValues,
   MAX_CANDIDATES,
@@ -282,5 +283,17 @@ describe('overlayChoices', () => {
 
   it('is empty when nothing recorded a summary', () => {
     expect(overlayChoices([[], []])).toEqual([]);
+  });
+});
+
+describe('the values a sweep can take', () => {
+  it('starts at the minimum when it is finer than the step', () => {
+    // Rounded to the step's precision alone, 0.35 came out as 0.4.
+    expect(discreteValues(0.35, 0.65, 0.1)).toEqual([0.35, 0.45, 0.55, 0.65]);
+    expect(discreteValues(0.25, 2, 0.5)).toEqual([0.25, 0.75, 1.25, 1.75]);
+  });
+
+  it('still walks a plain range without float noise', () => {
+    expect(discreteValues(7, 8, 0.5)).toEqual([7, 7.5, 8]);
   });
 });

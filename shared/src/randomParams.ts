@@ -37,9 +37,11 @@ export const MAX_CANDIDATES = 64;
 /**
  * Every value in `[min, max]` reachable from `min` in whole steps.
  *
- * Rounded to the step's own precision: floating-point addition otherwise walks
- * 7.5 → 8.000000000000002, which then shows up in the recorded settings and
- * makes two identical runs look different.
+ * Rounded to the precision of the step or of `min`, whichever is finer:
+ * floating-point addition otherwise walks 7.5 → 8.000000000000002, which then
+ * shows up in the recorded settings and makes two identical runs look
+ * different. The step's alone was not enough — 0.35 in steps of 0.1 rounded to
+ * 0.4, 0.5, 0.6, and the minimum somebody set was never drawn.
  *
  * Shared by the two features that both mean "a small set of values worth
  * choosing between": a variation rule draws one at random, and a point line
@@ -51,7 +53,7 @@ export function discreteValues(min: number, max: number, step: number): number[]
   if (!Number.isFinite(low) || !Number.isFinite(high)) return [];
   if (!Number.isFinite(step) || step <= 0) return [low];
 
-  const decimals = decimalsOf(step);
+  const decimals = Math.max(decimalsOf(step), decimalsOf(low));
   const values: number[] = [];
   for (let i = 0; values.length < MAX_CANDIDATES; i += 1) {
     const value = round(low + i * step, decimals);

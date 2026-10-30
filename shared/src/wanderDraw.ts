@@ -31,6 +31,16 @@ export function wanderReach(profile: TasteProfile, draw: WanderDraw): number {
     return own > 0 ? own : Number.POSITIVE_INFINITY;
   };
 
+  /*
+   * Pins that always apply are counted on their own, as `drawTaste` takes
+   * them: first, whatever their heading's cap or role and whether or not
+   * loose notes are drawn. Counted with the rest, a heading capped at one
+   * with three pins in it reached one — so the round asked for one, and only
+   * one of the three notes promised to every round got in. They still use up
+   * their heading's room for what is drawn after them, which is what the
+   * draw does too.
+   */
+  const pins = new Map<string | null, number>();
   const available = new Map<string | null, number>();
   for (const entry of profile.entries) {
     if (!entry.active) continue;
@@ -39,12 +49,19 @@ export function wanderReach(profile: TasteProfile, draw: WanderDraw): number {
     if (entry.text.trim() === '') continue;
     if (entry.always && draw.pinned === 'off') continue;
     const key = category?.id ?? null;
+    if (entry.always && draw.pinned === 'always') {
+      pins.set(key, (pins.get(key) ?? 0) + 1);
+      continue;
+    }
     if (key === null && draw.loose === 'off') continue;
     available.set(key, (available.get(key) ?? 0) + 1);
   }
 
   let reach = 0;
-  for (const [key, count] of available) reach += Math.min(count, cap(key));
+  for (const count of pins.values()) reach += count;
+  for (const [key, count] of available) {
+    reach += Math.min(count, Math.max(0, cap(key) - (pins.get(key) ?? 0)));
+  }
   return reach;
 }
 

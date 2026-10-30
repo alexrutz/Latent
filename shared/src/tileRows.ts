@@ -86,7 +86,12 @@ function wanted(shape: TileShape, uniform: boolean): TilePlan & { fixed: boolean
 }
 
 /**
- * The one shape a row is drawn at.
+ * The one shape a row is drawn at, as width ÷ height of a *single column*.
+ *
+ * Per column because tiles in a row can be different widths and must still be
+ * the same height: a tile's own ratio is this times its column count. Handing
+ * every tile the same overall ratio made a two-column tile beside a square one
+ * twice as tall as it, which is the ragged row this exists to prevent.
  *
  * A hand-picked tile fixes it: the point of choosing a shape is that it is the
  * shape you get, and the rest of the row matching it is what keeps the row
@@ -96,7 +101,7 @@ function wanted(shape: TileShape, uniform: boolean): TilePlan & { fixed: boolean
  */
 function rowRatio(row: readonly (TilePlan & { fixed: boolean })[]): number {
   const fixed = row.find((entry) => entry.fixed);
-  if (fixed) return fixed.ratio;
+  if (fixed) return fixed.ratio / fixed.cols;
 
   let lowest = Infinity;
   let highest = 0;
@@ -141,9 +146,10 @@ export function planTiles(
       if (used >= width) break;
     }
 
-    const ratio = rowRatio(row.map((index) => wants[index]!));
+    const perColumn = rowRatio(row.map((index) => wants[index]!));
     for (const index of row) {
-      plans[index] = { cols: Math.min(wants[index]!.cols, width), ratio };
+      const cols = Math.min(wants[index]!.cols, width);
+      plans[index] = { cols, ratio: perColumn * cols };
     }
   }
 

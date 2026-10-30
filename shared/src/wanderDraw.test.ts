@@ -78,6 +78,41 @@ describe('how many notes the rules allow', () => {
   });
 });
 
+describe('pins that always apply', () => {
+  /*
+   * The draw takes every one of them first, whatever their heading allows.
+   * Counted like the rest, three pins under a heading capped at one reached
+   * one, the round asked for one, and two of the three were left out.
+   */
+  const pinned = () => {
+    const base = profile();
+    base.entries = base.entries.map((entry) =>
+      entry.categoryId === 'films' ? { ...entry, always: true } : entry,
+    );
+    return base;
+  };
+
+  it('counts every one, past its heading cap', () => {
+    // Colour 1, films 3 pinned, mood 1, loose 1.
+    expect(wanderReach(pinned(), rules({ pinned: 'always' }))).toBe(6);
+  });
+
+  it('counts them under a heading out of wandering, and with loose notes off', () => {
+    const draw = rules({ pinned: 'always', categories: { films: { role: 'off', max: 0 } } });
+    expect(wanderReach(pinned(), draw)).toBe(6);
+    const loose = profile();
+    loose.entries = loose.entries.map((entry) => (entry.id === 'g' ? { ...entry, always: true } : entry));
+    expect(wanderReach(loose, rules({ pinned: 'always', loose: 'off' }))).toBe(4);
+  });
+
+  it('leaves their heading less room for what is drawn after them', () => {
+    const base = profile();
+    base.entries = base.entries.map((entry) => (entry.id === 'c' ? { ...entry, always: true } : entry));
+    // Films: the pin fills the cap of one, so nothing more is drawn from it.
+    expect(wanderReach(base, rules({ pinned: 'always' }))).toBe(4);
+  });
+});
+
 describe('the count a round asks for', () => {
   it('is the number set, when one is set', () => {
     expect(wanderCount(profile(), rules(), 3)).toBe(3);
