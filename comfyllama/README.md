@@ -650,6 +650,19 @@ username: llama
 password: env:LLAMA_PASSWORD
 ```
 
+Only variables meant for this are read: names starting with `LLAMA_` or
+`COMFYLLAMA_`, plus any listed in `COMFYLLAMA_SECRET_ENV` (comma-separated),
+for a token that already lives under another name:
+
+```
+COMFYLLAMA_SECRET_ENV=OPENROUTER_API_KEY
+```
+
+The limit is there because whoever can reach ComfyUI also chooses the server
+a credential is sent to — by queueing a workflow or asking for the model list —
+and without it `env:` would read any secret ComfyUI was started with and send
+it there.
+
 ## Models
 
 For the in-process nodes, put `.gguf` files into `ComfyUI/models/llm/`. The

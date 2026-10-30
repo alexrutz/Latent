@@ -22,7 +22,7 @@ from comfyllama.nodes.generation import LlamaCppGrammar, LlamaCppSampling
 from comfyllama.server import (LlamaServer, LlamaServerError, apply_grammar,
                                apply_thinking, build_auth_header, build_payload,
                                credentials_from_url, normalize_base_url,
-                               resolve_secret)
+                               resolve_secret, SECRET_ENV_ALLOW)
 
 
 class StubHandler(BaseHTTPRequestHandler):
@@ -252,6 +252,53 @@ class TestAuthHeaders(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             build_auth_header("bearer", api_key="env:COMFYLLAMA_TEST_MISSING")
         self.assertIn("COMFYLLAMA_TEST_MISSING", str(ctx.exception))
+
+    def test_env_indirection_reads_only_names_meant_for_it(self):
+        """Not a way to read any secret ComfyUI was started with.
+
+        Whoever can reach ComfyUI chooses the server a credential is sent to,
+        so `env:AWS_SECRET_ACCESS_KEY` pointed at their own server used to hand
+        it over.
+        """
+        os.environ["SOME_CLOUD_SECRET"] = "not-for-llama"
+        os.environ.pop(SECRET_ENV_ALLOW, None)
+        try:
+            with self.assertRaises(ValueError) as ctx:
+                resolve_secret("env:SOME_CLOUD_SECRET")
+            self.assertIn(SECRET_ENV_ALLOW, str(ctx.exception))
+            self.assertNotIn("not-for-llama", str(ctx.exception))
+
+            # Listed by name, it is followed.
+            os.environ[SECRET_ENV_ALLOW] = "OTHER, SOME_CLOUD_SECRET"
+            self.assertEqual(resolve_secret("env:SOME_CLOUD_SECRET"), "not-for-llama")
+            # The list is never itself a credential.
+            with self.assertRaises(ValueError):
+                resolve_secret(f"env:{SECRET_ENV_ALLOW}")
+        finally:
+            os.environ.pop("SOME_CLOUD_SECRET", None)
+            os.environ.pop(SECRET_ENV_ALLOW, None)
+
+    def test_the_documented_names_still_work(self):
+        os.environ["LLAMA_API_KEY"] = "sk-llama"
+        try:
+            self.assertEqual(resolve_secret("env:LLAMA_API_KEY"), "sk-llama")
+        finally:
+            del os.environ["LLAMA_API_KEY"]
+
+    def test_the_model_probe_route_cannot_read_other_secrets(self):
+        from comfyllama.api import probe_models
+
+        os.environ["SOME_CLOUD_SECRET"] = "not-for-llama"
+        try:
+            result = probe_models({
+                "base_url": "http://127.0.0.1:9",
+                "api_key": "env:SOME_CLOUD_SECRET",
+                "auth": "bearer",
+            })
+        finally:
+            os.environ.pop("SOME_CLOUD_SECRET", None)
+        self.assertEqual(result["models"], [])
+        self.assertIn("will not read", result["error"])
 
     def test_plain_values_are_passed_through_untouched(self):
         self.assertEqual(resolve_secret("  sk-literal  "), "sk-literal")

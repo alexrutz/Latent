@@ -28,6 +28,18 @@ AUTO_MODEL = {"auto", "default", "server default"}
 
 ENV_PREFIX = "env:"
 
+# Which environment variables `env:NAME` may read.
+#
+# Anyone who can reach ComfyUI's port can queue a workflow or call the model
+# route, and either one names the server the credential is sent to. Without a
+# limit, `api_key: env:AWS_SECRET_ACCESS_KEY` pointed at a server of their own
+# was a way to read any secret ComfyUI was started with. So only names meant
+# for this are followed: the two prefixes below, and whatever
+# COMFYLLAMA_SECRET_ENV lists (comma-separated) for a token that already lives
+# under another name.
+SECRET_ENV_PREFIXES = ("LLAMA_", "COMFYLLAMA_")
+SECRET_ENV_ALLOW = "COMFYLLAMA_SECRET_ENV"
+
 
 class LlamaServerError(RuntimeError):
     """Raised for transport errors and non-2xx responses.
@@ -55,6 +67,13 @@ def resolve_secret(value: str, *, field: str = "credential") -> str:
     name = value[len(ENV_PREFIX):].strip()
     if not name:
         raise ValueError(f"The {field} says '{ENV_PREFIX}' but names no variable.")
+    if not secret_env_allowed(name):
+        raise ValueError(
+            f"The {field} refers to the environment variable '{name}', which "
+            "comfyllama will not read: only names starting with "
+            f"{' or '.join(SECRET_ENV_PREFIXES)} are followed, or those listed "
+            f"in {SECRET_ENV_ALLOW}. Rename the variable, or add it to that list."
+        )
     resolved = os.environ.get(name)
     if resolved is None:
         raise ValueError(
@@ -62,6 +81,16 @@ def resolve_secret(value: str, *, field: str = "credential") -> str:
             "not set for the process running ComfyUI."
         )
     return resolved
+
+
+def secret_env_allowed(name: str) -> bool:
+    """Whether `env:NAME` may read this variable. See `SECRET_ENV_PREFIXES`."""
+    if name == SECRET_ENV_ALLOW:
+        return False  # The list itself is configuration, not a credential.
+    if name.startswith(SECRET_ENV_PREFIXES):
+        return True
+    listed = os.environ.get(SECRET_ENV_ALLOW, "")
+    return name in {entry.strip() for entry in listed.split(",") if entry.strip()}
 
 
 def _split_url(base_url: str):
