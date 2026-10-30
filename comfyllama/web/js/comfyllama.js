@@ -1,6 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { ComfyWidgets } from "../../scripts/widgets.js";
+import { keepOutOfWorkflow, repairNullsOnConfigure } from "./workflowWidgets.js";
 
 // Nodes that return {"ui": {"text": [...]}} get a read-only textarea widget so
 // the generated text is visible in the graph without opening the console.
@@ -316,13 +317,14 @@ function addModelPicker(nodeType) {
 	const onNodeCreated = nodeType.prototype.onNodeCreated;
 	nodeType.prototype.onNodeCreated = function () {
 		onNodeCreated?.apply(this, arguments);
-		this.addWidget(
-			"button",
-			"⟳ fetch models",
-			null,
-			(_value, _widget, node, _pos, event) => showModelMenu(node ?? this, event),
-			// Never serialised: it would shift every saved widget value.
-			{ serialize: false },
+		// Never serialised: it would shift every saved widget value.
+		keepOutOfWorkflow(
+			this.addWidget(
+				"button",
+				"⟳ fetch models",
+				null,
+				(_value, _widget, node, _pos, event) => showModelMenu(node ?? this, event),
+			),
 		);
 	};
 }
@@ -524,13 +526,14 @@ function addImageControls(nodeType) {
 	nodeType.prototype.onNodeCreated = function () {
 		onNodeCreated?.apply(this, arguments);
 
-		this.addWidget(
-			"button",
-			NO_IMAGE_LABEL,
-			null,
-			(_value, _widget, node) => clearImage(node ?? this),
-			// Never serialised: it would shift every saved widget value.
-			{ serialize: false },
+		// Never serialised: it would shift every saved widget value.
+		keepOutOfWorkflow(
+			this.addWidget(
+				"button",
+				NO_IMAGE_LABEL,
+				null,
+				(_value, _widget, node) => clearImage(node ?? this),
+			),
 		);
 
 		const toggle = widgetByName(this, "use_image");
@@ -650,6 +653,7 @@ app.registerExtension({
 	async beforeRegisterNodeDef(nodeType, nodeData) {
 		if (IMAGE_NODES.has(nodeData.name)) {
 			addImageControls(nodeType);
+			repairNullsOnConfigure(nodeType, nodeData);
 		}
 	},
 });
@@ -659,6 +663,9 @@ app.registerExtension({
 	async beforeRegisterNodeDef(nodeType, nodeData) {
 		if (MODEL_PICKER_NODES.has(nodeData.name)) {
 			addModelPicker(nodeType);
+			// Until now `{ serialize: false }` went into the options, where it
+			// does not reach the saved workflow, so older ones hold a null here.
+			repairNullsOnConfigure(nodeType, nodeData);
 		}
 	},
 });

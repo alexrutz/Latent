@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { keepOutOfWorkflow, repairNullsOnConfigure } from "./workflowWidgets.js";
 
 /**
  * A file browser for choosing an input picture.
@@ -511,11 +512,17 @@ app.registerExtension({
 			 */
 			for (const name of names) {
 				const label = names.length === 1 ? "Browse…" : `Browse ${name}…`;
-				this.addWidget("button", label, null, () =>
-					openBrowser(this, name, widgets[name]),
+				keepOutOfWorkflow(
+					this.addWidget("button", label, null, () =>
+						openBrowser(this, name, widgets[name]),
+					),
 				);
 			}
 		};
+
+		// Workflows saved while the buttons still were part of them carry a
+		// null per button, which the `use_*` switches added after them load.
+		repairNullsOnConfigure(nodeType, nodeData);
 
 		/*
 		 * Double-clicking the node opens it too.
