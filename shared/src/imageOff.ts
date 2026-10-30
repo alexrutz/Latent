@@ -55,10 +55,30 @@ const PICTURE_ROLES = new Set(['image_input', 'folder_image']);
  * Only nodes that load a picture, and only when something actually reads it: a
  * loader nothing consumes is already doing nothing, and a switch for it would
  * be a control with no effect.
+ *
+ * And only nodes that load *one*, with no switch of their own. The switch
+ * works by unlinking everything the node feeds, which for a single loader is
+ * exactly "no picture this time" — and for the reference picker, fifteen slots
+ * with a `use_*` switch in front of each, was a "Use this picture" beside
+ * picture 1 that took every reference out of the run when turned off.
  */
 export function switchableImageNodes(schema: ParamSchema, workflow: ApiWorkflow): string[] {
+  const pictures = new Map<string, string[]>();
+  const inputs = new Map<string, Set<string>>();
+  for (const field of schema.fields) {
+    if (!inputs.has(field.nodeId)) inputs.set(field.nodeId, new Set());
+    inputs.get(field.nodeId)!.add(field.inputName);
+    if (!PICTURE_ROLES.has(field.role)) continue;
+    pictures.set(field.nodeId, [...(pictures.get(field.nodeId) ?? []), field.inputName]);
+  }
+
   const loaders = new Set(
-    schema.fields.filter((field) => PICTURE_ROLES.has(field.role)).map((field) => field.nodeId),
+    [...pictures.entries()]
+      .filter(
+        ([nodeId, names]) =>
+          names.length === 1 && !inputs.get(nodeId)!.has(`use_${names[0]}`),
+      )
+      .map(([nodeId]) => nodeId),
   );
   if (loaders.size === 0) return [];
 

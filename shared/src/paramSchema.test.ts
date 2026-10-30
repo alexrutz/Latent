@@ -810,6 +810,12 @@ describe('the MiniMax H3 reference picker', () => {
     expect(field('1.use_audio_1')?.hidden).toBeFalsy();
   });
 
+  it('offers no single switch for all fifteen slots', () => {
+    // It unlinked everything the node feeds, so turning off "Use this picture"
+    // beside picture 1 took every reference out — and each slot has its own.
+    expect(schema.fields.some((entry) => entry.inputName === '__image')).toBe(false);
+  });
+
   it('keeps the settings that apply to every slot as ordinary numbers', () => {
     expect(field('1.video_fps')?.control).toBe('int');
     expect(field('1.video_seconds')?.control).toBe('int');
