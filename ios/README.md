@@ -5,10 +5,12 @@ web app does — see [*Signing in from something
 else*](../README.md#signing-in-from-something-else) in the main README for the
 contract it relies on.
 
-**It has never been compiled.** It was written on a machine with no Xcode and
-no iOS SDK, so it is unbuilt and untested code. Expect to fix something on the
-first build. The shape of it is right and the API calls are checked against the
-routes they hit; what has not been checked is that Swift agrees.
+**It has never been built as an app.** It was written on a machine with no
+Xcode and no iOS SDK. The model layer — `Model/`, everything but the Keychain
+code — has been type-checked with Swift 6.1 on Linux, which is how a type
+declared inside a generic function in `APITypes.swift` was found and fixed. The
+screens use SwiftUI, which exists only on Apple's platforms, so they have not
+been checked at all. Expect to fix something on the first build.
 
 ## Opening it
 

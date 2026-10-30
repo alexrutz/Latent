@@ -170,6 +170,14 @@ struct LiveState: Decodable {
     let lastError: String?
 }
 
+/// The `{ "data": … }` around every event's payload.
+///
+/// At file scope because Swift will not have a type declared inside a generic
+/// function — it was inside `payload<T>` below, and the app did not compile.
+private struct EventEnvelope<U: Decodable>: Decodable {
+    let data: U
+}
+
 /// A frame off `/api/ws`.
 ///
 /// Decoded by hand rather than as an enum with a synthesised initialiser: the
@@ -185,8 +193,7 @@ enum ServerEvent {
         guard let tag = try? JSONDecoder().decode(Tag.self, from: data) else { return nil }
 
         func payload<T: Decodable>(_ type: T.Type) -> T? {
-            struct Envelope<U: Decodable>: Decodable { let data: U }
-            return try? JSONDecoder().decode(Envelope<T>.self, from: data).data
+            try? JSONDecoder().decode(EventEnvelope<T>.self, from: data).data
         }
 
         switch tag.type {
