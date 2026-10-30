@@ -1846,16 +1846,19 @@ test.describe('picking inputs and straightening them', () => {
 
     await openSheet();
 
-    // On its own picture: the box's centre is inside that tile.
-    const [tile, tick] = await Promise.all([
-      sheet.getByRole('img', { name: 'lighthouse.png' }).boundingBox(),
-      box('lighthouse.png').boundingBox(),
-    ]);
-    const centre = { x: tick!.x + tick!.width / 2, y: tick!.y + tick!.height / 2 };
-    expect(centre.x).toBeGreaterThan(tile!.x);
-    expect(centre.x).toBeLessThan(tile!.x + tile!.width);
-    expect(centre.y).toBeGreaterThan(tile!.y);
-    expect(centre.y).toBeLessThan(tile!.y + tile!.height);
+    // On its own picture: the box's centre is inside that tile. Both read in
+    // the same frame — the sheet is still rising as it opens, and two separate
+    // measurements can catch it at two different heights.
+    const onItsTile = await sheet.evaluate((root) => {
+      const tile = root.querySelector('img[alt="lighthouse.png"]')!.getBoundingClientRect();
+      const tick = root
+        .querySelector('[aria-label="Add lighthouse.png to the batch"]')!
+        .getBoundingClientRect();
+      const x = tick.x + tick.width / 2;
+      const y = tick.y + tick.height / 2;
+      return x > tile.left && x < tile.right && y > tile.top && y < tile.bottom;
+    });
+    expect(onItsTile).toBe(true);
 
     await box('harbour.png').click();
     await expect(box('harbour.png')).toHaveAttribute('aria-checked', 'true');
