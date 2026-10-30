@@ -1,3 +1,4 @@
+import { open } from 'node:fs/promises';
 import { deflateSync, inflateSync } from 'node:zlib';
 
 /**
@@ -524,4 +525,21 @@ export function makeThumbnail(buffer: Buffer, maxSize = 384): Thumbnail | null {
     width,
     height,
   };
+}
+
+/**
+ * The pixel size of an image file, reading only its first 64 KB.
+ *
+ * That covers a PNG's IHDR and a JPEG's frame header comfortably, and keeps a
+ * scan of a folder of camera photos from reading every one of them whole.
+ */
+export async function readImageSizeOfFile(path: string): Promise<Dimensions | null> {
+  const handle = await open(path, 'r');
+  try {
+    const buffer = Buffer.alloc(64 * 1024);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return readImageSize(buffer.subarray(0, bytesRead));
+  } finally {
+    await handle.close();
+  }
 }

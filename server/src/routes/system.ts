@@ -174,6 +174,11 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: AppContext): voi
      * would be the lock left on the latch.
      */
     ctx.tasteGate.revokeAll();
+    // The update screen's passes too. They are kept apart from the notes' so
+    // that closing the notes does not cut off an update being watched — but
+    // signing out is the other case, and a pass outliving it would let
+    // whoever has the device next run an update without the password.
+    ctx.updateGate.revokeAll();
     return { ok: true };
   });
 

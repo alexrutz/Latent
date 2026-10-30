@@ -1032,14 +1032,14 @@ export class Orchestrator {
       if (this.stopped || this.state.comfyOnline) return;
 
       const stale = this.store.listUnfinished();
+      // Through `markFinished`, as in `reconcile`, so a study or a chat
+      // waiting on one of these hears that it is over.
       for (const record of stale) {
-        this.store.setGenerationStatus(
+        this.markFinished(
           record.promptId,
           'cancelled',
           'ComfyUI became unreachable while this was queued.',
         );
-        this.emitGeneration(record.promptId);
-        this.tracked.delete(record.promptId);
       }
       if (stale.length > 0) {
         this.log.warn(`Gave up on ${stale.length} job(s) after losing ComfyUI`);

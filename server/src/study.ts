@@ -153,7 +153,9 @@ export class StudyRunner {
 
     const study = this.store.getStudy(shot.studyId);
     if (!study || study.status !== 'running') return;
-    if (this.store.nextPendingShots(shot.studyId, 1).length > 0) return;
+    // Queued counts as unfinished too: with two shots in flight, the first to
+    // land used to end the study before the last picture existed.
+    if (this.store.hasUnfinishedShots(shot.studyId)) return;
 
     this.store.updateStudy(shot.studyId, { status: 'rating' });
     if (this.studyId === shot.studyId) this.pause();

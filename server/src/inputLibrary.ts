@@ -1,11 +1,11 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
-import { extname, join, relative, resolve, sep } from 'node:path';
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import type { InputImage, InputScanResult } from '@latent/shared';
 
 import { inputRoot } from './comfyPaths.js';
 import type { Store } from './db.js';
-import { makeThumbnail, readImageSize } from './images/png.js';
+import { makeThumbnail, readImageSizeOfFile } from './images/png.js';
 
 /**
  * A folder of pictures to feed *into* workflows.
@@ -46,9 +46,7 @@ export class InputLibrary {
     if (!root) return null;
 
     const absolute = resolve(root, relativePath);
-    const within = relative(root, absolute);
-    if (within === '' || within.startsWith('..') || within.startsWith(sep)) return null;
-    return absolute;
+    return inside(root, absolute) ? absolute : null;
   }
 
   async scan(): Promise<InputScanResult> {
@@ -108,7 +106,7 @@ export class InputLibrary {
 
         try {
           const info = await stat(absolute);
-          const size = await readImageHeader(absolute);
+          const size = await readImageSizeOfFile(absolute);
           files.push({
             path: relative(root, absolute).split(sep).join('/'),
             name: entry.name,
@@ -135,6 +133,14 @@ export class InputLibrary {
     if (!absolute) return null;
 
     try {
+      /*
+       * Where the file really is, not where its name says. A link inside the
+       * folder to `/etc/passwd`, or to a document on another drive, passes
+       * the check on the name and then reads whatever it points at.
+       */
+      const [real, realRoot] = await Promise.all([realpath(absolute), realpath(this.root()!)]);
+      if (!inside(realRoot, real)) return null;
+
       const info = await stat(absolute);
       if (!info.isFile()) return null;
       return { data: await readFile(absolute), name: relativePath.split('/').pop() ?? 'image' };
@@ -162,14 +168,17 @@ export class InputLibrary {
   }
 }
 
-/** Read just enough of a file to learn its pixel size. */
-async function readImageHeader(path: string) {
-  const handle = await import('node:fs/promises').then((fs) => fs.open(path, 'r'));
-  try {
-    const buffer = Buffer.alloc(64 * 1024);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    return readImageSize(buffer.subarray(0, bytesRead));
-  } finally {
-    await handle.close();
-  }
+
+/**
+ * Whether `target` is somewhere under `root`, and not `root` itself.
+ *
+ * `isAbsolute` rather than a leading separator: on Windows, a path on another
+ * drive comes back from `relative` as `D:\…`, which starts with no separator
+ * and so passed. And `..` only as a whole segment, so a file called `..notes`
+ * is not mistaken for a step out.
+ */
+function inside(root: string, target: string): boolean {
+  const within = relative(root, target);
+  if (within === '' || isAbsolute(within)) return false;
+  return within !== '..' && !within.startsWith(`..${sep}`);
 }

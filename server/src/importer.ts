@@ -18,7 +18,7 @@ import type {
 import type { Archive } from './archive.js';
 import { outputRoot } from './comfyPaths.js';
 import type { Store } from './db.js';
-import { readImageSize, readPngText } from './images/png.js';
+import { readImageSizeOfFile, readPngText } from './images/png.js';
 
 /**
  * Pulls existing images out of a ComfyUI output folder.
@@ -153,7 +153,7 @@ export class Importer {
 
           // Read only the header for dimensions; these files can be large and
           // there can be thousands of them.
-          const size = await readImageHeader(absolute);
+          const size = await readImageSizeOfFile(absolute);
 
           files.push({
             path: relativePath,
@@ -223,15 +223,19 @@ export class Importer {
          * no equivalent in an mp4 or a flac.
          */
         if (mediaKindOf(filename) !== 'image') {
+          this.store.dropUnarchivedImports(filename, subfolder);
+          const generationId = randomUUID();
           const imageId = this.store.insertImportedImage({
-            generationId: randomUUID(),
+            generationId,
             promptId: `import:${path}`,
             title: subfolder ? `${subfolder}/${filename}` : filename,
             filename,
             subfolder,
             modifiedAt: Math.round(info.mtimeMs),
           });
-          await this.archive.storeStreamed(imageId, filename, createReadStream(absolute));
+          await this.archived(generationId, () =>
+            this.archive.storeStreamed(imageId, filename, createReadStream(absolute)),
+          );
           if (rating > 0) this.store.setImageRating(imageId, rating);
           result.imported += 1;
           continue;
@@ -240,8 +244,10 @@ export class Importer {
         const data = await readFile(absolute);
         const recovered = this.recoverSettings(data);
 
+        this.store.dropUnarchivedImports(filename, subfolder);
+        const generationId = randomUUID();
         const imageId = this.store.insertImportedImage({
-          generationId: randomUUID(),
+          generationId,
           promptId: `import:${path}`,
           // The prompt when the image carried one, otherwise where it came
           // from — a filename is a poor title but it is better than nothing.
@@ -255,7 +261,7 @@ export class Importer {
           params: recovered?.params,
         });
 
-        await this.archive.storeBytes(imageId, filename, data);
+        await this.archived(generationId, () => this.archive.storeBytes(imageId, filename, data));
         if (rating > 0) this.store.setImageRating(imageId, rating);
 
         result.imported += 1;
@@ -268,6 +274,23 @@ export class Importer {
     }
 
     return result;
+  }
+
+  /**
+   * Archive a just-inserted import, or take the row back out.
+   *
+   * The row goes in first because the archive is keyed by its id. Left behind
+   * when the copy failed — a full disk, an unreadable file — it was a gallery
+   * entry with nothing behind it, and because it counted as imported, trying
+   * again skipped the file.
+   */
+  private async archived(generationId: string, store: () => Promise<unknown>): Promise<void> {
+    try {
+      await store();
+    } catch (error) {
+      this.store.deleteGeneration(generationId);
+      throw error;
+    }
   }
 
   /**
@@ -463,15 +486,3 @@ export class Importer {
   }
 }
 
-/** Read just enough of a file to learn its pixel size. */
-async function readImageHeader(path: string) {
-  const handle = await import('node:fs/promises').then((fs) => fs.open(path, 'r'));
-  try {
-    // 64 KB covers a PNG's IHDR and a JPEG's frame header comfortably.
-    const buffer = Buffer.alloc(64 * 1024);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    return readImageSize(buffer.subarray(0, bytesRead));
-  } finally {
-    await handle.close();
-  }
-}

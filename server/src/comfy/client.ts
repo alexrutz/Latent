@@ -67,6 +67,9 @@ export function isSelfSignedError(error: unknown): boolean {
  * box and a token-protected vast.ai instance with a self-signed certificate are
  * the same code path.
  */
+/** How long `/view` may take to start answering. See `ComfyClient.view`. */
+const VIEW_ANSWER_MS = 60_000;
+
 export class ComfyClient {
   private prefix: string | null = null;
   private probing: Promise<string> | null = null;
@@ -293,17 +296,34 @@ export class ComfyClient {
    * difference between a clip that starts immediately and one that has to be
    * downloaded whole before the first frame.
    */
-  view(params: ViewParams, headers?: Record<string, string>): Promise<Response> {
-    return this.request('/view', {
-      query: {
-        filename: params.filename,
-        subfolder: params.subfolder ?? '',
-        type: params.type ?? 'output',
-        preview: params.preview,
-      },
-      ...(headers ? { headers } : {}),
-      signal: AbortSignal.timeout(60_000),
-    });
+  async view(params: ViewParams, headers?: Record<string, string>): Promise<Response> {
+    /*
+     * A minute for ComfyUI to answer, and then as long as the file takes.
+     *
+     * `AbortSignal.timeout` would bound the whole transfer, body included, so
+     * a large clip — or a slow link to a rented box — was cut off a minute in,
+     * part way through the bytes. The limit is for an instance that does not
+     * answer; once it has, the stream is the caller's.
+     */
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => controller.abort(new DOMException('ComfyUI did not answer in time', 'TimeoutError')),
+      VIEW_ANSWER_MS,
+    );
+    try {
+      return await this.request('/view', {
+        query: {
+          filename: params.filename,
+          subfolder: params.subfolder ?? '',
+          type: params.type ?? 'output',
+          preview: params.preview,
+        },
+        ...(headers ? { headers } : {}),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async uploadImage(

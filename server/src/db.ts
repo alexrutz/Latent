@@ -2760,11 +2760,32 @@ export class Store {
     return Number(result.lastInsertRowid);
   }
 
-  /** Which of these relative paths have already been imported. */
+  /**
+   * Remove import rows for this file that never got their copy.
+   *
+   * Left by an import that failed before this was handled; the file is about
+   * to be imported again and would otherwise appear twice.
+   */
+  dropUnarchivedImports(filename: string, subfolder: string): void {
+    const rows = this.db
+      .prepare<[string, string], { generation_id: string }>(
+        `SELECT generation_id FROM images
+          WHERE type = 'import' AND archived_path IS NULL AND filename = ? AND subfolder = ?`,
+      )
+      .all(filename, subfolder);
+    for (const row of rows) this.deleteGeneration(row.generation_id);
+  }
+
+  /**
+   * Which of these relative paths have already been imported.
+   *
+   * Only those with a copy: an import whose copy failed is not imported, and
+   * counting it made trying again skip the file.
+   */
   importedPaths(): Set<string> {
     const rows = this.db
       .prepare<[], { filename: string; subfolder: string }>(
-        "SELECT filename, subfolder FROM images WHERE type = 'import'",
+        "SELECT filename, subfolder FROM images WHERE type = 'import' AND archived_path IS NOT NULL",
       )
       .all();
     return new Set(
@@ -3723,17 +3744,48 @@ export class Store {
   }
 
   /**
-   * Put every queued shot of a study back to pending.
+   * Settle the queued shots of a study that are no longer in flight.
    *
    * A shot marked queued whose prompt never reached ComfyUI — a crash, a lost
    * connection, a pause landing mid-submit — would otherwise be skipped
-   * forever, leaving a hole in the plan that nothing fills. Pending is the
-   * safe reading: at worst a shot renders twice.
+   * forever, leaving a hole in the plan that nothing fills, so it goes back to
+   * pending. But only that one. A shot whose run is still queued or rendering
+   * is in flight and stays queued: requeuing those on every resume rendered
+   * them a second time, a minute's pause and resume being enough. A shot whose
+   * run finished while nobody was listening is simply done.
    */
   requeueStranded(studyId: string): number {
-    return this.db
-      .prepare("UPDATE study_shots SET status = 'pending' WHERE study_id = ? AND status = 'queued'")
-      .run(studyId).changes;
+    const settle = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE study_shots SET status = 'done'
+            WHERE study_id = ? AND status = 'queued'
+              AND EXISTS (SELECT 1 FROM generations g
+                           WHERE g.id = study_shots.generation_id AND g.status = 'completed')`,
+        )
+        .run(studyId);
+      return this.db
+        .prepare(
+          `UPDATE study_shots SET status = 'pending'
+            WHERE study_id = ? AND status = 'queued'
+              AND NOT EXISTS (SELECT 1 FROM generations g
+                               WHERE g.id = study_shots.generation_id
+                                 AND g.status IN ('queued', 'running'))`,
+        )
+        .run(studyId).changes;
+    });
+    return settle();
+  }
+
+  /** Whether any shot of a study is still waiting to be rendered or rendering. */
+  hasUnfinishedShots(studyId: string): boolean {
+    const row = this.db
+      .prepare<[string], { count: number }>(
+        `SELECT COUNT(*) AS count FROM study_shots
+          WHERE study_id = ? AND status IN ('pending', 'queued')`,
+      )
+      .get(studyId);
+    return (row?.count ?? 0) > 0;
   }
 
   /** Which shot a finished generation belongs to, if any. */

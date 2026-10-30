@@ -310,3 +310,62 @@ describe('which archived copies the prune offers up', () => {
     expect(offered(subject)).toEqual([]);
   });
 });
+
+/**
+ * Shots a paused study left behind, on the way back in.
+ *
+ * Every queued shot used to go back to pending, including the ones still
+ * rendering — so pausing and resuming within a minute rendered them twice.
+ */
+describe('resuming a study', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const setUp = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-db-'));
+    dirs.push(dir);
+    const subject = new Store(join(dir, 'test.db'));
+    subject.insertStudy({ id: 's', name: 'Study', workflowId: null, workflowName: '', seed: 1 });
+    subject.replaceShots('s', ['a', 'b', 'c', 'd'].map((id) => ({ id, values: {} })));
+    const runAs = (shot: string, status: 'queued' | 'running' | 'completed' | 'cancelled') => {
+      subject.insertGeneration({
+        id: `g-${shot}`,
+        promptId: `p-${shot}`,
+        workflowId: null,
+        workflowName: '',
+        title: shot,
+        values: {},
+        seeds: {},
+        source: 'study',
+      });
+      if (status !== 'queued') subject.setGenerationStatus(`p-${shot}`, status);
+      subject.setShotStatus(shot, 'queued', `g-${shot}`);
+    };
+    return { subject, runAs };
+  };
+
+  it('leaves what is in flight, settles what finished, and requeues what was lost', () => {
+    const { subject, runAs } = setUp();
+    runAs('a', 'queued');
+    runAs('b', 'running');
+    runAs('c', 'completed');
+    runAs('d', 'cancelled');
+
+    expect(subject.requeueStranded('s')).toBe(1);
+    const status = Object.fromEntries(
+      subject.listShots('s').map((shot) => [shot.id, shot.status]),
+    );
+    expect(status).toEqual({ a: 'queued', b: 'queued', c: 'done', d: 'pending' });
+  });
+
+  it('counts a queued shot as unfinished, so the study does not end early', () => {
+    const { subject, runAs } = setUp();
+    for (const id of ['a', 'b', 'c']) subject.setShotStatus(id, 'done');
+    runAs('d', 'running');
+    expect(subject.hasUnfinishedShots('s')).toBe(true);
+    subject.setShotStatus('d', 'done');
+    expect(subject.hasUnfinishedShots('s')).toBe(false);
+  });
+});

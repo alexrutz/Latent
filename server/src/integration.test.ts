@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -2374,6 +2374,9 @@ describe('input image folder', () => {
     writeFileSync(join(inputs, 'notes.txt'), 'not an image');
     // A secret outside the root, to prove traversal is refused.
     writeFileSync(join(dir, 'secret.png'), renderPlaceholder(16, 16, 'secret'));
+    // And a link inside the root that points at it: the name is inside, the
+    // file is not.
+    symlinkSync(join(dir, 'secret.png'), join(inputs, 'innocent.png'));
 
     const comfy = createMockComfy({ logLevel: 'silent' });
     const comfyUrl = await comfy.listen(0);
@@ -2442,7 +2445,7 @@ describe('input image folder', () => {
        * The one that matters: an authenticated caller must not be able to read
        * files outside the configured folder by asking nicely.
        */
-      for (const escape of ['../secret.png', '/etc/hostname', 'nested/../../secret.png']) {
+      for (const escape of ['../secret.png', '/etc/hostname', 'nested/../../secret.png', 'innocent.png']) {
         const denied = await server.call(
           `/api/input-images/file?path=${encodeURIComponent(escape)}`,
           { cookie },
@@ -8315,6 +8318,21 @@ describe('updating Latent itself', () => {
       });
       // 409 rather than 403: through the door, and refused on the merits.
       expect(stillGood.status).toBe(409);
+
+      // Signing out is the other case: whoever has the device next must not
+      // inherit a pass to replace the running code.
+      await server.call('/api/auth/logout', { method: 'POST', cookie });
+      const relogin = await server.call('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ password: 'correct horse' }),
+      });
+      const fresh = relogin.headers.get('set-cookie')?.split(';')[0] ?? '';
+      const afterLogout = await server.call('/api/update/restart', {
+        method: 'POST',
+        cookie: fresh,
+        headers: { 'x-latent-update': forUpdate.ticket },
+      });
+      expect(afterLogout.status).toBe(403);
     } finally {
       await server.dispose();
     }
