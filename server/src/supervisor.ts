@@ -165,14 +165,12 @@ export class Supervisor {
 
     const cwd = resolve(config.root);
     /*
-     * A launcher file with no path separator is a program on the PATH, not a
-     * file under the root. `python3` is the case this exists for: it is how a
-     * system install is started, and resolving it against the root would look
-     * for `/opt/ComfyUI/python3` and not find it.
+     * Under the root, unless the launcher says the PATH. Resolved to a full
+     * path because a bare name is looked up on the PATH by `spawn`, which is
+     * how a release unzipped into the root came to run some other
+     * llama-server entirely.
      */
-    const file = command.file.includes('/') || command.file.includes('\\')
-      ? resolve(cwd, command.file)
-      : command.file;
+    const file = command.launcher.onPath ? command.file : resolve(cwd, command.file);
 
     tracked.status = {
       ...tracked.status,
@@ -228,9 +226,17 @@ export class Supervisor {
       const message = error instanceof Error ? error.message : String(error);
       tracked.status = { ...tracked.status, error: message };
       this.note(tracked, 'latent', `Process error: ${message}`);
+      /*
+       * And when it never ran, that is the end of it. Node may not follow a
+       * failed spawn with `exit`, and nothing else would take the service out
+       * of "running" — it sat there with no process, and Start did nothing
+       * because it looked up already. Not retried: a file that is not there
+       * is not there the next time either.
+       */
+      if (child.pid === undefined) this.onSpawnFailure(tracked, child, message);
     });
 
-    child.on('exit', (code, signal) => this.onExit(config.id, tracked, code, signal));
+    child.on('exit', (code, signal) => this.onExit(config.id, tracked, child, code, signal));
 
     return null;
   }
@@ -353,7 +359,14 @@ export class Supervisor {
     const root = config.root.trim();
     if (root === '') return null;
 
-    return buildCommand(definition, config, (file) => {
+    return buildCommand(definition, config, (file, launcher) => {
+      /*
+       * Never chosen automatically. The search is for files under the root;
+       * taking whatever the PATH offers whenever the root holds nothing would
+       * hide a wrong root behind a program started in an empty folder — and
+       * on Windows `python3` is as often as not the Microsoft Store's stub.
+       */
+      if (launcher.onPath) return false;
       try {
         const path = isAbsolute(file) ? file : resolve(root, file);
         accessSync(path, constants.X_OK);
@@ -412,12 +425,30 @@ export class Supervisor {
     if (tracked.log.length > LOG_LINES) tracked.log.splice(0, tracked.log.length - LOG_LINES);
   }
 
+  /** A process that could not be started at all. */
+  private onSpawnFailure(tracked: Tracked, child: ChildProcess, message: string): void {
+    const running = tracked.running;
+    if (running?.child !== child) return;
+    if (running.killTimer) clearTimeout(running.killTimer);
+    tracked.running = null;
+    tracked.status = {
+      ...tracked.status,
+      state: 'failed',
+      pid: null,
+      stoppedAt: Date.now(),
+      error: `Could not start: ${message}`,
+    };
+  }
+
   private onExit(
     id: string,
     tracked: Tracked,
+    child: ChildProcess,
     code: number | null,
     signal: NodeJS.Signals | null,
   ): void {
+    // Already settled — a failed spawn that Node did follow with an exit.
+    if (tracked.running?.child !== child) return;
     const running = tracked.running;
     if (running?.killTimer) clearTimeout(running.killTimer);
     const deliberate = running?.deliberate ?? false;

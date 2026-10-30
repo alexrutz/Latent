@@ -55,6 +55,13 @@ export interface ServiceArg {
   choices?: string[];
   min?: number;
   max?: number;
+  /**
+   * Other spellings of the same flag that a saved configuration may hold.
+   *
+   * `-np` is `--parallel` under its short name; a service saved when the form
+   * offered the long one keeps its value rather than losing it to the rename.
+   */
+  aliases?: string[];
   /** One sentence. Long enough to decide with, short enough to read in a list. */
   help: string;
   /** Which section of the form it appears under. */
@@ -111,6 +118,16 @@ export interface ServiceLauncher {
   args: string[];
   /** What this launcher is, in the one line the picker has room for. */
   hint: string;
+  /**
+   * The file is a program on the PATH, not a file under the root.
+   *
+   * Said rather than guessed. Guessing from "no slash in it" read
+   * `llama-server` — a file sitting at the top of the root — as a program to
+   * look up, and so ran whichever llama-server the PATH happened to hold
+   * instead of the one in the folder you chose. `python3` is the only
+   * launcher that means the PATH.
+   */
+  onPath?: boolean;
 }
 
 export interface ServiceDefinition {
@@ -642,12 +659,38 @@ const LLAMA_ARGS: ServiceArg[] = [
     group: 'Performance',
   },
   {
-    flag: '--parallel',
+    flag: '-np',
     label: 'Slots',
     type: 'int',
-    fallback: '1',
-    help: 'How many requests it will serve at once. Each one takes its own share of the context.',
+    preset: 1,
+    fallback: '-1 (auto)',
+    min: 1,
+    aliases: ['--parallel'],
+    help: 'How many requests it serves at once. Each slot takes its own share of the context, so one slot gives a single conversation all of it.',
     group: 'Performance',
+    common: true,
+  },
+  {
+    flag: '-fit',
+    label: 'Fit to memory',
+    type: 'choice',
+    choices: ['on', 'off'],
+    preset: 'off',
+    fallback: 'on',
+    help: 'Whether llama.cpp adjusts the arguments you did not set so everything fits in device memory. Off leaves your numbers exactly as you typed them, which is what you want once you have tuned them.',
+    group: 'Performance',
+    common: true,
+  },
+  {
+    flag: '--sleep-idle-seconds',
+    label: 'Sleep when idle after',
+    type: 'int',
+    preset: 1,
+    fallback: '-1 (never)',
+    min: -1,
+    help: 'Seconds of quiet before it unloads the model and gives the VRAM back. The next request loads it again. -1 never sleeps.',
+    group: 'Performance',
+    common: true,
   },
   {
     flag: '--no-mmap',
@@ -763,44 +806,11 @@ const LLAMA_ARGS: ServiceArg[] = [
     common: true,
   },
   {
-    flag: '-np',
-    label: 'Slots',
-    type: 'int',
-    preset: 1,
-    fallback: '-1 (auto)',
-    min: 1,
-    help: 'How many requests it serves at once. Each slot takes its own share of the context, so one slot gives a single conversation all of it.',
-    group: 'Performance',
-    common: true,
-  },
-  {
-    flag: '-fit',
-    label: 'Fit to memory',
-    type: 'choice',
-    choices: ['on', 'off'],
-    preset: 'off',
-    fallback: 'on',
-    help: 'Whether llama.cpp adjusts the arguments you did not set so everything fits in device memory. Off leaves your numbers exactly as you typed them, which is what you want once you have tuned them.',
-    group: 'Performance',
-    common: true,
-  },
-  {
-    flag: '--sleep-idle-seconds',
-    label: 'Sleep when idle after',
-    type: 'int',
-    preset: 1,
-    fallback: '-1 (never)',
-    min: -1,
-    help: 'Seconds of quiet before it unloads the model and gives the VRAM back. The next request loads it again. -1 never sleeps.',
-    group: 'Performance',
-    common: true,
-  },
-  {
     flag: '-lv',
     label: 'Log verbosity',
     type: 'int',
     preset: 4,
-    fallback: '0',
+    fallback: '3 (info)',
     min: 0,
     max: 5,
     help: 'How much it writes: 0 generic, 1 error, 2 warning, 3 info, 4 trace, 5 debug. 4 is what makes the log worth watching.',
@@ -858,7 +868,8 @@ export const SERVICE_DEFINITIONS: ServiceDefinition[] = [
         label: 'System Python',
         file: 'python3',
         args: ['main.py'],
-        hint: "Whatever `python3` resolves to, run inside the root. The fallback when nothing else is found.",
+        hint: 'Whatever `python3` resolves to, run inside the root. Only ever chosen by hand.',
+        onPath: true,
       },
     ],
     args: COMFY_ARGS,
@@ -1004,12 +1015,15 @@ export interface ServiceLogLine {
 /**
  * Split a free-text argument string the way a shell would, near enough.
  *
- * Quotes group, and a backslash escapes the next character. Deliberately not a
- * shell: nothing here expands a variable, runs a subcommand or globs, because
- * the string is handed to `spawn` as an argument list and never to `/bin/sh`.
- * A path with a space in it has to work, and `; rm -rf /` has to be three
- * arguments to a program that will not understand them rather than a second
- * command.
+ * Quotes group, and a backslash escapes a quote or a space — and nothing else.
+ * A backslash before anything else is a backslash, because on Windows it is
+ * the path separator: `C:\models\q4.gguf` has to arrive as itself, not as
+ * `C:modelsq4.gguf`, and `\\server\share` has to keep both of its leading
+ * ones. Deliberately not a shell: nothing here expands a variable, runs a
+ * subcommand or globs, because the string is handed to `spawn` as an argument
+ * list and never to `/bin/sh`. A path with a space in it has to work, and
+ * `; rm -rf /` has to be three arguments to a program that will not
+ * understand them rather than a second command.
  */
 export function splitArgs(input: string): string[] {
   const out: string[] = [];
@@ -1020,8 +1034,14 @@ export function splitArgs(input: string): string[] {
   for (let at = 0; at < input.length; at += 1) {
     const char = input[at]!;
 
-    if (char === '\\' && at + 1 < input.length && quote !== "'") {
-      current += input[at + 1];
+    const next = input[at + 1];
+    if (
+      char === '\\' &&
+      next !== undefined &&
+      quote !== "'" &&
+      (next === '"' || (!quote && (next === "'" || /\s/.test(next))))
+    ) {
+      current += next;
       has = true;
       at += 1;
       continue;
@@ -1067,7 +1087,7 @@ export function argumentsOf(definition: ServiceDefinition, config: ServiceConfig
   const out: string[] = [];
 
   for (const arg of definition.args) {
-    const value = config.values[arg.flag];
+    const value = valueOf(arg, config.values);
     if (value === undefined || value === null || value === '') continue;
 
     if (arg.type === 'flag') {
@@ -1083,9 +1103,42 @@ export function argumentsOf(definition: ServiceDefinition, config: ServiceConfig
   return out;
 }
 
+/** The value set for an argument, under its own flag or a former spelling of it. */
+function valueOf(
+  arg: ServiceArg,
+  values: Record<string, ServiceArgValue>,
+): ServiceArgValue | undefined {
+  if (values[arg.flag] !== undefined) return values[arg.flag];
+  for (const alias of arg.aliases ?? []) {
+    if (values[alias] !== undefined) return values[alias];
+  }
+  return undefined;
+}
+
+/**
+ * The values with every former spelling moved to the flag the form uses now.
+ *
+ * Applied when a configuration is read, so the form shows a renamed argument
+ * as set — and the next save stores it under its current name.
+ */
+export function currentValues(
+  definition: ServiceDefinition,
+  values: Record<string, ServiceArgValue>,
+): Record<string, ServiceArgValue> {
+  const out = { ...values };
+  for (const arg of definition.args) {
+    for (const alias of arg.aliases ?? []) {
+      if (!(alias in out)) continue;
+      if (out[arg.flag] === undefined) out[arg.flag] = out[alias]!;
+      delete out[alias];
+    }
+  }
+  return out;
+}
+
 /** What a service would be started as: the program, its arguments, and where. */
 export interface ServiceCommand {
-  /** The executable. Relative to the root unless it has no path separator. */
+  /** The executable. Relative to the root unless the launcher is `onPath`. */
   file: string;
   args: string[];
   launcher: ServiceLauncher;
@@ -1103,7 +1156,7 @@ export interface ServiceCommand {
 export function buildCommand(
   definition: ServiceDefinition,
   config: ServiceConfig,
-  available: (file: string) => boolean,
+  available: (file: string, launcher: ServiceLauncher) => boolean,
 ): ServiceCommand | null {
   const chosen = config.launcher
     ? definition.launchers.find((launcher) => launcher.id === config.launcher)
@@ -1117,7 +1170,9 @@ export function buildCommand(
    * launcher meant it; the automatic path is where existence decides.
    */
   const launcher =
-    chosen ?? definition.launchers.find((candidate) => available(candidate.file)) ?? null;
+    chosen ??
+    definition.launchers.find((candidate) => available(candidate.file, candidate)) ??
+    null;
   if (!launcher) return null;
 
   return {

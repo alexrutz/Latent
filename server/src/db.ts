@@ -52,7 +52,9 @@ import type { ApiWorkflow, RandomPromptConfig } from '@latent/shared';
 import {
   DEFAULT_RANDOM_PROMPT_CONFIG,
   DEFAULT_WANDER_DRAW,
+  currentValues,
   defaultSampling,
+  definitionFor,
   DEFAULT_FAVORITE_PREVIEW_EVERY,
   DEFAULT_GALLERY_PREVIEW_EVERY,
   IDLE_RUN,
@@ -797,6 +799,9 @@ interface ServiceRow {
  */
 function toService(row: ServiceRow): ServiceConfig {
   const stored = parseJson<Partial<ServiceConfig>>(row.config_json, {});
+  const definition = definitionFor(row.kind);
+  // A flag the form has since renamed keeps its value under the new name.
+  if (definition && stored.values) stored.values = currentValues(definition, stored.values);
   return {
     values: {},
     extraArgs: '',

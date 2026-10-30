@@ -5,6 +5,7 @@ import {
   blankConfig,
   buildCommand,
   commandLine,
+  currentValues,
   definitionFor,
   portOf,
   SERVICE_DEFINITIONS,
@@ -67,6 +68,21 @@ describe('splitArgs', () => {
 
   it('honours a backslash escape outside single quotes', () => {
     expect(splitArgs('a\\ b c')).toEqual(['a b', 'c']);
+  });
+
+  it('leaves a Windows path as it is', () => {
+    // A backslash only escapes a quote or a space. Before anything else it is
+    // a path separator, and swallowing it turned the model path into nonsense.
+    expect(splitArgs('--model C:\\models\\q4.gguf')).toEqual(['--model', 'C:\\models\\q4.gguf']);
+    expect(splitArgs('--model "D:\\My Models\\q4.gguf"')).toEqual([
+      '--model',
+      'D:\\My Models\\q4.gguf',
+    ]);
+    expect(splitArgs('\\\\server\\share\\m.gguf')).toEqual(['\\\\server\\share\\m.gguf']);
+  });
+
+  it('still escapes a quote inside quotes', () => {
+    expect(splitArgs('"say \\"hi\\""')).toEqual(['say "hi"']);
     expect(splitArgs("'a\\ b'")).toEqual(['a\\ b']);
   });
 
@@ -244,10 +260,47 @@ describe('the arguments a model server actually needs', () => {
     // In the order the catalogue declares them, which is the order they read
     // in on the form — so the command line and the form agree.
     expect(argumentsOf(llama, on)).toEqual([
-      '--spec-type', 'draft-mtp',
       '-np', '1',
       '-fit', 'off',
+      '--spec-type', 'draft-mtp',
     ]);
+  });
+
+  it('offers one control for the slots, not -np and --parallel both', () => {
+    // The same flag under two names: set both and it was passed twice.
+    expect(arg('--parallel')).toBeUndefined();
+    expect(arg('-np')?.aliases).toEqual(['--parallel']);
+  });
+
+  it('keeps a slot count saved under the long name', () => {
+    const saved: ServiceConfig = {
+      ...blankConfig(llama, 'id', 0),
+      root: '/opt/llama',
+      values: { '--parallel': 4 },
+    };
+    expect(argumentsOf(llama, saved)).toEqual(['-np', '4']);
+    expect(currentValues(llama, saved.values)).toEqual({ '-np': 4 });
+    // The new name wins when somebody has since set it.
+    expect(currentValues(llama, { '--parallel': 4, '-np': 2 })).toEqual({ '-np': 2 });
+  });
+
+  it('says what llama.cpp logs when -lv is not given', () => {
+    expect(arg('-lv')?.fallback).toMatch(/^3\b/);
+  });
+
+  /*
+   * The screen starts a new section whenever the group changes, so a group
+   * whose arguments are not side by side in the catalogue is drawn twice —
+   * which is what the three llama.cpp arguments added after Speculation did
+   * to Performance.
+   */
+  it('keep each group in one run, so each section appears once', () => {
+    for (const definition of SERVICE_DEFINITIONS) {
+      const runs = definition.args
+        .map((entry) => entry.group)
+        .filter((group, index, all) => group !== all[index - 1]);
+      expect(new Set(runs).size, definition.kind).toBe(runs.length);
+    }
   });
 
   it('lists draft-mtp among the speculation types llama.cpp knows', () => {

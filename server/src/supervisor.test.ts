@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -166,6 +166,58 @@ describe('when it will not start', () => {
       'python3 main.py --listen 0.0.0.0 --port 8189',
     );
     expect(subject.statusOf(config).state).toBe('stopped');
+  });
+});
+
+describe('which program it runs', () => {
+  const llama = definitionFor('llama-server')!;
+
+  /*
+   * A release unzipped into the root has `llama-server` at its top. With no
+   * slash in the name it used to be taken for a program to look up on the
+   * PATH — so whichever llama-server the PATH held ran instead, or, with none
+   * there, nothing did.
+   */
+  it('runs the llama-server under the root, not one from the PATH', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-llama-'));
+    dirs.push(dir);
+    const binary = join(dir, 'llama-server');
+    writeFileSync(binary, '#!/bin/sh\necho "the one under the root"\nsleep 30\n');
+    chmodSync(binary, 0o755);
+
+    const db = store();
+    const config: ServiceConfig = { ...blankConfig(llama, 'llama', Date.now()), root: dir };
+    db.insertService(config);
+    const subject = new Supervisor(db, quiet as never);
+
+    expect(subject.start(config)).toBeNull();
+    await until(() =>
+      subject.logSince(config.id, 0).lines.some((line) => line.text === 'the one under the root'),
+    );
+
+    subject.stop(config.id);
+    await until(() => !isUp(subject.statusOf(config).state));
+  });
+
+  /*
+   * A program that cannot be run at all gets an `error` and, from Node, maybe
+   * no `exit`. Nothing took the service out of "running", so it showed up
+   * with no process behind it and Start did nothing.
+   */
+  it('is failed, not running, when the program cannot be run at all', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-missing-'));
+    dirs.push(dir);
+    const db = store();
+    // Chosen by hand, so it is used although its file is not there.
+    const config = service({ root: dir, launcher: 'portable', autoRestart: true });
+    db.insertService(config);
+    const subject = new Supervisor(db, quiet as never);
+
+    subject.start(config);
+    await until(() => subject.statusOf(config).state === 'failed');
+    expect(subject.statusOf(config).pid).toBeNull();
+    expect(subject.statusOf(config).error).toMatch(/ENOENT/);
+    expect(subject.statusOf(config).restartAt).toBeNull();
   });
 });
 
