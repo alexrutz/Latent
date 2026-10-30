@@ -296,12 +296,19 @@ class TestLengthFromAClip(unittest.TestCase):
                 fake_image(1280, 720, frames=48), length=1)
         self.assertEqual(frames, 48)
 
-    def test_a_still_is_a_clip_of_one(self):
+    def test_a_still_leaves_the_length_alone(self):
+        """Image-to-video: the picture is the first frame, not the whole clip.
+
+        A still counted as a clip of one frame, so connecting the start frame
+        for its size made the node say the video was one frame long.
+        """
         with fake_torch():
-            *_, frames, _ = EmptyLatentByAspectRatio().generate(
+            _, width, height, frames, seconds = EmptyLatentByAspectRatio().generate(
                 "1:1", 1.0, 8, 1, DEFAULT_LATENT_FORMAT, FROM_IMAGE_RESOLUTION,
-                fake_image(512, 512), length=60)
-        self.assertEqual(frames, 1)
+                fake_image(512, 512), length=60, frame_rate=24.0)
+        self.assertEqual((width, height), (512, 512))
+        self.assertEqual(frames, 60)
+        self.assertAlmostEqual(seconds, 2.5, places=4)
 
     def test_a_workflow_saved_before_this_existed_reports_one_frame(self):
         # No value for either widget, which is what an older graph carries.

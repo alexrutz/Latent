@@ -94,8 +94,8 @@ def image_frames(image) -> int:
     A clip in ComfyUI is an ``IMAGE`` batch — that is what *Get Video
     Components* produces and what this pack's reference picker produces — so the
     length of a clip is the first axis of the same tensor its size comes from. A
-    still is a batch of one, which is the honest answer for a still rather than
-    a special case.
+    still is a batch of one; `plan_length` is what decides that one frame says
+    nothing about how long the result should be.
     """
     shape = getattr(image, "shape", None)
     if shape is None or len(shape) < 3:
@@ -117,9 +117,15 @@ def plan_length(length: int, from_image: str = FROM_IMAGE_OFF,
     not an alternative to either, it is the third thing a clip carries, and
     making it a fourth mode would mean choosing between the length and the
     resolution of the very same clip.
+
+    A still carries no duration, so it leaves `length` alone. It used to count
+    as a clip of one frame, which is exactly wrong for the commonest reason to
+    connect one: image-to-video, where the picture is the first frame of a
+    clip whose length you set — and the node then said the clip was one frame
+    long.
     """
-    if from_image != FROM_IMAGE_OFF and source_frames is not None:
-        return max(1, source_frames)
+    if from_image != FROM_IMAGE_OFF and source_frames is not None and source_frames > 1:
+        return source_frames
     return max(1, int(length))
 
 
@@ -254,7 +260,8 @@ class EmptyLatentByAspectRatio:
                     "default": 1, "min": 1, "max": 16384,
                     "tooltip": "Frames, for a video workflow. Reported on the "
                                "'frames' output and overridden by a connected "
-                               "clip's own length whenever 'from_image' is on.",
+                               "clip's own length whenever 'from_image' is on. "
+                               "A still picture leaves it as set.",
                 }),
                 "frame_rate": ("FLOAT", {
                     "default": 24.0, "min": 0.1, "max": 240.0, "step": 0.1,
