@@ -94,7 +94,12 @@ export function ChatMark({ className = 'size-[1.15rem]' }: { className?: string 
  * Bottom navigation, because the bottom of the screen is the only part of a
  * phone you can reach one-handed.
  */
-export function BottomTabs() {
+/**
+ * `raised` lifts the bar over the privacy cover, which is drawn over the
+ * whole screen — the image viewer and an open sheet included — and leaves
+ * only the navigation to tap.
+ */
+export function BottomTabs({ raised = false }: { raised?: boolean } = {}) {
   const queueRemaining = useLiveStore((state) => state.live.queueRemaining);
   const pathname = useLocation().pathname;
   const navigate = useNavigate();
@@ -128,7 +133,12 @@ export function BottomTabs() {
       that starts here was being handed to the document, which slid the whole
       app up and left a strip of background where it had been.
     */
-    <nav className="safe-b relative shrink-0 touch-none bg-surface/95 backdrop-blur">
+    <nav
+      className={cn(
+        'safe-b relative shrink-0 touch-none bg-surface/95 backdrop-blur',
+        raised && 'z-90',
+      )}
+    >
       {moreOpen && (
         <>
           {/* Tapping anywhere else puts it away, the way a menu should. */}

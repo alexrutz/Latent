@@ -23,7 +23,8 @@ import { cn } from './ui';
  * menu. And the labels are legible: eight points at the bottom of a phone is
  * a shape you learn the position of rather than a word you read.
  */
-export function SideRail() {
+/** `raised` lifts the rail over the privacy cover. See `BottomTabs`. */
+export function SideRail({ raised = false }: { raised?: boolean } = {}) {
   const queueRemaining = useLiveStore((state) => state.live.queueRemaining);
   const pathname = useLocation().pathname;
 
@@ -46,7 +47,10 @@ export function SideRail() {
         stood on its end. All of it in the stylesheet rather than a second tree:
         the same rows, wider.
       */
-      className="safe-l safe-t z-30 flex w-[5.25rem] shrink-0 touch-none flex-col border-r border-line bg-surface/60 desk:w-[13.5rem]"
+      className={cn(
+        'safe-l safe-t flex w-[5.25rem] shrink-0 touch-none flex-col border-r border-line bg-surface/60 desk:w-[13.5rem]',
+        raised ? 'z-90' : 'z-30',
+      )}
     >
       {/*
         The name, once, at the top of the rail.

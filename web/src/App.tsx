@@ -203,16 +203,11 @@ export function App() {
         where it sits along the bottom. Keeping the two in step is what makes
         the reading order and the tab order match what you can see.
       */}
-      {tablet && <SideRail />}
+      {tablet && <SideRail raised={covered} />}
       {/*
-        Everything the cover covers, in one positioned box.
-
-        The cover is "the app, minus the way out of it", and the way out is the
-        navigation — the bar along the bottom of a phone, the rail down the side
-        of a tablet. Both of those sit outside this box, so an absolutely
-        positioned child of it reaches exactly the screen, the progress bar and
-        the bench, and stops at the navigation without anything having to
-        measure where the navigation is.
+        The screen, the progress bar and the bench. The privacy cover is drawn
+        over all of it and over every full-screen layer besides — see
+        `PrivacyCover` — and the navigation either side is raised above it.
       */}
       <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
         {column}
@@ -226,7 +221,7 @@ export function App() {
         {desk && <Dock />}
         {covered && <PrivacyCover />}
       </div>
-      {!tablet && <BottomTabs />}
+      {!tablet && <BottomTabs raised={covered} />}
 
       <UnlockArchiveDialog open={unlocking} onClose={() => setUnlocking(false)} />
       <KeyMap open={map} onClose={closeMap} />

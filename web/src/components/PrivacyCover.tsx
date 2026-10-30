@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 import { uncover } from '../state/privacy';
 
@@ -40,7 +41,27 @@ export function PrivacyCover() {
     return () => clearInterval(timer);
   }, []);
 
-  return (
+  /*
+   * Focus on the cover, not on whatever was focused under it.
+   *
+   * An open sheet keeps its focus otherwise, and Enter in its text box would
+   * act on a form nobody can see. Here, Enter lifts the cover instead.
+   */
+  const ref = useRef<HTMLButtonElement>(null);
+  useEffect(() => ref.current?.focus({ preventScroll: true }), []);
+
+  /*
+   * Into the body, over the whole screen.
+   *
+   * It used to fill the content box beside the navigation, which kept the tabs
+   * clear without measuring anything — and put it under everything that is a
+   * full-screen layer of its own. The image viewer, the terminal and every
+   * sheet are, so a picture open in the viewer or a prompt in a sheet stayed
+   * on screen with the cover tucked away behind it. Now it is above all of
+   * them, and the navigation is lifted over it instead (`raised` on the tab
+   * bar and the rail), which is the one thing meant to stay reachable.
+   */
+  return createPortal(
     /*
       A button, not a div with a click handler.
 
@@ -56,10 +77,11 @@ export function PrivacyCover() {
     */
     <button
       type="button"
+      ref={ref}
       data-testid="privacy-cover"
       aria-label="Latent is covered. Tap to return."
       onClick={uncover}
-      className="animate-fade absolute inset-0 z-40 flex touch-none flex-col items-center justify-center overflow-hidden bg-ink"
+      className="animate-fade fixed inset-0 z-80 flex touch-none flex-col items-center justify-center overflow-hidden bg-ink"
     >
       {/*
         Two soft fields, well inside the edges.
@@ -120,6 +142,7 @@ export function PrivacyCover() {
           Tap anywhere to carry on, or pick a tab below.
         </span>
       </div>
-    </button>
+    </button>,
+    document.body,
   );
 }

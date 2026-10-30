@@ -8056,8 +8056,8 @@ test.describe('at a desk', () => {
  *
  * The moment it is for is the one you did not plan: the phone locked and handed
  * back, the screen shared, the laptop turned round. What has to be true is
- * narrow and testable — the cover is opaque, it stops at the tab bar, and the
- * way back in is a tap.
+ * narrow and testable — the cover is opaque, it is over everything but the
+ * navigation, and the way back in is a tap.
  */
 test.describe('the privacy cover', () => {
   test.beforeEach(async () => {
@@ -8101,17 +8101,57 @@ test.describe('the privacy cover', () => {
     });
     expect(solid).toBe(true);
 
-    // It stops at the tab bar, which is what makes it feel like part of the app
-    // rather than a crash: the way out is the navigation that was always there.
+    // The tab bar stays on top of it, which is what makes it feel like part of
+    // the app rather than a crash: the way out is the navigation that was
+    // always there. Asked of the page — what is under the middle of the tab —
+    // rather than of the boxes, because the cover is the whole screen now and
+    // the bar is lifted over it.
     const tab = page.getByRole('link', { name: 'Gallery' });
     await expect(tab).toBeVisible();
-    const [coverBox, tabBox] = await Promise.all([cover.boundingBox(), tab.boundingBox()]);
-    expect(coverBox!.y + coverBox!.height).toBeLessThanOrEqual(tabBox!.y + 1);
+    expect(await onTop(tab)).toBe(true);
 
     // A tap anywhere on it puts you back where you were.
     await cover.click();
     await expect(cover).toHaveCount(0);
     await expect(page).toHaveURL(/\/gallery$/);
+  });
+
+  /** Whether this element is what a tap at its centre would land on. */
+  const onTop = (target: import('@playwright/test').Locator) =>
+    target.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      return hit !== null && node.contains(hit);
+    });
+
+  /*
+   * Over the full-screen layers too.
+   *
+   * The viewer and every sheet are layers of their own above the app, and the
+   * cover used to sit inside the app, under them — so leaving with a picture
+   * open left the picture on screen, the one case the cover is most for.
+   */
+  test('covers a picture open in the viewer, and the tabs still work', async ({ page }) => {
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('not for the room');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await dismissResult(page);
+    await page.getByRole('link', { name: 'Gallery' }).click();
+    await page.locator('main img').first().click({ timeout: 60_000 });
+    const picture = page.getByTestId('viewer-image');
+    await expect(picture).toBeVisible();
+
+    await leave(page);
+    const cover = page.getByTestId('privacy-cover');
+    await expect(cover).toBeVisible();
+    expect(await onTop(cover)).toBe(true);
+    // The picture is still there underneath, just not what is on top.
+    expect(await onTop(picture)).toBe(false);
+    await page.screenshot({ path: 'test-results/103-privacy-cover-viewer.png' });
+
+    await page.getByRole('link', { name: 'Queue' }).click();
+    await expect(cover).toHaveCount(0);
+    await expect(page).toHaveURL(/\/queue$/);
   });
 
   test('a tab lifts it and goes where it says', async ({ page }) => {
