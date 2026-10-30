@@ -65,6 +65,11 @@ ROOTS_ENV = "COMFYLLAMA_IMAGE_ROOTS"
 # folder" is to filter, not to turn a page four hundred times. The listing says
 # when it has been cut short so the interface can say so too.
 LIST_LIMIT = 2000
+# How many matching files a recursive walk collects before it stops looking.
+# Far past what is shown, because it is what gets sorted and searched: stopping
+# at the display limit meant "newest first" and a search only ever saw the
+# alphabetically first few folders of a big output tree.
+SCAN_LIMIT = 50_000
 
 # How deep a recursive listing goes.
 #
@@ -276,8 +281,8 @@ def _matches(name: str, allowed: "set[str]") -> bool:
 
 
 def _collect(
-    start: str, *, recursive: bool, limit: int, allowed: "set[str]"
-) -> Tuple[List[str], List[str]]:
+    start: str, *, recursive: bool, limit: int, allowed: "set[str]", query: str = ""
+) -> Tuple[List[str], List[str], bool]:
     """Subfolders and image files under `start`, as absolute paths.
 
     Only the *immediate* subfolders come back, even walking recursively: they
@@ -292,6 +297,9 @@ def _collect(
     folders: List[str] = []
     files: List[str] = []
 
+    def wanted(name: str) -> bool:
+        return _matches(name, allowed) and (not query or query in name.lower())
+
     try:
         entries = sorted(os.scandir(start), key=lambda entry: entry.name.lower())
     except OSError as exc:
@@ -301,16 +309,18 @@ def _collect(
         try:
             if entry.is_dir(follow_symlinks=False):
                 folders.append(entry.path)
-            elif entry.is_file(follow_symlinks=False) and _matches(entry.name, allowed):
+            elif entry.is_file(follow_symlinks=False) and wanted(entry.name):
                 files.append(entry.path)
         except OSError:
             continue
 
     if not recursive:
-        return folders, files
+        return folders, files, False
 
-    # One extra past the cap, so the caller can tell "exactly the limit" from
-    # "more than the limit" without walking the rest of the tree to count them.
+    # The search is applied while walking, and the walk goes on far past the
+    # display limit: what it collects is what gets sorted, so it has to be the
+    # tree rather than its first corner. `cut` says when even that ran out.
+    cap = max(limit + 1, SCAN_LIMIT)
     for walk_root, directories, names in os.walk(start, followlinks=False):
         depth = walk_root[len(start):].count(os.sep)
         if depth >= MAX_DEPTH:
@@ -319,12 +329,12 @@ def _collect(
         if walk_root == start:
             continue  # already scanned above
         for name in names:
-            if _matches(name, allowed):
+            if wanted(name):
                 files.append(os.path.join(walk_root, name))
-        if len(files) > limit:
-            return folders, files
+        if len(files) >= cap:
+            return folders, files, True
 
-    return folders, files
+    return folders, files, False
 
 
 def _sort_key(sort: str):
@@ -371,8 +381,8 @@ def list_folder(
 
     # Not named `folder_paths`: that is the ComfyUI module this file imports a
     # few lines up, and shadowing it here would be a trap for the next edit.
-    subfolders, pictures = _collect(
-        start, recursive=recursive, limit=limit, allowed=extensions_for(kind)
+    subfolders, pictures, cut = _collect(
+        start, recursive=recursive, limit=limit, allowed=extensions_for(kind), query=query
     )
 
     def keep(entry: Optional[Dict[str, Any]]) -> bool:
@@ -392,6 +402,6 @@ def list_folder(
         "path": "" if start == root else os.path.relpath(start, root).replace(os.sep, "/"),
         "folders": folders,
         "files": files[:limit],
-        "truncated": len(files) > limit,
+        "truncated": cut or len(files) > limit,
         "total": len(files),
     }

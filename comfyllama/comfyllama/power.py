@@ -45,9 +45,12 @@ CACHE_MS = 900
 _cache: Optional[Dict[str, Any]] = None
 _cache_at = 0.0
 
-# Set once we have tried and failed, so a CPU-only box does not pay for a
-# subprocess every two seconds forever.
-_unavailable = False
+# When to try again after a reading came back empty, so a CPU-only box does
+# not pay for a subprocess every two seconds. A pause rather than a verdict:
+# one nvidia-smi timing out under a heavy render used to switch the figure off
+# until ComfyUI was restarted, with the GPU readable again seconds later.
+RETRY_S = 60.0
+_unavailable_until = 0.0
 
 _nvml: Any = None
 _handles: List[Any] = []
@@ -152,13 +155,13 @@ def read_power(now: Optional[float] = None) -> Dict[str, Any]:
     `{"gpus": [{"watts": 312.4, "limit": 450.0}], "source": "nvml"}`, or
     `{"gpus": [], "source": None}` where there is nothing to read.
     """
-    global _cache, _cache_at, _unavailable
+    global _cache, _cache_at, _unavailable_until
 
     moment = now if now is not None else time.monotonic()
     if _cache is not None and (moment - _cache_at) * 1000 < CACHE_MS:
         return _cache
 
-    if _unavailable:
+    if moment < _unavailable_until:
         return {"gpus": [], "source": None}
 
     gpus = _from_nvml()
@@ -168,8 +171,8 @@ def read_power(now: Optional[float] = None) -> Dict[str, Any]:
         source = "nvidia-smi"
 
     if gpus is None:
-        # Remembered, so a box with no NVIDIA card in it stops being asked.
-        _unavailable = True
+        # Asked again in a minute, not every two seconds and not never.
+        _unavailable_until = moment + RETRY_S
         return {"gpus": [], "source": None}
 
     _cache = {"gpus": gpus, "source": source}
@@ -179,10 +182,10 @@ def read_power(now: Optional[float] = None) -> Dict[str, Any]:
 
 def reset() -> None:
     """Forget everything cached. For tests, and for a driver that came back."""
-    global _cache, _cache_at, _unavailable, _nvml, _handles
+    global _cache, _cache_at, _unavailable_until, _nvml, _handles
     _cache = None
     _cache_at = 0.0
-    _unavailable = False
+    _unavailable_until = 0.0
     _nvml = None
     _handles = []
 

@@ -655,6 +655,39 @@ class TestModelCache(unittest.TestCase):
         self.assertTrue(llm.closed)
         self.assertIsNone(first.llm)
 
+    def test_an_evicted_handle_loads_again_when_it_is_used(self):
+        """Two loaders, keep_loaded=1: the first's handle is still held downstream.
+
+        Evicting it used to break every node after the second loader, and every
+        later run too, because ComfyUI keeps handing out the same freed handle.
+        """
+        cache = backend.ModelCache()
+        loads = []
+
+        def loader(name):
+            def factory():
+                loads.append(name)
+                return backend.LlamaModel(FakeLlama([]), (name,), name)
+            return factory
+
+        first = cache.get_or_load(("a",), loader("a"))
+        cache.get_or_load(("b",), loader("b"))
+        self.assertIsNone(first.llm)
+
+        self.assertIsNotNone(first.require())
+        self.assertEqual(loads, ["a", "b", "a"])
+        # Loaded through the cache, so keep_loaded still holds: b made room.
+        self.assertEqual(list(cache._entries), [("a",)])
+        self.assertIs(cache._entries[("a",)], first)
+
+    def test_an_unloaded_handle_still_refuses(self):
+        cache = backend.ModelCache()
+        model = cache.get_or_load(
+            ("a",), lambda: backend.LlamaModel(FakeLlama([]), ("a",), "a"))
+        cache.forget(model)
+        with self.assertRaises(RuntimeError):
+            model.require()
+
     def test_keep_loaded_zero_never_caches(self):
         cache = backend.ModelCache()
         model = cache.get_or_load(

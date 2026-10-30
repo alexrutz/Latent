@@ -48,7 +48,9 @@ class StubHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
         for event in events:
-            self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
+            # A plain string is a raw line, for the `error:` form.
+            line = event if isinstance(event, str) else f"data: {json.dumps(event)}"
+            self.wfile.write(f"{line}\n\n".encode())
             self.wfile.flush()
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
@@ -101,6 +103,8 @@ class StubHandler(BaseHTTPRequestHandler):
                       for piece in state["reasoning_pieces"]]
             events += [{"choices": [{"delta": {"content": piece}}]}
                        for piece in state["pieces"]]
+            if state.get("stream_error") is not None:
+                events.append(state["stream_error"])
             events.append({"choices": [{"delta": {}, "finish_reason": "stop"}]})
             return self._sse(events)
         if self.path == "/completion":
@@ -659,6 +663,25 @@ class TestChatNode(ServerTestCase):
         self.assertEqual(sent["seed"], 5)
         self.assertEqual(sent["max_tokens"], 16)
         self.assertEqual([m["role"] for m in sent["messages"]], ["system", "user"])
+
+    def test_an_error_part_way_through_the_reply_is_raised(self):
+        """The context overflowing after the stream began, say.
+
+        It arrives as an event, not a status code, and was passed over: the
+        node returned empty text and the graph carried on with a blank prompt.
+        """
+        for form in ({"error": {"message": "context overflow"}},
+                     'error: {"message": "context overflow"}'):
+            with self.subTest(form=form):
+                self.stub.state["stream_error"] = form
+                try:
+                    with self.assertRaises(LlamaServerError) as ctx:
+                        remote.LlamaServerChat().generate(
+                            self.connect(), "", "hi", thinking="auto", max_tokens=8,
+                            temperature=0.0, top_p=1.0, seed=0)
+                finally:
+                    self.stub.state["stream_error"] = None
+                self.assertIn("context overflow", str(ctx.exception))
 
     def test_sampling_and_grammar_reach_the_server(self):
         sampling = LlamaCppSampling().build(**sampling_args(

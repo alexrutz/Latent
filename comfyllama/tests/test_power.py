@@ -101,6 +101,30 @@ class PowerTests(unittest.TestCase):
 
         self.assertEqual(which.call_count, 1)
 
+    def test_asks_again_after_a_while_rather_than_never(self) -> None:
+        """One nvidia-smi timeout under load used to end the figure for good."""
+        def run(*_args, **_kwargs):
+            return subprocess.CompletedProcess([], 0, stdout="280.5, 450.00\n", stderr="")
+
+        with (
+            mock.patch.object(power, "_init_nvml", return_value=False),
+            mock.patch.object(power.shutil, "which", return_value="/usr/bin/nvidia-smi"),
+            mock.patch.object(
+                power.subprocess, "run", side_effect=subprocess.TimeoutExpired("nvidia-smi", 4)
+            ),
+        ):
+            self.assertEqual(power.read_power(now=100.0)["gpus"], [])
+            # Inside the pause, not asked again.
+            self.assertEqual(power.read_power(now=110.0)["gpus"], [])
+
+        with (
+            mock.patch.object(power, "_init_nvml", return_value=False),
+            mock.patch.object(power.shutil, "which", return_value="/usr/bin/nvidia-smi"),
+            mock.patch.object(power.subprocess, "run", side_effect=run),
+        ):
+            reading = power.read_power(now=100.0 + power.RETRY_S + 1)
+        self.assertEqual(reading["gpus"], [{"watts": 280.5, "limit": 450.0}])
+
     def test_survives_nvidia_smi_failing(self) -> None:
         with (
             mock.patch.object(power, "_init_nvml", return_value=False),

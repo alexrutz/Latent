@@ -281,6 +281,12 @@ class LlamaServer:
                     continue
                 if event is _DONE:
                     return
+                # An error after the stream has started arrives as an event,
+                # not as a status code. Passed over, it ended the run with
+                # empty text and the graph carried on with a blank prompt.
+                problem = _stream_error(event)
+                if problem is not None:
+                    raise LlamaServerError(f"llama-server reported an error mid-reply: {problem}")
                 yield event
         finally:
             response.close()
@@ -371,6 +377,13 @@ def _decode_sse_line(line: bytes) -> Any:
     text = line.decode("utf-8", "replace").strip()
     if not text or text.startswith(":"):
         return None
+    # `error: {...}` is how llama-server's own SSE reports a failure part way.
+    if text.startswith("error:"):
+        detail = text[len("error:"):].strip()
+        try:
+            return {"error": json.loads(detail)}
+        except json.JSONDecodeError:
+            return {"error": detail or "unknown error"}
     if text.startswith("data:"):
         text = text[len("data:"):].strip()
     if text == "[DONE]":
@@ -379,6 +392,16 @@ def _decode_sse_line(line: bytes) -> Any:
         return json.loads(text)
     except json.JSONDecodeError:
         return None
+
+
+def _stream_error(event: Any) -> Optional[str]:
+    """The message of an error event, or None for an ordinary one."""
+    if not isinstance(event, dict) or "error" not in event or event.get("choices"):
+        return None
+    error = event["error"]
+    if isinstance(error, dict):
+        return str(error.get("message") or error)
+    return str(error)
 
 
 def _error_detail(exc: urllib.error.HTTPError) -> str:

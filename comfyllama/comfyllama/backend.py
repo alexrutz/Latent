@@ -122,6 +122,10 @@ class LlamaModel:
         self.chat_format = chat_format
         self.vision = vision
         self.n_ctx = n_ctx
+        # Set by `ModelCache` when it makes room by freeing this one, so the
+        # next use can load it again instead of failing. See `require`.
+        self._evicted_from: Optional["ModelCache"] = None
+        self._factory: Optional[Callable[[], "LlamaModel"]] = None
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         kind = "vision" if self.vision else "text"
@@ -141,6 +145,17 @@ class LlamaModel:
         gc.collect()
 
     def require(self) -> Any:
+        """The loaded model, loading it again if the cache made room by freeing it.
+
+        Two loaders in one graph with `keep_loaded=1`: the second evicts the
+        first, but a node after it still holds the first's handle — and so does
+        ComfyUI's output cache, which hands the same freed handle out on every
+        later run without re-running the loader. That used to fail here every
+        time until an input changed. Evicted is not unloaded: only the unload
+        node, or clearing the cache, means "gone".
+        """
+        if self.llm is None and self._evicted_from is not None and self._factory is not None:
+            self._evicted_from.revive(self)
         if self.llm is None:
             raise RuntimeError(
                 f"The model '{self.name}' was unloaded. Re-run the loader node "
@@ -171,6 +186,7 @@ class ModelCache:
         # Loading happens outside the lock: it is slow and must not block a
         # parallel `unload` from the UI.
         model = factory()
+        model._factory = factory
 
         with self._lock:
             if self.max_entries:
@@ -179,9 +195,31 @@ class ModelCache:
                 self._trim(self.max_entries)
         return model
 
+    def revive(self, model: LlamaModel) -> None:
+        """Load an evicted model back into the same handle, making room as a load does."""
+        factory = model._factory
+        if factory is None:
+            return
+        with self._lock:
+            self._entries.pop(model.key, None)
+            self._trim(self.max_entries - 1 if self.max_entries else 0)
+
+        fresh = factory()
+        # Into the handle the graph is already holding, so every node that has
+        # it — and ComfyUI's cache — sees the loaded model again.
+        model.llm, fresh.llm = fresh.llm, None
+        model._evicted_from = None
+
+        with self._lock:
+            if self.max_entries:
+                self._entries[model.key] = model
+                self._entries.move_to_end(model.key)
+                self._trim(self.max_entries)
+
     def _trim(self, keep: int) -> None:
         while len(self._entries) > max(0, keep):
             _, victim = self._entries.popitem(last=False)
+            victim._evicted_from = self
             victim.free()
 
     def forget(self, model: LlamaModel) -> None:
@@ -189,6 +227,8 @@ class ModelCache:
             cached = self._entries.get(model.key)
             if cached is model:
                 self._entries.pop(model.key, None)
+        # Unloaded on purpose: using it afterwards is an error, not a reload.
+        model._evicted_from = None
         model.free()
 
     def clear(self) -> None:
@@ -196,6 +236,7 @@ class ModelCache:
             entries = list(self._entries.values())
             self._entries.clear()
         for entry in entries:
+            entry._evicted_from = None
             entry.free()
         gc.collect()
         mm = _model_management()

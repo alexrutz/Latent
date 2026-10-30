@@ -108,14 +108,43 @@ def load_video(path: str, fps: int = TARGET_FPS, max_seconds: int = MAX_VIDEO_SE
             raise BrowseError(f"'{os.path.basename(path)}' has no video in it.")
         stream = container.streams.video[0]
         source_fps = float(stream.average_rate or fps)
-        frames = [frame.to_ndarray(format="rgb24") for frame in container.decode(stream)]
+        if source_fps <= 0:
+            source_fps = float(fps)
 
-    if not frames:
+        # Only as far as the cap, and only the frames that will be kept turned
+        # into arrays. Decoding the whole file first — every frame of a ten
+        # minute 4K clip, held at once — ran ComfyUI out of memory to keep the
+        # first fifteen seconds of it.
+        def source_index(i: int) -> int:
+            return int(round(i * source_fps / fps))
+
+        needed = {source_index(i) for i in range(int(max_seconds * fps) + 1)}
+        stop = int(max_seconds * source_fps) + 1
+        kept = {}
+        last = None
+        count = 0
+        for frame in container.decode(stream):
+            if count >= stop:
+                break
+            if count in needed:
+                kept[count] = frame.to_ndarray(format="rgb24")
+                last = kept[count]
+            else:
+                last = frame
+            count += 1
+        # Converted while the file is still open, like every other frame.
+        if last is not None and not isinstance(last, np.ndarray):
+            last = last.to_ndarray(format="rgb24")
+
+    if count == 0:
         raise BrowseError(f"No frames could be read from '{os.path.basename(path)}'.")
 
-    duration = len(frames) / source_fps if source_fps > 0 else 0.0
+    duration = count / source_fps
     wanted = max(1, int(round(min(duration, max_seconds) * fps)))
-    picked = [frames[min(len(frames) - 1, int(round(i * source_fps / fps)))] for i in range(wanted)]
+    picked = []
+    for i in range(wanted):
+        index = source_index(i)
+        picked.append(kept[index] if index < count - 1 and index in kept else last)
 
     stacked = np.stack(picked).astype(np.float32) / 255.0
     return torch.from_numpy(stacked)

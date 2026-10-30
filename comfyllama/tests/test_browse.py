@@ -238,6 +238,23 @@ class TestListing(BrowseTestCase):
         self.assertTrue(listing["truncated"])
         self.assertGreater(listing["total"], 2)
 
+    def test_a_capped_search_still_reaches_the_last_folder(self):
+        """The walk stopped at the cap before the search ran, in folder order.
+
+        So a search for something in a later folder found nothing, and said
+        nothing was cut short.
+        """
+        listing = browse.list_folder(self.key, recursive=True, query="delta", limit=1)
+        self.assertEqual([entry["name"] for entry in listing["files"]], ["delta.webp"])
+        self.assertFalse(listing["truncated"])
+
+    def test_newest_first_looks_at_the_whole_tree_before_the_cap(self):
+        newest = os.path.join(self.root, "tuesday", "portraits", "delta.webp")
+        os.utime(newest, (time.time() + 60, time.time() + 60))
+        listing = browse.list_folder(self.key, recursive=True, limit=1)
+        self.assertEqual(listing["files"][0]["name"], "delta.webp")
+        self.assertTrue(listing["truncated"])
+
     def test_an_uncapped_listing_does_not_claim_to_be_cut_short(self):
         listing = browse.list_folder(self.key, recursive=True)
         self.assertFalse(listing["truncated"])

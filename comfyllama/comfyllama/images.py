@@ -89,13 +89,28 @@ def sample_frames(video, count: int) -> List[Any]:
     is the part that says least about it. First and last always included, so the
     sample spans the whole thing rather than stopping short of the end.
     """
-    frames = _to_pil_images(video)
-    if count <= 0 or len(frames) <= count:
-        return frames
+    # Which frames, from the length alone, and then only those converted.
+    # Converting all of them first meant 360 full-size pictures built to keep
+    # 8 — about fifty times the work for the same result.
+    total = _frame_count(video)
+    if count <= 0 or total <= count:
+        return _to_pil_images(video)
     if count == 1:
-        return [frames[0]]
-    step = (len(frames) - 1) / (count - 1)
-    return [frames[int(round(index * step))] for index in range(count)]
+        picks = [0]
+    else:
+        step = (total - 1) / (count - 1)
+        picks = [int(round(index * step)) for index in range(count)]
+    return _to_pil_images(video[picks])
+
+
+def _frame_count(video) -> int:
+    """How many frames an IMAGE batch holds, without converting any of them."""
+    shape = getattr(video, "shape", None)
+    if shape is None:
+        import numpy as np
+
+        shape = np.asarray(video).shape
+    return int(shape[0]) if len(shape) == 4 else 1
 
 
 def video_to_content(video, *, frames: int = 8, max_size: int = 1024,
