@@ -10,7 +10,8 @@ import type { ComfyImageRef } from '@latent/shared';
 
 import type { ComfyClient } from './comfy/client.js';
 import type { ImageRow, Store } from './db.js';
-import { makeThumbnail, readImageSize } from './images/png.js';
+import { makeThumbnailOffThread } from './images/offThread.js';
+import { readImageSize } from './images/png.js';
 import { ArchiveUnreadableError, Vault, VaultLockedError } from './vault.js';
 
 /**
@@ -168,7 +169,8 @@ export class Archive {
 
     const size = readImageSize(data);
 
-    const generated = makeThumbnail(data, THUMBNAIL_SIZE);
+    // Off the main thread: see `makeThumbnailOffThread`.
+    const generated = await makeThumbnailOffThread(data, THUMBNAIL_SIZE);
     const thumbnail = generated?.data ?? null;
 
     let thumbPath: string | null = null;

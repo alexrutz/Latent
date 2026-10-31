@@ -5,7 +5,8 @@ import type { InputImage, InputScanResult } from '@latent/shared';
 
 import { inputRoot } from './comfyPaths.js';
 import type { Store } from './db.js';
-import { makeThumbnail, readImageSizeOfFile } from './images/png.js';
+import { makeThumbnailOffThread } from './images/offThread.js';
+import { readImageSizeOfFile } from './images/png.js';
 
 /**
  * A folder of pictures to feed *into* workflows.
@@ -160,7 +161,7 @@ export class InputLibrary {
     const file = await this.read(relativePath);
     if (!file) return null;
 
-    const generated = makeThumbnail(file.data, THUMBNAIL_SIZE);
+    const generated = await makeThumbnailOffThread(file.data, THUMBNAIL_SIZE);
     if (generated && generated.data.length < file.data.length) {
       return { data: generated.data, png: true };
     }

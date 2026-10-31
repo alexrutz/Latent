@@ -1,4 +1,5 @@
-import { decodePng, isPng, makeThumbnail, readImageSize, renderRegion } from './png.js';
+import { makeThumbnailOffThread } from './offThread.js';
+import { decodePng, isPng, readImageSize, renderRegion } from './png.js';
 import type { DecodedPng, Region } from './png.js';
 
 /**
@@ -112,7 +113,7 @@ export class ThumbnailCache {
       });
     }
 
-    const thumbnail = await this.serialise(() => makeThumbnail(original, this.maxSize));
+    const thumbnail = await this.serialise(() => makeThumbnailOffThread(original, this.maxSize));
     if (!thumbnail) return this.remember(key, null);
     return this.remember(key, { data: thumbnail.data, contentType: 'image/png' });
   }
@@ -120,14 +121,14 @@ export class ThumbnailCache {
   /**
    * Run the decoding one picture at a time, yielding first.
    *
-   * It is several hundred milliseconds of straight-line JavaScript, which
-   * nothing else can run during. A gallery page asks for twenty at once; doing
-   * them concurrently would not be faster — there is one thread — and would
-   * hold the event loop for the whole batch, stalling the ComfyUI socket and
-   * every other request behind it. One at a time, with a turn of the loop in
-   * between, spreads the same work out so the app stays answerable.
+   * The decoding itself is on the thumbnail worker now (see
+   * `makeThumbnailOffThread`), so it no longer holds the event loop. One at a
+   * time still, because a gallery page asks for twenty at once and the worker
+   * takes them in turn anyway: queued here, only one original is copied across
+   * at a time rather than twenty full-size pictures waiting in its mailbox. And
+   * where the worker cannot start, this is still what keeps the app answerable.
    */
-  private serialise<T>(task: () => T): Promise<T> {
+  private serialise<T>(task: () => T | Promise<T>): Promise<T> {
     const next = this.tail.then(async () => {
       await new Promise((resolve) => setImmediate(resolve));
       return task();
