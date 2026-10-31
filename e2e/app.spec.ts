@@ -2506,6 +2506,23 @@ test.describe('keeping, deleting and looking closely', () => {
    * then for the gallery to fetch every page scrolled through, one after
    * another, before the star on screen changed.
    */
+  /*
+   * Whether the picture on screen is a favourite comes from a small index,
+   * not from every favourite in full — which the viewer used to fetch, settings
+   * and all, each time it opened.
+   */
+  test('asks only which pictures are favourites when the viewer opens', async ({ page }) => {
+    const asked: string[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.startsWith('/api/favorites')) asked.push(url.pathname + url.search);
+    });
+    await generateAndOpen(page, 'is this one kept');
+    await expect(page.getByRole('button', { name: /^Favourite/ })).toBeVisible();
+    expect(asked.some((path) => path.startsWith('/api/favorites/index'))).toBe(true);
+    expect(asked.filter((path) => /^\/api\/favorites(\?|$)/.test(path))).toEqual([]);
+  });
+
   test('lights a star at once and fetches no gallery pages for it', async ({ page }) => {
     await generateAndOpen(page, 'rate me quickly');
 

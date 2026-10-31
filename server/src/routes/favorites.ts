@@ -100,6 +100,28 @@ export function registerFavoriteRoutes(app: FastifyInstance, ctx: AppContext): v
     return ctx.store.listFavorites(requested && SORTS.has(requested) ? requested : 'rating');
   });
 
+  /** A page at a time, for the screen and the picker. See `listFavoritesPage`. */
+  app.get<{ Querystring: { sort?: string; limit?: string; cursor?: string } }>(
+    '/api/favorites/page',
+    async (request) => {
+      const requested = request.query.sort as FavoriteSort | undefined;
+      return ctx.store.listFavoritesPage(
+        requested && SORTS.has(requested) ? requested : 'rating',
+        Number(request.query.limit ?? 30),
+        request.query.cursor ?? null,
+      );
+    },
+  );
+
+  /** Which pictures are favourites, for the viewer's button. */
+  app.get('/api/favorites/index', async () => ctx.store.listFavoriteIndex());
+
+  app.get<{ Params: { id: string } }>('/api/favorites/:id', async (request, reply) => {
+    const favorite = ctx.store.getFavorite(request.params.id);
+    if (!favorite) return reply.code(404).send({ error: 'Favourite not found' });
+    return favorite;
+  });
+
   app.post<{ Body: CreateFavoriteRequest }>('/api/favorites', async (request, reply) => {
     const { generationId, image, note } = request.body ?? {};
     if (!generationId || !image?.filename) {

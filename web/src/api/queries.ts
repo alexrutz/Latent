@@ -12,6 +12,8 @@ import { useEffect, useMemo } from 'react';
 
 import type {
   Favorite,
+  FavoriteIndexEntry,
+  FavoritePage,
   GalleryPage,
   AppSettings,
   ServicePatch,
@@ -45,6 +47,10 @@ export const queryKeys = {
   settings: ['settings'] as const,
   connections: ['connections'] as const,
   favorites: ['favorites'] as const,
+  /** Paged lists live under the same root, so `favorites` reaches them all. */
+  favoritePages: (sort: FavoriteSort) => ['favorites', 'pages', sort] as const,
+  favoriteIndex: ['favorites', 'index'] as const,
+  favorite: (id: string) => ['favorites', 'one', id] as const,
   promptBlocks: ['prompt-blocks'] as const,
   systemPrompts: ['system-prompts'] as const,
   taste: ['taste'] as const,
@@ -438,19 +444,20 @@ function patchImage(
     return touched ? { ...data, pages } : data;
   });
 
-  // A favourite shows its picture's own star and keep too.
-  client.setQueriesData<Favorite[]>({ queryKey: queryKeys.favorites }, (data) => {
-    if (!Array.isArray(data)) return data;
-    let touched = false;
-    const next = data.map((favorite) => {
-      if (!favorite.image || favorite.generationId !== generationId || !sameImage(favorite.image, image)) {
-        return favorite;
-      }
-      touched = true;
-      return { ...favorite, image: { ...favorite.image, ...change } };
-    });
-    return touched ? next : data;
-  });
+  // A favourite shows its picture's own star and keep too, in a paged list
+  // or the one picture open in the viewer.
+  const onFavorite = (favorite: Favorite): Favorite =>
+    favorite.image && favorite.generationId === generationId && sameImage(favorite.image, image)
+      ? { ...favorite, image: { ...favorite.image, ...change } }
+      : favorite;
+  client.setQueriesData<InfiniteData<FavoritePage>>({ queryKey: ['favorites', 'pages'] }, (data) =>
+    data && Array.isArray(data.pages)
+      ? { ...data, pages: data.pages.map((page) => ({ ...page, items: page.items.map(onFavorite) })) }
+      : data,
+  );
+  client.setQueriesData<Favorite>({ queryKey: ['favorites', 'one'] }, (favorite) =>
+    favorite && typeof favorite === 'object' && 'values' in favorite ? onFavorite(favorite) : favorite,
+  );
 }
 
 /** Put the server's copy of a run in place of the one every list holds. */
@@ -657,50 +664,122 @@ export function useDeleteImage() {
 /* Favourites                                                          */
 /* ------------------------------------------------------------------ */
 
-/**
- * `enabled: false` for a list nobody is looking at yet: the folder picker is
- * mounted with every image field and only needs this once its sheet is open.
- */
-export function useFavorites(sort: FavoriteSort = 'rating', { enabled = true } = {}) {
-  return useQuery({
-    queryKey: [...queryKeys.favorites, sort],
-    queryFn: () => api.favorites(sort),
+/** Favourites a page at a time, for the screen and the folder picker. */
+export function useFavoritePages(sort: FavoriteSort, { enabled = true } = {}) {
+  return useInfiniteQuery({
+    queryKey: queryKeys.favoritePages(sort),
+    queryFn: ({ pageParam }) => api.favoritesPage(sort, pageParam as string | null),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
     enabled,
   });
 }
 
-function useFavoriteMutation<TArgs>(fn: (args: TArgs) => Promise<unknown>) {
+/** Which pictures are favourites. What the viewer's button needs, and no more. */
+export function useFavoriteIndex() {
+  return useQuery({ queryKey: queryKeys.favoriteIndex, queryFn: api.favoriteIndex });
+}
+
+/** One favourite in full, for the picture open in the viewer. */
+export function useFavorite(id: string | null | undefined) {
+  return useQuery({
+    queryKey: queryKeys.favorite(id ?? ''),
+    queryFn: () => api.favorite(id!),
+    enabled: Boolean(id),
+  });
+}
+
+/**
+ * Change one favourite everywhere it is shown: every page of every list, and
+ * its own entry.
+ *
+ * Instead of invalidating them. Every favourite mutation used to refetch the
+ * whole list — all of it, settings included — and the gallery too, which is the
+ * infinite query that refetches page after page.
+ */
+function patchFavorite(
+  client: QueryClient,
+  id: string,
+  change: (favorite: Favorite) => Favorite | null,
+): void {
+  client.setQueriesData<InfiniteData<FavoritePage>>({ queryKey: ['favorites', 'pages'] }, (data) => {
+    if (!data || !Array.isArray(data.pages)) return data;
+    return {
+      ...data,
+      pages: data.pages.map((page) => ({
+        ...page,
+        items: page.items.flatMap((favorite) => {
+          if (favorite.id !== id) return [favorite];
+          const next = change(favorite);
+          return next ? [next] : [];
+        }),
+      })),
+    };
+  });
+  client.setQueryData<Favorite>(queryKeys.favorite(id), (favorite) =>
+    favorite ? (change(favorite) ?? undefined) : favorite,
+  );
+}
+
+export function useAddFavorite() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: fn,
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: queryKeys.favorites });
-      // Favouriting archives the image, so its gallery row changed too.
-      void client.invalidateQueries({ queryKey: ['gallery'] });
+    mutationFn: ({ generationId, image, note }: { generationId: string; image: ComfyImageRef; note?: string }) =>
+      api.addFavorite(generationId, image, note),
+    onSuccess: (favorite) => {
+      client.setQueryData(queryKeys.favorite(favorite.id), favorite);
+      // The index is small, and a new favourite is a new entry in it.
+      void client.invalidateQueries({ queryKey: queryKeys.favoriteIndex });
+      // The lists gain one at a place only the server can say: marked stale,
+      // and fetched when next looked at rather than now.
+      void client.invalidateQueries({
+        predicate: (query) => query.queryKey[0] === 'favorites' && query.queryKey[1] !== 'index' && query.queryKey[1] !== 'one',
+        refetchType: 'none',
+      });
+      // Favouriting archives the picture. Its gallery entry says so the next
+      // time it loads; nothing on screen needs it this second.
+      void client.invalidateQueries({ queryKey: ['gallery'], refetchType: 'none' });
     },
   });
 }
 
-export const useAddFavorite = () =>
-  useFavoriteMutation(
-    ({
-      generationId,
-      image,
-      note,
-    }: {
-      generationId: string;
-      image: ComfyImageRef;
-      note?: string;
-    }) => api.addFavorite(generationId, image, note),
-  );
-
-export const useUpdateFavorite = () =>
-  useFavoriteMutation(
-    ({ id, patch }: { id: string; patch: { rating?: number; note?: string | null } }) =>
+export function useUpdateFavorite() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: { rating?: number; note?: string | null } }) =>
       api.updateFavorite(id, patch),
-  );
+    // Shown at once, like a gallery star.
+    onMutate: ({ id, patch }) => {
+      patchFavorite(client, id, (favorite) => ({
+        ...favorite,
+        ...(patch.rating !== undefined ? { rating: patch.rating } : {}),
+        ...(patch.note !== undefined ? { note: patch.note } : {}),
+      }));
+    },
+    onSuccess: (favorite, { id, patch }) => {
+      if (favorite) patchFavorite(client, id, () => favorite);
+      // A list sorted by this rating reorders when it next loads.
+      if (patch.rating !== undefined) {
+        void client.invalidateQueries({ queryKey: queryKeys.favoritePages('rating'), refetchType: 'none' });
+      }
+    },
+    onError: () => void client.invalidateQueries({ queryKey: queryKeys.favorites }),
+  });
+}
 
-export const useDeleteFavorite = () => useFavoriteMutation((id: string) => api.deleteFavorite(id));
+export function useDeleteFavorite() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteFavorite(id),
+    onSuccess: (_result, id) => {
+      patchFavorite(client, id, () => null);
+      client.setQueryData<FavoriteIndexEntry[]>(queryKeys.favoriteIndex, (index) =>
+        index?.filter((entry) => entry.id !== id),
+      );
+      client.removeQueries({ queryKey: queryKeys.favorite(id) });
+    },
+  });
+}
 
 /* ------------------------------------------------------------------ */
 /* Prompt building blocks                                              */

@@ -20,6 +20,8 @@ import type {
   GenerationStatus,
   ParamSchema,
   Favorite,
+  FavoriteIndexEntry,
+  FavoritePage,
   FavoriteSort,
   FormLayout,
   GenerationImage,
@@ -2198,16 +2200,82 @@ export class Store {
   /* ---------------------------------------------------------------- */
 
   listFavorites(sort: FavoriteSort = 'rating'): Favorite[] {
+    return this.queryFavorites(sort, null, null).items;
+  }
+
+  /**
+   * One page of favourites, keyset-paged like the gallery.
+   *
+   * The whole list used to come back on every look, and again after every
+   * change to any favourite — each carrying the settings it was made with,
+   * which made a few hundred of them most of a megabyte.
+   */
+  listFavoritesPage(sort: FavoriteSort, limit: number, cursor: string | null): FavoritePage {
+    return this.queryFavorites(sort, Math.min(Math.max(Math.floor(limit) || 1, 1), 100), cursor);
+  }
+
+  /** Which pictures are favourites. See `FavoriteIndexEntry`. */
+  listFavoriteIndex(): FavoriteIndexEntry[] {
+    return this.db
+      .prepare<[], { id: string; generation_id: string | null; image_id: number | null; image_json: string }>(
+        'SELECT id, generation_id, image_id, image_json FROM favorites',
+      )
+      .all()
+      .map((row) => {
+        const image = snapshotImage(row.image_json);
+        return {
+          id: row.id,
+          generationId: row.generation_id,
+          image: image
+            ? {
+                id: row.image_id,
+                filename: image.filename,
+                subfolder: image.subfolder ?? '',
+                type: image.type ?? 'output',
+              }
+            : null,
+        };
+      });
+  }
+
+  private queryFavorites(sort: FavoriteSort, limit: number | null, cursor: string | null): FavoritePage {
     const order =
       sort === 'newest'
-        ? 'created_at DESC'
+        ? 'created_at DESC, id DESC'
         : sort === 'oldest'
-          ? 'created_at ASC'
-          : 'rating DESC, created_at DESC';
+          ? 'created_at ASC, id ASC'
+          : 'rating DESC, created_at DESC, id DESC';
 
-    const rows = this.db
-      .prepare<[], FavoriteRow>(`SELECT * FROM favorites ORDER BY ${order}`)
-      .all();
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (cursor) {
+      const [ratingText, createdText, ...rest] = cursor.split('_');
+      const rating = Number(ratingText);
+      const created = Number(createdText);
+      const id = rest.join('_');
+      if (Number.isFinite(rating) && Number.isFinite(created) && id) {
+        if (sort === 'oldest') {
+          where.push('(created_at > ? OR (created_at = ? AND id > ?))');
+          params.push(created, created, id);
+        } else if (sort === 'rating') {
+          where.push(
+            `(rating < ? OR (rating = ? AND (created_at < ? OR (created_at = ? AND id < ?))))`,
+          );
+          params.push(rating, rating, created, created, id);
+        } else {
+          where.push('(created_at < ? OR (created_at = ? AND id < ?))');
+          params.push(created, created, id);
+        }
+      }
+    }
+
+    const sql = `SELECT * FROM favorites ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+                 ORDER BY ${order}${limit !== null ? ' LIMIT ?' : ''}`;
+    const fetched = this.db
+      .prepare<unknown[], FavoriteRow>(sql)
+      .all(...params, ...(limit !== null ? [limit + 1] : []));
+    const hasMore = limit !== null && fetched.length > limit;
+    const rows = hasMore ? fetched.slice(0, limit!) : fetched;
 
     // One lookup rather than one per row: the list can be long.
     const available = new Set(
@@ -2218,24 +2286,10 @@ export class Store {
     );
 
     /*
-     * Which of these actually have their bytes here.
-     *
-     * One query rather than one per row, for the same reason as the workflow
-     * lookup above: this list is as long as the user's taste.
-     */
-    const archived = new Set(
-      this.db
-        .prepare<[], { id: number }>('SELECT id FROM images WHERE archived_path IS NOT NULL')
-        .all()
-        .map((entry) => entry.id),
-    );
-
-    /*
-     * The rows these favourites point at, where they are still there.
-     *
-     * One query for the lot, like the two above: this list is as long as the
-     * user's taste, and a lookup per row would make opening the screen a
-     * hundred statements.
+     * The rows these favourites point at, where they are still there — which
+     * also says which have their bytes here. One query for the page rather
+     * than one per row, and only for the pictures on it: this used to read
+     * every archived picture in the library to answer for thirty.
      */
     const live = new Map<number, ImageRow>();
     const ids = rows.map((row) => row.image_id).filter((id): id is number => id !== null);
@@ -2248,14 +2302,20 @@ export class Store {
       }
     }
 
-    return rows.map((row) =>
-      toFavorite(
+    const items = rows.map((row) => {
+      const image = row.image_id !== null ? (live.get(row.image_id) ?? null) : null;
+      return toFavorite(
         row,
         row.workflow_id !== null && available.has(row.workflow_id),
-        row.image_id !== null && archived.has(row.image_id),
-        row.image_id !== null ? (live.get(row.image_id) ?? null) : null,
-      ),
-    );
+        image?.archived_path != null,
+        image,
+      );
+    });
+    const last = rows.at(-1);
+    return {
+      items,
+      nextCursor: hasMore && last ? `${last.rating}_${last.created_at}_${last.id}` : null,
+    };
   }
 
   getFavorite(id: string): Favorite | null {

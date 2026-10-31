@@ -434,3 +434,72 @@ describe('the stored best rating', () => {
     expect(new Set(seen).size).toBe(7);
   });
 });
+
+/**
+ * Favourites a page at a time. The whole list used to come back on every look,
+ * settings and all, and again after every change to any one of them.
+ */
+describe('favourites, a page at a time', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const setUp = (count: number) => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-db-'));
+    dirs.push(dir);
+    const subject = new Store(join(dir, 'test.db'));
+    const raw = (subject as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } }).db;
+    for (let i = 0; i < count; i += 1) {
+      subject.insertFavorite({
+        id: `f${String(i).padStart(2, '0')}`,
+        imageId: null,
+        generationId: null,
+        workflowId: null,
+        title: `favourite ${i}`,
+        note: null,
+        values: {},
+        image: { filename: `pic${i}.png`, subfolder: 'day', type: 'output' } as never,
+      });
+      // Ties on purpose: several share a time and a rating, so the id has to
+      // break them for a page boundary to land anywhere deterministic.
+      raw.prepare('UPDATE favorites SET created_at = ?, rating = ? WHERE id = ?').run(
+        Math.floor(i / 3),
+        i % 4,
+        `f${String(i).padStart(2, '0')}`,
+      );
+    }
+    return subject;
+  };
+
+  for (const sort of ['newest', 'oldest', 'rating'] as const) {
+    it(`walks every favourite once, sorted by ${sort}`, () => {
+      const subject = setUp(17);
+      const seen: string[] = [];
+      let cursor: string | null = null;
+      let pages = 0;
+      do {
+        const page = subject.listFavoritesPage(sort, 4, cursor);
+        seen.push(...page.items.map((favorite) => favorite.id));
+        cursor = page.nextCursor;
+        pages += 1;
+      } while (cursor && pages < 20);
+      expect(pages).toBe(5);
+      // The same order as the whole list, which is what a page boundary must
+      // not disturb.
+      expect(seen).toEqual(subject.listFavorites(sort).map((favorite) => favorite.id));
+    });
+  }
+
+  it('says which pictures are favourites without their settings', () => {
+    const subject = setUp(2);
+    const index = subject.listFavoriteIndex();
+    expect(index).toHaveLength(2);
+    expect(index[0]).toEqual({
+      id: expect.stringMatching(/^f0/),
+      generationId: null,
+      image: { id: null, filename: expect.stringMatching(/^pic/), subfolder: 'day', type: 'output' },
+    });
+    expect(JSON.stringify(index)).not.toContain('values');
+  });
+});

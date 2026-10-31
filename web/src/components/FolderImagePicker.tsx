@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { BrowseListing, Favorite } from '@latent/shared';
 
 import { api, browseThumbUrl, thumbnailUrl } from '../api/client';
-import { useFavorites } from '../api/queries';
+import { useFavoritePages } from '../api/queries';
 import { BatchBar } from './BatchBar';
 import { ErrorNote, Sheet, Spinner, cn } from './ui';
 
@@ -136,11 +136,16 @@ export function FolderImagePicker({
   /*
    * The gallery's favourites, newest first.
    *
-   * Only fetched while the sheet is open — it is a list of every picture ever
-   * kept, and nothing needs it until somebody taps the ★ chip. Newest first
-   * because a reference slot is overwhelmingly filled from recent work.
+   * Only fetched while the sheet is open, and a page at a time — it is every
+   * picture ever kept, and nothing needs it until somebody taps the ★ chip.
+   * Newest first because a reference slot is overwhelmingly filled from
+   * recent work, so the first page is usually the one.
    */
-  const galleryFavorites = useFavorites('newest', { enabled: open });
+  const galleryFavorites = useFavoritePages('newest', { enabled: open });
+  const allFavorites = useMemo(
+    () => galleryFavorites.data?.pages.flatMap((page) => page.items) ?? [],
+    [galleryFavorites.data],
+  );
 
   /*
    * The ones this slot could actually load.
@@ -153,11 +158,11 @@ export function FolderImagePicker({
    */
   const favorites = useMemo(
     () =>
-      (galleryFavorites.data ?? []).filter(
+      allFavorites.filter(
         (favorite): favorite is Favorite & { image: NonNullable<Favorite['image']> } =>
           Boolean(favorite.image) && favorite.image!.kind === kind,
       ),
-    [galleryFavorites.data, kind],
+    [allFavorites, kind],
   );
 
   // The first root is the one to open on: comfyllama offers `output` first,
@@ -400,7 +405,10 @@ export function FolderImagePicker({
             <GalleryFavorites
               favorites={favorites}
               loading={galleryFavorites.isLoading}
-              hidden={(galleryFavorites.data ?? []).length - favorites.length}
+              hidden={allFavorites.length - favorites.length}
+              more={galleryFavorites.hasNextPage ?? false}
+              loadingMore={galleryFavorites.isFetchingNextPage}
+              onMore={() => void galleryFavorites.fetchNextPage()}
               kind={kind}
               resolving={resolving}
               ticked={multiple ? tickedFavorites : null}
@@ -623,6 +631,9 @@ function GalleryFavorites({
   favorites,
   loading,
   hidden,
+  more,
+  loadingMore,
+  onMore,
   kind,
   resolving,
   ticked,
@@ -631,6 +642,10 @@ function GalleryFavorites({
 }: {
   favorites: (Favorite & { image: NonNullable<Favorite['image']> })[];
   loading: boolean;
+  /** Whether there are older favourites than the ones loaded so far. */
+  more: boolean;
+  loadingMore: boolean;
+  onMore: () => void;
   /** Kept, but the wrong sort of media for this slot. See below. */
   hidden: number;
   kind: 'image' | 'video' | 'audio';
@@ -656,7 +671,7 @@ function GalleryFavorites({
     );
   }
 
-  if (favorites.length === 0) {
+  if (favorites.length === 0 && !more) {
     return (
       <p className="py-6 text-center text-sm text-muted">
         {hidden > 0
@@ -694,6 +709,17 @@ function GalleryFavorites({
           {hidden} more kept, {hidden === 1 ? 'but it is' : 'but they are'} the wrong sort of file
           for this slot.
         </p>
+      )}
+
+      {more && (
+        <button
+          type="button"
+          onClick={onMore}
+          disabled={loadingMore}
+          className="w-full rounded-lg border border-line py-2 text-xs text-muted"
+        >
+          {loadingMore ? 'Loading…' : 'Show older favourites'}
+        </button>
       )}
     </div>
   );

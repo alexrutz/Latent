@@ -13,6 +13,8 @@ import type {
   ArchiveStats,
   ComfyImageRef,
   Favorite,
+  FavoriteIndexEntry,
+  FavoritePage,
   FavoriteReference,
   FavoriteSort,
   FieldOverrides,
@@ -409,7 +411,14 @@ export const api = {
   /* Favourites                                                        */
   /* ---------------------------------------------------------------- */
 
-  favorites: (sort: FavoriteSort = 'rating') => request<Favorite[]>(`/api/favorites?sort=${sort}`),
+  favoritesPage: (sort: FavoriteSort, cursor: string | null, limit = 30) =>
+    request<FavoritePage>(
+      `/api/favorites/page?sort=${sort}&limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+    ),
+
+  favoriteIndex: () => request<FavoriteIndexEntry[]>('/api/favorites/index'),
+
+  favorite: (id: string) => request<Favorite>(`/api/favorites/${id}`),
 
   addFavorite: (generationId: string, image: ComfyImageRef, note?: string) =>
     request<Favorite>('/api/favorites', {

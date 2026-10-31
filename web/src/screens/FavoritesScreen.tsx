@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import {
@@ -9,7 +9,7 @@ import {
 } from '@latent/shared';
 import type { Favorite, FavoriteSort, GenerationImage, GenerationRecord } from '@latent/shared';
 
-import { useFavorites, useGeneration, useSettings } from '../api/queries';
+import { useFavoritePages, useGeneration, useSettings } from '../api/queries';
 import { Thumb, type ViewerEntry } from '../components/ImageViewer';
 import { shapeOf, ThumbGrid, useTileStyle } from '../components/ThumbGrid';
 import { useMeasuredVersion } from '../state/measured';
@@ -53,7 +53,12 @@ export function FavoritesScreen() {
    * you liked most recently, not the one you rated highest months ago.
    */
   const [sort, setSort] = useState<FavoriteSort>('newest');
-  const favorites = useFavorites(sort);
+  /*
+   * A page at a time, loaded as you scroll — as the gallery is. It was the
+   * whole list at once, and again after every change to any one of them.
+   */
+  const favorites = useFavoritePages(sort);
+  const sentinel = useRef<HTMLDivElement>(null);
   const [settings, updateSettings] = useGridSettings();
   /** Which favourite is open in the viewer, by its id. */
   const [viewing, setViewing] = useState<string | null>(null);
@@ -66,7 +71,26 @@ export function FavoritesScreen() {
     DEFAULT_FAVORITE_PREVIEW_EVERY,
   );
 
-  const items = favorites.data ?? [];
+  const items = useMemo(
+    () => favorites.data?.pages.flatMap((page) => page.items) ?? [],
+    [favorites.data],
+  );
+
+  // The next page as the end of the list comes into view.
+  useEffect(() => {
+    const element = sentinel.current;
+    if (!element) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && favorites.hasNextPage && !favorites.isFetchingNextPage) {
+          void favorites.fetchNextPage();
+        }
+      },
+      { rootMargin: '400px' },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [favorites]);
 
   /**
    * The list, cut into the days things were kept on.
@@ -238,6 +262,8 @@ export function FavoritesScreen() {
           />
         </div>
       ))}
+
+      <div ref={sentinel} className="h-8" />
 
       {viewerIndex >= 0 && (
         <FavoriteViewer

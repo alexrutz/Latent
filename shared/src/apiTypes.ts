@@ -476,6 +476,25 @@ export interface Favorite {
   createdAt: number;
 }
 
+/** One page of favourites. See `GET /api/favorites/page`. */
+export interface FavoritePage {
+  items: Favorite[];
+  nextCursor: string | null;
+}
+
+/**
+ * Which pictures are favourites, and nothing else.
+ *
+ * What the viewer needs to say whether the picture in front of you is one: it
+ * used to fetch every favourite in full — settings and all, hundreds of
+ * kilobytes — to answer that for one picture.
+ */
+export interface FavoriteIndexEntry {
+  id: string;
+  generationId: string | null;
+  image: { id: number | null; filename: string; subfolder: string; type: string } | null;
+}
+
 /**
  * Where a favourite's picture can be loaded from, on the ComfyUI machine.
  *

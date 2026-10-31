@@ -11,7 +11,8 @@ import {
   useAddFavorite,
   useDeleteFavorite,
   useDeleteImage,
-  useFavorites,
+  useFavorite,
+  useFavoriteIndex,
   useKeepImage,
   useRateImage,
   useSettings,
@@ -93,10 +94,28 @@ export function ViewerWithActions({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const addFavorite = useAddFavorite();
   const removeFavorite = useDeleteFavorite();
-  const favorites = useFavorites();
+  const favoriteIndex = useFavoriteIndex();
 
   // Swiping to the next picture must not leave a primed delete button behind.
   useEffect(() => setConfirmDelete(false), [index]);
+
+  /*
+   * Whether the picture on screen is a favourite, from the index — which says
+   * which pictures are, and nothing else — and then that one favourite in full.
+   * The whole list used to be fetched for this, settings and all, every time a
+   * viewer opened.
+   */
+  const current = entries[index];
+  const favoriteId = current?.image
+    ? (favoriteIndex.data?.find(
+        (entry) =>
+          entry.generationId === current.record.id &&
+          entry.image?.filename === current.image.filename &&
+          entry.image?.subfolder === current.image.subfolder,
+      )?.id ?? null)
+    : null;
+  const favoriteQuery = useFavorite(favoriteId);
+  const existingFavorite = favoriteId ? (favoriteQuery.data ?? null) : null;
 
   // Every hook above runs unconditionally; only then is it safe to bail. The
   // caller only renders this once it has found the entry, so a miss means the
@@ -130,14 +149,6 @@ export function ViewerWithActions({
    * the truth when the viewer is reopened — and so a second tap removes it
    * instead of silently saving a duplicate, which is what used to happen.
    */
-  const existingFavorite = image
-    ? (favorites.data?.find(
-        (entry) =>
-          entry.generationId === record.id &&
-          entry.image?.filename === image.filename &&
-          entry.image?.subfolder === image.subfolder,
-      ) ?? null)
-    : null;
 
   const favorite = async () => {
     if (!image) return;
