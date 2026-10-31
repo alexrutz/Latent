@@ -131,6 +131,32 @@ export function UpdateSection() {
         )}
 
         {/*
+          The files moved, the program did not.
+
+          `git pull` or switching branch changes the checkout, and the version
+          above — read from git — changes with it; but what runs is the last
+          build, until it is built and restarted. An update run here does both,
+          and says so itself, so this is only for a checkout moved by hand.
+        */}
+        {status?.builtCommit &&
+          checkout?.commit &&
+          status.builtCommit !== checkout.commit &&
+          status.run?.phase !== 'succeeded' && (
+            <div className="space-y-1 text-xs text-warn" role="status">
+              <p>
+                Latent is still running the build of{' '}
+                <span className="font-mono">{status.builtCommit.slice(0, 7)}</span>: the files are
+                at <span className="font-mono">{checkout.commitShort}</span> but have not been
+                built. In the Latent folder, run these one after the other:
+              </p>
+              {/* Two lines, not `&&`: Windows PowerShell 5.1 does not have it. */}
+              <p className="font-mono break-all">npm install</p>
+              <p className="font-mono break-all">npm run build</p>
+              <p>then restart Latent and reload this page.</p>
+            </div>
+          )}
+
+        {/*
           The reason it cannot be updated is shown rather than the section being
           hidden: "this is a Docker image, update it with docker compose pull"
           is the useful answer to "how do I update", and hiding the section

@@ -2846,6 +2846,8 @@ test.describe('the twelfth wave', () => {
     // only that the screen says what is running rather than nothing.
     await expect(software.getByText(/^[0-9a-f]{7,40}$/)).toBeVisible();
     await expect(software.getByRole('button', { name: 'Check for updates' })).toBeEnabled();
+    // Built from the commit it is on, so no talk of an unbuilt checkout.
+    await expect(software.getByText(/still running the build of/)).toHaveCount(0);
 
     // Either label, depending on whether the checkout happens to be behind.
     await software.getByRole('button', { name: /Install (update|anyway)/ }).click();

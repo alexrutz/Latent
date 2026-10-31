@@ -14,7 +14,7 @@
     "web"
   ],
   "scripts": {
-    "build": "npm run build:shared && npm run build -w @latent/web && npm run build -w @latent/server",
+    "build": "npm run build:shared && npm run build -w @latent/web && npm run build -w @latent/server && node scripts/build-info.mjs",
     "build:shared": "npm run build -w @latent/shared",
     "start": "npm run start -w @latent/server",
     "dev": "npm run build:shared && concurrently -n shared,server,web -c gray,cyan,magenta \"npm:watch:shared\" \"npm:dev:server\" \"npm:dev:web\"",

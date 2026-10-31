@@ -914,6 +914,14 @@ export interface UpdateSupervisor {
 
 export interface UpdateStatus {
   checkout: UpdateCheckout;
+  /**
+   * The commit the running server was built from, when the build recorded it.
+   *
+   * Moving the checkout — `git pull`, switching branch — changes the files but
+   * not what runs: that takes a build and a restart. When this differs from
+   * `checkout.commit`, the version shown is not the version running.
+   */
+  builtCommit: string | null;
   available: UpdateAvailable;
   /** The current or most recent attempt; null if none since the last restart. */
   run: UpdateRun | null;

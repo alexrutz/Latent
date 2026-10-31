@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 import type {
   UpdateAvailable,
@@ -272,6 +272,24 @@ export interface UpdaterOptions {
   now?: () => number;
   env?: NodeJS.ProcessEnv;
   fileExists?: (path: string) => boolean;
+  /** The commit the running build was made from (`scripts/build-info.mjs`). */
+  builtCommit?: string | null;
+}
+
+/**
+ * The commit a compiled server was built from, read from beside it.
+ *
+ * Absent when running from source (`npm run dev`) or from a build made before
+ * builds recorded it — in both cases there is nothing to compare, and nothing
+ * is claimed.
+ */
+export function readBuiltCommit(file: URL): string | null {
+  try {
+    const info = JSON.parse(readFileSync(file, 'utf8')) as { commit?: unknown };
+    return typeof info.commit === 'string' && info.commit ? info.commit : null;
+  } catch {
+    return null;
+  }
 }
 
 export class Updater {
@@ -280,6 +298,7 @@ export class Updater {
   private readonly now: () => number;
   private readonly log: { info(message: string): void; warn(message: string): void };
   private readonly supervisorInfo: UpdateSupervisor;
+  private readonly builtCommit: string | null;
 
   private lines: UpdateLogLine[] = [];
   private seq = 0;
@@ -303,6 +322,7 @@ export class Updater {
     this.now = options.now ?? Date.now;
     this.log = options.log ?? { info: () => {}, warn: () => {} };
     this.supervisorInfo = detectSupervisor(options.env, options.fileExists);
+    this.builtCommit = options.builtCommit ?? null;
   }
 
   get isRunning(): boolean {
@@ -319,6 +339,7 @@ export class Updater {
     const checkout = await this.readCheckout();
     return {
       checkout,
+      builtCommit: this.builtCommit,
       available: this.available,
       run: this.current,
       log: this.lines.filter((line) => line.seq > since),

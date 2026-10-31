@@ -15,7 +15,7 @@ import { Importer } from './importer.js';
 import { InputLibrary } from './inputLibrary.js';
 import { PasswordGate } from './gate.js';
 import { Taste } from './taste.js';
-import { Updater } from './update.js';
+import { readBuiltCommit, Updater } from './update.js';
 import { Vault } from './vault.js';
 import { plainConnection, type ConnectionConfig } from './comfy/connection.js';
 import { loadConfig, projectRoot, type Config } from './config.js';
@@ -165,7 +165,12 @@ export async function buildApp(overrides: Partial<Config> = {}): Promise<BuiltAp
    */
   const tasteGate = new PasswordGate();
   const updateGate = new PasswordGate();
-  const updater = new Updater({ cwd: projectRoot, log: app.log });
+  const updater = new Updater({
+    cwd: projectRoot,
+    log: app.log,
+    // Beside the compiled server; absent when running from source.
+    builtCommit: readBuiltCommit(new URL('./build-info.json', import.meta.url)),
+  });
   const inputs = new InputLibrary(store);
   const sweeper = new Sweeper(store, archive, app.log);
   /*

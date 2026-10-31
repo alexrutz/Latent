@@ -1,9 +1,15 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import {
   Updater,
   detectSupervisor,
   namePaths,
+  readBuiltCommit,
   readChanges,
   type CommandRequest,
   type CommandResult,
@@ -507,5 +513,34 @@ describe('reading git status', () => {
   it('names a few paths, and counts the rest', () => {
     expect(namePaths(['a', 'b'])).toBe('a, b');
     expect(namePaths(['a', 'b', 'c', 'd'], 2)).toBe('a, b and 2 more');
+  });
+});
+
+describe('which build is running', () => {
+  it('reports the commit the running build was made from', async () => {
+    const runner = scriptedRunner(healthyCheckout());
+    const subject = new Updater({
+      cwd: '/srv/latent',
+      run: runner.run,
+      builtCommit: 'c'.repeat(40),
+    });
+    const status = await subject.status();
+    // The checkout says aaaa…; the build says cccc… — the screen can tell them apart.
+    expect(status.builtCommit).toBe('c'.repeat(40));
+    expect(status.checkout.commit).toBe('a'.repeat(40));
+  });
+
+  it('reads the record beside the build, and claims nothing without one', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-build-'));
+    try {
+      const file = join(dir, 'build-info.json');
+      expect(readBuiltCommit(pathToFileURL(file))).toBeNull();
+      writeFileSync(file, JSON.stringify({ commit: 'd'.repeat(40), builtAt: 1 }));
+      expect(readBuiltCommit(pathToFileURL(file))).toBe('d'.repeat(40));
+      writeFileSync(file, JSON.stringify({ commit: null }));
+      expect(readBuiltCommit(pathToFileURL(file))).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
