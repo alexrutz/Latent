@@ -1278,6 +1278,49 @@ CREATE TABLE IF NOT EXISTS services (
 );
 `);
 
+/**
+ * Each run's best star, stored, so the gallery can sort by it from an index.
+ *
+ * It used to be worked out per row on every page — a subquery for every run in
+ * the library, then a sort of all of them, for thirty rows. That grew with the
+ * library: about 33 ms a page at eight thousand runs, and a rating sort scrolled
+ * twenty pages deep spent most of a second on it.
+ *
+ * Kept current by triggers rather than by the methods that rate a picture, so
+ * every way a rating changes or a picture goes — including ones written later
+ * — keeps it right without having to remember to.
+ */
+MIGRATIONS.push(`
+ALTER TABLE generations ADD COLUMN best_rating INTEGER NOT NULL DEFAULT 0;
+
+UPDATE generations
+   SET best_rating = COALESCE(
+     (SELECT MAX(rating) FROM images WHERE images.generation_id = generations.id), 0);
+
+CREATE INDEX idx_generations_best ON generations (best_rating DESC, created_at DESC, id DESC);
+
+CREATE TRIGGER images_best_rating_insert AFTER INSERT ON images BEGIN
+  UPDATE generations
+     SET best_rating = COALESCE(
+       (SELECT MAX(rating) FROM images WHERE generation_id = NEW.generation_id), 0)
+   WHERE id = NEW.generation_id;
+END;
+
+CREATE TRIGGER images_best_rating_update AFTER UPDATE OF rating, generation_id ON images BEGIN
+  UPDATE generations
+     SET best_rating = COALESCE(
+       (SELECT MAX(rating) FROM images WHERE generation_id = generations.id), 0)
+   WHERE id IN (NEW.generation_id, OLD.generation_id);
+END;
+
+CREATE TRIGGER images_best_rating_delete AFTER DELETE ON images BEGIN
+  UPDATE generations
+     SET best_rating = COALESCE(
+       (SELECT MAX(rating) FROM images WHERE generation_id = OLD.generation_id), 0)
+   WHERE id = OLD.generation_id;
+END;
+`);
+
 export class Store {
   private readonly db: Database.Database;
 
@@ -1791,8 +1834,8 @@ export class Store {
    * mean by "show me the good ones" — the alternative, an average, buries a
    * five-star image under the three near-misses it came with.
    */
-  private static readonly BEST_RATING =
-    '(SELECT COALESCE(MAX(rating), 0) FROM images WHERE images.generation_id = generations.id)';
+  /** A stored column, kept by triggers. See the migration that added it. */
+  private static readonly BEST_RATING = 'best_rating';
 
   listGenerations(options: {
     limit: number;
@@ -1881,7 +1924,7 @@ export class Store {
           ? `${Store.BEST_RATING} DESC, created_at DESC, id DESC`
           : 'created_at DESC, id DESC';
 
-    const sql = `SELECT *, ${Store.BEST_RATING} AS best_rating FROM generations
+    const sql = `SELECT * FROM generations
                  ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
                  ORDER BY ${order}
                  LIMIT ?`;

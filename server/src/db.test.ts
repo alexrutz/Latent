@@ -369,3 +369,68 @@ describe('resuming a study', () => {
     expect(subject.hasUnfinishedShots('s')).toBe(false);
   });
 });
+
+/**
+ * Each run's best star is stored, and kept by triggers, so the rating sort can
+ * walk an index instead of working it out for the whole library every page.
+ */
+describe('the stored best rating', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  const setUp = () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-db-'));
+    dirs.push(dir);
+    const subject = new Store(join(dir, 'test.db'));
+    const run = (id: string, createdAt: number) => {
+      subject.insertGeneration({ id, promptId: `p-${id}`, workflowId: null, workflowName: '', title: id, values: {}, seeds: {} });
+      (subject as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } }).db
+        .prepare('UPDATE generations SET created_at = ? WHERE id = ?')
+        .run(createdAt, id);
+      subject.setGenerationStatus(`p-${id}`, 'completed');
+      subject.addImages(`p-${id}`, '9', [0, 1].map((i) => ({ filename: `${id}-${i}.png`, subfolder: '', type: 'output' })));
+      return subject.getGeneration(id)!.images.map((image) => image.id!);
+    };
+    const order = () => subject.listGenerations({ limit: 10, sort: 'rating' }).items.map((item) => item.id);
+    return { subject, run, order };
+  };
+
+  it('follows ratings up, down and away', () => {
+    const { subject, run, order } = setUp();
+    const [a1, a2] = run('a', 1);
+    const [b1] = run('b', 2);
+    run('c', 3);
+
+    subject.setImageRating(a1!, 2);
+    subject.setImageRating(a2!, 5);
+    subject.setImageRating(b1!, 3);
+    expect(order()).toEqual(['a', 'b', 'c']);
+
+    // The best one taken back down: the next best in the run decides.
+    subject.setImageRating(a2!, 0);
+    expect(order()).toEqual(['b', 'a', 'c']);
+
+    // A rated picture deleted takes its stars with it.
+    subject.deleteImage(b1!);
+    expect(order()).toEqual(['a', 'c', 'b']);
+  });
+
+  it('pages through the rating sort without repeating or skipping', () => {
+    const { subject, run } = setUp();
+    for (let i = 0; i < 7; i += 1) {
+      const [first] = run(`r${i}`, i);
+      subject.setImageRating(first!, i % 3);
+    }
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = subject.listGenerations({ limit: 3, sort: 'rating', cursor });
+      seen.push(...page.items.map((item) => item.id));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(seen).toHaveLength(7);
+    expect(new Set(seen).size).toBe(7);
+  });
+});
