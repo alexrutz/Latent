@@ -106,11 +106,11 @@ describe('uiToApiWorkflow', () => {
     expect(converted['50']).toBeUndefined();
   });
 
-  it('leaves out nodes that are muted or bypassed, and notes', () => {
+  it('leaves out nodes that are muted, and notes', () => {
     const muted: UiWorkflow = JSON.parse(JSON.stringify(ui));
     // Saving switched off, previewing switched on — which is how a graph
     // usually looks while somebody is still deciding.
-    muted.nodes.find((node) => node.id === 9)!.mode = 4;
+    muted.nodes.find((node) => node.id === 9)!.mode = 2;
     muted.nodes.push({
       id: 61,
       type: 'PreviewImage',
@@ -123,6 +123,28 @@ describe('uiToApiWorkflow', () => {
     expect(converted['60']).toBeUndefined();
     expect(converted['61']).toBeDefined();
     expect(converted['3']).toBeDefined();
+  });
+
+  /*
+   * A bypassed node is kept, marked, so its switch can turn it back on from
+   * the form. ComfyUI's own export drops it, which makes the bypass permanent.
+   */
+  it('keeps a bypassed node, marked as bypassed', () => {
+    const bypassed: UiWorkflow = JSON.parse(JSON.stringify(ui));
+    bypassed.nodes.find((node) => node.id === 3)!.mode = 4;
+    const converted = uiToApiWorkflow(bypassed, objectInfoFixture);
+    expect(converted['3']?._meta?.bypassed).toBe(true);
+    expect(converted['4']?._meta?.bypassed).toBeUndefined();
+    // Its links are all still there, for when it is switched back on.
+    expect(converted['8']?.inputs.samples).toEqual(['3', 0]);
+  });
+
+  it('drops a link from a muted node rather than pointing at a node that is gone', () => {
+    const muted: UiWorkflow = JSON.parse(JSON.stringify(ui));
+    muted.nodes.find((node) => node.id === 5)!.mode = 2;
+    const converted = uiToApiWorkflow(muted, objectInfoFixture);
+    expect(converted['5']).toBeUndefined();
+    expect(converted['3']?.inputs.latent_image).toBeUndefined();
   });
 
   it('says which node is missing rather than importing a broken graph', () => {

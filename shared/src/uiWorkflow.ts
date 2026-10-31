@@ -109,9 +109,16 @@ export function uiToApiWorkflow(ui: UiWorkflow, objectInfo: ObjectInfo): ApiWork
   const missing = new Set<string>();
 
   for (const node of ui.nodes) {
-    // Muted and bypassed nodes are switched off in the editor; ComfyUI's own
-    // API export leaves them out too.
-    if (node.mode === 2 || node.mode === 4) continue;
+    /*
+     * A muted node is switched off in the editor and produces nothing, so it
+     * is left out, and so is every link from it (below).
+     *
+     * A bypassed one is kept, marked. ComfyUI's own API export drops it and
+     * rewires around it, which bakes the bypass in: from a phone it could never
+     * be switched back on. Kept, it arrives with its Bypass switch on, and is
+     * cut out on the way to ComfyUI for as long as that stays so.
+     */
+    if (node.mode === 2) continue;
     if (DECORATIVE.has(node.type)) continue;
 
     const definition = objectInfo[node.type];
@@ -137,6 +144,8 @@ export function uiToApiWorkflow(ui: UiWorkflow, objectInfo: ObjectInfo): ApiWork
        * leaves out, and ComfyUI refused the prompt over a node id nobody had.
        */
       if (byId.get(source.origin)?.type === 'PrimitiveNode') continue;
+      // A muted node gives nothing, so what read from it reads nothing.
+      if (byId.get(source.origin)?.mode === 2) continue;
       inputs[input.name] = [String(source.origin), source.slot];
       connected.add(input.name);
     }
@@ -146,7 +155,10 @@ export function uiToApiWorkflow(ui: UiWorkflow, objectInfo: ObjectInfo): ApiWork
     api[String(node.id)] = {
       class_type: node.type,
       inputs,
-      _meta: { title: node.title ?? definition.display_name ?? node.type },
+      _meta: {
+        title: node.title ?? definition.display_name ?? node.type,
+        ...(node.mode === 4 ? { bypassed: true } : {}),
+      },
     };
   }
 

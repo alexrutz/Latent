@@ -3,7 +3,9 @@ import type { FastifyInstance } from 'fastify';
 import {
   appendAlwaysBlocks,
   applyModelServer,
+  applyBypass,
   applyImageOff,
+  bypassedNodes,
   applyParams,
   imageOffNodes,
   applyPresetActive,
@@ -228,7 +230,15 @@ async function runBatch(
      * known, and before submitting, because the point is that the link is not
      * in the graph that goes over the wire.
      */
-    const withoutPictures = applyImageOff(graph, imageOffNodes(schema, itemValues), objectInfo);
+    /*
+     * Bypassed nodes are cut out and rewired around first, then the pictures
+     * switched off are unlinked from what is left — so a picture feeding a
+     * bypassed node reaches whatever that node fed, and its switch still works.
+     */
+    const bypassed = applyBypass(graph, bypassedNodes(schema, itemValues), objectInfo);
+    if (bypassed.error) return { generationIds, promptIds, error: bypassed.error };
+
+    const withoutPictures = applyImageOff(bypassed.workflow, imageOffNodes(schema, itemValues), objectInfo);
     if (withoutPictures.error) {
       // The same shape as a submit failure: whatever was already queued stays
       // queued, and the message says why the rest stopped.

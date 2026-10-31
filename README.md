@@ -2973,6 +2973,28 @@ rearranged or hidden in the form editor like any other, and it is saved in
 presets and drafts. Absent means on: a preset from before this existed keeps
 sending the picture it was built around.
 
+### Bypassing a node
+
+Every node that can pass something through gets a **Bypass** switch, first
+under its own heading in **Advanced** — a LoRA loader (its model and clip go
+straight on), an upscale (the picture goes straight to the save), a sampler
+(its latent goes straight to the decode). Nodes that could only break the graph
+if skipped, like a VAE decode that turns a latent into a picture, get none.
+
+Switched on, the node is cut out on the way to ComfyUI and whatever it fed is
+handed what *it* was fed, by ComfyUI's own rule for which input stands in for
+which output — the same position if the type fits, then the first input of
+that type — so a bypass here renders exactly what the same bypass in the editor
+would. A run of bypassed nodes is followed through, and where nothing can stand
+in for an input the next node needs, the switch is refused with a sentence
+naming it. The heading says **bypassed** and the node's other settings fade
+while it is.
+
+A workflow imported from the editor keeps the nodes that were bypassed there,
+with their switch on, instead of losing them: ComfyUI's own API export rewires
+around a bypassed node and drops it, which made the bypass permanent. A
+workflow imported before this needs **Rescan** to get its switches.
+
 **Load Image (Folder Browser)** uses the *same* control as any other image
 input — the folded header, the square preview, the filename, **Replace** and a
 second button beside it — with one difference: that second button says **Browse

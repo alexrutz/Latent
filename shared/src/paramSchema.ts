@@ -9,6 +9,7 @@ import type {
   WidgetValue,
 } from './comfyTypes.js';
 import { hasLoraTags } from './loraTags.js';
+import { bypassableNodes, bypassField, isBypassField } from './bypass.js';
 import { imageOffField, isImageOffField, switchableImageNodes } from './imageOff.js';
 import { producesAudio, producesVideo } from './media.js';
 import type {
@@ -909,6 +910,22 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
     fields.push({ ...switchField, classType: picture.classType, group: picture.group });
   }
 
+  /*
+   * A Bypass switch on every node that can pass something through.
+   *
+   * Under the node's own heading in Advanced, first among its settings: it
+   * decides whether the rest of them mean anything this run. A node that was
+   * bypassed in the editor arrives with it on. See `bypass.ts`.
+   */
+  for (const nodeId of bypassableNodes(workflow, objectInfo)) {
+    const node = workflow[nodeId]!;
+    const own = fields.filter((field) => field.nodeId === nodeId && field.group === 'advanced');
+    const first = own.length > 0 ? Math.min(...own.map((field) => field.order)) - 0.5 : fields.length;
+    const title =
+      node._meta?.title || objectInfo[node.class_type]?.display_name || node.class_type || nodeId;
+    fields.push(bypassField(nodeId, title, node.class_type, node._meta?.bypassed === true, first));
+  }
+
   // Renumber so main fields follow MAIN_ROLE_ORDER and advanced keeps graph order.
   const main = besideTheirPictures(
     fields.filter((f) => f.group === 'main').sort((a, b) => a.order - b.order),
@@ -1084,7 +1101,7 @@ export function applyParams(
   for (const field of schema.fields) {
     // Latent's own switch, not one of the node's inputs — writing it would put
     // a `__image` key into the prompt that ComfyUI would rightly reject.
-    if (isImageOffField(field)) continue;
+    if (isImageOffField(field) || isBypassField(field)) continue;
     const node = next[field.nodeId];
     if (!node?.inputs) continue;
     // Never overwrite an input that is wired from another node.

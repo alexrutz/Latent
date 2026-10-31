@@ -4680,6 +4680,48 @@ describe('llama-server nodes', () => {
    * answers that with an error, after the job has been queued. This is the
    * settling that keeps a stale choice from costing a run.
    */
+  /*
+   * A node bypassed from the form reaches ComfyUI as the editor's Bypass does:
+   * left out, with what it fed handed what it was fed.
+   */
+  it('cuts a bypassed node out of the graph it submits, and rewires around it', async () => {
+    const workflow = await json<WorkflowDetail>(
+      api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Bypass a sampler', graph: sd15Txt2Img }),
+      }),
+    );
+    // The sampler hands its latent on, so it can be bypassed; the decode
+    // cannot pass anything through, so it gets no switch.
+    expect(workflow.schema.fields.some((field) => field.id === '3.__bypass')).toBe(true);
+    expect(workflow.schema.fields.some((field) => field.id === '8.__bypass')).toBe(false);
+
+    const { promptIds } = await json<GenerateResponse>(
+      api('/api/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          workflowId: workflow.id,
+          values: { '6.text': 'skip the sampler', '3.__bypass': true },
+        }),
+      }),
+    );
+
+    const submitted = await waitFor(async () => {
+      const history = (await (
+        await fetch(`${mockUrl}/history/${promptIds[0]}`)
+      ).json()) as Record<string, { prompt?: [number, string, Record<string, {
+        inputs: Record<string, unknown>;
+      }>] }>;
+      return history[promptIds[0]!]?.prompt?.[2];
+    }, 20_000);
+
+    expect(submitted['3']).toBeUndefined();
+    // The decode reads the empty latent the sampler was given.
+    expect(submitted['8']?.inputs.samples).toEqual(['5', 0]);
+    // And nothing Latent invented reaches ComfyUI.
+    expect(JSON.stringify(submitted)).not.toContain('__bypass');
+  });
+
   it('settles the preset picker and submits a numeric combo as a number', async () => {
     const workflow = await json<WorkflowDetail>(
       api('/api/workflows', {

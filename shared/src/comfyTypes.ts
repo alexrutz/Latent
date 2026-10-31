@@ -18,8 +18,15 @@ export type NodeInputValue = WidgetValue | NodeLink | unknown;
 export interface ApiWorkflowNode {
   class_type: string;
   inputs: Record<string, NodeInputValue>;
-  /** ComfyUI writes the user-facing node title here when exporting. */
-  _meta?: { title?: string };
+  /**
+   * ComfyUI writes the user-facing node title here when exporting.
+   *
+   * `bypassed` is Latent's: a node that was bypassed in the editor when the
+   * workflow was imported. It stays in the graph so it can be switched back on
+   * from the form, and is cut out on the way to ComfyUI while it is bypassed —
+   * see `applyBypass`. ComfyUI ignores `_meta`.
+   */
+  _meta?: { title?: string; bypassed?: boolean };
 }
 
 /** ComfyUI "Save (API Format)" workflow: a flat map of nodeId -> node. */

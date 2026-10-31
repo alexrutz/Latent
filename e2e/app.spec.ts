@@ -2500,6 +2500,45 @@ test.describe('keeping, deleting and looking closely', () => {
   }
 
   /*
+   * Bypassing a node from the form, as the editor's Bypass does it.
+   */
+  test('bypasses a node from Advanced, and the run goes without it', async ({ page }) => {
+    await open(page, '/');
+    await page.getByRole('button', { name: 'Advanced' }).click();
+    const sheet = page.getByRole('dialog', { name: 'Advanced' });
+    const bypass = sheet.getByRole('button', { name: /^Bypass/ });
+    await expect(bypass).toHaveAttribute('aria-pressed', 'false');
+    await bypass.click();
+    await expect(bypass).toHaveAttribute('aria-pressed', 'true');
+    await expect(sheet.getByText('bypassed', { exact: true })).toBeVisible();
+    await page.screenshot({ path: 'test-results/108-bypass.png' });
+    await sheet.getByRole('button', { name: 'Done' }).click();
+
+    await page.getByPlaceholder('Describe the image…').fill('without the sampler');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+
+    // What reached ComfyUI: no sampler, and the decode reading the latent the
+    // sampler would have been given.
+    await expect
+      .poll(
+        async () => {
+          const mock = await apiRequest.newContext({ baseURL: 'http://127.0.0.1:8188' });
+          const history = (await (await mock.get('/history')).json()) as Record<
+            string,
+            { prompt?: [number, string, Record<string, { class_type: string; inputs: Record<string, unknown> }>] }
+          >;
+          await mock.dispose();
+          const last = Object.values(history).at(-1)?.prompt?.[2];
+          return last && !Object.values(last).some((node) => node.class_type === 'KSampler')
+            ? 'without the sampler'
+            : 'not yet';
+        },
+        { timeout: 30_000 },
+      )
+      .toBe('without the sampler');
+  });
+
+  /*
    * A star shows the moment it is tapped, and costs no refetch.
    *
    * It used to wait for the server — which archives the picture first — and

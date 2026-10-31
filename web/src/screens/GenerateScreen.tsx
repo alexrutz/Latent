@@ -7,6 +7,7 @@ import {
   defaultValues,
   findFieldByRole,
   groupByNode,
+  isBypassField,
   isLlamaServerField,
   matchSystemPrompt,
   planFormRuns,
@@ -917,40 +918,63 @@ function GenerateForm({
               their group, because they cannot be read in half of one.
             */}
               <div className="space-y-4">
-                {groupByNode(advancedFields).map((group) => (
-                  <section key={group.nodeId} className="space-y-1.5">
-                    <h3 className="flex items-baseline gap-2 border-b border-line pb-1">
-                      <span className="min-w-0 truncate text-xs font-medium tracking-wide text-muted uppercase">
-                        {group.title}
-                      </span>
-                      <span className="shrink-0 text-[11px] text-muted/70">
-                        {group.fields.length}
-                      </span>
-                    </h3>
-                    <div className="flex flex-wrap gap-1.5">
-                      {group.fields.map((field) => (
-                        <div
-                          key={field.id}
+                {groupByNode(advancedFields).map((group) => {
+                  /*
+                   * A bypassed node says so on its heading, and its other
+                   * settings fade: they are still there to change, but they do
+                   * nothing this run, and a form that looked the same either
+                   * way would hide the one switch that matters.
+                   */
+                  const bypassSwitch = group.fields.find(isBypassField);
+                  const bypassed =
+                    bypassSwitch !== undefined &&
+                    (values[bypassSwitch.id] ?? bypassSwitch.defaultValue) === true;
+                  return (
+                    <section key={group.nodeId} className="space-y-1.5">
+                      <h3 className="flex items-baseline gap-2 border-b border-line pb-1">
+                        <span
                           className={cn(
-                            'min-w-0',
-                            isWideControl(field) ? 'w-full space-y-1' : 'max-w-full',
+                            'min-w-0 truncate text-xs font-medium tracking-wide text-muted uppercase',
+                            bypassed && 'line-through',
                           )}
                         >
-                          {isWideControl(field) && (
-                            <span className="block truncate text-[11px] tracking-wide text-muted uppercase">
-                              {field.label}
-                            </span>
-                          )}
-                          <AdvancedRow
-                            field={field}
-                            value={values[field.id] ?? field.defaultValue}
-                            onChange={(value) => setValue(field.id, value)}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </section>
-                ))}
+                          {group.title}
+                        </span>
+                        {bypassed && (
+                          <span className="shrink-0 rounded bg-warn/15 px-1.5 text-[10px] text-warn uppercase">
+                            bypassed
+                          </span>
+                        )}
+                        <span className="shrink-0 text-[11px] text-muted/70">
+                          {group.fields.length}
+                        </span>
+                      </h3>
+                      <div className="flex flex-wrap gap-1.5">
+                        {group.fields.map((field) => (
+                          <div
+                            key={field.id}
+                            className={cn(
+                              'min-w-0',
+                              isWideControl(field) ? 'w-full space-y-1' : 'max-w-full',
+                              bypassed && !isBypassField(field) && 'opacity-50',
+                            )}
+                          >
+                            {isWideControl(field) && (
+                              <span className="block truncate text-[11px] tracking-wide text-muted uppercase">
+                                {field.label}
+                              </span>
+                            )}
+                            <AdvancedRow
+                              field={field}
+                              value={values[field.id] ?? field.defaultValue}
+                              onChange={(value) => setValue(field.id, value)}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  );
+                })}
               </div>
             </Sheet>
           </>

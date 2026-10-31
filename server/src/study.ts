@@ -2,7 +2,9 @@ import type { FastifyBaseLogger } from 'fastify';
 
 import {
   applyModelServer,
+  applyBypass,
   applyImageOff,
+  bypassedNodes,
   applyParams,
   imageOffNodes,
   applyPresetActive,
@@ -201,6 +203,10 @@ export class StudyRunner {
         detail.overrides,
       );
 
+      // For the bypass rewiring, which needs to know what each slot carries.
+      // Cached by the orchestrator, so this is not a request per tick.
+      const objectInfo = await this.orchestrator.objectInfo().catch(() => ({}));
+
       for (const shot of shots) {
         /*
          * The drawn factor values on top of everything typed on the setup
@@ -242,7 +248,11 @@ export class StudyRunner {
            * failing says the same thing.
            */
           graph: applyImageOff(
-            applyModelServer(workflow, this.modelServer()),
+            applyBypass(
+              applyModelServer(workflow, this.modelServer()),
+              bypassedNodes(schema, values),
+              objectInfo,
+            ).workflow,
             imageOffNodes(schema, values),
           ).workflow,
           workflowId: detail.id,
