@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import {
+  applyBypass,
   applyPresetChat,
   batchLength,
+  bypassFieldId,
   bypassedNodes,
   defaultValues,
   findFieldByRole,
@@ -37,6 +39,7 @@ import {
   useSavePreset,
   useSetEndless,
   useWorkflow,
+  useWorkflowDefinitions,
   useVisibleWorkflows,
   useWorkflows,
 } from '../api/queries';
@@ -54,6 +57,7 @@ import {
   WorkflowScope,
 } from '../components/ParamControl';
 import { Button, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
+import { WorkflowGraph } from '../components/WorkflowGraph';
 import { pruneDrafts, useFormDrafts } from '../state/formDraft';
 import { useWide } from '../state/layout';
 import { useLiveStore } from '../state/live';
@@ -488,7 +492,31 @@ function GenerateForm({
     () => new Set(schema ? bypassedNodes(schema, values) : []),
     [schema, values],
   );
-  const fadedByBypass = (field: ParamField) => bypassed.has(field.nodeId) && !isBypassField(field);
+  const fadedByBypass = (field: ParamField) => bypassed.has(field.nodeId);
+
+  /** Bypass a node from the workflow view, or bring it back. */
+  const toggleBypass = useCallback(
+    (nodeId: string) => {
+      if (!detail) return;
+      const id = bypassFieldId(nodeId);
+      patchDraft(detail.id, { values: { ...values, [id]: !bypassed.has(nodeId) } });
+    },
+    [detail, values, bypassed, patchDraft],
+  );
+  const clearBypass = useCallback(() => {
+    if (!schema || !detail) return;
+    const cleared = { ...values };
+    for (const field of schema.fields) if (isBypassField(field)) cleared[field.id] = false;
+    patchDraft(detail.id, { values: cleared });
+  }, [schema, detail, values, patchDraft]);
+
+  const [showGraph, setShowGraph] = useState(false);
+  const definitions = useWorkflowDefinitions(detail?.id ?? null, showGraph);
+  /** Whether Generate would refuse these bypasses, said while choosing them. */
+  const bypassProblem = useMemo(() => {
+    if (!detail || bypassed.size === 0 || !definitions.data) return undefined;
+    return applyBypass(detail.graph, bypassed, definitions.data).error;
+  }, [detail, bypassed, definitions.data]);
 
   // Hand the typed prompt to the Random tab, which previews draws on top of it.
   const promptDraft = promptFields
@@ -951,27 +979,23 @@ function GenerateForm({
               <div className="space-y-4">
                 {groupByNode(advancedFields).map((group) => {
                   /*
-                   * A bypassed node says so on its heading, and its other
-                   * settings fade: they are still there to change, but they do
-                   * nothing this run, and a form that looked the same either
-                   * way would hide the one switch that matters.
+                   * A node bypassed on the workflow view says so on its
+                   * heading, and its settings fade: still there to change, but
+                   * doing nothing this run.
                    */
-                  const bypassSwitch = group.fields.find(isBypassField);
-                  const bypassed =
-                    bypassSwitch !== undefined &&
-                    (values[bypassSwitch.id] ?? bypassSwitch.defaultValue) === true;
+                  const nodeBypassed = bypassed.has(group.nodeId);
                   return (
                     <section key={group.nodeId} className="space-y-1.5">
                       <h3 className="flex items-baseline gap-2 border-b border-line pb-1">
                         <span
                           className={cn(
                             'min-w-0 truncate text-xs font-medium tracking-wide uppercase',
-                            bypassed ? 'text-fuchsia-300 line-through' : 'text-muted',
+                            nodeBypassed ? 'text-fuchsia-300 line-through' : 'text-muted',
                           )}
                         >
                           {group.title}
                         </span>
-                        {bypassed && (
+                        {nodeBypassed && (
                           // Purple, as a bypassed node is in ComfyUI's editor.
                           <span className="shrink-0 rounded bg-fuchsia-500/20 px-1.5 text-[10px] text-fuchsia-300 uppercase">
                             bypassed
@@ -988,7 +1012,7 @@ function GenerateForm({
                             className={cn(
                               'min-w-0',
                               isWideControl(field) ? 'w-full space-y-1' : 'max-w-full',
-                              bypassed && !isBypassField(field) && 'opacity-50',
+                              nodeBypassed && 'opacity-50',
                             )}
                           >
                             {isWideControl(field) && (
@@ -1011,6 +1035,40 @@ function GenerateForm({
             </Sheet>
           </>
         )}
+
+        {/*
+          The workflow itself, drawn as ComfyUI draws it — where a node is
+          bypassed, by tapping it, rather than by hunting through Advanced.
+        */}
+        <button
+          type="button"
+          onClick={() => setShowGraph(true)}
+          className="flex items-center justify-between rounded-xl border border-line bg-surface px-3 py-2 text-left active:bg-surface-2"
+        >
+          <span className="text-sm">Workflow</span>
+          <span className="text-xs text-muted">
+            {bypassed.size > 0 && (
+              <span className="text-fuchsia-300">{bypassed.size} bypassed · </span>
+            )}
+            {Object.keys(detail.graph).length} nodes ›
+          </span>
+        </button>
+        <Sheet open={showGraph} onClose={() => setShowGraph(false)} title="Workflow" full wide>
+          {definitions.isPending ? (
+            <div className="flex h-full items-center justify-center">
+              <Spinner className="size-5" />
+            </div>
+          ) : (
+            <WorkflowGraph
+              workflow={detail.graph}
+              definitions={definitions.data ?? {}}
+              bypassed={bypassed}
+              onToggleBypass={toggleBypass}
+              onClearBypass={clearBypass}
+              problem={bypassProblem}
+            />
+          )}
+        </Sheet>
 
         <ErrorNote>{error}</ErrorNote>
 

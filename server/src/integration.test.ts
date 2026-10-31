@@ -4757,10 +4757,25 @@ describe('llama-server nodes', () => {
         body: JSON.stringify({ name: 'Bypass a sampler', graph: sd15Txt2Img }),
       }),
     );
-    // Every node has a switch, as in ComfyUI's editor — the decode too.
+    // Every node has a switch, as in ComfyUI's editor — the decode too —
+    // and none is a control on the form: the workflow view sets them.
     for (const nodeId of Object.keys(sd15Txt2Img)) {
-      expect(workflow.schema.fields.some((field) => field.id === `${nodeId}.__bypass`)).toBe(true);
+      const field = workflow.schema.fields.find((entry) => entry.id === `${nodeId}.__bypass`);
+      expect(field?.hidden).toBe(true);
     }
+
+    // The view is sent the definitions of this graph's nodes only, trimmed.
+    const definitions = (await json(api(`/api/workflows/${workflow.id}/definitions`))) as Record<
+      string,
+      { input?: { required?: Record<string, unknown> }; output?: unknown[] }
+    >;
+    expect(Object.keys(definitions).sort()).toEqual(
+      [...new Set(Object.values(sd15Txt2Img).map((node) => node.class_type))].sort(),
+    );
+    expect(definitions.KSampler?.output).toEqual(['LATENT']);
+    expect(
+      (definitions.CheckpointLoaderSimple?.input?.required?.ckpt_name as unknown[])[0],
+    ).toEqual([]);
 
     // Bypassing the decode leaves the save with no picture, and says so
     // rather than handing ComfyUI a graph it will reject.

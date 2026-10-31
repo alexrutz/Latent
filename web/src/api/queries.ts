@@ -94,6 +94,21 @@ export function useWorkflow(id: string | null) {
 }
 
 /**
+ * Node definitions for the workflow view, asked for only once it is opened.
+ *
+ * They change only when ComfyUI's nodes do, so they are kept for the session
+ * rather than refetched every time the view is.
+ */
+export function useWorkflowDefinitions(id: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: [...queryKeys.workflow(id ?? ''), 'definitions'] as const,
+    queryFn: () => api.getWorkflowDefinitions(id as string),
+    enabled: Boolean(id) && enabled,
+    staleTime: Infinity,
+  });
+}
+
+/**
  * The settings, once there is a session to read them with.
  *
  * `enabled` exists for one caller and matters to all of them: the app shell
@@ -176,10 +191,7 @@ export function useVisibleWorkflows() {
    * consumer got a new list each time — the Generate screen pruned its
    * drafts on every render as a result.
    */
-  const data = useMemo(
-    () => query.data?.filter((workflow) => workflow.visible),
-    [query.data],
-  );
+  const data = useMemo(() => query.data?.filter((workflow) => workflow.visible), [query.data]);
   return { ...query, data };
 }
 
@@ -409,9 +421,16 @@ export function useDeletePreset(workflowId: string | null) {
  */
 type ImageChange = Partial<Pick<GenerationRecord['images'][number], 'rating' | 'kept'>>;
 
-function sameImage(a: ComfyImageRef & { id?: number | null }, b: ComfyImageRef & { id?: number | null }) {
+function sameImage(
+  a: ComfyImageRef & { id?: number | null },
+  b: ComfyImageRef & { id?: number | null },
+) {
   if (a.id != null && b.id != null) return a.id === b.id;
-  return a.filename === b.filename && (a.subfolder ?? '') === (b.subfolder ?? '') && (a.type ?? 'output') === (b.type ?? 'output');
+  return (
+    a.filename === b.filename &&
+    (a.subfolder ?? '') === (b.subfolder ?? '') &&
+    (a.type ?? 'output') === (b.type ?? 'output')
+  );
 }
 
 /** Apply `change` to one picture of one run, wherever a list is holding it. */
@@ -452,11 +471,16 @@ function patchImage(
       : favorite;
   client.setQueriesData<InfiniteData<FavoritePage>>({ queryKey: ['favorites', 'pages'] }, (data) =>
     data && Array.isArray(data.pages)
-      ? { ...data, pages: data.pages.map((page) => ({ ...page, items: page.items.map(onFavorite) })) }
+      ? {
+          ...data,
+          pages: data.pages.map((page) => ({ ...page, items: page.items.map(onFavorite) })),
+        }
       : data,
   );
   client.setQueriesData<Favorite>({ queryKey: ['favorites', 'one'] }, (favorite) =>
-    favorite && typeof favorite === 'object' && 'values' in favorite ? onFavorite(favorite) : favorite,
+    favorite && typeof favorite === 'object' && 'values' in favorite
+      ? onFavorite(favorite)
+      : favorite,
   );
 }
 
@@ -515,8 +539,15 @@ function useImageChange<TArgs extends { generationId: string; image: ComfyImageR
 
 export function useRateImage() {
   return useImageChange(
-    ({ generationId, image, rating }: { generationId: string; image: ComfyImageRef; rating: number }) =>
-      api.rateImage(generationId, image, rating),
+    ({
+      generationId,
+      image,
+      rating,
+    }: {
+      generationId: string;
+      image: ComfyImageRef;
+      rating: number;
+    }) => api.rateImage(generationId, image, rating),
     ({ rating }) => ({ rating }),
   );
 }
@@ -642,8 +673,15 @@ export function reportImageDimensions(image: ComfyImageRef, width: number, heigh
 
 export function useKeepImage() {
   return useImageChange(
-    ({ generationId, image, kept }: { generationId: string; image: ComfyImageRef; kept: boolean }) =>
-      api.keepImage(generationId, image, kept),
+    ({
+      generationId,
+      image,
+      kept,
+    }: {
+      generationId: string;
+      image: ComfyImageRef;
+      kept: boolean;
+    }) => api.keepImage(generationId, image, kept),
     ({ kept }) => ({ kept }),
   );
 }
@@ -702,20 +740,23 @@ function patchFavorite(
   id: string,
   change: (favorite: Favorite) => Favorite | null,
 ): void {
-  client.setQueriesData<InfiniteData<FavoritePage>>({ queryKey: ['favorites', 'pages'] }, (data) => {
-    if (!data || !Array.isArray(data.pages)) return data;
-    return {
-      ...data,
-      pages: data.pages.map((page) => ({
-        ...page,
-        items: page.items.flatMap((favorite) => {
-          if (favorite.id !== id) return [favorite];
-          const next = change(favorite);
-          return next ? [next] : [];
-        }),
-      })),
-    };
-  });
+  client.setQueriesData<InfiniteData<FavoritePage>>(
+    { queryKey: ['favorites', 'pages'] },
+    (data) => {
+      if (!data || !Array.isArray(data.pages)) return data;
+      return {
+        ...data,
+        pages: data.pages.map((page) => ({
+          ...page,
+          items: page.items.flatMap((favorite) => {
+            if (favorite.id !== id) return [favorite];
+            const next = change(favorite);
+            return next ? [next] : [];
+          }),
+        })),
+      };
+    },
+  );
   client.setQueryData<Favorite>(queryKeys.favorite(id), (favorite) =>
     favorite ? (change(favorite) ?? undefined) : favorite,
   );
@@ -724,8 +765,15 @@ function patchFavorite(
 export function useAddFavorite() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: ({ generationId, image, note }: { generationId: string; image: ComfyImageRef; note?: string }) =>
-      api.addFavorite(generationId, image, note),
+    mutationFn: ({
+      generationId,
+      image,
+      note,
+    }: {
+      generationId: string;
+      image: ComfyImageRef;
+      note?: string;
+    }) => api.addFavorite(generationId, image, note),
     onSuccess: (favorite) => {
       client.setQueryData(queryKeys.favorite(favorite.id), favorite);
       // The index is small, and a new favourite is a new entry in it.
@@ -733,7 +781,10 @@ export function useAddFavorite() {
       // The lists gain one at a place only the server can say: marked stale,
       // and fetched when next looked at rather than now.
       void client.invalidateQueries({
-        predicate: (query) => query.queryKey[0] === 'favorites' && query.queryKey[1] !== 'index' && query.queryKey[1] !== 'one',
+        predicate: (query) =>
+          query.queryKey[0] === 'favorites' &&
+          query.queryKey[1] !== 'index' &&
+          query.queryKey[1] !== 'one',
         refetchType: 'none',
       });
       // Favouriting archives the picture. Its gallery entry says so the next
@@ -760,7 +811,10 @@ export function useUpdateFavorite() {
       if (favorite) patchFavorite(client, id, () => favorite);
       // A list sorted by this rating reorders when it next loads.
       if (patch.rating !== undefined) {
-        void client.invalidateQueries({ queryKey: queryKeys.favoritePages('rating'), refetchType: 'none' });
+        void client.invalidateQueries({
+          queryKey: queryKeys.favoritePages('rating'),
+          refetchType: 'none',
+        });
       }
     },
     onError: () => void client.invalidateQueries({ queryKey: queryKeys.favorites }),

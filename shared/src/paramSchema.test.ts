@@ -721,9 +721,12 @@ describe('the MiniMax H3 reference slots', () => {
     const other = build({
       '1': { class_type: 'LoadImage', inputs: { image: 'a.png' } },
     });
-    expect(other.fields.every((f) => !f.hidden || f.inputName === 'control_after_generate')).toBe(
-      true,
-    );
+    // (The Bypass switch is always hidden: it is set on the workflow view.)
+    expect(
+      other.fields.every(
+        (f) => !f.hidden || f.inputName === 'control_after_generate' || f.inputName === '__bypass',
+      ),
+    ).toBe(true);
   });
 });
 

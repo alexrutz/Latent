@@ -2502,36 +2502,63 @@ test.describe('keeping, deleting and looking closely', () => {
   /*
    * Bypassing a node from the form, as the editor's Bypass does it.
    */
-  test('bypasses a node from Advanced, and the run goes without it', async ({ page }) => {
+  test('bypasses a node from the workflow view, and the run goes without it', async ({ page }) => {
     await open(page, '/');
     // The sampler's settings on the main screen — seed, steps — are live.
     const faded = page.locator('main [data-bypassed]');
     await expect(faded).toHaveCount(0);
+
+    // Advanced is settings only: no Bypass switches among them any more.
     await page.getByRole('button', { name: 'Advanced' }).click();
-    const sheet = page.getByRole('dialog', { name: 'Advanced' });
-    // A switch on every node, as in ComfyUI's editor — the decode and the
-    // save included, which once had none.
-    await expect(sheet.getByRole('button', { name: /^Bypass/ })).toHaveCount(
-      Object.keys(sd15Txt2Img).length,
-    );
-    const sampler = sheet
-      .locator('section')
-      .filter({ has: page.locator('h3', { hasText: 'KSampler' }) });
-    const bypass = sampler.getByRole('button', { name: /^Bypass/ });
-    await expect(bypass).toHaveAttribute('aria-pressed', 'false');
-    await bypass.click();
-    await expect(bypass).toHaveAttribute('aria-pressed', 'true');
-    await expect(sampler.getByText('bypassed', { exact: true })).toBeVisible();
+    const advanced = page.getByRole('dialog', { name: 'Advanced' });
+    await expect(advanced.getByRole('button', { name: /^Bypass/ })).toHaveCount(0);
+    await advanced.getByRole('button', { name: 'Done' }).click();
+
+    // The workflow, drawn as ComfyUI draws it: every node, every link.
+    await page.getByRole('button', { name: /^Workflow.*nodes/ }).click();
+    const sheet = page.getByRole('dialog', { name: 'Workflow' });
+    await expect(sheet.locator('[data-node]')).toHaveCount(Object.keys(sd15Txt2Img).length);
+    await expect(sheet.locator('svg path[stroke]')).not.toHaveCount(0);
+
+    // It opens readable, at the loaders' end, and moves under a finger.
+    const canvas = sheet.getByTestId('workflow-graph');
+    await page.screenshot({ path: 'test-results/108a-graph-open.png' });
+    const layer = canvas.locator('svg > g').first();
+    const before = await layer.getAttribute('transform');
+    const area = (await canvas.boundingBox())!;
+    await page.mouse.move(area.x + area.width / 2, area.y + area.height - 140);
+    await page.mouse.down();
+    await page.mouse.move(area.x + area.width / 2 - 120, area.y + area.height - 160, { steps: 6 });
+    await page.mouse.up();
+    expect(await layer.getAttribute('transform')).not.toBe(before);
+    // Fit shows all of it.
+    await sheet.getByRole('button', { name: 'Fit' }).click();
+
+    // A bypass that leaves the save with nothing is said at once.
+    await sheet.getByRole('button', { name: /^VAE Decode node/ }).click();
+    const toggle = sheet.getByRole('button', { name: /^Bypass/ });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(sheet.getByRole('status')).toContainText("without its 'images'");
+    await toggle.click();
+    await expect(sheet.getByRole('status')).toHaveCount(0);
+
+    // The sampler can go: its latent goes straight on to the decode.
+    await sheet.getByRole('button', { name: /^KSampler node/ }).click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(sheet.getByRole('button', { name: 'KSampler node, bypassed' })).toBeVisible();
+    await expect(sheet.getByText('1 bypassed')).toBeVisible();
     await page.screenshot({ path: 'test-results/108-bypass.png' });
     await sheet.getByRole('button', { name: 'Done' }).click();
 
-    // ...and fade once it is bypassed, as they do in Advanced; the prompt,
-    // which is another node's, does not.
+    // The row says so, and the sampler's settings fade as they do in Advanced;
+    // the prompt, which is another node's, does not.
+    await expect(page.getByRole('button', { name: /^Workflow.*1 bypassed/ })).toBeVisible();
     await expect(faded.first()).toBeVisible();
     await expect(faded.first()).toHaveClass(/opacity-50/);
-    await expect(faded.filter({ has: page.getByPlaceholder('Describe the image…') })).toHaveCount(
-      0,
-    );
+    await expect(faded.filter({ has: page.getByPlaceholder('Describe the image…') })).toHaveCount(0);
     await page.screenshot({ path: 'test-results/108b-bypass-main.png' });
 
     await page.getByPlaceholder('Describe the image…').fill('without the sampler');

@@ -1,4 +1,5 @@
 import type {
+  ObjectInfo,
   ParamSchema,
   CreateStudyRequest,
   StudyDetail,
@@ -741,6 +742,9 @@ export const api = {
     }),
 
   getWorkflow: (id: string) => request<WorkflowDetail>(`/api/workflows/${id}`),
+
+  /** What ComfyUI says about this workflow's nodes, for drawing it. */
+  getWorkflowDefinitions: (id: string) => request<ObjectInfo>(`/api/workflows/${id}/definitions`),
 
   createWorkflow: (name: string, graph: unknown) =>
     request<WorkflowDetail>('/api/workflows', {

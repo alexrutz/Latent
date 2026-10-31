@@ -7,6 +7,7 @@ import {
   defaultValues,
   isUiWorkflow,
   poolFields,
+  trimDefinitions,
   uiToApiWorkflow,
   UiWorkflowError,
   WorkflowFormatError,
@@ -154,6 +155,26 @@ export function registerWorkflowRoutes(app: FastifyInstance, ctx: AppContext): v
 
     const detail = ctx.store.getWorkflow(request.params.id);
     return detail ? withOverrides(detail) : reply.code(404).send({ error: 'Workflow not found' });
+  });
+
+  /**
+   * What ComfyUI says about the nodes in one workflow, for drawing it.
+   *
+   * Only the node types in this graph, and without their option lists — a
+   * checkpoint loader's lists every checkpoint on the machine, which the view
+   * never shows. With ComfyUI unreachable and nothing cached the answer is
+   * empty, and the view draws what the graph alone says.
+   */
+  app.get<{ Params: { id: string } }>('/api/workflows/:id/definitions', async (request, reply) => {
+    const existing = ctx.store.getWorkflow(request.params.id);
+    if (!existing) return reply.code(404).send({ error: 'Workflow not found' });
+    let objectInfo: ObjectInfo = {};
+    try {
+      objectInfo = await ctx.orchestrator.objectInfo();
+    } catch (error) {
+      app.log.warn({ err: error }, 'No node definitions for the workflow view');
+    }
+    return trimDefinitions(existing.graph, objectInfo);
   });
 
   app.delete<{ Params: { id: string } }>('/api/workflows/:id', async (request, reply) => {

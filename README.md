@@ -2975,24 +2975,28 @@ sending the picture it was built around.
 
 ### Bypassing a node
 
-Every node gets a **Bypass** switch, as every node can be bypassed in ComfyUI's
-editor. It sits first under the node's own heading in **Advanced**; a node with
-no settings of its own gets a heading with just the switch. Workflows imported
-before this gain their switches without a rescan.
+Under **Advanced** on the Generate screen, **Workflow** opens the graph drawn as
+ComfyUI's editor draws it: every node with its sockets down the sides and its
+widgets underneath, links coloured by what they carry, in the editor's dark
+palette. An API-format workflow keeps no positions, so the nodes are laid out
+left to right in the order data flows. One finger moves it, two or the wheel
+zoom it, and **Fit** shows all of it; it opens at a size that can be read,
+from the loaders' end.
 
-Switched on, the node is cut out on the way to ComfyUI, its heading turns
-**purple** with a **bypassed** tag, and its settings fade, in Advanced and on
-the main screen alike. Whatever it fed is handed what *it* was fed, by
-ComfyUI's own rule for which input stands in for which output — the same
-position if the type fits, then the first input of that type — so a bypass here
-renders exactly what the same bypass in the editor would: a LoRA loader's model
-and clip go straight on, an upscale's picture goes straight to the save. A run
-of bypassed nodes is followed through, and a custom node ComfyUI does not
-describe passes its first matching link straight through.
+**Tap a node, then Bypass** (or Ctrl/⌘+B, as in the editor). Any node can be
+bypassed. It turns **purple** and is left out of the run, and whatever it fed is
+handed what *it* was fed, by ComfyUI's own rule for which input stands in for
+which output — the same position if the type fits, then the first input of that
+type — so the result is what the same bypass in the editor renders: a LoRA
+loader's model and clip go straight on, an upscale's picture goes straight to
+the save. The Workflow row counts what is bypassed, **Clear** brings it all
+back, and the node's settings fade on the main screen and in Advanced.
 
 Some bypasses leave the graph unable to run, in the editor as here — skipping
-the VAE decode leaves the save with no picture. Those are refused when you press
-Generate, with a sentence naming the node, rather than sent to ComfyUI to fail.
+the VAE decode leaves the save with no picture. The view says so as soon as the
+node is bypassed, naming it, and Generate refuses rather than sending ComfyUI a
+graph it would reject. Bypasses are kept with the rest of the form: in the
+draft, and in presets.
 
 A workflow imported from the editor keeps the nodes that were bypassed there,
 with their switch on, instead of losing them: ComfyUI's own API export rewires

@@ -50,7 +50,7 @@ export function typesConnect(a: string, b: string): boolean {
 }
 
 /** A declared type as a string: a combo's option list is a `COMBO`. */
-function typeOf(spec: InputSpec | string | string[] | undefined): string {
+export function typeOf(spec: InputSpec | string | string[] | undefined): string {
   if (Array.isArray(spec)) {
     const head = spec[0];
     if (Array.isArray(head)) return 'COMBO';
@@ -60,7 +60,7 @@ function typeOf(spec: InputSpec | string | string[] | undefined): string {
 }
 
 /** A node's inputs in slot order, with their types. */
-function inputSlots(definition: NodeDef): { name: string; type: string }[] {
+export function inputSlots(definition: NodeDef): { name: string; type: string }[] {
   const required = definition.input?.required ?? {};
   const optional = definition.input?.optional ?? {};
   const order = definition.input_order;
@@ -124,16 +124,18 @@ export function bypassableNodes(workflow: ApiWorkflow, _objectInfo: ObjectInfo =
  * The same switches, added to a schema stored before every node had one.
  *
  * Applied whenever a workflow is read, so a form saved by an older version
- * gains its switches without a rescan. A switch already there — with whatever
- * the form editor did to it — is left exactly as it is; a missing one goes
+ * gains its switches without a rescan. They are kept hidden, including ones an
+ * older version stored as visible: the switch is set from the workflow view,
+ * and as a button in Advanced it was one among dozens. A missing one goes
  * first among its node's advanced settings, or after everything for a node
- * that has none. Orders are fractional rather than renumbered, so nothing
- * else on the form moves.
+ * that has none; orders are fractional rather than renumbered, so nothing else
+ * on the form moves.
  */
 export function withBypassSwitches(schema: ParamSchema, workflow: ApiWorkflow): ParamSchema {
   const have = new Set(schema.fields.filter(isBypassField).map((field) => field.nodeId));
   const missing = bypassableNodes(workflow).filter((nodeId) => !have.has(nodeId));
-  if (missing.length === 0) return schema;
+  const shown = schema.fields.some((field) => isBypassField(field) && !field.hidden);
+  if (missing.length === 0 && !shown) return schema;
 
   const advanced = schema.fields.filter((field) => field.group === 'advanced');
   let tail = advanced.reduce((max, field) => Math.max(max, field.order), -1);
@@ -144,7 +146,10 @@ export function withBypassSwitches(schema: ParamSchema, workflow: ApiWorkflow): 
     const title = node._meta?.title || own[0]?.nodeTitle || node.class_type || nodeId;
     return bypassField(nodeId, title, node.class_type, node._meta?.bypassed === true, order);
   });
-  return { ...schema, fields: [...schema.fields, ...added] };
+  const fields = schema.fields.map((field) =>
+    isBypassField(field) && !field.hidden ? { ...field, hidden: true } : field,
+  );
+  return { ...schema, fields: [...fields, ...added] };
 }
 
 /** The switch, as a field of the form. */
@@ -168,7 +173,9 @@ export function bypassField(
     defaultValue: bypassed,
     group: 'advanced',
     order,
-    hidden: false,
+    // Never a control on the form: bypassing is done on the workflow view,
+    // where the node is, rather than by hunting through Advanced for it.
+    hidden: true,
     unknownNodeType: false,
   };
 }

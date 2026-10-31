@@ -10,6 +10,7 @@ import {
   fieldPoints,
   clearOwnOrder,
   hasOwnOrder,
+  isBypassField,
   isSizeable,
   fieldPointValues,
   SAMPLING_GROUPS,
@@ -286,7 +287,11 @@ function PreviewEvery({
           {value <= 1 ? 'every one' : `every ${value}${nth(value)}`}
         </span>
       </div>
-      <div role="radiogroup" aria-label={`${label}: show every nth`} className="flex flex-wrap gap-1">
+      <div
+        role="radiogroup"
+        aria-label={`${label}: show every nth`}
+        className="flex flex-wrap gap-1"
+      >
         {PREVIEW_STEPS.map((step) => {
           const active = value === step;
           return (
@@ -1458,7 +1463,10 @@ function FormEditorSheet({ workflowId, onClose }: { workflowId: string; onClose:
             <LayoutBar workflowId={workflowId} detail={detail} />
 
             {(['main', 'advanced'] as const).map((group) => {
-              const fields = detail.schema.fields.filter((field) => field.group === group);
+              // Bypass switches are set on the workflow view, never placed here.
+              const fields = detail.schema.fields.filter(
+                (field) => field.group === group && !isBypassField(field),
+              );
               if (fields.length === 0) return null;
               return (
                 <div key={group} className="space-y-2">

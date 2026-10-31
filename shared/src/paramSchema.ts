@@ -920,7 +920,8 @@ export function buildParamSchema(workflow: ApiWorkflow, objectInfo: ObjectInfo =
   for (const nodeId of bypassableNodes(workflow, objectInfo)) {
     const node = workflow[nodeId]!;
     const own = fields.filter((field) => field.nodeId === nodeId && field.group === 'advanced');
-    const first = own.length > 0 ? Math.min(...own.map((field) => field.order)) - 0.5 : fields.length;
+    const first =
+      own.length > 0 ? Math.min(...own.map((field) => field.order)) - 0.5 : fields.length;
     const title =
       node._meta?.title || objectInfo[node.class_type]?.display_name || node.class_type || nodeId;
     fields.push(bypassField(nodeId, title, node.class_type, node._meta?.bypassed === true, first));
@@ -975,6 +976,9 @@ function labelDuplicates(fields: ParamField[]): void {
  */
 export function applyOverrides(schema: ParamSchema, overrides: FieldOverrides = {}): ParamSchema {
   const fields = schema.fields.map((field) => {
+    // A Bypass switch is set from the workflow view and never shown on the
+    // form, whatever an older form editor once stored for it.
+    if (isBypassField(field)) return { ...field, hidden: true };
     const o = overrides[field.id];
     if (!o) return { ...field };
     return {

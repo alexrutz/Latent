@@ -5,6 +5,7 @@ import {
   SAMPLINGS,
   describeSignificance,
   factorLevels,
+  isBypassField,
   levelLabel,
   playsInAudioElement,
   playsInVideoElement,
@@ -80,18 +81,19 @@ const COSTS: { value: number; label: string; hint: string }[] = [
 function candidateFields(fields: ParamField[]): ParamField[] {
   return fields.filter(
     (field) =>
-      field.control === 'combo' ||
-      field.control === 'boolean' ||
-      field.control === 'int' ||
-      field.control === 'float',
+      // A node on or off is not a setting to compare; it is a different graph.
+      !isBypassField(field) &&
+      (field.control === 'combo' ||
+        field.control === 'boolean' ||
+        field.control === 'int' ||
+        field.control === 'float'),
   );
 }
 
 /** A first guess at a factor for a field, so adding one is a single tap. */
 function defaultFactor(field: ParamField): StudyFactor {
   if (field.control === 'combo' || field.control === 'boolean') {
-    const levels =
-      field.control === 'boolean' ? [true, false] : (field.options ?? []).slice(0, 8);
+    const levels = field.control === 'boolean' ? [true, false] : (field.options ?? []).slice(0, 8);
     return {
       kind: 'categorical',
       key: field.id,
@@ -255,8 +257,7 @@ function NumericFactorFields({
               onClick={() =>
                 onChange({
                   ...factor,
-                  quantise:
-                    mode === 'samples' ? { mode, count: 5 } : { mode, step: 1 },
+                  quantise: mode === 'samples' ? { mode, count: 5 } : { mode, step: 1 },
                 })
               }
               className={cn(
@@ -279,7 +280,9 @@ function NumericFactorFields({
                   : { mode: 'interval', step: value },
             })
           }
-          aria-label={factor.quantise.mode === 'samples' ? 'How many values' : 'Step between values'}
+          aria-label={
+            factor.quantise.mode === 'samples' ? 'How many values' : 'Step between values'
+          }
           className="min-w-0 flex-1"
         />
       </div>
@@ -415,10 +418,7 @@ function SetupPhase({ study }: { study: StudyDetail }) {
 
   const factors = study.factors as StudyFactor[];
   const preview = useStudyPreview(study.id, factors.length > 0);
-  const candidates = useMemo(
-    () => candidateFields(fields.data?.fields ?? []),
-    [fields.data],
-  );
+  const candidates = useMemo(() => candidateFields(fields.data?.fields ?? []), [fields.data]);
 
   const save = (next: StudyFactor[]) => update.mutate({ factors: next });
 
@@ -699,19 +699,13 @@ function RatingViewer({ study }: { study: StudyDetail }) {
             loop
             muted
             playsInline
-            className={cn(
-              'block max-h-[62svh] w-full object-contain',
-              blurred && 'blur-2xl',
-            )}
+            className={cn('block max-h-[62svh] w-full object-contain', blurred && 'blur-2xl')}
           />
         ) : (
           <img
             src={imageUrl(shot.image)}
             alt=""
-            className={cn(
-              'block max-h-[62svh] w-full object-contain',
-              blurred && 'blur-2xl',
-            )}
+            className={cn('block max-h-[62svh] w-full object-contain', blurred && 'blur-2xl')}
           />
         )}
 

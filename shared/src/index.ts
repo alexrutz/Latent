@@ -7,6 +7,7 @@ export * from './paramSummary.js';
 export * from './formRuns.js';
 export * from './imageOff.js';
 export * from './bypass.js';
+export * from './graphView.js';
 export * from './daySections.js';
 export * from './inputBatch.js';
 export * from './supervisor.js';

@@ -11,7 +11,7 @@ import {
   withBypassSwitches,
 } from './bypass.js';
 import type { ApiWorkflow, ObjectInfo } from './comfyTypes.js';
-import { applyParams, buildParamSchema } from './paramSchema.js';
+import { applyOverrides, applyParams, buildParamSchema } from './paramSchema.js';
 
 /** Just enough of /object_info to wire a model through two LoRAs and an upscale. */
 const objectInfo: ObjectInfo = {
@@ -262,6 +262,27 @@ describe('the Bypass switch in the form', () => {
     const field = schema.fields.find((entry) => entry.id === bypassFieldId('2'));
     expect(field).toMatchObject({ group: 'advanced', control: 'boolean', defaultValue: false });
     expect(field?.label).toMatch(/^Bypass/);
+  });
+
+  it('is never a control on the form, whatever a form edit once said', () => {
+    const schema = buildParamSchema(graph(), objectInfo);
+    expect(schema.fields.filter(isBypassField).every((field) => field.hidden)).toBe(true);
+    // An older version showed them, and its form editor could store that.
+    const shown = {
+      ...schema,
+      fields: schema.fields.map((field) =>
+        isBypassField(field) ? { ...field, hidden: false } : field,
+      ),
+    };
+    expect(
+      withBypassSwitches(shown, graph())
+        .fields.filter(isBypassField)
+        .every((field) => field.hidden),
+    ).toBe(true);
+    const overridden = applyOverrides(schema, {
+      [bypassFieldId('2')]: { hidden: false, group: 'main' },
+    });
+    expect(overridden.fields.find((field) => field.id === bypassFieldId('2'))?.hidden).toBe(true);
   });
 
   it('is never written into the graph as an input', () => {
