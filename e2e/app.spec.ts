@@ -2504,6 +2504,9 @@ test.describe('keeping, deleting and looking closely', () => {
    */
   test('bypasses a node from Advanced, and the run goes without it', async ({ page }) => {
     await open(page, '/');
+    // The sampler's settings on the main screen — seed, steps — are live.
+    const faded = page.locator('main [data-bypassed]');
+    await expect(faded).toHaveCount(0);
     await page.getByRole('button', { name: 'Advanced' }).click();
     const sheet = page.getByRole('dialog', { name: 'Advanced' });
     const bypass = sheet.getByRole('button', { name: /^Bypass/ });
@@ -2513,6 +2516,13 @@ test.describe('keeping, deleting and looking closely', () => {
     await expect(sheet.getByText('bypassed', { exact: true })).toBeVisible();
     await page.screenshot({ path: 'test-results/108-bypass.png' });
     await sheet.getByRole('button', { name: 'Done' }).click();
+
+    // ...and fade once it is bypassed, as they do in Advanced; the prompt,
+    // which is another node's, does not.
+    await expect(faded.first()).toBeVisible();
+    await expect(faded.first()).toHaveClass(/opacity-50/);
+    await expect(faded.filter({ has: page.getByPlaceholder('Describe the image…') })).toHaveCount(0);
+    await page.screenshot({ path: 'test-results/108b-bypass-main.png' });
 
     await page.getByPlaceholder('Describe the image…').fill('without the sampler');
     await page.getByRole('button', { name: /^Generate/ }).click();

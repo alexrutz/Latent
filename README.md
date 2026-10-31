@@ -2988,7 +2988,8 @@ that type — so a bypass here renders exactly what the same bypass in the edito
 would. A run of bypassed nodes is followed through, and where nothing can stand
 in for an input the next node needs, the switch is refused with a sentence
 naming it. The heading says **bypassed** and the node's other settings fade
-while it is.
+while it is — in Advanced and on the main screen alike, so a sampler's steps
+dragged onto the main form do not look live while doing nothing.
 
 A workflow imported from the editor keeps the nodes that were bypassed there,
 with their switch on, instead of losing them: ComfyUI's own API export rewires

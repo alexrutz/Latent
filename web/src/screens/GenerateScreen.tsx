@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   applyPresetChat,
   batchLength,
+  bypassedNodes,
   defaultValues,
   findFieldByRole,
   groupByNode,
@@ -60,6 +61,9 @@ import { usePendingStore } from '../state/pending';
 import { savePromptDraft } from '../state/promptDraft';
 
 const LAST_WORKFLOW_KEY = 'latent.lastWorkflowId';
+
+/** Said over a setting whose node is bypassed, wherever the setting sits. */
+const BYPASSED_HINT = 'Its node is bypassed, so this does nothing this run.';
 
 /**
  * One field on the main screen, rendered as whatever it is.
@@ -471,6 +475,21 @@ function GenerateForm({
     [fields],
   );
 
+  /**
+   * The nodes switched off for this run, so their settings on the main screen
+   * fade as they do in Advanced.
+   *
+   * Only Advanced showed it, and a sampler's steps or a LoRA's strength
+   * dragged onto the main screen looked live while doing nothing. Read from
+   * the whole schema, hidden switches included: a switch hidden from the form
+   * still bypasses its node.
+   */
+  const bypassed = useMemo(
+    () => new Set(schema ? bypassedNodes(schema, values) : []),
+    [schema, values],
+  );
+  const fadedByBypass = (field: ParamField) => bypassed.has(field.nodeId) && !isBypassField(field);
+
   // Hand the typed prompt to the Random tab, which previews draws on top of it.
   const promptDraft = promptFields
     .map((field) => String(values[field.id] ?? ''))
@@ -800,7 +819,13 @@ function GenerateForm({
               {run.fields.map((field) => (
                 <div
                   key={field.id}
-                  className={cn('min-w-0', field.width === 'full' && 'col-span-full')}
+                  className={cn(
+                    'min-w-0',
+                    field.width === 'full' && 'col-span-full',
+                    fadedByBypass(field) && 'opacity-50',
+                  )}
+                  title={fadedByBypass(field) ? BYPASSED_HINT : undefined}
+                  data-bypassed={fadedByBypass(field) || undefined}
                 >
                   {/*
                     A point line that was explicitly set to half width sits in
@@ -826,23 +851,29 @@ function GenerateForm({
               ))}
             </div>
           ) : (
-            <MainField
+            <div
               key={run.fields[0]!.id}
-              field={run.fields[0]!}
-              values={values}
-              setValue={setValue}
-              workflows={workflows}
-              workflowId={workflowId}
-              onSendToWorkflow={sendToWorkflow}
-              lockedSeeds={lockedSeeds}
-              onToggleSeedLock={(id) =>
-                patchDraft(detail.id, {
-                  lockedSeeds: lockedSeeds.includes(id)
-                    ? lockedSeeds.filter((seed) => seed !== id)
-                    : [...lockedSeeds, id],
-                })
-              }
-            />
+              className={cn(fadedByBypass(run.fields[0]!) && 'opacity-50')}
+              title={fadedByBypass(run.fields[0]!) ? BYPASSED_HINT : undefined}
+              data-bypassed={fadedByBypass(run.fields[0]!) || undefined}
+            >
+              <MainField
+                field={run.fields[0]!}
+                values={values}
+                setValue={setValue}
+                workflows={workflows}
+                workflowId={workflowId}
+                onSendToWorkflow={sendToWorkflow}
+                lockedSeeds={lockedSeeds}
+                onToggleSeedLock={(id) =>
+                  patchDraft(detail.id, {
+                    lockedSeeds: lockedSeeds.includes(id)
+                      ? lockedSeeds.filter((seed) => seed !== id)
+                      : [...lockedSeeds, id],
+                  })
+                }
+              />
+            </div>
           ),
         )}
 
