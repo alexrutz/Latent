@@ -165,10 +165,21 @@ export function UpdateSection() {
             )}
 
             {checkout.dirty && (
-              <p className="text-xs text-warn">
-                There are uncommitted changes in the project directory. An update would discard
-                them, so it will be refused until they are committed or stashed.
-              </p>
+              <div className="space-y-1 text-xs text-warn">
+                <p>
+                  These files have changes that are not committed. An update would discard them, so
+                  it will be refused until they are committed, stashed, or dropped with{' '}
+                  <span className="font-mono">git checkout -- &lt;file&gt;</span>:
+                </p>
+                <ul className="list-inside list-disc font-mono break-all">
+                  {(checkout.changes ?? []).slice(0, 12).map((path) => (
+                    <li key={path}>{path}</li>
+                  ))}
+                  {(checkout.changes?.length ?? 0) > 12 && (
+                    <li>and {(checkout.changes?.length ?? 0) - 12} more</li>
+                  )}
+                </ul>
+              </div>
             )}
 
             <div className="flex flex-wrap gap-2">

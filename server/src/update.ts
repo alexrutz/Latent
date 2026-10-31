@@ -36,6 +36,52 @@ import type {
  * was a button.
  */
 
+/**
+ * Files npm rewrites on its own.
+ *
+ * `npm install` — which the update itself runs — rewrites the lockfile when
+ * the npm on this machine is not the one that wrote it, which on Windows it
+ * usually is not. Counting that as somebody's work meant every update after
+ * the first was refused, over a change the updater had made itself. The
+ * reset puts the file back and the install writes it again, so nothing of
+ * anybody's is lost by leaving it out.
+ */
+const NPM_CHURN = new Set(['package-lock.json']);
+
+/**
+ * What `git status --porcelain` says, split by what a hard reset does to it.
+ *
+ * A reset throws away changes to tracked files, so those are somebody's work
+ * in the way. It leaves untracked files alone — Python's `__pycache__`, a
+ * virtualenv, a notes file — so those are not in the way at all, unless the
+ * update brings a file to the same path (see `execute`).
+ */
+export function readChanges(porcelain: string): { tracked: string[]; untracked: string[] } {
+  const tracked: string[] = [];
+  const untracked: string[] = [];
+  for (const line of porcelain.split('\n')) {
+    if (line.length < 4) continue;
+    const code = line.slice(0, 2);
+    if (code === '!!') continue;
+    let path = line.slice(3);
+    // A rename is `old -> new`; the new name is what is there now.
+    const arrow = path.indexOf(' -> ');
+    if (arrow !== -1) path = path.slice(arrow + 4);
+    // Git quotes a path with spaces or unusual characters.
+    if (path.startsWith('"') && path.endsWith('"'))
+      path = path.slice(1, -1).replace(/\\(.)/g, '$1');
+    if (code === '??') untracked.push(path);
+    else if (!NPM_CHURN.has(path)) tracked.push(path);
+  }
+  return { tracked, untracked };
+}
+
+/** A short list of paths for a sentence: the first few, and how many more. */
+export function namePaths(paths: string[], shown = 6): string {
+  const head = paths.slice(0, shown).join(', ');
+  return paths.length > shown ? `${head} and ${paths.length - shown} more` : head;
+}
+
 /** How long a step may run before it is killed, in milliseconds. */
 const GIT_TIMEOUT = 5 * 60 * 1000;
 /** Installing can compile better-sqlite3 from source on a slow box. */
@@ -320,8 +366,10 @@ export class Updater {
       return {
         ok: false,
         error:
-          'There are uncommitted changes in the project directory. Installing an update would ' +
-          'discard them, so it has not been started — commit or stash them first.',
+          `These files in the project directory have changes that are not committed: ` +
+          `${namePaths(checkout.changes)}. Installing an update would discard them, so it has ` +
+          'not been started — commit or stash them first, or run git checkout -- <file> to ' +
+          'drop a change you do not want.',
       };
     }
     if (!checkout.commit || !checkout.branch || !checkout.upstream) {
@@ -375,6 +423,38 @@ export class Updater {
       // Nothing was touched, so there is nothing to undo.
       await this.fail('Could not fetch from the remote.', false);
       return;
+    }
+
+    /*
+     * The one way a reset touches an untracked file: the update brings a file
+     * to the same path, and the reset writes over it. Asked after the fetch,
+     * so it is about exactly the commit about to be installed.
+     */
+    const status = await this.capture(
+      'git',
+      ['status', '--porcelain', '--untracked-files=all'],
+      GIT_TIMEOUT,
+    );
+    const untracked = new Set(status.code === 0 ? readChanges(status.stdout).untracked : []);
+    if (untracked.size > 0) {
+      const added = await this.capture(
+        'git',
+        ['diff', '--name-only', '--diff-filter=A', 'HEAD', upstream],
+        GIT_TIMEOUT,
+      );
+      const clashes = added.stdout
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((path) => path && untracked.has(path));
+      if (clashes.length > 0) {
+        await this.fail(
+          `The update adds ${namePaths(clashes)}, which already exist here but are not part of ` +
+            'the project. Installing would overwrite them, so nothing has been changed — move ' +
+            'them somewhere else first.',
+          false,
+        );
+        return;
+      }
     }
 
     if (!(await this.step('reset', 'git', ['reset', '--hard', upstream], GIT_TIMEOUT))) {
@@ -565,6 +645,7 @@ export class Updater {
       committedAt: null,
       subject: null,
       dirty: false,
+      changes: [],
       ...partial,
     };
   }
@@ -608,8 +689,13 @@ export class Updater {
       subject,
     };
 
-    const dirtyResult = await this.capture('git', ['status', '--porcelain'], GIT_TIMEOUT);
-    const dirty = dirtyResult.code === 0 && dirtyResult.stdout.trim() !== '';
+    const statusResult = await this.capture(
+      'git',
+      ['status', '--porcelain', '--untracked-files=all'],
+      GIT_TIMEOUT,
+    );
+    const changes = statusResult.code === 0 ? readChanges(statusResult.stdout).tracked : [];
+    const dirty = changes.length > 0;
 
     const branchResult = await this.capture(
       'git',
@@ -621,7 +707,7 @@ export class Updater {
       return this.blocked(
         'This checkout is not on a branch (a detached HEAD), so there is nothing to update ' +
           'towards. Check out a branch first.',
-        { ...identity, dirty },
+        { ...identity, dirty, changes },
       );
     }
 
@@ -635,11 +721,11 @@ export class Updater {
       return this.blocked(
         `The branch '${branch}' does not track a remote branch, so there is nowhere to update ` +
           'from. Set one with git branch --set-upstream-to.',
-        { ...identity, branch, dirty },
+        { ...identity, branch, dirty, changes },
       );
     }
 
-    return { updatable: true, reason: null, ...identity, branch, upstream, dirty };
+    return { updatable: true, reason: null, ...identity, branch, upstream, dirty, changes };
   }
 
   /** How far behind the upstream is, from what was last fetched. */

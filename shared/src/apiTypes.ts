@@ -847,8 +847,13 @@ export interface UpdateCheckout {
    * own work rather than a property of the install, and the screen says so
    * differently: everything else is "this cannot be updated", this is "you have
    * edits here that an update would destroy".
+   *
+   * Only changes to tracked files count: an untracked file is left alone by
+   * the update, and npm's own rewrite of the lockfile is the update's to redo.
    */
   dirty: boolean;
+  /** The files that make it dirty, so the screen can say which. */
+  changes: string[];
 }
 
 /** What the upstream has that this checkout does not. */

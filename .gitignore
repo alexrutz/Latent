@@ -22,7 +22,16 @@ playwright-report/
 blob-report/
 .playwright/
 
+# Python (comfyllama, loaded by ComfyUI straight from this folder)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
 # Editor / OS
+Thumbs.db
+desktop.ini
 .DS_Store
 .idea/
 .vscode/*

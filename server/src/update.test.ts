@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { Updater, detectSupervisor, type CommandRequest, type CommandResult } from './update.js';
+import {
+  Updater,
+  detectSupervisor,
+  namePaths,
+  readChanges,
+  type CommandRequest,
+  type CommandResult,
+} from './update.js';
 
 /**
  * The updater, with git and npm scripted rather than run.
@@ -37,7 +44,10 @@ function healthyCheckout(commit = 'a'.repeat(40)): Scripted[] {
   return [
     { match: 'git --version', stdout: 'git version 2.43.0' },
     { match: 'git rev-parse --is-inside-work-tree', stdout: 'true' },
-    { match: 'git log -1', stdout: [commit, commit.slice(0, 7), '1700000000', 'A commit'].join(SEP) },
+    {
+      match: 'git log -1',
+      stdout: [commit, commit.slice(0, 7), '1700000000', 'A commit'].join(SEP),
+    },
     { match: 'git status --porcelain', stdout: '' },
     { match: 'git symbolic-ref', stdout: 'main' },
     { match: 'git rev-parse --abbrev-ref --symbolic-full-name', stdout: 'origin/main' },
@@ -193,10 +203,7 @@ describe('what is waiting', () => {
   it('says so in a sentence when the remote answers with nothing at all', async () => {
     // No `failure`, no stderr — just a non-zero exit. The note has to say
     // something rather than being a blank line where the reason belongs.
-    const { updater: subject } = updater([
-      ...healthyCheckout(),
-      { match: 'git fetch', code: 128 },
-    ]);
+    const { updater: subject } = updater([...healthyCheckout(), { match: 'git fetch', code: 128 }]);
 
     const status = await subject.check();
     expect(status.log.map((line) => line.text)).toContain('Could not reach the remote.');
@@ -216,16 +223,63 @@ describe('what is waiting', () => {
 });
 
 describe('refusing to start', () => {
-  it('will not reset over uncommitted work', async () => {
+  it('will not reset over uncommitted work, and names it', async () => {
     const { updater: subject, calls } = updater([
       ...healthyCheckout(),
-      { match: 'git status --porcelain', stdout: '?? notes.txt\n' },
+      { match: 'git status --porcelain', stdout: ' M server/src/app.ts\n?? notes.txt\n' },
     ]);
 
     const started = await subject.start();
     expect(started.ok).toBe(false);
-    expect(started.ok === false && started.error).toContain('uncommitted changes');
+    expect(started.ok === false && started.error).toContain('server/src/app.ts');
+    expect(started.ok === false && started.error).not.toContain('notes.txt');
+    expect((await subject.status()).checkout.changes).toEqual(['server/src/app.ts']);
     // And nothing was touched on the way to saying so.
+    expect(calls.some((call) => call.startsWith('git reset'))).toBe(false);
+  });
+
+  /*
+   * What used to refuse every update after the first: npm rewriting its own
+   * lockfile, and files nobody tracks — ComfyUI's `__pycache__` beside
+   * comfyllama — neither of which a reset would lose.
+   */
+  it('goes ahead past untracked files and npm’s own lockfile churn', async () => {
+    const { updater: subject, calls } = updater([
+      ...healthyCheckout(),
+      {
+        match: 'git status --porcelain',
+        stdout: ' M package-lock.json\n?? comfyllama/comfyllama/__pycache__/api.cpython-312.pyc\n',
+      },
+      { match: 'git fetch', stdout: '' },
+      { match: 'git diff --name-only --diff-filter=A', stdout: 'web/src/new.ts\n' },
+      { match: 'git reset', stdout: '' },
+      { match: 'npm install', stdout: '' },
+      { match: 'npm run build', stdout: '' },
+      { match: 'git rev-parse HEAD', stdout: 'b'.repeat(40) },
+      { match: 'git rev-list', stdout: '0\t0' },
+    ]);
+
+    const { checkout } = await subject.status();
+    expect(checkout.dirty).toBe(false);
+    expect((await subject.start()).ok).toBe(true);
+    await subject.settled();
+    expect((await subject.status()).run?.phase).toBe('succeeded');
+    expect(calls.some((call) => call.startsWith('git reset --hard'))).toBe(true);
+  });
+
+  it('stops before the reset when the update would write over an untracked file', async () => {
+    const { updater: subject, calls } = updater([
+      ...healthyCheckout(),
+      { match: 'git status --porcelain', stdout: '?? web/src/new.ts\n' },
+      { match: 'git fetch', stdout: '' },
+      { match: 'git diff --name-only --diff-filter=A', stdout: 'web/src/new.ts\nREADME2.md\n' },
+    ]);
+
+    expect((await subject.start()).ok).toBe(true);
+    await subject.settled();
+    const { run } = await subject.status();
+    expect(run?.phase).toBe('failed');
+    expect(JSON.stringify(run)).toContain('web/src/new.ts');
     expect(calls.some((call) => call.startsWith('git reset'))).toBe(false);
   });
 
@@ -426,5 +480,32 @@ describe('what would start it again', () => {
     expect(bare.restarts).toBe(false);
     // Said plainly, because this is the case where the button stops Latent.
     expect(bare.note).toContain('Restart it yourself');
+  });
+});
+
+describe('reading git status', () => {
+  it('splits what a reset would lose from what it would not', () => {
+    expect(
+      readChanges(
+        [
+          ' M server/src/app.ts',
+          'M  web/src/a.ts',
+          ' M package-lock.json',
+          'R  old.ts -> renamed.ts',
+          '?? notes.txt',
+          '?? "with space.txt"',
+          '!! node_modules/',
+          '',
+        ].join('\n'),
+      ),
+    ).toEqual({
+      tracked: ['server/src/app.ts', 'web/src/a.ts', 'renamed.ts'],
+      untracked: ['notes.txt', 'with space.txt'],
+    });
+  });
+
+  it('names a few paths, and counts the rest', () => {
+    expect(namePaths(['a', 'b'])).toBe('a, b');
+    expect(namePaths(['a', 'b', 'c', 'd'], 2)).toBe('a, b and 2 more');
   });
 });
