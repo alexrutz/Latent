@@ -398,7 +398,8 @@ export function ImageField({
             </Button>
             {/* The folder on the Latent machine, for reference shots and masks
                 that were never on the phone to begin with. */}
-            <Button variant="ghost" size="sm" onClick={() => setPicking(true)}>
+            {/* The same button as Replace beside it, not a bare word. */}
+            <Button variant="secondary" size="sm" onClick={() => setPicking(true)}>
               {browsesFolders ? 'Browse folders' : 'From folder'}
             </Button>
             {bypass && (
@@ -411,21 +412,18 @@ export function ImageField({
                     ? `Bypasses this node and ${bypass.alongside.join(', ')}`
                     : 'Bypasses this node'
                 }
+                // The same shape as Replace and Browse folders beside it.
                 className={cn(
-                  'rounded-lg px-3 py-1.5 text-xs font-medium',
-                  bypass.on ? 'bg-fuchsia-600 text-white' : 'bg-surface-2 text-muted',
+                  'inline-flex h-8 items-center justify-center rounded-lg px-2.5 text-sm font-medium transition-colors',
+                  bypass.on
+                    ? 'bg-fuchsia-600 text-white'
+                    : 'bg-surface-2 text-body hover:bg-surface-3 active:bg-surface-3',
                 )}
               >
                 {bypass.on ? 'Bypassed' : 'Bypass'}
               </button>
             )}
           </div>
-          {bypass?.on && (
-            <p className="text-[11px] text-fuchsia-300">
-              Left out of the run
-              {bypass.alongside.length > 0 && <>, with {bypass.alongside.join(', ')}</>}.
-            </p>
-          )}
           {bypass?.on && bypass.problem && (
             <p className="text-[11px] text-warn">{bypass.problem}</p>
           )}

@@ -125,6 +125,14 @@ export interface ParamField {
   tooltip?: string;
   group: ParamGroup;
   hidden: boolean;
+  /**
+   * On the form but deciding nothing right now — faded, never removed.
+   *
+   * Set from values, not by the definition: the preset picker while its
+   * node's model is switched off. Removing it instead moved every control
+   * after it each time the switch was flipped.
+   */
+  idle?: boolean;
   /** Sort position within the group. */
   order: number;
   /**

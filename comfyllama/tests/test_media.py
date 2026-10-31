@@ -28,7 +28,8 @@ except ImportError:  # pragma: no cover - depends on the environment
 
 from comfyllama.images import (audio_to_content, audio_to_wav,  # noqa: E402
                                sample_frames, video_to_content)
-from comfyllama.nodes.common import active_media, wants_image  # noqa: E402
+from comfyllama.nodes.common import (MAX_IMAGES, active_image, active_media,  # noqa: E402
+                                     image_inputs, wants_image)
 from comfyllama.nodes.generation import user_content  # noqa: E402
 
 
@@ -184,6 +185,34 @@ class Switches(unittest.TestCase):
 
     def test_an_input_that_already_has_a_value_is_not_asked_for_again(self):
         self.assertEqual(wants_image({"image": "here", "video": None}), ["video"])
+
+    def test_extra_pictures_are_asked_for_once_connected_and_switched_on(self):
+        # ComfyUI passes a lazy input it has not evaluated as None, and leaves
+        # an unconnected one out altogether.
+        self.assertEqual(
+            wants_image({"image": None, "image_2": None, "image_3": "here"}),
+            ["image", "image_2"])
+        self.assertEqual(wants_image({"image": None, "image_2": None, "use_image": False}), [])
+
+
+class MorePictures(unittest.TestCase):
+    """Pictures beyond the first, one input each."""
+
+    def test_every_chat_node_offers_them_lazily_after_the_first(self):
+        inputs = image_inputs()
+        names = list(inputs)
+        self.assertEqual(names[:MAX_IMAGES],
+                         ["image"] + [f"image_{n}" for n in range(2, MAX_IMAGES + 1)])
+        for name in names[1:MAX_IMAGES]:
+            self.assertEqual(inputs[name][0], "IMAGE")
+            self.assertTrue(inputs[name][1]["lazy"])
+
+    def test_one_picture_is_itself_and_several_are_a_list_in_order(self):
+        self.assertEqual(active_image("a", True, {}), "a")
+        self.assertEqual(active_image(None, True, {"image_2": "b"}), "b")
+        self.assertEqual(active_image("a", True, {"image_3": "c", "image_2": "b"}), ["a", "b", "c"])
+        self.assertIsNone(active_image("a", False, {"image_2": "b"}))
+        self.assertIsNone(active_image(None, True, {}))
 
 
 class EveryNodeOffersWhatItReads(unittest.TestCase):

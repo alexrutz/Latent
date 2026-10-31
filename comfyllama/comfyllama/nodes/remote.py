@@ -175,7 +175,7 @@ class LlamaServerChat:
                  top_p, seed, model="", messages=None, sampling=None, grammar=None,
                  use_image=True, image=None, image_max_size=1024, image_quality=90,
                  **kwargs):
-        content = user_content(prompt, active_image(image, use_image),
+        content = user_content(prompt, active_image(image, use_image, kwargs),
                                **active_media(kwargs),
                                video_frames=kwargs.get("video_frames", 8),
                                max_size=image_max_size, quality=image_quality)

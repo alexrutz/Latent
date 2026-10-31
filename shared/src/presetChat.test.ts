@@ -67,11 +67,7 @@ describe('applyPresetChat', () => {
     // six that are was the clunky way to turn the model off. The `use_model`
     // switch says it instead.
     const shaped = applyPresetChat(schema, {});
-    expect(field(`${NODE}.active`, shaped)?.options).toEqual([
-      'Rewrite',
-      'Caption',
-      'Preset 3',
-    ]);
+    expect(field(`${NODE}.active`, shaped)?.options).toEqual(['Rewrite', 'Caption', 'Preset 3']);
   });
 
   it('hides the slots above slot_count', () => {
@@ -138,18 +134,26 @@ describe('applyPresetChat', () => {
    * The switch that replaced choosing "passthrough" from a list of prompts.
    *
    * Latent has no ComfyUI extension, so what it can do is show whichever
-   * control is deciding: with the model off there is no preset to pick, and
-   * with it on the picker holds presets and only presets.
+   * control is deciding: with the model off there is no preset to pick, so the
+   * picker fades (as the extension greys it), and with it on the picker holds
+   * presets and only presets.
    */
   describe('the run-or-pass-through switch', () => {
     const withSwitch = (on: boolean) => applyPresetChat(schema, { [`${NODE}.use_model`]: on });
 
-    it('hides the picker while the model is off', () => {
-      expect(field(`${NODE}.active`, withSwitch(false))?.hidden).toBe(true);
+    it('fades the picker while the model is off, and never removes it', () => {
+      // Removing it moved every control after it with each flip of the switch.
+      const off = withSwitch(false);
+      expect(field(`${NODE}.active`, off)?.hidden).toBeFalsy();
+      expect(field(`${NODE}.active`, off)?.idle).toBe(true);
+      // The same fields, in the same places, either way.
+      const visible = (shaped: typeof off) =>
+        shaped.fields.filter((f) => !f.hidden).map((f) => f.id);
+      expect(visible(off)).toEqual(visible(withSwitch(true)));
     });
 
-    it('shows it again when the model is back on', () => {
-      expect(field(`${NODE}.active`, withSwitch(true))?.hidden).toBeFalsy();
+    it('brings it back when the model is back on', () => {
+      expect(field(`${NODE}.active`, withSwitch(true))?.idle).toBeFalsy();
     });
 
     it('never hides the switch itself', () => {
@@ -163,7 +167,8 @@ describe('applyPresetChat', () => {
       // Reading only the switch would leave a picker showing a value that is
       // no longer one of its own options.
       const older = applyPresetChat(schema, { [`${NODE}.active`]: 'passthrough' });
-      expect(field(`${NODE}.active`, older)?.hidden).toBe(true);
+      expect(field(`${NODE}.active`, older)?.idle).toBe(true);
+      expect(field(`${NODE}.active`, older)?.hidden).toBeFalsy();
     });
 
     it('keeps passthrough in the picker for a workflow that has no switch', () => {
@@ -441,7 +446,9 @@ describe('the sampler node’s two ways of setting the same values', () => {
       objectInfoFixture,
     );
 
-    const shared = chat.fields.filter((entry) => ['temperature', 'top_p'].includes(entry.inputName));
+    const shared = chat.fields.filter((entry) =>
+      ['temperature', 'top_p'].includes(entry.inputName),
+    );
     expect(shared).toHaveLength(2);
     for (const entry of shared) expect(entry.hidden).not.toBe(true);
   });

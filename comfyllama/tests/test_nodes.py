@@ -611,6 +611,32 @@ class TestGeneration(unittest.TestCase):
         self.assertEqual(content[0]["type"], "image_url")
         self.assertEqual(content[-1], {"type": "text", "text": "what is this?"})
 
+    def test_chat_sends_every_connected_picture_in_order(self):
+        if not HAVE_IMAGING:
+            self.skipTest("numpy and Pillow are required")
+        import numpy as np
+
+        model, llm = fake_model(["ok"])
+        model.vision = True
+        # Three sizes, which no single batch could hold; image_3 left empty.
+        generation.LlamaCppChat().generate(
+            model, "sys", "compare these", thinking="auto", max_tokens=8,
+            temperature=0.0, top_p=1.0, seed=0,
+            image=np.zeros((1, 8, 8, 3), dtype=np.float32),
+            image_2=np.zeros((1, 16, 4, 3), dtype=np.float32),
+            image_4=np.zeros((2, 6, 6, 3), dtype=np.float32))
+        content = llm.calls[0]["messages"][-1]["content"]
+        # One, one, and a batch of two — then the words.
+        self.assertEqual([part["type"] for part in content],
+                         ["image_url"] * 4 + ["text"])
+
+    def test_use_image_switches_every_picture_off(self):
+        model, llm = fake_model(["ok"])  # text-only: a picture would be refused
+        generation.LlamaCppChat().generate(
+            model, "sys", "hello", thinking="auto", max_tokens=8, temperature=0.0,
+            top_p=1.0, seed=0, use_image=False, image=object(), image_2=object())
+        self.assertEqual(llm.calls[0]["messages"][-1]["content"], "hello")
+
     def test_chat_without_an_image_stays_plain_text(self):
         model, llm = fake_model(["ok"])
         generation.LlamaCppChat().generate(

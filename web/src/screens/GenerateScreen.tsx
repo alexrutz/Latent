@@ -891,6 +891,9 @@ function GenerateForm({
                   className={cn(
                     'min-w-0',
                     field.width === 'full' && 'col-span-full',
+                    // Deciding nothing right now (the preset picker with the
+                    // model off): faded, never removed, so nothing moves.
+                    field.idle && 'opacity-50',
                     fadedByBypass(field) && 'opacity-50',
                   )}
                   title={fadedByBypass(field) ? BYPASSED_HINT : undefined}
@@ -922,7 +925,7 @@ function GenerateForm({
           ) : (
             <div
               key={run.fields[0]!.id}
-              className={cn(fadedByBypass(run.fields[0]!) && 'opacity-50')}
+              className={cn((fadedByBypass(run.fields[0]!) || run.fields[0]!.idle) && 'opacity-50')}
               title={fadedByBypass(run.fields[0]!) ? BYPASSED_HINT : undefined}
               data-bypassed={fadedByBypass(run.fields[0]!) || undefined}
             >
@@ -1054,6 +1057,7 @@ function GenerateForm({
                             className={cn(
                               'min-w-0',
                               isWideControl(field) ? 'w-full space-y-1' : 'max-w-full',
+                              field.idle && 'opacity-50',
                               nodeBypassed && 'opacity-50',
                             )}
                           >

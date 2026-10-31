@@ -492,6 +492,14 @@ list (images first, prompt last) instead of plain text; leave it unconnected and
 nothing about the request changes. A whole `IMAGE` batch is sent as several
 parts, so you can ask a model to compare frames.
 
+**More than one picture.** A batch has to be one size, and pictures to compare
+or combine rarely are, so the chat nodes take up to eight: `image`, then
+`image_2` to `image_8`. The node shows one empty socket after the last picture
+connected — connect a picture and the next socket appears, unplug the last and
+the spare goes again. They are sent in input order, each as its own part, before
+the prompt; `use_image` switches all of them off, and `✕ clear image` unplugs
+all of them.
+
 `image_max_size` scales the longest edge before upload (0 disables it) and
 `image_quality` picks JPEG quality, or lossless PNG at 100.
 

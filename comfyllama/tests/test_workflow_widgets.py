@@ -42,6 +42,15 @@ class TestButtonsStayOutOfTheWorkflow(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("ok", completed.stdout)
 
+    @unittest.skipUnless(shutil.which("node"), "needs Node.js")
+    def test_picture_inputs_grow_one_spare_at_a_time(self):
+        script = ROOT / "tests" / "js" / "image_inputs.mjs"
+        completed = subprocess.run(
+            ["node", str(script)], capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("ok", completed.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

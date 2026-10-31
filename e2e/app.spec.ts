@@ -6352,7 +6352,8 @@ test.describe('the twenty-fifth wave', () => {
    * Handing the prompt straight through was picked from the same dropdown as
    * the presets, which put "do not run the model at all" in a list of ways to
    * run it and took two taps to find. It is its own control now, and while it
-   * is off the picker has nothing left to choose, so it goes away.
+   * is off the picker has nothing left to choose, so it fades — in place, so
+   * flipping the switch moves nothing else on the form.
    */
   test('turns the preset model off with a switch, not a dropdown entry', async ({ page }) => {
     await withApi(async (ctx) => {
@@ -6369,15 +6370,44 @@ test.describe('the twenty-fifth wave', () => {
     await expect(useModel).toHaveAttribute('aria-pressed', 'true');
     await expect(page.getByRole('button', { name: /^Active/ })).toBeVisible();
 
+    // Where every control sits in the sheet's content — not on the screen,
+    // which the sheet scrolls — so a flip of the switch can be seen to move none.
+    const sheet = page.getByRole('dialog', { name: 'Advanced' });
+    const positions = () =>
+      sheet.getByRole('button').evaluateAll((buttons) =>
+        buttons.flatMap((button) => {
+          const scroller = button.closest('.overflow-y-auto');
+          if (!scroller) return [];
+          const box = button.getBoundingClientRect();
+          const top = box.top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+          return [{ label: button.textContent?.trim().split(/\s+/)[0] ?? '', x: box.left, y: top }];
+        }),
+      );
+    const before = await positions();
+    /** The same controls, each within a couple of pixels of where it was. */
+    const unmoved = async () => {
+      const after = await positions();
+      expect(after.map((entry) => entry.label)).toEqual(before.map((entry) => entry.label));
+      after.forEach((entry, index) => {
+        expect(Math.abs(entry.x - before[index]!.x), entry.label).toBeLessThanOrEqual(2);
+        expect(Math.abs(entry.y - before[index]!.y), entry.label).toBeLessThanOrEqual(2);
+      });
+    };
+
     await useModel.click();
     await expect(useModel).toHaveAttribute('aria-pressed', 'false');
-    // Nothing to pick between when the model is not being asked.
-    await expect(page.getByRole('button', { name: /^Active/ })).toHaveCount(0);
+    // Nothing to pick between when the model is not being asked, so the picker
+    // fades — and stays where it is, as does everything after it.
+    const active = page.getByRole('button', { name: /^Active/ });
+    await expect(active).toBeVisible();
+    await expect(active.locator('xpath=..')).toHaveClass(/opacity-50/);
+    await unmoved();
     await page.screenshot({ path: 'test-results/86-preset-passthrough-switch.png' });
 
     // And back, without having to remember which preset it was on.
     await useModel.click();
-    await expect(page.getByRole('button', { name: /^Active/ })).toBeVisible();
+    await expect(active.locator('xpath=..')).not.toHaveClass(/opacity-50/);
+    await unmoved();
   });
 });
 
@@ -7690,7 +7720,6 @@ test.describe('picking a picture out of a folder', () => {
     await bypass.click();
     const on = field.getByRole('button', { name: 'Bypassed' });
     await expect(on).toHaveAttribute('aria-pressed', 'true');
-    await expect(field.getByText(/Left out of the run, with VAE ?Encode/)).toBeVisible();
     // Both are bypassed, as the workflow view counts them.
     await expect(page.getByRole('button', { name: /^Workflow.*2 bypassed/ })).toBeVisible();
     // This graph also saves the picture straight from the loader, so the

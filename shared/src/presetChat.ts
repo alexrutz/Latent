@@ -121,9 +121,7 @@ export function applyPresetChat(schema: ParamSchema, values: ParamValues): Param
          */
         running:
           valueOf(schema, values, nodeId, 'use_model') !== 'false' &&
-          !PASSTHROUGH_ALIASES.has(
-            valueOf(schema, values, nodeId, 'active').trim().toLowerCase(),
-          ),
+          !PASSTHROUGH_ALIASES.has(valueOf(schema, values, nodeId, 'active').trim().toLowerCase()),
       },
     ]),
   );
@@ -138,10 +136,10 @@ export function applyPresetChat(schema: ParamSchema, values: ParamValues): Param
         ...field,
         options: node.switched ? [...node.names] : [PRESET_PASSTHROUGH, ...node.names],
         numericOptions: false,
-        // Nothing to pick while the model is switched off. Hidden rather than
-        // greyed here because a form field cannot be greyed and still read as
-        // a control; the switch above it is what brings it back.
-        ...(node.switched && !node.running ? { hidden: true } : {}),
+        // Nothing to pick while the model is switched off, so it fades —
+        // as the ComfyUI extension greys it. It used to be hidden, which moved
+        // every control after it each time the switch was flipped.
+        ...(node.switched && !node.running ? { idle: true } : {}),
       };
     }
 

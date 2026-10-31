@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 CATEGORY = "llama.cpp"
 CATEGORY_SERVER = "llama.cpp/server"
@@ -66,6 +66,15 @@ def thinking_input() -> Any:
     })
 
 
+#: How many picture inputs a chat node can grow to.
+MAX_IMAGES = 8
+
+
+def image_input_name(index: int) -> str:
+    """``image`` for the first picture, ``image_2`` onwards for the rest."""
+    return "image" if index == 1 else f"image_{index}"
+
+
 def image_inputs(lazy: bool = True) -> Dict[str, Any]:
     """Optional image input, its switch, and its encoding controls.
 
@@ -92,8 +101,24 @@ def image_inputs(lazy: bool = True) -> Dict[str, Any]:
     }
     if lazy:
         image["lazy"] = True
+    # More pictures than one batch can hold: a batch is one size, and pictures
+    # to compare or combine rarely are. The web extension shows these one at a
+    # time — connecting one makes the next appear — so a node with one picture
+    # still has one empty slot, not seven. Sockets, not widgets, so adding them
+    # moves no saved widget value.
+    more: Dict[str, Any] = {}
+    for index in range(2, MAX_IMAGES + 1):
+        extra: Dict[str, Any] = {
+            "tooltip": f"Optional. Picture {index}, sent after the ones before "
+                       "it. Pictures of different sizes each need their own "
+                       "input; 'use_image' switches them all off.",
+        }
+        if lazy:
+            extra["lazy"] = True
+        more[image_input_name(index)] = ("IMAGE", extra)
     return {
         "image": ("IMAGE", image),
+        **more,
         "image_max_size": ("INT", {
             "default": 1024, "min": 0, "max": 4096, "step": 64,
             "tooltip": "Longest edge the image is scaled to before it is sent. "
@@ -200,15 +225,27 @@ def active_media(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def active_image(image, use_image=True):
-    """The image to send, or ``None`` while the switch is off.
+def active_image(image, use_image=True, extra=None):
+    """The picture or pictures to send, or ``None`` while the switch is off.
 
     One place, because "is there a picture on this turn" is asked by every
     chat node and by the vision check in front of them, and two of those
     answering differently is how a node ends up demanding a projector for an
     image it is not going to send.
+
+    ``extra`` is the node's other keyword arguments, where ``image_2`` onwards
+    arrive. One picture comes back as itself, as it always did; several come
+    back as a list, in input order, for ``user_content`` to send one by one.
     """
-    return image if use_image else None
+    if not use_image:
+        return None
+    pictures = [image] + [
+        (extra or {}).get(image_input_name(index)) for index in range(2, MAX_IMAGES + 1)
+    ]
+    pictures = [picture for picture in pictures if picture is not None]
+    if not pictures:
+        return None
+    return pictures[0] if len(pictures) == 1 else pictures
 
 
 def wants_image(kwargs: Dict[str, Any]) -> List[str]:
@@ -224,12 +261,18 @@ def wants_image(kwargs: Dict[str, Any]) -> List[str]:
     clip and the sound too now, and the three are asked in exactly the same way.
     """
     wanted: List[str] = []
-    for name, switch in (("image", "use_image"), ("video", "use_video"), ("audio", "use_audio")):
+    for name, switch in media_switches():
         if not kwargs.get(switch, True):
             continue
         if name in kwargs and kwargs.get(name) is None:
             wanted.append(name)
     return wanted
+
+
+def media_switches() -> List[Tuple[str, str]]:
+    """Every lazy media input, with the switch that governs it."""
+    pictures = [(image_input_name(index), "use_image") for index in range(1, MAX_IMAGES + 1)]
+    return pictures + [("video", "use_video"), ("audio", "use_audio")]
 
 
 def generation_inputs() -> Dict[str, Any]:

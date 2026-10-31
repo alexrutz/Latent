@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { ComfyWidgets } from "../../scripts/widgets.js";
 import { keepOutOfWorkflow, repairNullsOnConfigure } from "./workflowWidgets.js";
+import { anyImageLinked, fitImageInputs, growsImages, imageNumber } from "./imageInputs.js";
 
 // Nodes that return {"ui": {"text": [...]}} get a read-only textarea widget so
 // the generated text is visible in the graph without opening the console.
@@ -468,22 +469,27 @@ const IMAGE_ENCODING_WIDGETS = ["image_max_size", "image_quality"];
 const CLEAR_IMAGE_LABEL = "✕ clear image";
 const NO_IMAGE_LABEL = "no image connected";
 
-function imageInputSlot(node) {
-	const slot = node.inputs?.findIndex((input) => input.name === "image");
-	return slot === undefined || slot < 0 ? null : slot;
-}
-
 function hasImageLink(node) {
-	const slot = imageInputSlot(node);
-	return slot !== null && node.inputs[slot].link != null;
+	// Any picture, not only the first: `image_2` onwards count the same.
+	return anyImageLinked(node);
 }
 
+/** Unplug every picture. The highest slot first: each one moves the rest. */
 function clearImage(node) {
-	const slot = imageInputSlot(node);
-	if (slot === null || node.inputs[slot].link == null) {
+	const wired = (node.inputs ?? [])
+		.map((input, slot) => ({ input, slot }))
+		.filter(({ input }) => imageNumber(input.name) !== null && input.link != null)
+		.map(({ slot }) => slot)
+		.sort((a, b) => b - a);
+	if (wired.length === 0) {
 		return;
 	}
-	node.disconnectInput(slot);
+	for (const slot of wired) {
+		// Looked up again each time: the spare-socket fit can run in between.
+		if (node.inputs[slot]?.link != null) {
+			node.disconnectInput(slot);
+		}
+	}
 	applyImageState(node);
 	app.graph.setDirtyCanvas(true, true);
 }
@@ -505,11 +511,13 @@ function applyImageState(node) {
 		}
 	}
 
-	// Say on the input itself why a connected image is not being used, rather
-	// than leaving a live-looking link that quietly goes nowhere.
-	const slot = imageInputSlot(node);
-	if (slot !== null) {
-		node.inputs[slot].label = connected && !sending ? "image (off)" : undefined;
+	// Say on the inputs themselves why a connected picture is not being used,
+	// rather than leaving a live-looking link that quietly goes nowhere.
+	for (const input of node.inputs ?? []) {
+		if (imageNumber(input.name) === null) {
+			continue;
+		}
+		input.label = input.link != null && !sending ? `${input.name} (off)` : undefined;
 	}
 
 	const button = node.widgets?.find((w) => w.name === CLEAR_IMAGE_LABEL || w.name === NO_IMAGE_LABEL);
@@ -521,10 +529,14 @@ function applyImageState(node) {
 }
 
 
-function addImageControls(nodeType) {
+function addImageControls(nodeType, grows) {
 	const onNodeCreated = nodeType.prototype.onNodeCreated;
 	nodeType.prototype.onNodeCreated = function () {
 		onNodeCreated?.apply(this, arguments);
+		// One picture socket and one spare, not all eight (see imageInputs.js).
+		if (grows) {
+			fitImageInputs(this);
+		}
 
 		// Never serialised: it would shift every saved widget value.
 		keepOutOfWorkflow(
@@ -551,13 +563,21 @@ function addImageControls(nodeType) {
 	const onConfigure = nodeType.prototype.onConfigure;
 	nodeType.prototype.onConfigure = function () {
 		onConfigure?.apply(this, arguments);
+		// A saved workflow brings its own sockets; fit them to its links.
+		if (grows) {
+			fitImageInputs(this);
+		}
 		applyImageState(this);
 	};
 
-	// Plugging an image in or pulling it out is the other half of the state.
+	// Plugging an image in or pulling it out is the other half of the state —
+	// and, for a node that grows, what adds or drops the spare socket.
 	const onConnectionsChange = nodeType.prototype.onConnectionsChange;
 	nodeType.prototype.onConnectionsChange = function () {
 		onConnectionsChange?.apply(this, arguments);
+		if (grows) {
+			fitImageInputs(this);
+		}
 		applyImageState(this);
 	};
 }
@@ -652,7 +672,7 @@ app.registerExtension({
 	name: "comfyllama.imageInput",
 	async beforeRegisterNodeDef(nodeType, nodeData) {
 		if (IMAGE_NODES.has(nodeData.name)) {
-			addImageControls(nodeType);
+			addImageControls(nodeType, growsImages(nodeData));
 			repairNullsOnConfigure(nodeType, nodeData);
 		}
 	},

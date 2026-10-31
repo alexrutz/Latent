@@ -28,8 +28,10 @@ def user_content(prompt: str, image=None, *, video=None, audio=None,
     time they leave here — see ``sample_frames``.
     """
     parts: List[Dict[str, Any]] = []
-    if image is not None:
-        parts.extend(images_to_content(image, max_size=max_size, quality=quality))
+    # One picture (or batch), or several from the extra inputs, in order.
+    for picture in image if isinstance(image, list) else [image]:
+        if picture is not None:
+            parts.extend(images_to_content(picture, max_size=max_size, quality=quality))
     if video is not None:
         parts.extend(video_to_content(video, frames=video_frames,
                                       max_size=max_size, quality=quality))
@@ -45,7 +47,7 @@ def user_content(prompt: str, image=None, *, video=None, audio=None,
 def require_vision_model(model, image, video=None, audio=None) -> None:
     """In-process models can only take media if a projector was loaded."""
     for name, value in (("image", image), ("video", video), ("audio", audio)):
-        if value is None:
+        if value is None or (isinstance(value, list) and not value):
             continue
         if not model.vision:
             raise ValueError(
@@ -156,7 +158,7 @@ class LlamaCppChat:
     def generate(self, model, system, prompt, thinking, max_tokens, temperature, top_p,
                  seed, messages=None, sampling=None, grammar=None, use_image=True,
                  image=None, image_max_size=1024, image_quality=90, **kwargs):
-        image = active_image(image, use_image)
+        image = active_image(image, use_image, kwargs)
         media = active_media(kwargs)
         require_vision_model(model, image, media["video"], media["audio"])
         content = user_content(prompt, image, **media,
