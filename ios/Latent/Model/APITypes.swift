@@ -100,6 +100,27 @@ struct ComfyImage: Decodable, Hashable {
     }
 }
 
+extension ComfyImage {
+    /// The same picture with one field changed.
+    ///
+    /// Decoded from the server and with no business being mutable; these are
+    /// the one place a copy is made with a field changed — the viewer's
+    /// optimistic star, and putting it back.
+    func with(rating: Int? = nil, kept: Bool? = nil) -> ComfyImage {
+        ComfyImage(
+            id: id,
+            filename: filename,
+            subfolder: subfolder,
+            type: type,
+            rating: rating ?? self.rating,
+            kept: kept ?? self.kept,
+            width: width,
+            height: height,
+            kind: kind
+        )
+    }
+}
+
 struct GenerationRecord: Decodable, Identifiable, Hashable {
     let id: String
     let title: String

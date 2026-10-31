@@ -5,14 +5,12 @@ import SwiftUI
 /// A flat grid of pictures rather than a list of runs. A batch of four is not a
 /// boundary anybody is thinking about when they are looking for one image, and
 /// grouping by run puts a heading between every four thumbnails.
+@MainActor
 struct GalleryView: View {
     let client: LatentClient
     let live: LiveSocket
 
-    @State private var entries: [GalleryEntry] = []
-    @State private var cursor: String?
-    @State private var loading = false
-    @State private var problem: String?
+    @State private var feed = GalleryFeed()
     @State private var opened: GalleryEntry?
 
     private let columns = [GridItem(.adaptive(minimum: 110), spacing: 2)]
@@ -20,49 +18,56 @@ struct GalleryView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if entries.isEmpty && loading {
+                if feed.entries.isEmpty && feed.loading {
                     ProgressView()
-                } else if entries.isEmpty {
+                } else if feed.entries.isEmpty {
                     ContentUnavailableView(
                         "Nothing yet",
                         systemImage: "photo.on.rectangle",
-                        description: Text(problem ?? "Renders appear here as soon as they finish.")
+                        description: Text(feed.problem ?? "Renders appear here as soon as they finish.")
                     )
                 } else {
                     grid
                 }
             }
             .navigationTitle("Gallery")
-            .refreshable { await reload() }
+            // Pulling down is asking to start over, so it does.
+            .refreshable { await feed.reload(fetch) }
         }
-        .task { await reload() }
+        // Every time the tab comes back, not only the first: what finished
+        // while it was away belongs at the top. Merged in rather than reloaded,
+        // so coming back to a list scrolled ten pages down leaves it there.
+        .task { await feed.refreshTop(fetch) }
         .onAppear {
-            // A run finishing means this list is stale. The socket is the only
-            // thing that knows; polling for it would be a request a second for
-            // an event that happens twice an hour.
-            live.onGenerationFinished = { Task { await reload() } }
+            // A run finishing means the top of this list is stale. The socket
+            // is the only thing that knows; polling for it would be a request a
+            // second for an event that happens twice an hour.
+            let feed = feed
+            let fetch = fetch
+            live.onGenerationFinished = { Task { await feed.refreshTop(fetch) } }
         }
         .fullScreenCover(item: $opened) { entry in
-            ViewerView(
-                client: client,
-                entries: entries,
-                start: entry,
-                onChanged: { updated in replace(updated) }
-            )
+            ViewerView(client: client, feed: feed, start: entry)
         }
+    }
+
+    /// Pages from this server, as the feed asks for them.
+    private var fetch: GalleryFeed.Fetch {
+        { [client] cursor in try await client.gallery(cursor: cursor) }
     }
 
     private var grid: some View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 2) {
-                ForEach(entries) { entry in
+                ForEach(feed.entries) { entry in
                     Button { opened = entry } label: {
                         RemoteImage(
                             // Always the preview in a grid: a screenful of
                             // full-size renders is tens of megabytes over the
                             // network and hundreds decoded.
-                            url: client.imageURL(entry.image, preview: true),
-                            token: client.token
+                            client: client,
+                            image: entry.image,
+                            preview: true
                         )
                         .aspectRatio(1, contentMode: .fill)
                         .clipped()
@@ -72,11 +77,11 @@ struct GalleryView: View {
                     .task {
                         // The last tile coming into view is the signal to fetch
                         // the next page — no button, no page numbers.
-                        if entry.id == entries.last?.id { await loadMore() }
+                        if entry.id == feed.entries.last?.id { await feed.loadMore(fetch) }
                     }
                 }
             }
-            if loading && !entries.isEmpty {
+            if feed.loadingMore {
                 ProgressView().padding()
             }
         }
@@ -102,51 +107,5 @@ struct GalleryView: View {
         .background(.black.opacity(0.55), in: .rect(cornerRadius: 4))
         .foregroundStyle(.white)
         .padding(3)
-    }
-
-    // MARK: - Loading
-
-    private func reload() async {
-        loading = true
-        defer { loading = false }
-        do {
-            let page = try await client.gallery()
-            entries = flatten(page.items)
-            cursor = page.nextCursor
-            problem = nil
-        } catch {
-            problem = error.localizedDescription
-        }
-    }
-
-    private func loadMore() async {
-        guard let cursor, !loading else { return }
-        loading = true
-        defer { loading = false }
-        do {
-            let page = try await client.gallery(cursor: cursor)
-            entries.append(contentsOf: flatten(page.items))
-            self.cursor = page.nextCursor
-        } catch {
-            // A page that will not load is not worth an error over the whole
-            // screen; the pictures already on it are still good.
-            self.cursor = nil
-        }
-    }
-
-    /// Runs to pictures, dropping the ones with nothing to show.
-    private func flatten(_ records: [GenerationRecord]) -> [GalleryEntry] {
-        records.flatMap { record in
-            record.images.map { GalleryEntry(record: record, image: $0) }
-        }
-    }
-
-    /// Put a rating or a keep back into the list under it.
-    ///
-    /// Rather than reloading the page: the change is already known, and a
-    /// refetch would move the scroll position under whoever just tapped a star.
-    private func replace(_ entry: GalleryEntry) {
-        guard let index = entries.firstIndex(where: { $0.id == entry.id }) else { return }
-        entries[index] = entry
     }
 }

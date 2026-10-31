@@ -47,7 +47,7 @@ struct GenerateView: View {
                     // Said plainly, because it is the one surprising thing about
                     // this screen: the render uses the rest of the settings from
                     // wherever the workflow was last used.
-                    if let detail, detail.promptField == nil {
+                    if let detail = current, detail.promptField == nil {
                         Text("This workflow has no prompt field, so the text above will not be used.")
                             .foregroundStyle(.orange)
                     } else {
@@ -67,7 +67,10 @@ struct GenerateView: View {
                             Spacer()
                         }
                     }
-                    .disabled(sending || detail == nil || prompt.trimmingCharacters(in: .whitespaces).isEmpty)
+                    // Only once the chosen workflow's own values are here. The
+                    // last one's stayed until the next arrived, and a quick tap
+                    // in between queued the workflow just switched away from.
+                    .disabled(sending || current == nil || prompt.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
 
                 if let note {
@@ -107,18 +110,31 @@ struct GenerateView: View {
         }
     }
 
+    /// The loaded values, if they are the chosen workflow's — never the last one's.
+    private var current: WorkflowDetail? {
+        guard let detail, detail.id == chosen?.id else { return nil }
+        return detail
+    }
+
     private func loadDetail() async {
-        guard let chosen else { detail = nil; return }
+        detail = nil
+        guard let chosen else { return }
         do {
-            detail = try await client.workflow(chosen.id)
+            let loaded = try await client.workflow(chosen.id)
+            guard !Task.isCancelled else { return }
+            detail = loaded
+            problem = nil
+        } catch is CancellationError {
+            // Picked past on the way to another one. Not a failure, and saying
+            // "could not reach that address" about it was wrong.
+            return
         } catch {
-            detail = nil
             problem = error.localizedDescription
         }
     }
 
     private func send() {
-        guard let detail else { return }
+        guard let detail = current else { return }
         sending = true
         problem = nil
         note = nil

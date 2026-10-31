@@ -5,12 +5,14 @@ import SwiftUI
 /// A `TabView` in page mode rather than a gesture written by hand: paging
 /// between full-screen pictures is what it is for, and it brings the rubber
 /// banding at the ends and the momentum with it.
+@MainActor
 struct ViewerView: View {
     let client: LatentClient
-    let entries: [GalleryEntry]
+    /// The gallery's own list, read live rather than copied in: a change made
+    /// here shows in the grid underneath, and one that has to be taken back is
+    /// taken back from what the list holds now.
+    let feed: GalleryFeed
     let start: GalleryEntry
-    /// A rating or a keep, back to whoever is listing these.
-    let onChanged: (GalleryEntry) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var current: String = ""
@@ -20,7 +22,7 @@ struct ViewerView: View {
     @State private var problem: String?
 
     private var entry: GalleryEntry? {
-        entries.first { $0.id == current }
+        feed.entry(current)
     }
 
     var body: some View {
@@ -28,12 +30,14 @@ struct ViewerView: View {
             Color.black.ignoresSafeArea()
 
             TabView(selection: $current) {
-                ForEach(entries) { entry in
-                    RemoteImage(
-                        url: client.imageURL(entry.image),
-                        token: client.token,
-                        contentMode: .fit
-                    )
+                ForEach(feed.entries) { entry in
+                    Group {
+                        if entry.image.isStill {
+                            RemoteImage(client: client, image: entry.image, contentMode: .fit)
+                        } else {
+                            MediaPlayer(client: client, image: entry.image)
+                        }
+                    }
                     .tag(entry.id)
                 }
             }
@@ -134,10 +138,16 @@ struct ViewerView: View {
      * home network with a sleeping server, and the request nearly always
      * succeeds. When it does not, the value goes back and says why — which is
      * the honest version of an optimistic update.
+     *
+     * Going back means this one field, from the list as it is when the answer
+     * arrives, and only if it still holds what this tap set. It used to put
+     * back the whole picture as it was at the tap — so a keep tapped while a
+     * star was in flight was undone by the star failing, and a second star
+     * tapped meanwhile was overwritten by the first one's old value.
      */
     private func rate(_ entry: GalleryEntry, stars: Int) {
         let previous = entry.image.rating
-        apply(entry) { $0.rating = stars }
+        feed.revise(entry.id) { $0.with(rating: stars) }
         Task {
             do {
                 try await client.rate(entry.image, in: entry.record.id, stars: stars)
@@ -147,14 +157,14 @@ struct ViewerView: View {
                 // off would be the one outcome the server avoids on purpose.
                 problem = message
             } catch {
-                apply(entry) { $0.rating = previous }
+                feed.revise(entry.id) { $0.rating == stars ? $0.with(rating: previous) : nil }
                 problem = error.localizedDescription
             }
         }
     }
 
     private func setKept(_ entry: GalleryEntry, kept: Bool) {
-        apply(entry) { $0.kept = kept }
+        feed.revise(entry.id) { $0.with(kept: kept) }
         Task {
             do {
                 try await client.keep(entry.image, in: entry.record.id, kept: kept)
@@ -162,44 +172,9 @@ struct ViewerView: View {
             } catch LatentClient.Failure.savedButNotArchived(let message) {
                 problem = message
             } catch {
-                apply(entry) { $0.kept = !kept }
+                feed.revise(entry.id) { $0.kept == kept ? $0.with(kept: !kept) : nil }
                 problem = error.localizedDescription
             }
-        }
-    }
-
-    /// Rebuild the entry with one field changed and hand it back up.
-    private func apply(_ entry: GalleryEntry, _ change: (inout MutableImage) -> Void) {
-        var mutable = MutableImage(entry.image)
-        change(&mutable)
-        onChanged(GalleryEntry(record: entry.record, image: mutable.build()))
-    }
-
-    /// `ComfyImage` is decoded from the server and has no business being
-    /// mutable; this is the one place a copy is made with a field changed.
-    private struct MutableImage {
-        var rating: Int
-        var kept: Bool
-        private let source: ComfyImage
-
-        init(_ image: ComfyImage) {
-            source = image
-            rating = image.rating
-            kept = image.kept
-        }
-
-        func build() -> ComfyImage {
-            ComfyImage(
-                id: source.id,
-                filename: source.filename,
-                subfolder: source.subfolder,
-                type: source.type,
-                rating: rating,
-                kept: kept,
-                width: source.width,
-                height: source.height,
-                kind: source.kind
-            )
         }
     }
 }

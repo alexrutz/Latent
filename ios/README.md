@@ -9,8 +9,8 @@ contract it relies on.
 Xcode and no iOS SDK. The model layer — `Model/`, everything but the Keychain
 code — has been type-checked with Swift 6.1 on Linux, which is how a type
 declared inside a generic function in `APITypes.swift` was found and fixed. The
-screens use SwiftUI, which exists only on Apple's platforms, so they have not
-been checked at all. Expect to fix something on the first build.
+screens use SwiftUI, which exists only on Apple's platforms, so they have only
+been parsed, not type-checked. Expect to fix something on the first build.
 
 ## Opening it
 
@@ -32,23 +32,30 @@ The project uses a **synchronized folder group**, so `Latent/` is picked up
 whole and adding a file is adding a file — there is no list in the project to
 keep in step. That needs Xcode 16 or later.
 
-## Known issues in the screens
+## Fixed in the screens, not yet built
 
-Found by review, and left for the first build because the screens cannot be
-compiled anywhere but on a Mac — changing SwiftUI blind would trade a known
-bug for an unknown compile error.
+Four problems found by review were fixed without a Mac, so they have been
+parsed but not compiled. The logic that could move out of SwiftUI did:
+`Model/GalleryFeed.swift` is type-checked and was run on Linux against a fake
+server, and so were the client's new `bytes` and `download`.
 
-- **Gallery** reloads page one on every `generation` event and every time it
-  appears, so a scrolled-down list jumps back to the top and loses the pages it
-  had; overlapping reloads can also finish out of order.
-- **Generate** keeps showing the previous workflow while the next one loads,
-  with Generate still enabled, so a quick tap queues the old one; and a
-  cancelled load reports itself as "could not reach that address".
-- **Pictures** — `RemoteImage` reads every file into memory and decodes it as
-  an image, so videos and sounds show a warning triangle (and a whole video is
-  downloaded to fail); it also builds its own request outside `LatentClient`.
-- **Viewer** rolls a failed rating or keep back from the snapshot taken at the
-  tap, which also undoes any change made since.
+- **Gallery** — a finished run, or coming back to the tab, merges a fresh page
+  one over the list instead of replacing it, so pages scrolled to are kept. A
+  burst of finishes is one request and one more, and an answer to a question
+  asked before a pull to refresh is dropped rather than shown.
+- **Generate** — the button waits for the chosen workflow's own values; the
+  previous one's no longer count. A load cancelled by picking past it is not
+  reported as "could not reach that address" — the client now passes a
+  cancelled request on as `CancellationError` instead of `unreachable`.
+- **Pictures** — `RemoteImage` fetches through `LatentClient`. A clip shows its
+  poster, or a film icon until there is one; a sound shows a waveform and is
+  never asked for a picture. In the viewer, a clip or sound has a Play button
+  (`Support/MediaPlayer.swift`) that downloads the file then and plays it.
+  Downloaded, not streamed, because `AVPlayer` cannot be given the token
+  except through an undocumented asset option.
+- **Viewer** — reads the gallery's list live. A failed rating or keep puts back
+  only its own field, and only if it still holds what that tap set, so a later
+  change is no longer undone.
 
 ## What it does
 
@@ -120,9 +127,11 @@ Latent/
     LatentClient.swift   Every request, and the only place the token goes on
     LiveSocket.swift     /api/ws, with its own reconnect
     Session.swift        Signing in, restoring, signing out
+    GalleryFeed.swift    The gallery's list: pages, merging new runs, edits
   Screens/               One file per screen
   Support/
-    RemoteImage.swift    AsyncImage, but with a header on the request
+    RemoteImage.swift    AsyncImage, but through LatentClient
+    MediaPlayer.swift    A clip or a sound: poster, then the file on Play
 ```
 
 `AsyncImage` is unused for one reason: it takes a URL and builds its own

@@ -88,6 +88,9 @@ struct QueueView: View {
         do {
             fetched = try await client.queue()
             problem = nil
+        } catch is CancellationError {
+            // The tab was left before the answer came. Not a failure.
+            return
         } catch {
             problem = error.localizedDescription
         }

@@ -116,7 +116,12 @@ struct LatentClient {
 
     /// The one place a request is built, and the only place the token goes on.
     private func request(_ path: String, query: [URLQueryItem] = [], method: String = "GET", body: Data? = nil) -> URLRequest {
-        var request = URLRequest(url: url(path, query: query))
+        authorised(url(path, query: query), method: method, body: body)
+    }
+
+    /// The same, for an address already built — `imageURL` hands these out.
+    private func authorised(_ url: URL, method: String = "GET", body: Data? = nil) -> URLRequest {
+        var request = URLRequest(url: url)
         request.httpMethod = method
         if let body {
             request.httpBody = body
@@ -135,10 +140,31 @@ struct LatentClient {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
-            throw Failure.unreachable(error.localizedDescription)
+            throw Self.transportFailure(error)
         }
+        try check(response, body: data)
+        return data
+    }
 
-        guard let http = response as? HTTPURLResponse else { return data }
+    /*
+     * A request that was called off is not a server that could not be reached.
+     *
+     * Both spellings arrive: a `.task` cancelled under it throws
+     * `CancellationError`, and `URLSession` noticing first throws
+     * `URLError.cancelled`. Either one used to come out as "could not reach
+     * that address" — on every workflow picked quickly past, and every tile
+     * scrolled away from. Passed on as `CancellationError` so callers have one
+     * thing to ignore.
+     */
+    private static func transportFailure(_ error: Error) -> Error {
+        if error is CancellationError { return error }
+        if (error as? URLError)?.code == .cancelled { return CancellationError() }
+        return Failure.unreachable(error.localizedDescription)
+    }
+
+    /// The status codes, read the same way for every route.
+    private func check(_ response: URLResponse, body data: Data) throws {
+        guard let http = response as? HTTPURLResponse else { return }
         if http.statusCode == 401 {
             // Only a client that was signed in has anything to expire.
             if token != nil { onUnauthorised?() }
@@ -164,7 +190,6 @@ struct LatentClient {
             if http.statusCode == 423 { throw Failure.savedButNotArchived(message) }
             throw Failure.server(status: http.statusCode, message: message)
         }
-        return data
     }
 
     private func get<T: Decodable>(_ path: String, query: [URLQueryItem] = [], as type: T.Type) async throws -> T {
@@ -245,6 +270,48 @@ struct LatentClient {
         if let id = image.id { query.append(URLQueryItem(name: "id", value: String(id))) }
         if preview { query.append(URLQueryItem(name: "preview", value: "webp;70")) }
         return url("/api/view", query: query)
+    }
+
+    /// The bytes of a picture, through the same session and checks as everything else.
+    ///
+    /// For stills only. A video or a sound is not read into memory to be
+    /// decoded as a picture — see `download` and `MediaPlayer`.
+    func bytes(_ url: URL) async throws -> Data {
+        try await send(authorised(url))
+    }
+
+    /// A clip or a sound, fetched to a file the player can open.
+    ///
+    /// To a file because `AVPlayer` cannot be handed the token: the only way
+    /// to put a header on its requests is an undocumented asset option, and a
+    /// resource loader that re-implements byte ranges is a lot of code to get
+    /// right without a device to try it on. Fetched only when Play is tapped,
+    /// never to draw a tile.
+    ///
+    /// The file keeps the original's extension, which is how the player tells
+    /// an `.mp4` from a `.flac`. The caller deletes it when done.
+    func download(_ image: ComfyImage) async throws -> URL {
+        let downloaded: URL
+        let response: URLResponse
+        do {
+            (downloaded, response) = try await session.download(for: authorised(imageURL(image)))
+        } catch {
+            throw Self.transportFailure(error)
+        }
+        do {
+            // A refusal is a small JSON body, written to the file like any other.
+            try check(response, body: (try? Data(contentsOf: downloaded)) ?? Data())
+        } catch {
+            try? FileManager.default.removeItem(at: downloaded)
+            throw error
+        }
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("latent-media", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let ext = (image.filename as NSString).pathExtension
+        let target = folder.appendingPathComponent(UUID().uuidString + (ext.isEmpty ? "" : "." + ext))
+        try FileManager.default.moveItem(at: downloaded, to: target)
+        return target
     }
 
     /// Which picture a rating or a keep is about, as both routes take it.
