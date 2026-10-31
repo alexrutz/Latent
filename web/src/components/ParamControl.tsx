@@ -159,7 +159,27 @@ export function SeedField({
 /** Where one image input remembers whether it is folded away. */
 const foldKey = (fieldId: string) => `latent.imageField.${fieldId}`;
 
-export function ImageField({ field, value, onChange }: ControlProps) {
+/**
+ * A Bypass beside a picture: its node, and the encode it feeds, left out.
+ *
+ * Offered on the folder pictures comfyllama ships, which is where a workflow
+ * built around a picture is most often wanted without one. See `bypassGroup`.
+ */
+export interface PictureBypass {
+  on: boolean;
+  onToggle: () => void;
+  /** The other nodes that go with it — the encode — named for the button's title. */
+  alongside: string[];
+  /** Why Generate would refuse it, when it would. */
+  problem?: string;
+}
+
+export function ImageField({
+  field,
+  value,
+  onChange,
+  bypass,
+}: ControlProps & { bypass?: PictureBypass }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -179,7 +199,8 @@ export function ImageField({ field, value, onChange }: ControlProps) {
    */
   const workflowId = useContext(WorkflowContext);
   const batch = useFormDrafts(
-    (state) => (workflowId ? state.drafts[workflowId]?.batchInputs?.[field.id] : undefined) ?? EMPTY_BATCH,
+    (state) =>
+      (workflowId ? state.drafts[workflowId]?.batchInputs?.[field.id] : undefined) ?? EMPTY_BATCH,
   );
   const patchDraft = useFormDrafts((state) => state.patch);
 
@@ -341,7 +362,12 @@ export function ImageField({ field, value, onChange }: ControlProps) {
       </button>
 
       <div className={cn('flex items-center gap-3', !open && 'hidden')}>
-        <div className="size-20 shrink-0 overflow-hidden rounded-xl border border-line bg-surface-2">
+        <div
+          className={cn(
+            'size-20 shrink-0 overflow-hidden rounded-xl border border-line bg-surface-2',
+            bypass?.on && 'opacity-40',
+          )}
+        >
           {preview ? (
             <img
               src={preview}
@@ -375,7 +401,34 @@ export function ImageField({ field, value, onChange }: ControlProps) {
             <Button variant="ghost" size="sm" onClick={() => setPicking(true)}>
               {browsesFolders ? 'Browse folders' : 'From folder'}
             </Button>
+            {bypass && (
+              <button
+                type="button"
+                aria-pressed={bypass.on}
+                onClick={bypass.onToggle}
+                title={
+                  bypass.alongside.length > 0
+                    ? `Bypasses this node and ${bypass.alongside.join(', ')}`
+                    : 'Bypasses this node'
+                }
+                className={cn(
+                  'rounded-lg px-3 py-1.5 text-xs font-medium',
+                  bypass.on ? 'bg-fuchsia-600 text-white' : 'bg-surface-2 text-muted',
+                )}
+              >
+                {bypass.on ? 'Bypassed' : 'Bypass'}
+              </button>
+            )}
           </div>
+          {bypass?.on && (
+            <p className="text-[11px] text-fuchsia-300">
+              Left out of the run
+              {bypass.alongside.length > 0 && <>, with {bypass.alongside.join(', ')}</>}.
+            </p>
+          )}
+          {bypass?.on && bypass.problem && (
+            <p className="text-[11px] text-warn">{bypass.problem}</p>
+          )}
         </div>
       </div>
 

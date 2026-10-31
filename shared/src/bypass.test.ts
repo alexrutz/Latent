@@ -5,6 +5,7 @@ import {
   bypassableNodes,
   bypassedNodes,
   bypassFieldId,
+  bypassGroup,
   bypassSlotIndex,
   isBypassField,
   typesConnect,
@@ -289,5 +290,33 @@ describe('the Bypass switch in the form', () => {
     const schema = buildParamSchema(graph(), objectInfo);
     const { workflow } = applyParams(graph(), schema, { [bypassFieldId('2')]: true });
     expect(Object.keys(workflow['2']!.inputs)).not.toContain('__bypass');
+  });
+});
+
+describe('bypassing a picture with its encode', () => {
+  it('takes the VAE Encode a picture feeds, and only that', async () => {
+    const { loadImageFromFolder, img2img } = await import('./fixtures/workflows.js');
+    // The loader feeds the encode and a save; only the encode goes with it.
+    expect(bypassGroup(loadImageFromFolder, '1').sort()).toEqual(['1', '3']);
+    expect(bypassGroup(img2img, '1').sort()).toEqual(['1', '3']);
+  });
+
+  it('takes whatever lies between the picture and its encode', () => {
+    const chain: ApiWorkflow = {
+      '1': { class_type: 'LoadImageFromFolder', inputs: { image: 'a.png' } },
+      '2': { class_type: 'ImageScale', inputs: { image: ['1', 0], width: 512 } },
+      '3': { class_type: 'VAEEncodeTiled', inputs: { pixels: ['2', 0], vae: ['9', 2] } },
+      '4': { class_type: 'PreviewImage', inputs: { images: ['2', 0] } },
+      '9': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'm' } },
+    };
+    expect(bypassGroup(chain, '1').sort()).toEqual(['1', '2', '3']);
+  });
+
+  it('is the picture alone when no encode follows', () => {
+    const plain: ApiWorkflow = {
+      '1': { class_type: 'LoadImageFromFolder', inputs: { image: 'a.png' } },
+      '2': { class_type: 'SaveImage', inputs: { images: ['1', 0] } },
+    };
+    expect(bypassGroup(plain, '1')).toEqual(['1']);
   });
 });

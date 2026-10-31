@@ -152,6 +152,55 @@ export function withBypassSwitches(schema: ParamSchema, workflow: ApiWorkflow): 
   return { ...schema, fields: [...fields, ...added] };
 }
 
+/** A VAE encode of any kind: plain, tiled, for inpainting. */
+const isVaeEncode = (classType: string) => /^VAEEncode/i.test(classType);
+
+/** How many nodes may sit between a picture and its encode and still go with it. */
+const MAX_BETWEEN = 3;
+
+/**
+ * A picture loader, and the encode it feeds, as one thing to bypass.
+ *
+ * A picture that is switched off leaves its VAE Encode with nothing to encode,
+ * which ComfyUI rejects — so the Bypass beside a folder picture takes the
+ * encode with it, and whatever lies between the two (a resize, a crop) so the
+ * chain is gone whole rather than left half-wired. Only a chain that reaches
+ * an encode is taken; a loader that feeds a save, or a node that is not on the
+ * way to an encode, is left as it is.
+ */
+export function bypassGroup(workflow: ApiWorkflow, nodeId: string): string[] {
+  const consumers = new Map<string, string[]>();
+  for (const [id, node] of Object.entries(workflow)) {
+    for (const value of Object.values(node?.inputs ?? {})) {
+      if (!isNodeLink(value)) continue;
+      const source = String(value[0]);
+      if (!consumers.has(source)) consumers.set(source, []);
+      if (!consumers.get(source)!.includes(id)) consumers.get(source)!.push(id);
+    }
+  }
+
+  const group = new Set([nodeId]);
+  // Breadth first, carrying the path, so a chain is taken only once it ends in
+  // an encode.
+  let frontier: string[][] = [[nodeId]];
+  for (let depth = 0; depth <= MAX_BETWEEN && frontier.length > 0; depth += 1) {
+    const next: string[][] = [];
+    for (const path of frontier) {
+      for (const consumer of consumers.get(path[path.length - 1]!) ?? []) {
+        if (path.includes(consumer)) continue;
+        const reached = [...path, consumer];
+        if (isVaeEncode(workflow[consumer]?.class_type ?? '')) {
+          for (const id of reached) group.add(id);
+        } else {
+          next.push(reached);
+        }
+      }
+    }
+    frontier = next;
+  }
+  return [...group];
+}
+
 /** The switch, as a field of the form. */
 export function bypassField(
   nodeId: string,
@@ -260,9 +309,14 @@ export function applyBypass(
       else {
         delete node.inputs[name];
         if (definition?.input?.required && name in definition.input.required) {
+          // Named as the editor names them, not by class.
           const skipped = workflow[String(value[0])];
-          const title = skipped?._meta?.title || skipped?.class_type || String(value[0]);
-          const consumer = node._meta?.title || node.class_type;
+          const title =
+            skipped?._meta?.title ||
+            objectInfo[skipped?.class_type ?? '']?.display_name ||
+            skipped?.class_type ||
+            String(value[0]);
+          const consumer = node._meta?.title || definition?.display_name || node.class_type;
           return {
             workflow,
             error:

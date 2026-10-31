@@ -2975,28 +2975,33 @@ sending the picture it was built around.
 
 ### Bypassing a node
 
-Under **Advanced** on the Generate screen, **Workflow** opens the graph drawn as
-ComfyUI's editor draws it: every node with its sockets down the sides and its
-widgets underneath, links coloured by what they carry, in the editor's dark
-palette. An API-format workflow keeps no positions, so the nodes are laid out
-left to right in the order data flows. One finger moves it, two or the wheel
-zoom it, and **Fit** shows all of it; it opens at a size that can be read,
-from the loaders' end.
+Under **Advanced** on the Generate screen, **Workflow** shows the workflow in
+the order it runs: a column per step, left to right — loaders first, the save
+last — so scrolling sideways follows the run along. A column holds that step's
+nodes top to bottom, each saying what it reads from; tap one to see where every
+input comes from and what every value is set to (they are changed on the form,
+not here). What the opened node reads and feeds are outlined in their own
+columns.
 
-**Tap a node, then Bypass** (or Ctrl/⌘+B, as in the editor). Any node can be
-bypassed. It turns **purple** and is left out of the run, and whatever it fed is
-handed what *it* was fed, by ComfyUI's own rule for which input stands in for
-which output — the same position if the type fits, then the first input of that
-type — so the result is what the same bypass in the editor renders: a LoRA
-loader's model and clip go straight on, an upscale's picture goes straight to
-the save. The Workflow row counts what is bypassed, **Clear** brings it all
-back, and the node's settings fade on the main screen and in Advanced.
+Every node has a **Bypass** button on its card. Bypassed, it turns purple and is
+left out of the run, and whatever it fed is handed what *it* was fed, by
+ComfyUI's own rule for which input stands in for which output — the same
+position if the type fits, then the first input of that type — so the result is
+what the same bypass in the editor renders: a LoRA loader's model and clip go
+straight on, an upscale's picture goes straight to the save. The Workflow row
+counts what is bypassed, **Clear** brings it all back, and the node's settings
+fade on the main screen and in Advanced.
+
+A picture from **Load Image (Folder Browser)** has its own **Bypass** beside
+Replace and Browse folders. It takes the **VAE Encode** that picture feeds with
+it — and anything between the two, a resize or a crop — since an encode left
+with no picture is a graph ComfyUI rejects.
 
 Some bypasses leave the graph unable to run, in the editor as here — skipping
-the VAE decode leaves the save with no picture. The view says so as soon as the
-node is bypassed, naming it, and Generate refuses rather than sending ComfyUI a
-graph it would reject. Bypasses are kept with the rest of the form: in the
-draft, and in presets.
+the VAE decode leaves the save with no picture. That is said as soon as the node
+is bypassed, naming it, and Generate refuses rather than sending ComfyUI a graph
+it would reject. Bypasses are kept with the rest of the form: in the draft, and
+in presets.
 
 A workflow imported from the editor keeps the nodes that were bypassed there,
 with their switch on, instead of losing them: ComfyUI's own API export rewires

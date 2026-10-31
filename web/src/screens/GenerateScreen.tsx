@@ -6,6 +6,7 @@ import {
   applyPresetChat,
   batchLength,
   bypassFieldId,
+  bypassGroup,
   bypassedNodes,
   defaultValues,
   findFieldByRole,
@@ -52,12 +53,13 @@ import { PromptBuilder } from '../components/PromptBuilder';
 import {
   FieldChip,
   ImageField,
+  type PictureBypass,
   PromptField,
   SeedField,
   WorkflowScope,
 } from '../components/ParamControl';
 import { Button, cn, EmptyState, ErrorNote, Sheet, Spinner } from '../components/ui';
-import { WorkflowGraph } from '../components/WorkflowGraph';
+import { WorkflowSteps } from '../components/WorkflowSteps';
 import { pruneDrafts, useFormDrafts } from '../state/formDraft';
 import { useWide } from '../state/layout';
 import { useLiveStore } from '../state/live';
@@ -84,6 +86,7 @@ function MainField({
   workflows,
   workflowId,
   onSendToWorkflow,
+  pictureBypass,
 }: {
   field: ParamField;
   values: ParamValues;
@@ -93,6 +96,8 @@ function MainField({
   workflows: { id: string; name: string }[];
   workflowId: string | null;
   onSendToWorkflow: (id: string, text: string) => void;
+  /** The Bypass beside a folder picture, when this field is one. */
+  pictureBypass?: PictureBypass;
 }) {
   const value = values[field.id] ?? field.defaultValue;
   const filled = useFilledFrom(field);
@@ -169,6 +174,7 @@ function MainField({
           field={field}
           value={values[field.id] ?? ''}
           onChange={(next) => setValue(field.id, next)}
+          bypass={pictureBypass}
         />
       );
 
@@ -492,7 +498,9 @@ function GenerateForm({
     () => new Set(schema ? bypassedNodes(schema, values) : []),
     [schema, values],
   );
-  const fadedByBypass = (field: ParamField) => bypassed.has(field.nodeId);
+  // A folder picture fades its own preview instead, so its Bypass stays live.
+  const fadedByBypass = (field: ParamField) =>
+    bypassed.has(field.nodeId) && field.role !== 'folder_image';
 
   /** Bypass a node from the workflow view, or bring it back. */
   const toggleBypass = useCallback(
@@ -511,12 +519,45 @@ function GenerateForm({
   }, [schema, detail, values, patchDraft]);
 
   const [showGraph, setShowGraph] = useState(false);
-  const definitions = useWorkflowDefinitions(detail?.id ?? null, showGraph);
+  // Wanted once anything is bypassed too: they are what says whether a bypass
+  // would be refused, beside the button that made it.
+  const definitions = useWorkflowDefinitions(detail?.id ?? null, showGraph || bypassed.size > 0);
   /** Whether Generate would refuse these bypasses, said while choosing them. */
   const bypassProblem = useMemo(() => {
     if (!detail || bypassed.size === 0 || !definitions.data) return undefined;
     return applyBypass(detail.graph, bypassed, definitions.data).error;
   }, [detail, bypassed, definitions.data]);
+
+  /**
+   * The Bypass beside one of comfyllama's folder pictures.
+   *
+   * Takes the VAE Encode the picture feeds with it (`bypassGroup`), on and off
+   * together, since an encode with no picture is a graph ComfyUI rejects.
+   */
+  const pictureBypassFor = (field: ParamField): PictureBypass | undefined => {
+    if (field.role !== 'folder_image' || !detail) return undefined;
+    const group = bypassGroup(detail.graph, field.nodeId);
+    const on = bypassed.has(field.nodeId);
+    const name = (id: string) => {
+      const node = detail.graph[id];
+      return (
+        node?._meta?.title ||
+        definitions.data?.[node?.class_type ?? '']?.display_name ||
+        node?.class_type ||
+        id
+      );
+    };
+    return {
+      on,
+      alongside: group.filter((id) => id !== field.nodeId).map(name),
+      onToggle: () => {
+        const next = { ...values };
+        for (const id of group) next[bypassFieldId(id)] = !on;
+        patchDraft(detail.id, { values: next });
+      },
+      problem: on ? bypassProblem : undefined,
+    };
+  };
 
   // Hand the typed prompt to the Random tab, which previews draws on top of it.
   const promptDraft = promptFields
@@ -887,6 +928,7 @@ function GenerateForm({
             >
               <MainField
                 field={run.fields[0]!}
+                pictureBypass={pictureBypassFor(run.fields[0]!)}
                 values={values}
                 setValue={setValue}
                 workflows={workflows}
@@ -1059,7 +1101,7 @@ function GenerateForm({
               <Spinner className="size-5" />
             </div>
           ) : (
-            <WorkflowGraph
+            <WorkflowSteps
               workflow={detail.graph}
               definitions={definitions.data ?? {}}
               bypassed={bypassed}

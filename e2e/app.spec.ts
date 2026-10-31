@@ -2514,41 +2514,55 @@ test.describe('keeping, deleting and looking closely', () => {
     await expect(advanced.getByRole('button', { name: /^Bypass/ })).toHaveCount(0);
     await advanced.getByRole('button', { name: 'Done' }).click();
 
-    // The workflow, drawn as ComfyUI draws it: every node, every link.
+    // The workflow in the order it runs: a column per step, left to right.
     await page.getByRole('button', { name: /^Workflow.*nodes/ }).click();
     const sheet = page.getByRole('dialog', { name: 'Workflow' });
-    await expect(sheet.locator('[data-node]')).toHaveCount(Object.keys(sd15Txt2Img).length);
-    await expect(sheet.locator('svg path[stroke]')).not.toHaveCount(0);
+    const board = sheet.getByTestId('workflow-steps');
+    await expect(board.locator('[data-node]')).toHaveCount(Object.keys(sd15Txt2Img).length);
+    await expect(board.getByRole('region', { name: /^Step \d+$/ })).toHaveCount(5);
+    await expect(
+      board
+        .getByRole('region', { name: 'Step 1' })
+        .getByRole('article', { name: 'Load Checkpoint' }),
+    ).toBeVisible();
+    await expect(
+      board.getByRole('region', { name: 'Step 5' }).getByRole('article', { name: 'Save Image' }),
+    ).toBeAttached();
+    await page.screenshot({ path: 'test-results/108a-steps-open.png' });
 
-    // It opens readable, at the loaders' end, and moves under a finger.
-    const canvas = sheet.getByTestId('workflow-graph');
-    await page.screenshot({ path: 'test-results/108a-graph-open.png' });
-    const layer = canvas.locator('svg > g').first();
-    const before = await layer.getAttribute('transform');
-    const area = (await canvas.boundingBox())!;
-    await page.mouse.move(area.x + area.width / 2, area.y + area.height - 140);
-    await page.mouse.down();
-    await page.mouse.move(area.x + area.width / 2 - 120, area.y + area.height - 160, { steps: 6 });
-    await page.mouse.up();
-    expect(await layer.getAttribute('transform')).not.toBe(before);
-    // Fit shows all of it.
-    await sheet.getByRole('button', { name: 'Fit' }).click();
+    // Wider than the screen, and it scrolls sideways along the run.
+    const scroll = await board.evaluate((element) => ({
+      width: element.scrollWidth,
+      shown: element.clientWidth,
+    }));
+    expect(scroll.width).toBeGreaterThan(scroll.shown);
+
+    // A tap opens a card: where its inputs come from, and what its values are.
+    const sampler = board.getByRole('article', { name: 'KSampler' });
+    await sampler.scrollIntoViewIfNeeded();
+    await sampler.getByRole('button', { name: /^KSampler/ }).click();
+    await expect(sampler.getByText('← Load Checkpoint')).toBeVisible();
+    await expect(sampler.locator('dd', { hasText: /^euler$/ })).toBeVisible();
+    // What it reads and feeds are marked in their own steps.
+    await expect(board.getByRole('article', { name: 'VAE Decode' })).toHaveClass(/ring-accent/);
 
     // A bypass that leaves the save with nothing is said at once.
-    await sheet.getByRole('button', { name: /^VAE Decode node/ }).click();
-    const toggle = sheet.getByRole('button', { name: /^Bypass/ });
-    await toggle.click();
-    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    const decode = board.getByRole('article', { name: 'VAE Decode' });
+    await decode.getByRole('button', { name: 'Bypass' }).click();
+    await expect(decode.getByRole('button', { name: 'Bypassed' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     await expect(sheet.getByRole('status')).toContainText("without its 'images'");
-    await toggle.click();
+    await decode.getByRole('button', { name: 'Bypassed' }).click();
     await expect(sheet.getByRole('status')).toHaveCount(0);
 
     // The sampler can go: its latent goes straight on to the decode.
-    await sheet.getByRole('button', { name: /^KSampler node/ }).click();
-    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
-    await toggle.click();
-    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
-    await expect(sheet.getByRole('button', { name: 'KSampler node, bypassed' })).toBeVisible();
+    await sampler.getByRole('button', { name: 'Bypass' }).click();
+    await expect(sampler.getByRole('button', { name: 'Bypassed' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
     await expect(sheet.getByText('1 bypassed')).toBeVisible();
     await page.screenshot({ path: 'test-results/108-bypass.png' });
     await sheet.getByRole('button', { name: 'Done' }).click();
@@ -2558,7 +2572,9 @@ test.describe('keeping, deleting and looking closely', () => {
     await expect(page.getByRole('button', { name: /^Workflow.*1 bypassed/ })).toBeVisible();
     await expect(faded.first()).toBeVisible();
     await expect(faded.first()).toHaveClass(/opacity-50/);
-    await expect(faded.filter({ has: page.getByPlaceholder('Describe the image…') })).toHaveCount(0);
+    await expect(faded.filter({ has: page.getByPlaceholder('Describe the image…') })).toHaveCount(
+      0,
+    );
     await page.screenshot({ path: 'test-results/108b-bypass-main.png' });
 
     await page.getByPlaceholder('Describe the image…').fill('without the sampler');
@@ -7654,6 +7670,37 @@ test.describe('picking a picture out of a folder', () => {
     await withApi((ctx) =>
       ctx.post('/api/workflows', { data: { name: 'From a folder', graph: loadImageFromFolder } }),
     );
+  });
+
+  /*
+   * A Bypass beside the picture, taking the VAE Encode it feeds with it — an
+   * encode left with no picture is a graph ComfyUI rejects.
+   */
+  test('bypasses the folder picture and the encode it feeds, from beside the picture', async ({
+    page,
+  }) => {
+    await open(page, '/');
+    const field = page
+      .getByTestId('image-drop')
+      .filter({ has: page.getByRole('button', { name: 'Browse folders' }) });
+    const bypass = field.getByRole('button', { name: 'Bypass', exact: true });
+    await expect(bypass).toHaveAttribute('aria-pressed', 'false');
+    await expect(bypass).toHaveAttribute('title', /VAE ?Encode/);
+
+    await bypass.click();
+    const on = field.getByRole('button', { name: 'Bypassed' });
+    await expect(on).toHaveAttribute('aria-pressed', 'true');
+    await expect(field.getByText(/Left out of the run, with VAE ?Encode/)).toBeVisible();
+    // Both are bypassed, as the workflow view counts them.
+    await expect(page.getByRole('button', { name: /^Workflow.*2 bypassed/ })).toBeVisible();
+    // This graph also saves the picture straight from the loader, so the
+    // bypass would leave the save with nothing — said beside the button.
+    await expect(field.getByText(/without its 'images'/)).toBeVisible();
+    await page.screenshot({ path: 'test-results/110-folder-bypass.png' });
+
+    await on.click();
+    await expect(bypass).toHaveAttribute('aria-pressed', 'false');
+    await expect(page.getByRole('button', { name: /^Workflow.*bypassed/ })).toHaveCount(0);
   });
 
   test('browses the far machine, and offers the gallery favourites beside it', async ({ page }) => {
