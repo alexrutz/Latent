@@ -4,11 +4,15 @@ import {
   useQueries,
   useQuery,
   useQueryClient,
+  type InfiniteData,
   type QueryClient,
+  type QueryKey,
 } from '@tanstack/react-query';
 import { useEffect, useMemo } from 'react';
 
 import type {
+  Favorite,
+  GalleryPage,
   AppSettings,
   ServicePatch,
   GenerationRecord,
@@ -383,23 +387,131 @@ export function useDeletePreset(workflowId: string | null) {
 /* Ratings                                                             */
 /* ------------------------------------------------------------------ */
 
-export function useRateImage() {
+/*
+ * A star or a keep, shown the moment it is tapped.
+ *
+ * Both used to invalidate the whole gallery, which is an infinite query: it
+ * refetches every page you have scrolled through, one after another from the
+ * first, and the star on screen comes from that data — so a picture twenty
+ * pages down lit up only after twenty round trips. Now the one picture is
+ * patched in every list that holds it, straight away, and replaced with the
+ * server's record when that arrives. Nothing is refetched.
+ *
+ * Lists whose *order* depends on the change — sorted by rating, or filtered to
+ * rated pictures — are marked stale rather than refetched: the picture shows
+ * its new star now, and moves to its new place the next time the list loads.
+ */
+type ImageChange = Partial<Pick<GenerationRecord['images'][number], 'rating' | 'kept'>>;
+
+function sameImage(a: ComfyImageRef & { id?: number | null }, b: ComfyImageRef & { id?: number | null }) {
+  if (a.id != null && b.id != null) return a.id === b.id;
+  return a.filename === b.filename && (a.subfolder ?? '') === (b.subfolder ?? '') && (a.type ?? 'output') === (b.type ?? 'output');
+}
+
+/** Apply `change` to one picture of one run, wherever a list is holding it. */
+function patchImage(
+  client: QueryClient,
+  generationId: string,
+  image: ComfyImageRef,
+  change: ImageChange,
+): void {
+  client.setQueriesData<InfiniteData<GalleryPage>>({ queryKey: ['gallery'] }, (data) => {
+    if (!data || !Array.isArray(data.pages)) return data;
+    let touched = false;
+    const pages = data.pages.map((page) => {
+      if (!page.items.some((item) => item.id === generationId)) return page;
+      touched = true;
+      return {
+        ...page,
+        items: page.items.map((item) =>
+          item.id !== generationId
+            ? item
+            : {
+                ...item,
+                images: item.images.map((entry) =>
+                  sameImage(entry, image) ? { ...entry, ...change } : entry,
+                ),
+              },
+        ),
+      };
+    });
+    return touched ? { ...data, pages } : data;
+  });
+
+  // A favourite shows its picture's own star and keep too.
+  client.setQueriesData<Favorite[]>({ queryKey: queryKeys.favorites }, (data) => {
+    if (!Array.isArray(data)) return data;
+    let touched = false;
+    const next = data.map((favorite) => {
+      if (!favorite.image || favorite.generationId !== generationId || !sameImage(favorite.image, image)) {
+        return favorite;
+      }
+      touched = true;
+      return { ...favorite, image: { ...favorite.image, ...change } };
+    });
+    return touched ? next : data;
+  });
+}
+
+/** Put the server's copy of a run in place of the one every list holds. */
+function replaceRecord(client: QueryClient, record: GenerationRecord): void {
+  client.setQueriesData<InfiniteData<GalleryPage>>({ queryKey: ['gallery'] }, (data) => {
+    if (!data || !Array.isArray(data.pages)) return data;
+    let touched = false;
+    const pages = data.pages.map((page) => {
+      if (!page.items.some((item) => item.id === record.id)) return page;
+      touched = true;
+      return { ...page, items: page.items.map((item) => (item.id === record.id ? record : item)) };
+    });
+    return touched ? { ...data, pages } : data;
+  });
+}
+
+/** Lists whose order or membership a star or a keep can change. */
+function dependsOnRating(key: QueryKey): boolean {
+  if (key[0] !== 'gallery') return false;
+  const minRating = Number(key[2] ?? 0);
+  return minRating > 0 || key[3] === 'rating';
+}
+
+/** Shared by rating and keeping: patch now, settle with the server's answer. */
+function useImageChange<TArgs extends { generationId: string; image: ComfyImageRef }>(
+  send: (args: TArgs) => Promise<GenerationRecord>,
+  changeOf: (args: TArgs) => ImageChange,
+) {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      generationId,
-      image,
-      rating,
-    }: {
-      generationId: string;
-      image: ComfyImageRef;
-      rating: number;
-    }) => api.rateImage(generationId, image, rating),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ['gallery'] });
+    mutationFn: send,
+    onMutate: async (args: TArgs) => {
+      // A refetch already on its way would land after this and undo it.
+      await client.cancelQueries({ queryKey: ['gallery'] });
+      const before = [
+        ...client.getQueriesData({ queryKey: ['gallery'] }),
+        ...client.getQueriesData({ queryKey: queryKeys.favorites }),
+      ];
+      patchImage(client, args.generationId, args.image, changeOf(args));
+      return { before };
+    },
+    onError: (_error, _args, context) => {
+      for (const [key, data] of context?.before ?? []) client.setQueryData(key, data);
+    },
+    onSuccess: (record) => {
+      if (record && Array.isArray(record.images)) replaceRecord(client, record);
+      void client.invalidateQueries({
+        predicate: (query) => dependsOnRating(query.queryKey),
+        refetchType: 'none',
+      });
       void client.invalidateQueries({ queryKey: queryKeys.archiveStats });
     },
   });
+}
+
+export function useRateImage() {
+  return useImageChange(
+    ({ generationId, image, rating }: { generationId: string; image: ComfyImageRef; rating: number }) =>
+      api.rateImage(generationId, image, rating),
+    ({ rating }) => ({ rating }),
+  );
 }
 
 export function useArchiveStats() {
@@ -522,22 +634,11 @@ export function reportImageDimensions(image: ComfyImageRef, width: number, heigh
 }
 
 export function useKeepImage() {
-  const client = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      generationId,
-      image,
-      kept,
-    }: {
-      generationId: string;
-      image: ComfyImageRef;
-      kept: boolean;
-    }) => api.keepImage(generationId, image, kept),
-    onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ['gallery'] });
-      void client.invalidateQueries({ queryKey: queryKeys.archiveStats });
-    },
-  });
+  return useImageChange(
+    ({ generationId, image, kept }: { generationId: string; image: ComfyImageRef; kept: boolean }) =>
+      api.keepImage(generationId, image, kept),
+    ({ kept }) => ({ kept }),
+  );
 }
 
 export function useDeleteImage() {

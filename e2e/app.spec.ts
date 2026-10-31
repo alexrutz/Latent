@@ -2499,6 +2499,40 @@ test.describe('keeping, deleting and looking closely', () => {
     await page.locator('main img').first().click({ timeout: 60_000 });
   }
 
+  /*
+   * A star shows the moment it is tapped, and costs no refetch.
+   *
+   * It used to wait for the server — which archives the picture first — and
+   * then for the gallery to fetch every page scrolled through, one after
+   * another, before the star on screen changed.
+   */
+  test('lights a star at once and fetches no gallery pages for it', async ({ page }) => {
+    await generateAndOpen(page, 'rate me quickly');
+
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route('**/api/gallery/*/rating', async (route) => {
+      await held;
+      await route.continue();
+    });
+    const galleryReads: string[] = [];
+    page.on('request', (request) => {
+      if (/\/api\/gallery(\?|$)/.test(request.url())) galleryReads.push(request.url());
+    });
+
+    const star = page.getByRole('button', { name: '3 stars' });
+    await star.click();
+    // Lit while the server has not even been asked yet.
+    await expect(star).toHaveAttribute('aria-pressed', 'true');
+
+    const answered = page.waitForResponse('**/api/gallery/*/rating');
+    release();
+    await answered;
+    await page.waitForTimeout(500);
+    await expect(star).toHaveAttribute('aria-pressed', 'true');
+    expect(galleryReads).toEqual([]);
+  });
+
   /**
    * The finished run stays reachable without taking the screen: the bar carries
    * the thumbnail, and the sheet it opens is the same one as before.
