@@ -62,6 +62,7 @@ import {
   IDLE_RUN,
   mediaKindOf,
   normaliseRandomPromptConfig,
+  withBypassSwitches,
 } from '@latent/shared';
 
 import type { BlockState, UiState, WorkflowUiState } from './uiState.js';
@@ -1565,16 +1566,20 @@ export class Store {
       .prepare<[string], WorkflowRow>('SELECT * FROM workflows WHERE id = ?')
       .get(id);
     if (!row) return null;
+    const graph = parseJson<ApiWorkflow>(row.graph_json, {});
+    const stored = parseJson<ParamSchema>(row.schema_json, {
+      version: 1,
+      fields: [],
+      outputNodeIds: [],
+      capabilities: { img2img: false, seeded: false, video: false, audio: false },
+      missingNodeTypes: [],
+    });
     return {
       ...this.toWorkflowSummary(row),
-      graph: parseJson<ApiWorkflow>(row.graph_json, {}),
-      schema: parseJson<ParamSchema>(row.schema_json, {
-        version: 1,
-        fields: [],
-        outputNodeIds: [],
-        capabilities: { img2img: false, seeded: false, video: false, audio: false },
-        missingNodeTypes: [],
-      }),
+      graph,
+      // Every node has a Bypass switch, including in forms stored before
+      // that was so — added on the way out rather than needing a rescan.
+      schema: withBypassSwitches(stored, graph),
       overrides: parseJson<FieldOverrides>(row.overrides_json, {}),
       lastValues: parseJson<ParamValues>(row.last_values_json, {}),
       layouts: this.listLayouts(row.id),
@@ -2217,9 +2222,10 @@ export class Store {
   /** Which pictures are favourites. See `FavoriteIndexEntry`. */
   listFavoriteIndex(): FavoriteIndexEntry[] {
     return this.db
-      .prepare<[], { id: string; generation_id: string | null; image_id: number | null; image_json: string }>(
-        'SELECT id, generation_id, image_id, image_json FROM favorites',
-      )
+      .prepare<
+        [],
+        { id: string; generation_id: string | null; image_id: number | null; image_json: string }
+      >('SELECT id, generation_id, image_id, image_json FROM favorites')
       .all()
       .map((row) => {
         const image = snapshotImage(row.image_json);
@@ -2238,7 +2244,11 @@ export class Store {
       });
   }
 
-  private queryFavorites(sort: FavoriteSort, limit: number | null, cursor: string | null): FavoritePage {
+  private queryFavorites(
+    sort: FavoriteSort,
+    limit: number | null,
+    cursor: string | null,
+  ): FavoritePage {
     const order =
       sort === 'newest'
         ? 'created_at DESC, id DESC'

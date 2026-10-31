@@ -38,8 +38,14 @@ export function isBypassField(field: { inputName: string }): boolean {
  */
 export function typesConnect(a: string, b: string): boolean {
   if (!a || !b || a === '*' || b === '*') return true;
-  const left = a.toLowerCase().split(',').map((part) => part.trim());
-  const right = b.toLowerCase().split(',').map((part) => part.trim());
+  const left = a
+    .toLowerCase()
+    .split(',')
+    .map((part) => part.trim());
+  const right = b
+    .toLowerCase()
+    .split(',')
+    .map((part) => part.trim());
   return left.some((type) => right.includes(type));
 }
 
@@ -97,45 +103,48 @@ export function bypassSlotIndex(
 }
 
 /**
- * The nodes worth a Bypass switch.
+ * The nodes that get a Bypass switch: all of them, as in ComfyUI's editor.
  *
- * Those that can pass something through — an output that one of their own
- * inputs could stand in for — and whose output something actually reads. A
- * VAE decode turns a latent into a picture and has no picture to hand on, so
- * bypassing it could only break the graph; a LoRA loader hands its model and
- * clip straight on. And always the ones that were bypassed in the editor, so
- * they can be switched back on.
+ * It used to be only those that could pass something through, which left a
+ * VAE decode, a save or a preview — anything whose output no input of its own
+ * could stand in for — with no switch at all, and so no way to do from here
+ * what the editor does to any node. Whether a particular bypass leaves the
+ * graph runnable is `applyBypass`'s question, answered when it is used, with a
+ * sentence naming the switch.
+ *
+ * `objectInfo` is no longer needed and is kept so callers need not change.
  */
-export function bypassableNodes(workflow: ApiWorkflow, objectInfo: ObjectInfo): string[] {
-  const consumed = new Map<string, Set<number>>();
-  for (const node of Object.values(workflow)) {
-    for (const value of Object.values(node?.inputs ?? {})) {
-      if (!isNodeLink(value)) continue;
-      const source = String(value[0]);
-      if (!consumed.has(source)) consumed.set(source, new Set());
-      consumed.get(source)!.add(Number(value[1]));
-    }
-  }
+export function bypassableNodes(workflow: ApiWorkflow, _objectInfo: ObjectInfo = {}): string[] {
+  return Object.keys(workflow)
+    .filter((nodeId) => workflow[nodeId]?.class_type)
+    .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+}
 
-  const out: string[] = [];
-  for (const [nodeId, node] of Object.entries(workflow)) {
-    if (node?._meta?.bypassed) {
-      out.push(nodeId);
-      continue;
-    }
-    const definition = objectInfo[node?.class_type ?? ''];
-    if (!definition) continue;
-    const slots = consumed.get(nodeId);
-    if (!slots) continue;
-    const inputs = inputSlots(definition).filter((input) => input.type !== 'COMBO');
-    const outputs = outputTypes(definition);
-    const passes = [...slots].some((slot) => {
-      const type = outputs[slot];
-      return type !== undefined && inputs.some((input) => typesConnect(input.type, type) && type !== '*');
-    });
-    if (passes) out.push(nodeId);
-  }
-  return out.sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+/**
+ * The same switches, added to a schema stored before every node had one.
+ *
+ * Applied whenever a workflow is read, so a form saved by an older version
+ * gains its switches without a rescan. A switch already there — with whatever
+ * the form editor did to it — is left exactly as it is; a missing one goes
+ * first among its node's advanced settings, or after everything for a node
+ * that has none. Orders are fractional rather than renumbered, so nothing
+ * else on the form moves.
+ */
+export function withBypassSwitches(schema: ParamSchema, workflow: ApiWorkflow): ParamSchema {
+  const have = new Set(schema.fields.filter(isBypassField).map((field) => field.nodeId));
+  const missing = bypassableNodes(workflow).filter((nodeId) => !have.has(nodeId));
+  if (missing.length === 0) return schema;
+
+  const advanced = schema.fields.filter((field) => field.group === 'advanced');
+  let tail = advanced.reduce((max, field) => Math.max(max, field.order), -1);
+  const added = missing.map((nodeId) => {
+    const node = workflow[nodeId]!;
+    const own = advanced.filter((field) => field.nodeId === nodeId);
+    const order = own.length > 0 ? Math.min(...own.map((field) => field.order)) - 0.5 : ++tail;
+    const title = node._meta?.title || own[0]?.nodeTitle || node.class_type || nodeId;
+    return bypassField(nodeId, title, node.class_type, node._meta?.bypassed === true, order);
+  });
+  return { ...schema, fields: [...schema.fields, ...added] };
 }
 
 /** The switch, as a field of the form. */
@@ -202,8 +211,21 @@ export function applyBypass(
     if (!bypassed.has(nodeId)) return { link: [nodeId, slot] };
     if (seen.has(nodeId)) return null;
     const node = workflow[nodeId];
-    const definition = node ? objectInfo[node.class_type] : undefined;
-    if (!node || !definition) return null;
+    if (!node) return null;
+    const definition = objectInfo[node.class_type];
+    if (!definition) {
+      /*
+       * A node ComfyUI does not describe — a custom node that is not
+       * installed, or definitions that could not be fetched. Without types,
+       * the link in the same position stands in, or the first one: what the
+       * editor's rule comes to for a node whose inputs and outputs line up,
+       * which pass-through nodes nearly always do.
+       */
+      const links = Object.values(node.inputs ?? {}).filter(isNodeLink);
+      const link = links[slot] ?? links[0];
+      if (!link) return null;
+      return resolve(String(link[0]), Number(link[1]), wanted, new Set([...seen, nodeId]));
+    }
 
     const inputs = inputSlots(definition);
     const index = bypassSlotIndex(inputs, slot, outputTypes(definition)[slot] ?? '*', wanted);
@@ -222,7 +244,9 @@ export function applyBypass(
     const definition = objectInfo[node.class_type];
     for (const [name, value] of Object.entries(node.inputs)) {
       if (!isNodeLink(value) || !bypassed.has(String(value[0]))) continue;
-      const wanted = typeOf(definition?.input?.required?.[name] ?? definition?.input?.optional?.[name]);
+      const wanted = typeOf(
+        definition?.input?.required?.[name] ?? definition?.input?.optional?.[name],
+      );
       const resolved = resolve(String(value[0]), Number(value[1]), wanted, new Set());
       if (resolved && 'link' in resolved) node.inputs[name] = resolved.link;
       else if (resolved) node.inputs[name] = resolved.value;
@@ -245,14 +269,17 @@ export function applyBypass(
 
   for (const id of bypassed) delete next[id];
 
-  const produces = Object.values(next).some((node) => objectInfo[node.class_type]?.output_node === true);
+  const produces = Object.values(next).some(
+    (node) => objectInfo[node.class_type]?.output_node === true,
+  );
   const producedBefore = Object.values(workflow).some(
     (node) => objectInfo[node.class_type]?.output_node === true,
   );
   if (producedBefore && !produces) {
     return {
       workflow,
-      error: 'With those nodes bypassed nothing is left that saves a picture. Switch one of them back on.',
+      error:
+        'With those nodes bypassed nothing is left that saves a picture. Switch one of them back on.',
     };
   }
 

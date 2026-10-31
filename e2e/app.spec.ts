@@ -2509,11 +2509,19 @@ test.describe('keeping, deleting and looking closely', () => {
     await expect(faded).toHaveCount(0);
     await page.getByRole('button', { name: 'Advanced' }).click();
     const sheet = page.getByRole('dialog', { name: 'Advanced' });
-    const bypass = sheet.getByRole('button', { name: /^Bypass/ });
+    // A switch on every node, as in ComfyUI's editor — the decode and the
+    // save included, which once had none.
+    await expect(sheet.getByRole('button', { name: /^Bypass/ })).toHaveCount(
+      Object.keys(sd15Txt2Img).length,
+    );
+    const sampler = sheet
+      .locator('section')
+      .filter({ has: page.locator('h3', { hasText: 'KSampler' }) });
+    const bypass = sampler.getByRole('button', { name: /^Bypass/ });
     await expect(bypass).toHaveAttribute('aria-pressed', 'false');
     await bypass.click();
     await expect(bypass).toHaveAttribute('aria-pressed', 'true');
-    await expect(sheet.getByText('bypassed', { exact: true })).toBeVisible();
+    await expect(sampler.getByText('bypassed', { exact: true })).toBeVisible();
     await page.screenshot({ path: 'test-results/108-bypass.png' });
     await sheet.getByRole('button', { name: 'Done' }).click();
 
@@ -2521,7 +2529,9 @@ test.describe('keeping, deleting and looking closely', () => {
     // which is another node's, does not.
     await expect(faded.first()).toBeVisible();
     await expect(faded.first()).toHaveClass(/opacity-50/);
-    await expect(faded.filter({ has: page.getByPlaceholder('Describe the image…') })).toHaveCount(0);
+    await expect(faded.filter({ has: page.getByPlaceholder('Describe the image…') })).toHaveCount(
+      0,
+    );
     await page.screenshot({ path: 'test-results/108b-bypass-main.png' });
 
     await page.getByPlaceholder('Describe the image…').fill('without the sampler');
@@ -2535,7 +2545,13 @@ test.describe('keeping, deleting and looking closely', () => {
           const mock = await apiRequest.newContext({ baseURL: 'http://127.0.0.1:8188' });
           const history = (await (await mock.get('/history')).json()) as Record<
             string,
-            { prompt?: [number, string, Record<string, { class_type: string; inputs: Record<string, unknown> }>] }
+            {
+              prompt?: [
+                number,
+                string,
+                Record<string, { class_type: string; inputs: Record<string, unknown> }>,
+              ];
+            }
           >;
           await mock.dispose();
           const last = Object.values(history).at(-1)?.prompt?.[2];
@@ -7775,7 +7791,9 @@ test.describe('a batch of pictures in one slot', () => {
     // The slot takes the first of the list, and the strip shows the list.
     const field = page.getByTestId('image-drop');
     await expect(field.getByText('output/monday/render_0007.png')).toBeVisible();
-    await expect(page.getByTestId('batch-strip').getByText('2 pictures, one per run')).toBeVisible();
+    await expect(
+      page.getByTestId('batch-strip').getByText('2 pictures, one per run'),
+    ).toBeVisible();
 
     // One run, and the slot has moved on to the second.
     await page.getByRole('button', { name: /^Generate/ }).click();
@@ -8461,9 +8479,7 @@ test.describe('the supervisor', () => {
      * is the point: a manager that hides the command it produces is a manager
      * you cannot debug.
      */
-    await settings
-      .getByLabel('How to start it')
-      .selectOption('portable');
+    await settings.getByLabel('How to start it').selectOption('portable');
     const command = settings.getByTestId('service-command');
     await expect(command).toContainText('ComfyUI/main.py');
 

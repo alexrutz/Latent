@@ -328,7 +328,10 @@ describe('resuming a study', () => {
     dirs.push(dir);
     const subject = new Store(join(dir, 'test.db'));
     subject.insertStudy({ id: 's', name: 'Study', workflowId: null, workflowName: '', seed: 1 });
-    subject.replaceShots('s', ['a', 'b', 'c', 'd'].map((id) => ({ id, values: {} })));
+    subject.replaceShots(
+      's',
+      ['a', 'b', 'c', 'd'].map((id) => ({ id, values: {} })),
+    );
     const runAs = (shot: string, status: 'queued' | 'running' | 'completed' | 'cancelled') => {
       subject.insertGeneration({
         id: `g-${shot}`,
@@ -354,9 +357,7 @@ describe('resuming a study', () => {
     runAs('d', 'cancelled');
 
     expect(subject.requeueStranded('s')).toBe(1);
-    const status = Object.fromEntries(
-      subject.listShots('s').map((shot) => [shot.id, shot.status]),
-    );
+    const status = Object.fromEntries(subject.listShots('s').map((shot) => [shot.id, shot.status]));
     expect(status).toEqual({ a: 'queued', b: 'queued', c: 'done', d: 'pending' });
   });
 
@@ -385,15 +386,32 @@ describe('the stored best rating', () => {
     dirs.push(dir);
     const subject = new Store(join(dir, 'test.db'));
     const run = (id: string, createdAt: number) => {
-      subject.insertGeneration({ id, promptId: `p-${id}`, workflowId: null, workflowName: '', title: id, values: {}, seeds: {} });
-      (subject as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } }).db
+      subject.insertGeneration({
+        id,
+        promptId: `p-${id}`,
+        workflowId: null,
+        workflowName: '',
+        title: id,
+        values: {},
+        seeds: {},
+      });
+      (
+        subject as unknown as {
+          db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } };
+        }
+      ).db
         .prepare('UPDATE generations SET created_at = ? WHERE id = ?')
         .run(createdAt, id);
       subject.setGenerationStatus(`p-${id}`, 'completed');
-      subject.addImages(`p-${id}`, '9', [0, 1].map((i) => ({ filename: `${id}-${i}.png`, subfolder: '', type: 'output' })));
+      subject.addImages(
+        `p-${id}`,
+        '9',
+        [0, 1].map((i) => ({ filename: `${id}-${i}.png`, subfolder: '', type: 'output' })),
+      );
       return subject.getGeneration(id)!.images.map((image) => image.id!);
     };
-    const order = () => subject.listGenerations({ limit: 10, sort: 'rating' }).items.map((item) => item.id);
+    const order = () =>
+      subject.listGenerations({ limit: 10, sort: 'rating' }).items.map((item) => item.id);
     return { subject, run, order };
   };
 
@@ -449,7 +467,11 @@ describe('favourites, a page at a time', () => {
     const dir = mkdtempSync(join(tmpdir(), 'latent-db-'));
     dirs.push(dir);
     const subject = new Store(join(dir, 'test.db'));
-    const raw = (subject as unknown as { db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } } }).db;
+    const raw = (
+      subject as unknown as {
+        db: { prepare: (sql: string) => { run: (...args: unknown[]) => void } };
+      }
+    ).db;
     for (let i = 0; i < count; i += 1) {
       subject.insertFavorite({
         id: `f${String(i).padStart(2, '0')}`,
@@ -463,11 +485,9 @@ describe('favourites, a page at a time', () => {
       });
       // Ties on purpose: several share a time and a rating, so the id has to
       // break them for a page boundary to land anywhere deterministic.
-      raw.prepare('UPDATE favorites SET created_at = ?, rating = ? WHERE id = ?').run(
-        Math.floor(i / 3),
-        i % 4,
-        `f${String(i).padStart(2, '0')}`,
-      );
+      raw
+        .prepare('UPDATE favorites SET created_at = ?, rating = ? WHERE id = ?')
+        .run(Math.floor(i / 3), i % 4, `f${String(i).padStart(2, '0')}`);
     }
     return subject;
   };
@@ -498,8 +518,62 @@ describe('favourites, a page at a time', () => {
     expect(index[0]).toEqual({
       id: expect.stringMatching(/^f0/),
       generationId: null,
-      image: { id: null, filename: expect.stringMatching(/^pic/), subfolder: 'day', type: 'output' },
+      image: {
+        id: null,
+        filename: expect.stringMatching(/^pic/),
+        subfolder: 'day',
+        type: 'output',
+      },
     });
     expect(JSON.stringify(index)).not.toContain('values');
+  });
+});
+
+/**
+ * A form stored before every node had a Bypass switch gains them when read,
+ * so a workflow imported by an older version needs no rescan to offer them.
+ */
+describe('reading a stored workflow', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('adds a Bypass switch for every node the stored form lacks', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latent-db-'));
+    dirs.push(dir);
+    const target = new Store(join(dir, 'test.db'));
+    target.insertWorkflow({
+      id: 'w1',
+      name: 'Old form',
+      graph: {
+        '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'm' } },
+        '2': {
+          class_type: 'VAEDecode',
+          inputs: { samples: ['1', 0], vae: ['1', 2] },
+          _meta: { title: 'Decode' },
+        },
+        '3': { class_type: 'SaveImage', inputs: { images: ['2', 0], filename_prefix: 'x' } },
+      },
+      schema: {
+        version: 1,
+        fields: [],
+        outputNodeIds: ['3'],
+        capabilities: { img2img: false, seeded: false, video: false, audio: false },
+        missingNodeTypes: [],
+      },
+      lastValues: {},
+    });
+    const switches = target
+      .getWorkflow('w1')!
+      .schema.fields.filter((field) => field.inputName === '__bypass');
+    expect(switches.map((field) => field.nodeId)).toEqual(['1', '2', '3']);
+    expect(switches.find((field) => field.nodeId === '2')).toMatchObject({
+      label: 'Bypass',
+      nodeTitle: 'Decode',
+      group: 'advanced',
+      defaultValue: false,
+    });
+    target.close();
   });
 });

@@ -6,7 +6,9 @@ import {
   bypassedNodes,
   bypassFieldId,
   bypassSlotIndex,
+  isBypassField,
   typesConnect,
+  withBypassSwitches,
 } from './bypass.js';
 import type { ApiWorkflow, ObjectInfo } from './comfyTypes.js';
 import { applyParams, buildParamSchema } from './paramSchema.js';
@@ -44,7 +46,10 @@ const objectInfo: ObjectInfo = {
     },
     output: ['LATENT'],
   },
-  EmptyLatentImage: { input: { required: { width: ['INT', { default: 512 }] } }, output: ['LATENT'] },
+  EmptyLatentImage: {
+    input: { required: { width: ['INT', { default: 512 }] } },
+    output: ['LATENT'],
+  },
   VAEDecode: { input: { required: { samples: ['LATENT'], vae: ['VAE'] } }, output: ['IMAGE'] },
   ImageScaleBy: {
     input: { required: { image: ['IMAGE'], scale_by: ['FLOAT', { default: 2 }] } },
@@ -59,13 +64,39 @@ const objectInfo: ObjectInfo = {
 
 const graph = (): ApiWorkflow => ({
   '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'model.safetensors' } },
-  '2': { class_type: 'LoraLoader', inputs: { model: ['1', 0], clip: ['1', 1], lora_name: 'a', strength_model: 1, strength_clip: 1 }, _meta: { title: 'Style LoRA' } },
-  '3': { class_type: 'LoraLoader', inputs: { model: ['2', 0], clip: ['2', 1], lora_name: 'b', strength_model: 1, strength_clip: 1 } },
+  '2': {
+    class_type: 'LoraLoader',
+    inputs: {
+      model: ['1', 0],
+      clip: ['1', 1],
+      lora_name: 'a',
+      strength_model: 1,
+      strength_clip: 1,
+    },
+    _meta: { title: 'Style LoRA' },
+  },
+  '3': {
+    class_type: 'LoraLoader',
+    inputs: {
+      model: ['2', 0],
+      clip: ['2', 1],
+      lora_name: 'b',
+      strength_model: 1,
+      strength_clip: 1,
+    },
+  },
   '4': { class_type: 'CLIPTextEncode', inputs: { text: 'a cat', clip: ['3', 1] } },
   '5': { class_type: 'EmptyLatentImage', inputs: { width: 512 } },
-  '6': { class_type: 'KSampler', inputs: { model: ['3', 0], seed: 1, positive: ['4', 0], latent_image: ['5', 0] } },
+  '6': {
+    class_type: 'KSampler',
+    inputs: { model: ['3', 0], seed: 1, positive: ['4', 0], latent_image: ['5', 0] },
+  },
   '7': { class_type: 'VAEDecode', inputs: { samples: ['6', 0], vae: ['1', 2] } },
-  '8': { class_type: 'ImageScaleBy', inputs: { image: ['7', 0], scale_by: 2 }, _meta: { title: 'Upscale' } },
+  '8': {
+    class_type: 'ImageScaleBy',
+    inputs: { image: ['7', 0], scale_by: 2 },
+    _meta: { title: 'Upscale' },
+  },
   '9': { class_type: 'SaveImage', inputs: { images: ['8', 0], filename_prefix: 'out' } },
 });
 
@@ -132,8 +163,86 @@ describe('cutting bypassed nodes out', () => {
 });
 
 describe('the Bypass switch in the form', () => {
-  it('is offered on nodes that can pass something through, and only those', () => {
-    expect(bypassableNodes(graph(), objectInfo)).toEqual(['2', '3', '6', '8']);
+  it('is offered on every node, as the editor offers it', () => {
+    // The decode, the save and the loader too: whether a bypass leaves the
+    // graph runnable is asked when it is used, not by withholding the switch.
+    expect(bypassableNodes(graph(), objectInfo)).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      '5',
+      '6',
+      '7',
+      '8',
+      '9',
+    ]);
+    expect(bypassableNodes(graph())).toHaveLength(9);
+    const schema = buildParamSchema(graph(), objectInfo);
+    expect(schema.fields.filter(isBypassField).map((field) => field.nodeId)).toHaveLength(9);
+  });
+
+  it('refuses a bypass that leaves a needed input empty, naming the node', () => {
+    const { error, workflow } = applyBypass(graph(), ['7'], objectInfo);
+    expect(error).toMatch(/VAEDecode/);
+    expect(error).toMatch(/Upscale without its 'image'/);
+    expect(workflow['7']).toBeDefined();
+    expect(applyBypass(graph(), ['9'], objectInfo).error).toMatch(/nothing is left that saves/);
+  });
+
+  it('passes a node ComfyUI does not describe straight through', () => {
+    const custom = graph();
+    custom['10'] = {
+      class_type: 'SomeCustomPack.Sharpen',
+      inputs: { image: ['8', 0], amount: 0.5 },
+    };
+    custom['9']!.inputs.images = ['10', 0];
+    const { workflow, error } = applyBypass(custom, ['10'], objectInfo);
+    expect(error).toBeUndefined();
+    expect(workflow['10']).toBeUndefined();
+    expect(workflow['9']!.inputs.images).toEqual(['8', 0]);
+  });
+
+  it('is added to a form stored before every node had one, without moving anything', () => {
+    const fresh = buildParamSchema(graph(), objectInfo);
+    // A form from an older version: switches on 2 and 3 only, one of them
+    // renamed in the form editor.
+    const old = {
+      ...fresh,
+      fields: fresh.fields
+        .filter((field) => !isBypassField(field) || ['2', '3'].includes(field.nodeId))
+        .map((field) =>
+          field.id === bypassFieldId('2') ? { ...field, label: 'Skip style' } : field,
+        ),
+    };
+    const upgraded = withBypassSwitches(old, graph());
+    const switches = upgraded.fields.filter(isBypassField);
+    expect(switches.map((field) => field.nodeId).sort()).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      '5',
+      '6',
+      '7',
+      '8',
+      '9',
+    ]);
+    expect(switches.find((field) => field.nodeId === '2')?.label).toBe('Skip style');
+    // Everything that was there keeps its place.
+    for (const field of old.fields) {
+      expect(upgraded.fields.find((entry) => entry.id === field.id)?.order).toBe(field.order);
+    }
+    // First among its node's advanced settings, where it has some.
+    for (const nodeId of ['1', '4', '5', '6', '7', '8', '9']) {
+      const own = upgraded.fields.filter(
+        (field) => field.nodeId === nodeId && field.group === 'advanced',
+      );
+      const first = own.reduce((a, b) => (b.order < a.order ? b : a));
+      expect(isBypassField(first)).toBe(true);
+    }
+    // Nothing to add: the same schema back.
+    expect(withBypassSwitches(upgraded, graph())).toBe(upgraded);
   });
 
   it('is always offered on a node bypassed in the editor, and starts on there', () => {

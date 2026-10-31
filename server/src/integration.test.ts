@@ -1,5 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -240,7 +249,9 @@ describe('workflow import', () => {
 
     await api(`/api/workflows/${id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ overrides: { '9.filename_prefix': { label: 'File name', group: 'main' } } }),
+      body: JSON.stringify({
+        overrides: { '9.filename_prefix': { label: 'File name', group: 'main' } },
+      }),
     });
 
     const detail = (await (await api(`/api/workflows/${id}`)).json()) as WorkflowDetail;
@@ -300,7 +311,10 @@ describe('generation', () => {
 
     const completed = await waitFor(() =>
       events
-        .filter((event): event is Extract<ServerEvent, { type: 'generation' }> => event.type === 'generation')
+        .filter(
+          (event): event is Extract<ServerEvent, { type: 'generation' }> =>
+            event.type === 'generation',
+        )
         .find((event) => event.data.id === generationId && event.data.status === 'completed'),
     );
 
@@ -448,7 +462,7 @@ describe('queue', () => {
    * prompt are indistinguishable without their values, and picking wrongly is
    * the failure this guards against.
    */
-  it('carries each job\'s settings, so one of several can be picked out and removed', async () => {
+  it("carries each job's settings, so one of several can be picked out and removed", async () => {
     const list = await json<{ id: string; name: string }[]>(api('/api/workflows'));
     const workflow = list.find((w) => w.name === 'SD1.5 txt2img');
 
@@ -565,7 +579,9 @@ describe('generation statistics', () => {
     const list = await json<{ id: string; name: string }[]>(api('/api/workflows'));
     const workflow = list.find((w) => w.name === 'SD1.5 txt2img');
 
-    const socket = new WebSocket(`${baseUrl.replace('http', 'ws')}/api/ws`, { headers: { cookie } });
+    const socket = new WebSocket(`${baseUrl.replace('http', 'ws')}/api/ws`, {
+      headers: { cookie },
+    });
     const states: Extract<ServerEvent, { type: 'state' | 'snapshot' }>[] = [];
     socket.on('message', (data, isBinary) => {
       if (isBinary) return;
@@ -624,7 +640,8 @@ describe('generation statistics', () => {
       });
       const second = await waitFor(() =>
         states.find(
-          (event) => event.data.job?.title === 'stats again' && event.data.job.stats.lastRunMs !== null,
+          (event) =>
+            event.data.job?.title === 'stats again' && event.data.job.stats.lastRunMs !== null,
         ),
       );
       expect(second.data.job!.stats.lastRunMs).toBeGreaterThan(0);
@@ -710,7 +727,6 @@ describe('recovering from a ComfyUI restart', () => {
     }
   }, 30_000);
 });
-
 
 /** Boot an isolated server for tests that need their own auth or connection state. */
 async function bootIsolated(overrides: Parameters<typeof buildApp>[0] = {}) {
@@ -1022,14 +1038,23 @@ describe('a client this server did not ship', () => {
 
       // The scheme is matched without case, because clients differ.
       expect(
-        (await server.call('/api/workflows', { headers: { authorization: `bearer ${issued.token}` } }))
-          .status,
+        (
+          await server.call('/api/workflows', {
+            headers: { authorization: `bearer ${issued.token}` },
+          })
+        ).status,
       ).toBe(200);
 
       // A wrong one, a missing one and a malformed header are all just "no".
-      expect((await server.call('/api/workflows', { headers: { authorization: 'Bearer nope' } })).status).toBe(401);
-      expect((await server.call('/api/workflows', { headers: { authorization: 'Bearer' } })).status).toBe(401);
-      expect((await server.call('/api/workflows', { headers: { authorization: issued.token } })).status).toBe(401);
+      expect(
+        (await server.call('/api/workflows', { headers: { authorization: 'Bearer nope' } })).status,
+      ).toBe(401);
+      expect(
+        (await server.call('/api/workflows', { headers: { authorization: 'Bearer' } })).status,
+      ).toBe(401);
+      expect(
+        (await server.call('/api/workflows', { headers: { authorization: issued.token } })).status,
+      ).toBe(401);
       expect((await server.call('/api/workflows')).status).toBe(401);
     } finally {
       await server.dispose();
@@ -1247,9 +1272,11 @@ describe('authenticated remote connections (the vast.ai path)', () => {
       const cookie = claim.headers.get('set-cookie')?.split(';')[0] ?? '';
 
       // Boot seeded a "Default" connection from COMFY_URL, which points nowhere.
-      const seeded = (await (
-        await server.call('/api/connections', { cookie })
-      ).json()) as { id: string; name: string; isActive: boolean }[];
+      const seeded = (await (await server.call('/api/connections', { cookie })).json()) as {
+        id: string;
+        name: string;
+        isActive: boolean;
+      }[];
       expect(seeded).toHaveLength(1);
       expect(seeded[0]?.name).toBe('Default');
       expect(seeded[0]?.isActive).toBe(true);
@@ -1343,9 +1370,7 @@ describe('ratings survive the instance being destroyed', () => {
       });
 
       const finished = await waitFor(async () => {
-        const page = (await (
-          await server.call('/api/gallery', { cookie })
-        ).json()) as GalleryPage;
+        const page = (await (await server.call('/api/gallery', { cookie })).json()) as GalleryPage;
         const record = page.items[0];
         return record && record.status === 'completed' && record.images.length > 0 ? record : null;
       }, 20_000);
@@ -1390,9 +1415,10 @@ describe('ratings survive the instance being destroyed', () => {
       expect(ratedOnly.items.map((item) => item.id)).toContain(finished.id);
 
       // An unrated image from the same dead instance is correctly gone.
-      const stats = (await (
-        await server.call('/api/archive/stats', { cookie })
-      ).json()) as { images: number; bytes: number };
+      const stats = (await (await server.call('/api/archive/stats', { cookie })).json()) as {
+        images: number;
+        bytes: number;
+      };
       expect(stats.images).toBe(1);
       expect(stats.bytes).toBeGreaterThan(0);
     } finally {
@@ -1537,14 +1563,18 @@ describe('database migrations', () => {
         UNIQUE (generation_id, filename, subfolder, type));
       CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
-    legacy.prepare("INSERT INTO workflows VALUES ('w1','Old workflow','{}','{}','{}','{}',1,1)").run();
+    legacy
+      .prepare("INSERT INTO workflows VALUES ('w1','Old workflow','{}','{}','{}','{}',1,1)")
+      .run();
     legacy
       .prepare(
         `INSERT INTO generations (id, prompt_id, workflow_id, workflow_name, status, created_at)
          VALUES ('g1','p1','w1','Old workflow','completed',1)`,
       )
       .run();
-    legacy.prepare("INSERT INTO images (generation_id, node_id, filename) VALUES ('g1','9','old.png')").run();
+    legacy
+      .prepare("INSERT INTO images (generation_id, node_id, filename) VALUES ('g1','9','old.png')")
+      .run();
     expect(Number(legacy.pragma('user_version', { simple: true }))).toBe(0);
     legacy.close();
 
@@ -1736,7 +1766,9 @@ describe('encrypted archive', () => {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ password: 'not the password' }),
         });
-        expect((await fetch(`${restartedUrl}/api/view?${params}`, { headers: { cookie } })).status).toBe(423);
+        expect(
+          (await fetch(`${restartedUrl}/api/view?${params}`, { headers: { cookie } })).status,
+        ).toBe(423);
 
         /*
          * The session outlives the restart — the cookie is an HMAC over the
@@ -1750,8 +1782,9 @@ describe('encrypted archive', () => {
           body: JSON.stringify({ password: 'not the password' }),
         });
         expect(wrongUnlock.status).toBe(401);
-        expect((await fetch(`${restartedUrl}/api/view?${params}`, { headers: { cookie } })).status)
-          .toBe(423);
+        expect(
+          (await fetch(`${restartedUrl}/api/view?${params}`, { headers: { cookie } })).status,
+        ).toBe(423);
 
         const unlock = await fetch(`${restartedUrl}/api/auth/unlock`, {
           method: 'POST',
@@ -1760,8 +1793,9 @@ describe('encrypted archive', () => {
         });
         expect(unlock.status).toBe(200);
         // The same cookie, now working: no new session was needed.
-        expect((await fetch(`${restartedUrl}/api/view?${params}`, { headers: { cookie } })).status)
-          .toBe(200);
+        expect(
+          (await fetch(`${restartedUrl}/api/view?${params}`, { headers: { cookie } })).status,
+        ).toBe(200);
         const afterUnlock = (await (
           await fetch(`${restartedUrl}/api/status`)
         ).json()) as StatusResponse;
@@ -1963,7 +1997,9 @@ describe('folder import', () => {
       expect(preview.status).toBe(200);
       expect(preview.headers.get('x-latent-source')).toBe('archive-thumb');
       const thumbBytes = Buffer.from(await preview.arrayBuffer());
-      expect(thumbBytes.length).toBeLessThan(full.headers.get('content-length') ? Number(full.headers.get('content-length')) : 1e9);
+      expect(thumbBytes.length).toBeLessThan(
+        full.headers.get('content-length') ? Number(full.headers.get('content-length')) : 1e9,
+      );
 
       // Sending an imported image to img2img must work too: ComfyUI has never
       // seen the file, so the bytes have to come from the archive.
@@ -1988,7 +2024,9 @@ describe('folder import', () => {
       ).json()) as ImportResult;
       expect(escape.imported).toBe(0);
       expect(escape.failed).toHaveLength(2);
-      expect(escape.failed.every((entry) => /outside the import folder/.test(entry.reason))).toBe(true);
+      expect(escape.failed.every((entry) => /outside the import folder/.test(entry.reason))).toBe(
+        true,
+      );
     } finally {
       await server.dispose();
       await comfy.close();
@@ -2242,18 +2280,22 @@ describe('random prompt mode', () => {
   it('narrows the draw to a chosen pool, and leaves the prompt alone when the pool is empty', async () => {
     const workflowId = await txt2imgWorkflowId();
 
-    const only = ((await (
-      await api('/api/prompt-blocks', {
-        method: 'POST',
-        body: JSON.stringify({ name: 'Only this', category: 'Style', text: 'the only phrase' }),
-      })
-    ).json()) as { id: string }).id;
-    const other = ((await (
-      await api('/api/prompt-blocks', {
-        method: 'POST',
-        body: JSON.stringify({ name: 'Not this', category: 'Style', text: 'never drawn' }),
-      })
-    ).json()) as { id: string }).id;
+    const only = (
+      (await (
+        await api('/api/prompt-blocks', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'Only this', category: 'Style', text: 'the only phrase' }),
+        })
+      ).json()) as { id: string }
+    ).id;
+    const other = (
+      (await (
+        await api('/api/prompt-blocks', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'Not this', category: 'Style', text: 'never drawn' }),
+        })
+      ).json()) as { id: string }
+    ).id;
 
     try {
       await api('/api/prompt-mode', {
@@ -2322,12 +2364,14 @@ describe('random prompt mode', () => {
   it('leaves the prompt alone when the mode is off', async () => {
     const workflowId = await txt2imgWorkflowId();
 
-    const id = ((await (
-      await api('/api/prompt-blocks', {
-        method: 'POST',
-        body: JSON.stringify({ name: 'Idle', text: 'should not appear' }),
-      })
-    ).json()) as { id: string }).id;
+    const id = (
+      (await (
+        await api('/api/prompt-blocks', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'Idle', text: 'should not appear' }),
+        })
+      ).json()) as { id: string }
+    ).id;
 
     try {
       const config = await json<{ enabled: boolean }>(api('/api/prompt-mode'));
@@ -2445,7 +2489,12 @@ describe('input image folder', () => {
        * The one that matters: an authenticated caller must not be able to read
        * files outside the configured folder by asking nicely.
        */
-      for (const escape of ['../secret.png', '/etc/hostname', 'nested/../../secret.png', 'innocent.png']) {
+      for (const escape of [
+        '../secret.png',
+        '/etc/hostname',
+        'nested/../../secret.png',
+        'innocent.png',
+      ]) {
         const denied = await server.call(
           `/api/input-images/file?path=${encodeURIComponent(escape)}`,
           { cookie },
@@ -2579,12 +2628,14 @@ describe('parameter variation', () => {
    * together — otherwise the two halves can silently disagree.
    */
   it('saves and reloads the whole setup as one named thing', async () => {
-    const block = ((await (
-      await api('/api/prompt-blocks', {
-        method: 'POST',
-        body: JSON.stringify({ name: 'Moody', category: 'Mood', text: 'heavy clouds' }),
-      })
-    ).json()) as { id: string }).id;
+    const block = (
+      (await (
+        await api('/api/prompt-blocks', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'Moody', category: 'Mood', text: 'heavy clouds' }),
+        })
+      ).json()) as { id: string }
+    ).id;
 
     try {
       await api('/api/prompt-mode', {
@@ -2610,7 +2661,13 @@ describe('parameter variation', () => {
       // Wander away from it entirely.
       await api('/api/prompt-mode', {
         method: 'PATCH',
-        body: JSON.stringify({ blockIds: [], minBlocks: 4, maxBlocks: 4, groupLimits: {}, params: [] }),
+        body: JSON.stringify({
+          blockIds: [],
+          minBlocks: 4,
+          maxBlocks: 4,
+          groupLimits: {},
+          params: [],
+        }),
       });
 
       const restored = await json<{
@@ -2919,13 +2976,10 @@ describe('losing the connection with work outstanding', () => {
       await replacement.listen(Number(new URL(strayAddress).port));
 
       try {
-        const resolved = await waitFor(
-          async () => {
-            const record = await json<GenerationRecord>(call(`/api/gallery/${id}`));
-            return record.status !== 'queued' && record.status !== 'running' ? record : null;
-          },
-          40_000,
-        );
+        const resolved = await waitFor(async () => {
+          const record = await json<GenerationRecord>(call(`/api/gallery/${id}`));
+          return record.status !== 'queued' && record.status !== 'running' ? record : null;
+        }, 40_000);
 
         // Nothing to recover, so it is gone — and a run that is gone must not
         // sit in the gallery as a placeholder forever.
@@ -3052,7 +3106,10 @@ describe('browsing an output folder', () => {
       JSON.stringify({
         ...sd15Txt2Img,
         '3': { ...sd15Txt2Img['3'], inputs: { ...sd15Txt2Img['3']!.inputs, steps: 27 } },
-        '6': { ...sd15Txt2Img['6'], inputs: { ...sd15Txt2Img['6']!.inputs, text: 'recovered prompt' } },
+        '6': {
+          ...sd15Txt2Img['6'],
+          inputs: { ...sd15Txt2Img['6']!.inputs, text: 'recovered prompt' },
+        },
       }),
     );
     writeFileSync(join(outputs, '2026-07-30', 'made-here.png'), withGraph);
@@ -3072,9 +3129,7 @@ describe('browsing an output folder', () => {
       // The count is what makes a folder worth opening — or not.
       expect(root.folders[0]?.images).toBe(1);
 
-      const inside = await json<ImportBrowseResult>(
-        api('/api/import/browse?path=2026-07-30'),
-      );
+      const inside = await json<ImportBrowseResult>(api('/api/import/browse?path=2026-07-30'));
       expect(inside.parent).toBe('');
       expect(inside.files.map((file) => file.name)).toEqual(['made-here.png']);
 
@@ -3278,7 +3333,7 @@ describe('encrypted settings files', () => {
  * the ones that were ours. A file another install left under another password
  * is somebody's prompt library; it used to be overwritten on the spot.
  */
-describe('changing the password with a stranger\'s settings file present', () => {
+describe("changing the password with a stranger's settings file present", () => {
   it('re-keys our file and leaves the other one as it was', async () => {
     const root = mkdtempSync(join(tmpdir(), 'latent-rekey-files-'));
     const stateDir = join(root, 'above');
@@ -3550,8 +3605,7 @@ describe('previews of a big picture', () => {
       }, 20_000);
 
       const query =
-        `filename=${encodeURIComponent(image.filename)}&subfolder=&type=output` +
-        `&id=${image.id}`;
+        `filename=${encodeURIComponent(image.filename)}&subfolder=&type=output` + `&id=${image.id}`;
 
       // The picture itself is what the viewer opens, and it is untouched.
       const full = await call(`/api/view?${query}`);
@@ -3645,8 +3699,7 @@ describe('views sized for the screen', () => {
         return record.images[0];
       }, 20_000);
 
-      const query =
-        `filename=${encodeURIComponent(image.filename)}&subfolder=&type=output&id=${image.id}`;
+      const query = `filename=${encodeURIComponent(image.filename)}&subfolder=&type=output&id=${image.id}`;
 
       // A portrait phone at 3x: the whole picture fits inside that box.
       const fitted = await call(`/api/view?${query}&fit=390x844`);
@@ -3836,9 +3889,7 @@ describe('endless generation', () => {
       }, 60_000);
       expect(queuedTwo).toBeGreaterThanOrEqual(2);
 
-      const state = await json<{ enabled: boolean; queued: number }>(
-        api('/api/generate/endless'),
-      );
+      const state = await json<{ enabled: boolean; queued: number }>(api('/api/generate/endless'));
       expect(state.enabled).toBe(true);
       expect(state.queued).toBeGreaterThanOrEqual(2);
 
@@ -4032,9 +4083,9 @@ describe('which workflows a scan takes', () => {
       expect(scan.ok).toBe(true);
       expect(scan.imported).toBe(2);
 
-      const names = ((await (
-        await server.call('/api/workflows', { cookie })
-      ).json()) as { name: string }[])
+      const names = (
+        (await (await server.call('/api/workflows', { cookie })).json()) as { name: string }[]
+      )
         .map((workflow) => workflow.name)
         .sort();
 
@@ -4106,9 +4157,9 @@ describe('which workflows a scan takes', () => {
       ).json()) as WorkflowScanResult;
       expect(scan.imported).toBe(2);
 
-      const names = ((await (
-        await server.call('/api/workflows', { cookie })
-      ).json()) as { name: string }[])
+      const names = (
+        (await (await server.call('/api/workflows', { cookie })).json()) as { name: string }[]
+      )
         .map((workflow) => workflow.name)
         .sort();
       // Nothing stripped either, since there is no marker to strip.
@@ -4489,7 +4540,10 @@ describe('the queue policy', () => {
 
     try {
       // Appending is the default: the second batch lines up behind the first.
-      await api('/api/settings', { method: 'PATCH', body: JSON.stringify({ queuePolicy: 'append' }) });
+      await api('/api/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ queuePolicy: 'append' }),
+      });
       await queue('policy append a');
       const afterFirst = await pendingCount();
       await queue('policy append b');
@@ -4643,9 +4697,21 @@ describe('llama-server nodes', () => {
       const submitted = await waitFor(async () => {
         const history = (await (
           await fetch(`${mockUrl}/history/${promptIds[0]}`)
-        ).json()) as Record<string, { prompt?: [number, string, Record<string, {
-          inputs: Record<string, unknown>;
-        }>] }>;
+        ).json()) as Record<
+          string,
+          {
+            prompt?: [
+              number,
+              string,
+              Record<
+                string,
+                {
+                  inputs: Record<string, unknown>;
+                }
+              >,
+            ];
+          }
+        >;
         return history[promptIds[0]!]?.prompt?.[2];
       }, 20_000);
 
@@ -4691,10 +4757,21 @@ describe('llama-server nodes', () => {
         body: JSON.stringify({ name: 'Bypass a sampler', graph: sd15Txt2Img }),
       }),
     );
-    // The sampler hands its latent on, so it can be bypassed; the decode
-    // cannot pass anything through, so it gets no switch.
-    expect(workflow.schema.fields.some((field) => field.id === '3.__bypass')).toBe(true);
-    expect(workflow.schema.fields.some((field) => field.id === '8.__bypass')).toBe(false);
+    // Every node has a switch, as in ComfyUI's editor — the decode too.
+    for (const nodeId of Object.keys(sd15Txt2Img)) {
+      expect(workflow.schema.fields.some((field) => field.id === `${nodeId}.__bypass`)).toBe(true);
+    }
+
+    // Bypassing the decode leaves the save with no picture, and says so
+    // rather than handing ComfyUI a graph it will reject.
+    const refused = await api('/api/generate', {
+      method: 'POST',
+      body: JSON.stringify({ workflowId: workflow.id, values: { '8.__bypass': true } }),
+    });
+    expect(refused.status).toBe(502);
+    expect(((await refused.json()) as { error: string }).error).toMatch(
+      /Bypassing ".*" leaves .* without its 'images'/,
+    );
 
     const { promptIds } = await json<GenerateResponse>(
       api('/api/generate', {
@@ -4707,11 +4784,21 @@ describe('llama-server nodes', () => {
     );
 
     const submitted = await waitFor(async () => {
-      const history = (await (
-        await fetch(`${mockUrl}/history/${promptIds[0]}`)
-      ).json()) as Record<string, { prompt?: [number, string, Record<string, {
-        inputs: Record<string, unknown>;
-      }>] }>;
+      const history = (await (await fetch(`${mockUrl}/history/${promptIds[0]}`)).json()) as Record<
+        string,
+        {
+          prompt?: [
+            number,
+            string,
+            Record<
+              string,
+              {
+                inputs: Record<string, unknown>;
+              }
+            >,
+          ];
+        }
+      >;
       return history[promptIds[0]!]?.prompt?.[2];
     }, 20_000);
 
@@ -4748,11 +4835,21 @@ describe('llama-server nodes', () => {
     );
 
     const submitted = await waitFor(async () => {
-      const history = (await (
-        await fetch(`${mockUrl}/history/${promptIds[0]}`)
-      ).json()) as Record<string, { prompt?: [number, string, Record<string, {
-        inputs: Record<string, unknown>;
-      }>] }>;
+      const history = (await (await fetch(`${mockUrl}/history/${promptIds[0]}`)).json()) as Record<
+        string,
+        {
+          prompt?: [
+            number,
+            string,
+            Record<
+              string,
+              {
+                inputs: Record<string, unknown>;
+              }
+            >,
+          ];
+        }
+      >;
       return history[promptIds[0]!]?.prompt?.[2];
     }, 20_000);
 
@@ -4939,10 +5036,7 @@ const awaiting = async (chatId: string): Promise<ChatMessage | undefined> => {
  * what was stored. Subscribes first, so nothing can be missed between the
  * intent and the first frame.
  */
-const watching = async (
-  chatId: string,
-  during: () => Promise<unknown>,
-): Promise<ChatEvent[]> => {
+const watching = async (chatId: string, during: () => Promise<unknown>): Promise<ChatEvent[]> => {
   const controller = new AbortController();
   const response = await api(`/api/chat/conversations/${chatId}/events`, {
     signal: controller.signal,
@@ -4985,7 +5079,6 @@ const watching = async (
 };
 
 describe('chat', () => {
-
   async function render(prompt: string): Promise<string> {
     const workflows = await json<{ id: string }[]>(api('/api/workflows'));
     const workflowId =
@@ -5029,9 +5122,7 @@ describe('chat', () => {
 
     try {
       await useLlama(url);
-      const chat = await json<{ id: string }>(
-        api('/api/chat/conversations', { method: 'POST' }),
-      );
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
 
       llama.script(
         { content: 'Let me think about that for a long', holdMs: 3_000 },
@@ -5076,9 +5167,7 @@ describe('chat', () => {
         body: JSON.stringify({ chat: { thinking: true } }),
       });
 
-      const chat = await json<{ id: string }>(
-        api('/api/chat/conversations', { method: 'POST' }),
-      );
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
 
       // Both ways a real build sends reasoning, in one reply.
       llama.script({
@@ -5133,9 +5222,7 @@ describe('chat', () => {
 
     try {
       await useLlama(url);
-      const chat = await json<{ id: string }>(
-        api('/api/chat/conversations', { method: 'POST' }),
-      );
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
 
       llama.script({
         content: 'Here are three.',
@@ -5163,12 +5250,13 @@ describe('chat', () => {
 
       // Two of the three, and one of them corrected on the way through.
       await intentRaw(chat.id, 'decide', {
-          messageId,
-          decision: 'accepted',
-          blocks: [
-            { action: 'add', name: 'Golden hour', category: 'Lighting', text: 'warm rim light' },
-            { action: 'add', name: 'Overcast', category: 'Lighting', text: 'flat grey daylight' },
-          ] });
+        messageId,
+        decision: 'accepted',
+        blocks: [
+          { action: 'add', name: 'Golden hour', category: 'Lighting', text: 'warm rim light' },
+          { action: 'add', name: 'Overcast', category: 'Lighting', text: 'flat grey daylight' },
+        ],
+      });
 
       const after = await json<{ name: string; text: string }[]>(api('/api/prompt-blocks'));
       expect(after.length).toBe(before.length + 2);
@@ -5218,9 +5306,7 @@ describe('chat', () => {
         body: JSON.stringify({ name: 'Golden hour', category: 'Lighting', text: 'warm rim light' }),
       });
 
-      const chat = await json<{ id: string }>(
-        api('/api/chat/conversations', { method: 'POST' }),
-      );
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
 
       llama.script({
         content: 'That one is doing no work.',
@@ -5280,9 +5366,7 @@ describe('chat', () => {
 
     try {
       await useLlama(url);
-      const chat = await json<{ id: string }>(
-        api('/api/chat/conversations', { method: 'POST' }),
-      );
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
 
       llama.script({
         toolCall: {
@@ -5339,9 +5423,7 @@ describe('chat', () => {
       );
       const before = await json<{ id: string }[]>(api('/api/prompt-blocks'));
 
-      const chat = await json<{ id: string }>(
-        api('/api/chat/conversations', { method: 'POST' }),
-      );
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
 
       llama.script({
         toolCall: {
@@ -5388,9 +5470,7 @@ describe('chat', () => {
 
     try {
       await useLlama(url);
-      const chat = await json<{ id: string }>(
-        api('/api/chat/conversations', { method: 'POST' }),
-      );
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
 
       llama.script({
         toolCall: {
@@ -5427,9 +5507,7 @@ describe('chat', () => {
 
     try {
       await useLlama(url);
-      const chat = await json<{ id: string }>(
-        api('/api/chat/conversations', { method: 'POST' }),
-      );
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
 
       llama.script({ content: 'A harbour at dawn, then.' });
       await intent(chat.id, 'say', { content: 'something calm' });
@@ -5753,7 +5831,10 @@ describe('chat', () => {
         const nextMessageId = run.awaiting as string;
         expect(nextMessageId).toBeTruthy();
 
-        const rejected = await intentRaw(chatId, 'decide', { messageId: nextMessageId, decision: 'rejected' });
+        const rejected = await intentRaw(chatId, 'decide', {
+          messageId: nextMessageId,
+          decision: 'rejected',
+        });
         expect(rejected.status).toBe(200);
 
         llama.script({ content: 'Fair enough.' });
@@ -5859,8 +5940,7 @@ describe('chat', () => {
      * exactly the state with no next step to notice the change.
      */
     describe('turning it on part way through a run', () => {
-      const setAutonomous = (chatId: string, on: boolean) =>
-        intent(chatId, 'autonomous', { on });
+      const setAutonomous = (chatId: string, on: boolean) => intent(chatId, 'autonomous', { on });
 
       /**
        * Open the event stream and leave again.
@@ -5875,7 +5955,10 @@ describe('chat', () => {
           signal: controller.signal,
         });
         expect(response.status).toBe(200);
-        void response.body?.getReader().read().catch(() => undefined);
+        void response.body
+          ?.getReader()
+          .read()
+          .catch(() => undefined);
         return () => controller.abort();
       };
 
@@ -6295,9 +6378,7 @@ describe('chat', () => {
 
     try {
       await useLlama(url);
-      const chat = await json<{ id: string }>(
-        api('/api/chat/conversations', { method: 'POST' }),
-      );
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
 
       llama.script({
         toolCall: {
@@ -6350,9 +6431,7 @@ describe('chat', () => {
         method: 'PATCH',
         body: JSON.stringify({ chat: { review: { enabled: false } } }),
       });
-      const chat = await json<{ id: string }>(
-        api('/api/chat/conversations', { method: 'POST' }),
-      );
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
       await render('a harbour at dawn');
 
       llama.script({
@@ -6396,9 +6475,7 @@ describe('chat', () => {
 
     try {
       await useLlama(url);
-      const chat = await json<{ id: string }>(
-        api('/api/chat/conversations', { method: 'POST' }),
-      );
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
 
       llama.script({
         toolCall: {
@@ -6438,9 +6515,7 @@ describe('chat', () => {
 
     try {
       await useLlama(url);
-      const chat = await json<{ id: string }>(
-        api('/api/chat/conversations', { method: 'POST' }),
-      );
+      const chat = await json<{ id: string }>(api('/api/chat/conversations', { method: 'POST' }));
 
       llama.script({ content: 'Sure.' });
       await intent(chat.id, 'say', { content: 'hello' });
@@ -6683,9 +6758,9 @@ describe('video workflows', () => {
     const length = workflow.schema.fields.find((field) => field.id === '6.length');
     expect(length?.role).toBe('length');
     expect(length?.group).toBe('main');
-    expect(
-      workflow.schema.fields.find((field) => field.id === '7.frame_rate')?.role,
-    ).toBe('frame_rate');
+    expect(workflow.schema.fields.find((field) => field.id === '7.frame_rate')?.role).toBe(
+      'frame_rate',
+    );
     // A quantised model is still the model picker.
     expect(workflow.schema.fields.find((field) => field.id === '1.unet_name')?.role).toBe('model');
 
@@ -7171,9 +7246,9 @@ describe('a conversation that nobody is watching', () => {
       // Wait until the run is genuinely under way before pulling the plug.
       const deadline = Date.now() + 20_000;
       for (;;) {
-        const detail = (await (
-          await one.call(`/api/chat/conversations/${chatId}`)
-        ).json()) as { run: ChatRun };
+        const detail = (await (await one.call(`/api/chat/conversations/${chatId}`)).json()) as {
+          run: ChatRun;
+        };
         if (detail.run.mode === 'wander') break;
         if (Date.now() > deadline) throw new Error('The run never started');
         await new Promise((resolve) => setTimeout(resolve, 25));
@@ -7194,9 +7269,9 @@ describe('a conversation that nobody is watching', () => {
     try {
       const deadline = Date.now() + 30_000;
       for (;;) {
-        const detail = (await (
-          await two.call(`/api/chat/conversations/${chatId}`)
-        ).json()) as { messages: ChatMessage[] };
+        const detail = (await (await two.call(`/api/chat/conversations/${chatId}`)).json()) as {
+          messages: ChatMessage[];
+        };
         const asked = detail.messages.some(
           (message) =>
             message.toolCall?.tool === 'build_prompt' &&
@@ -7281,7 +7356,10 @@ describe('what the user likes', () => {
   afterAll(async () => {
     for (const id of entries) await taste(`/api/taste/entries/${id}`, { method: 'DELETE' });
     for (const id of categories) await taste(`/api/taste/categories/${id}`, { method: 'DELETE' });
-    await api('/api/settings', { method: 'PATCH', body: JSON.stringify({ chat: { taste: 'hints' } }) });
+    await api('/api/settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ chat: { taste: 'hints' } }),
+    });
   });
 
   it('keeps categories, notes filed under them, and notes filed under nothing', async () => {
@@ -7342,9 +7420,9 @@ describe('what the user likes', () => {
     );
     entries.push(note.id);
 
-    expect((await taste(`/api/taste/categories/${temporary.id}`, { method: 'DELETE' })).status).toBe(
-      204,
-    );
+    expect(
+      (await taste(`/api/taste/categories/${temporary.id}`, { method: 'DELETE' })).status,
+    ).toBe(204);
 
     const profile = await json<TasteProfile>(taste('/api/taste'));
     const survivor = profile.entries.find((entry) => entry.id === note.id);
@@ -7412,7 +7490,10 @@ describe('what the user likes', () => {
       await useLlama(url);
 
       const category = await json<TasteCategory>(
-        taste('/api/taste/categories', { method: 'POST', body: JSON.stringify({ name: 'Weather' }) }),
+        taste('/api/taste/categories', {
+          method: 'POST',
+          body: JSON.stringify({ name: 'Weather' }),
+        }),
       );
       const kept = await json<TasteEntry>(
         taste('/api/taste/entries', {
@@ -8312,7 +8393,9 @@ describe('updating Latent itself', () => {
         headers: { 'x-latent-update': opened.ticket },
       });
       expect(pointless.status).toBe(409);
-      expect((await json<{ error: string }>(pointless)).error).toContain('Nothing has been installed');
+      expect((await json<{ error: string }>(pointless)).error).toContain(
+        'Nothing has been installed',
+      );
     } finally {
       await server.dispose();
     }
@@ -8755,7 +8838,8 @@ describe('a favourite as somewhere to load from', () => {
     const finished = await waitFor(async () => {
       const page = await json<GalleryPage>(api('/api/gallery?limit=5'));
       const record = page.items.find(
-        (item) => item.title === 'one to keep' && item.status === 'completed' && item.images.length > 0,
+        (item) =>
+          item.title === 'one to keep' && item.status === 'completed' && item.images.length > 0,
       );
       return record ?? null;
     }, 20_000);

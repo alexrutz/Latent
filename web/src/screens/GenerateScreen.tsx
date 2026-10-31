@@ -965,14 +965,15 @@ function GenerateForm({
                       <h3 className="flex items-baseline gap-2 border-b border-line pb-1">
                         <span
                           className={cn(
-                            'min-w-0 truncate text-xs font-medium tracking-wide text-muted uppercase',
-                            bypassed && 'line-through',
+                            'min-w-0 truncate text-xs font-medium tracking-wide uppercase',
+                            bypassed ? 'text-fuchsia-300 line-through' : 'text-muted',
                           )}
                         >
                           {group.title}
                         </span>
                         {bypassed && (
-                          <span className="shrink-0 rounded bg-warn/15 px-1.5 text-[10px] text-warn uppercase">
+                          // Purple, as a bypassed node is in ComfyUI's editor.
+                          <span className="shrink-0 rounded bg-fuchsia-500/20 px-1.5 text-[10px] text-fuchsia-300 uppercase">
                             bypassed
                           </span>
                         )}

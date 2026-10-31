@@ -2975,26 +2975,30 @@ sending the picture it was built around.
 
 ### Bypassing a node
 
-Every node that can pass something through gets a **Bypass** switch, first
-under its own heading in **Advanced** — a LoRA loader (its model and clip go
-straight on), an upscale (the picture goes straight to the save), a sampler
-(its latent goes straight to the decode). Nodes that could only break the graph
-if skipped, like a VAE decode that turns a latent into a picture, get none.
+Every node gets a **Bypass** switch, as every node can be bypassed in ComfyUI's
+editor. It sits first under the node's own heading in **Advanced**; a node with
+no settings of its own gets a heading with just the switch. Workflows imported
+before this gain their switches without a rescan.
 
-Switched on, the node is cut out on the way to ComfyUI and whatever it fed is
-handed what *it* was fed, by ComfyUI's own rule for which input stands in for
-which output — the same position if the type fits, then the first input of
-that type — so a bypass here renders exactly what the same bypass in the editor
-would. A run of bypassed nodes is followed through, and where nothing can stand
-in for an input the next node needs, the switch is refused with a sentence
-naming it. The heading says **bypassed** and the node's other settings fade
-while it is — in Advanced and on the main screen alike, so a sampler's steps
-dragged onto the main form do not look live while doing nothing.
+Switched on, the node is cut out on the way to ComfyUI, its heading turns
+**purple** with a **bypassed** tag, and its settings fade, in Advanced and on
+the main screen alike. Whatever it fed is handed what *it* was fed, by
+ComfyUI's own rule for which input stands in for which output — the same
+position if the type fits, then the first input of that type — so a bypass here
+renders exactly what the same bypass in the editor would: a LoRA loader's model
+and clip go straight on, an upscale's picture goes straight to the save. A run
+of bypassed nodes is followed through, and a custom node ComfyUI does not
+describe passes its first matching link straight through.
+
+Some bypasses leave the graph unable to run, in the editor as here — skipping
+the VAE decode leaves the save with no picture. Those are refused when you press
+Generate, with a sentence naming the node, rather than sent to ComfyUI to fail.
 
 A workflow imported from the editor keeps the nodes that were bypassed there,
 with their switch on, instead of losing them: ComfyUI's own API export rewires
-around a bypassed node and drops it, which made the bypass permanent. A
-workflow imported before this needs **Rescan** to get its switches.
+around a bypassed node and drops it, which made the bypass permanent. An
+editor-format workflow imported before this needs re-importing to get those
+nodes back.
 
 **Load Image (Folder Browser)** uses the *same* control as any other image
 input — the folded header, the square preview, the filename, **Replace** and a
