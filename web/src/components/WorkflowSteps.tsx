@@ -187,7 +187,8 @@ function StepCard({
             bypassed ? 'bg-fuchsia-600 text-white' : 'bg-surface-3 text-muted',
           )}
         >
-          {bypassed ? 'Bypassed' : 'Bypass'}
+          {/* One word either way: the background says which. */}
+          Bypass
         </button>
       </div>
 

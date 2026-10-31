@@ -2549,17 +2549,17 @@ test.describe('keeping, deleting and looking closely', () => {
     // A bypass that leaves the save with nothing is said at once.
     const decode = board.getByRole('article', { name: 'VAE Decode' });
     await decode.getByRole('button', { name: 'Bypass' }).click();
-    await expect(decode.getByRole('button', { name: 'Bypassed' })).toHaveAttribute(
+    await expect(decode.getByRole('button', { name: 'Bypass', exact: true })).toHaveAttribute(
       'aria-pressed',
       'true',
     );
     await expect(sheet.getByRole('status')).toContainText("without its 'images'");
-    await decode.getByRole('button', { name: 'Bypassed' }).click();
+    await decode.getByRole('button', { name: 'Bypass', exact: true }).click();
     await expect(sheet.getByRole('status')).toHaveCount(0);
 
     // The sampler can go: its latent goes straight on to the decode.
     await sampler.getByRole('button', { name: 'Bypass' }).click();
-    await expect(sampler.getByRole('button', { name: 'Bypassed' })).toHaveAttribute(
+    await expect(sampler.getByRole('button', { name: 'Bypass', exact: true })).toHaveAttribute(
       'aria-pressed',
       'true',
     );
@@ -7718,7 +7718,7 @@ test.describe('picking a picture out of a folder', () => {
     await expect(bypass).toHaveAttribute('title', /VAE ?Encode/);
 
     await bypass.click();
-    const on = field.getByRole('button', { name: 'Bypassed' });
+    const on = field.getByRole('button', { name: 'Bypass', exact: true });
     await expect(on).toHaveAttribute('aria-pressed', 'true');
     // Both are bypassed, as the workflow view counts them.
     await expect(page.getByRole('button', { name: /^Workflow.*2 bypassed/ })).toBeVisible();
@@ -7726,6 +7726,13 @@ test.describe('picking a picture out of a folder', () => {
     // bypass would leave the save with nothing — said beside the button.
     await expect(field.getByText(/without its 'images'/)).toBeVisible();
     await page.screenshot({ path: 'test-results/110-folder-bypass.png' });
+    // One row: Replace, Browse folders and Bypass side by side on a phone.
+    const tops = await Promise.all(
+      ['Replace', 'Browse folders', 'Bypass'].map(async (name) =>
+        Math.round((await field.getByRole('button', { name, exact: true }).boundingBox())!.y),
+      ),
+    );
+    expect(new Set(tops).size).toBe(1);
 
     await on.click();
     await expect(bypass).toHaveAttribute('aria-pressed', 'false');

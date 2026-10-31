@@ -47,7 +47,7 @@ type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   /** `lg` is the one primary action at the bottom of a screen. */
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'xs' | 'sm' | 'md' | 'lg';
   busy?: boolean;
   /**
    * Stretch to the container. Defaults on for `lg`, which is nearly always the
@@ -87,6 +87,8 @@ const VARIANTS: Record<ButtonVariant, string> = {
  * stays generous, since it is what you aim at without looking.
  */
 const SIZES = {
+  /** A row of three beside a thumbnail, which has to fit a phone's width on one line. */
+  xs: 'h-8 px-2 text-[13px] rounded-lg',
   sm: 'h-8 px-2.5 text-sm rounded-lg',
   md: 'h-10 px-3.5 text-[15px] rounded-xl',
   lg: 'h-12 px-5 text-base rounded-xl',

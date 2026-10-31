@@ -387,10 +387,10 @@ export function ImageField({
           <p className="truncate text-sm text-muted">{filename || 'No image selected'}</p>
           {/* Which folder it came from: the same name exists under several. */}
           {browsesFolders && stored && <p className="truncate text-[11px] text-muted">{stored}</p>}
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-1.5">
             <Button
               variant="secondary"
-              size="sm"
+              size="xs"
               busy={uploading}
               onClick={() => inputRef.current?.click()}
             >
@@ -399,7 +399,7 @@ export function ImageField({
             {/* The folder on the Latent machine, for reference shots and masks
                 that were never on the phone to begin with. */}
             {/* The same button as Replace beside it, not a bare word. */}
-            <Button variant="secondary" size="sm" onClick={() => setPicking(true)}>
+            <Button variant="secondary" size="xs" onClick={() => setPicking(true)}>
               {browsesFolders ? 'Browse folders' : 'From folder'}
             </Button>
             {bypass && (
@@ -414,13 +414,14 @@ export function ImageField({
                 }
                 // The same shape as Replace and Browse folders beside it.
                 className={cn(
-                  'inline-flex h-8 items-center justify-center rounded-lg px-2.5 text-sm font-medium transition-colors',
+                  'inline-flex h-8 items-center justify-center rounded-lg px-2 text-[13px] font-medium transition-colors',
                   bypass.on
                     ? 'bg-fuchsia-600 text-white'
                     : 'bg-surface-2 text-body hover:bg-surface-3 active:bg-surface-3',
                 )}
               >
-                {bypass.on ? 'Bypassed' : 'Bypass'}
+                {/* One word either way: the background says which. */}
+                Bypass
               </button>
             )}
           </div>
