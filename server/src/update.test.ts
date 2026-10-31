@@ -11,6 +11,7 @@ import {
   namePaths,
   readBuiltCommit,
   readChanges,
+  resolveNpm,
   type CommandRequest,
   type CommandResult,
 } from './update.js';
@@ -542,5 +543,77 @@ describe('which build is running', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/*
+ * Windows has refused to start `npm.cmd` without a shell since Node's April
+ * 2024 security release (CVE-2024-27980): every update failed at "Installing
+ * dependencies", and its rollback with it.
+ */
+describe('starting npm', () => {
+  const node = 'C:\\Program Files\\nodejs\\node.exe';
+  const beside = 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js';
+
+  it('is plain `npm` away from Windows', () => {
+    expect(resolveNpm('linux', {}, '/usr/bin/node', () => false)).toEqual({
+      command: 'npm',
+      prefix: [],
+      shell: false,
+    });
+  });
+
+  it('runs npm’s own script with Node on Windows, never the .cmd', () => {
+    const viaStart = 'C:\\Users\\me\\AppData\\npm\\node_modules\\npm\\bin\\npm-cli.js';
+    // Started with `npm start`: npm says where it is.
+    expect(
+      resolveNpm('win32', { npm_execpath: viaStart }, node, (path) => path === viaStart),
+    ).toEqual({
+      command: node,
+      prefix: [viaStart],
+      shell: false,
+    });
+    // Started some other way: the copy beside node.exe.
+    expect(resolveNpm('win32', {}, node, (path) => path === beside)).toEqual({
+      command: node,
+      prefix: [beside],
+      shell: false,
+    });
+    // A yarn or pnpm launcher in npm_execpath is not npm.
+    expect(resolveNpm('win32', { npm_execpath: 'C:\\yarn.js' }, node, () => false).command).toBe(
+      'npm.cmd',
+    );
+  });
+
+  it('falls back to the .cmd through a shell only when there is no script to run', () => {
+    expect(resolveNpm('win32', {}, node, () => false)).toEqual({
+      command: 'npm.cmd',
+      prefix: [],
+      shell: true,
+    });
+  });
+
+  it('starts the install and the build with the launcher it found', async () => {
+    const runner = scriptedRunner([
+      ...healthyCheckout(),
+      { match: 'git fetch', stdout: '' },
+      { match: 'git reset', stdout: '' },
+      { match: 'node.exe npm-cli.js install', stdout: '' },
+      { match: 'node.exe npm-cli.js run build', stdout: '' },
+      { match: 'git rev-parse HEAD', stdout: 'b'.repeat(40) },
+      { match: 'git rev-list', stdout: '0\t0' },
+    ]);
+    const subject = new Updater({
+      cwd: '/project',
+      run: runner.run,
+      npm: { command: 'node.exe', prefix: ['npm-cli.js'], shell: false },
+    });
+    await subject.start();
+    await subject.settled();
+    expect((await subject.status()).run?.phase).toBe('succeeded');
+    expect(
+      runner.calls.some((call) => call.startsWith('node.exe npm-cli.js install --include=dev')),
+    ).toBe(true);
+    expect(runner.calls.some((call) => call.startsWith('npm.cmd'))).toBe(false);
   });
 });

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { win32 } from 'node:path';
 
 import type {
   UpdateAvailable,
@@ -115,6 +116,12 @@ export interface CommandRequest {
   timeoutMs: number;
   /** Called per line while it runs. Absent for the quick probing commands. */
   onLine?: (stream: 'out' | 'err', text: string) => void;
+  /**
+   * Through a shell. Only ever for npm's `.cmd` on Windows, as a last resort,
+   * with arguments that are fixed words — never for git, which is handed a
+   * branch name.
+   */
+  shell?: boolean;
 }
 
 export interface CommandResult {
@@ -128,7 +135,42 @@ export interface CommandResult {
 
 export type RunCommand = (request: CommandRequest) => Promise<CommandResult>;
 
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+/** How npm is started: the program, what goes before npm's own arguments, and whether by shell. */
+export interface NpmLauncher {
+  command: string;
+  prefix: string[];
+  shell: boolean;
+}
+
+/**
+ * How to start npm on this machine.
+ *
+ * Not `npm.cmd` on Windows. Since Node's April 2024 security release
+ * (CVE-2024-27980), starting a `.cmd` or `.bat` without a shell fails at once
+ * with `EINVAL` — so every update failed at "Installing dependencies", and its
+ * rollback failed at the same place. npm is a JavaScript program, so it is run
+ * with this very Node instead: `npm_execpath` names it when Latent was started
+ * with `npm start`, and otherwise it sits beside `node.exe` in a standard
+ * install. Only when neither is there does it fall back to `npm.cmd` through a
+ * shell, which is safe with arguments that are fixed words.
+ */
+export function resolveNpm(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+  execPath: string = process.execPath,
+  fileExists: (path: string) => boolean = existsSync,
+): NpmLauncher {
+  if (platform !== 'win32') return { command: 'npm', prefix: [], shell: false };
+  const candidates = [
+    env.npm_execpath && /npm-cli\.js$/i.test(env.npm_execpath) ? env.npm_execpath : null,
+    // Windows path rules, whatever this is being run on.
+    win32.join(win32.dirname(execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ];
+  for (const cli of candidates) {
+    if (cli && fileExists(cli)) return { command: execPath, prefix: [cli], shell: false };
+  }
+  return { command: 'npm.cmd', prefix: [], shell: true };
+}
 
 /**
  * Run one command, streaming its output a line at a time.
@@ -146,8 +188,9 @@ export const spawnCommand: RunCommand = (request) =>
         env: process.env,
         // No shell: the arguments are fixed strings and a branch name, and a
         // shell is the one thing that would let a branch name mean anything
-        // other than a branch name.
-        shell: false,
+        // other than a branch name. The one exception is npm's `.cmd`, as a
+        // last resort with fixed words (see `resolveNpm`).
+        shell: request.shell === true,
       });
     } catch (error) {
       settle({
@@ -274,6 +317,8 @@ export interface UpdaterOptions {
   fileExists?: (path: string) => boolean;
   /** The commit the running build was made from (`scripts/build-info.mjs`). */
   builtCommit?: string | null;
+  /** How npm is started; worked out from this machine when absent. */
+  npm?: NpmLauncher;
 }
 
 /**
@@ -299,6 +344,7 @@ export class Updater {
   private readonly log: { info(message: string): void; warn(message: string): void };
   private readonly supervisorInfo: UpdateSupervisor;
   private readonly builtCommit: string | null;
+  private readonly npm: NpmLauncher;
 
   private lines: UpdateLogLine[] = [];
   private seq = 0;
@@ -323,6 +369,7 @@ export class Updater {
     this.log = options.log ?? { info: () => {}, warn: () => {} };
     this.supervisorInfo = detectSupervisor(options.env, options.fileExists);
     this.builtCommit = options.builtCommit ?? null;
+    this.npm = options.npm ?? resolveNpm(undefined, options.env, undefined, options.fileExists);
   }
 
   get isRunning(): boolean {
@@ -410,8 +457,8 @@ export class Updater {
       steps: [
         blankStep('fetch', `git fetch ${await this.remoteFor(checkout.branch)} ${checkout.branch}`),
         blankStep('reset', `git reset --hard ${checkout.upstream}`),
-        blankStep('install', `${npmCommand} install --include=dev --no-audit --no-fund`),
-        blankStep('build', `${npmCommand} run build`),
+        blankStep('install', 'npm install --include=dev --no-audit --no-fund'),
+        blankStep('build', 'npm run build'),
       ],
       error: null,
       restartRequired: false,
@@ -486,9 +533,10 @@ export class Updater {
     if (
       !(await this.step(
         'install',
-        npmCommand,
-        ['install', '--include=dev', '--no-audit', '--no-fund'],
+        this.npm.command,
+        [...this.npm.prefix, 'install', '--include=dev', '--no-audit', '--no-fund'],
         NPM_TIMEOUT,
+        this.npm.shell,
       ))
     ) {
       // `--include=dev` and not a bare install: a production deployment has
@@ -498,7 +546,15 @@ export class Updater {
       return;
     }
 
-    if (!(await this.step('build', npmCommand, ['run', 'build'], NPM_TIMEOUT))) {
+    if (
+      !(await this.step(
+        'build',
+        this.npm.command,
+        [...this.npm.prefix, 'run', 'build'],
+        NPM_TIMEOUT,
+        this.npm.shell,
+      ))
+    ) {
       await this.fail('The new version did not build.');
       return;
     }
@@ -536,6 +592,7 @@ export class Updater {
     command: string,
     args: string[],
     timeoutMs: number,
+    shell = false,
   ): Promise<boolean> {
     const step = this.current?.steps.find((entry) => entry.name === name);
     if (step) {
@@ -548,6 +605,7 @@ export class Updater {
       args,
       cwd: this.cwd,
       timeoutMs,
+      shell,
       onLine: (stream, text) => this.push(name, stream, text),
     });
 
@@ -598,25 +656,33 @@ export class Updater {
     this.note(null, `${error} Putting the checkout back at ${run.from.slice(0, 8)}.`);
     const step = blankStep(
       'rollback',
-      `git reset --hard ${run.from} && ${npmCommand} install --include=dev && ${npmCommand} run build`,
+      // Said as steps, not joined with `&&`, which Windows PowerShell 5.1 lacks.
+      `git reset --hard ${run.from}, then npm install --include=dev, then npm run build`,
     );
     step.status = 'running';
     step.startedAt = this.now();
     run.steps.push(step);
 
-    const commands: [string, string[], number][] = [
-      ['git', ['reset', '--hard', run.from], GIT_TIMEOUT],
-      [npmCommand, ['install', '--include=dev', '--no-audit', '--no-fund'], NPM_TIMEOUT],
-      [npmCommand, ['run', 'build'], NPM_TIMEOUT],
+    const { command: npm, prefix, shell: npmShell } = this.npm;
+    const commands: [string, string[], number, boolean][] = [
+      ['git', ['reset', '--hard', run.from], GIT_TIMEOUT, false],
+      [
+        npm,
+        [...prefix, 'install', '--include=dev', '--no-audit', '--no-fund'],
+        NPM_TIMEOUT,
+        npmShell,
+      ],
+      [npm, [...prefix, 'run', 'build'], NPM_TIMEOUT, npmShell],
     ];
 
     let code: number | null = 0;
-    for (const [command, args, timeoutMs] of commands) {
+    for (const [command, args, timeoutMs, shell] of commands) {
       const result = await this.run({
         command,
         args,
         cwd: this.cwd,
         timeoutMs,
+        shell,
         onLine: (stream, text) => this.push('rollback', stream, text),
       });
       if (result.failure) this.push('rollback', 'err', result.failure);
