@@ -113,15 +113,23 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
   const sheet = (
     <Sheet open={expanded} onClose={() => setExpanded(false)} title="Generating">
       <div className="space-y-4">
-        <div className="overflow-hidden rounded-2xl border border-line bg-surface-2">
+        {/*
+          A 2:3 frame whatever arrives in it. The sampler's previews, the
+          previous result and the waiting note all take the same box, so the
+          progress below does not jump as one replaces the next; a picture of
+          another shape is fitted inside it whole, never cropped. On a wide or
+          short window it is held to most of the window's height.
+        */}
+        <div
+          data-testid="live-preview-frame"
+          className="mx-auto grid aspect-[2/3] w-[min(100%,calc(65dvh*2/3))] place-items-center overflow-hidden rounded-2xl border border-line bg-surface-2"
+        >
           {previewUrl ? (
-            <img src={previewUrl} alt="Live preview" className="w-full object-contain" />
+            <img src={previewUrl} alt="Live preview" className="size-full object-contain" />
           ) : holdover ? (
-            <img src={holdover} alt="The previous result" className="w-full object-contain" />
+            <img src={holdover} alt="The previous result" className="size-full object-contain" />
           ) : (
-            <div className="grid aspect-square place-items-center text-sm text-muted">
-              Waiting for the first preview…
-            </div>
+            <p className="px-6 text-center text-sm text-muted">Waiting for the first preview…</p>
           )}
         </div>
         {!previewUrl && holdover && (
