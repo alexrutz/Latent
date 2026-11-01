@@ -2334,6 +2334,29 @@ stops it first: there is no "remove but leave it running", because there is no
 way back from it. Latent stops everything it started when it shuts down, so
 there is never a GPU held by something with no parent to stop it.
 
+**comfyllama is brought up to date before ComfyUI starts.** ComfyUI loads
+comfyllama from its own `custom_nodes`, so a change to the copy in this repo
+reached it only when somebody copied it across. Every time the Supervisor starts
+a ComfyUI service — by hand, at boot, or after a crash — it first makes
+`<ComfyUI folder>/custom_nodes/comfyllama` the same as Latent's, the one moment
+it can change with nothing running it. The ComfyUI folder is the one under
+**Settings → Servers** (the one with `main.py`), or worked out from the
+service's root, the Windows portable layout included.
+
+- Only files that changed are written; tests and Python caches are not copied.
+- A copy Latent made carries a `.latent-managed` file, and files Latent no
+  longer has are removed from it. A copy put there by hand is taken over on the
+  first start without anything being deleted.
+- A `custom_nodes/comfyllama` that is a **link** to this repo's copy is already
+  current and left alone; one that is its **own git clone** is left alone too,
+  with a line in the log saying to update it with `git pull` (or delete it and
+  let Latent keep a copy there).
+- What happened is the first line of the service's log. If comfyllama's
+  `requirements.txt` changed it says so, with the `pip install -r` to run with
+  ComfyUI's Python — Latent does not install Python packages itself.
+- A failed copy never stops ComfyUI starting. `LATENT_SYNC_COMFYLLAMA=0` turns
+  the whole thing off.
+
 **More of these are expected.** A service is a definition in a list rather than
 a branch in the code — `shared/src/supervisor.ts` — and the screen builds its
 whole form from what the server sends, so adding one is adding a definition and

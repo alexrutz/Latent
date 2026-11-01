@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -66,6 +66,32 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
+describe('updating comfyllama before ComfyUI starts', () => {
+  it('copies Latent’s comfyllama into custom_nodes first, and says so in the log', async () => {
+    const db = store();
+    const config = service({ root: root('import time\ntime.sleep(30)\n') });
+    mkdirSync(join(config.root, 'custom_nodes'));
+    // A small stand-in for Latent's copy.
+    const source = mkdtempSync(join(tmpdir(), 'latent-svc-src-'));
+    dirs.push(source);
+    writeFileSync(join(source, '__init__.py'), 'NODE_CLASS_MAPPINGS = {}\n');
+    db.insertService(config);
+    const subject = new Supervisor(db, quiet as never, source);
+
+    expect(subject.start(config)).toBeNull();
+    expect(existsSync(join(config.root, 'custom_nodes', 'comfyllama', '__init__.py'))).toBe(true);
+    const lines = subject.logSince(config.id, 0).lines.map((line) => line.text);
+    expect(lines.some((text) => text.includes('comfyllama installed'))).toBe(true);
+    // Before the command, not after it.
+    expect(lines.findIndex((text) => text.includes('comfyllama'))).toBeLessThan(
+      lines.findIndex((text) => text.startsWith('Starting:')),
+    );
+
+    subject.stop(config.id);
+    await until(() => !isUp(subject.statusOf(config).state));
+  });
+});
+
 describe('starting and stopping', () => {
   it('runs the command, reports a pid, and keeps its output', async () => {
     const db = store();
@@ -118,9 +144,7 @@ describe('starting and stopping', () => {
     const subject = new Supervisor(db, quiet as never);
     subject.start(config);
 
-    await until(() =>
-      subject.logSince(config.id, 0).lines.some((line) => line.text === 'one'),
-    );
+    await until(() => subject.logSince(config.id, 0).lines.some((line) => line.text === 'one'));
     const { seq } = subject.logSince(config.id, 0);
     expect(subject.logSince(config.id, seq).lines).toEqual([]);
 
@@ -162,9 +186,7 @@ describe('when it will not start', () => {
     db.insertService(config);
     const subject = new Supervisor(db, quiet as never);
 
-    expect(subject.statusOf(config).command).toBe(
-      'python3 main.py --listen 0.0.0.0 --port 8189',
-    );
+    expect(subject.statusOf(config).command).toBe('python3 main.py --listen 0.0.0.0 --port 8189');
     expect(subject.statusOf(config).state).toBe('stopped');
   });
 });

@@ -14,6 +14,8 @@ import {
   type ServiceStatus,
 } from '@latent/shared';
 
+import { customNodesDir, syncComfyllama } from './comfyllamaSync.js';
+import { projectRoot } from './config.js';
 import type { Store } from './db.js';
 
 /**
@@ -89,6 +91,8 @@ export class Supervisor {
   constructor(
     private readonly store: Store,
     private readonly log: FastifyBaseLogger,
+    /** Latent's comfyllama, copied into ComfyUI before it starts. */
+    private readonly comfyllamaSource: string = resolve(projectRoot, 'comfyllama'),
   ) {}
 
   /* ---------------------------------------------------------------- */
@@ -116,7 +120,8 @@ export class Supervisor {
       exitCode: null,
       exitSignal: null,
       restarts: 0,
-      error: config.root.trim() === '' ? 'No root directory set.' : command ? null : notFound(config),
+      error:
+        config.root.trim() === '' ? 'No root directory set.' : command ? null : notFound(config),
       command: commandLine(command),
       restartAt: null,
     };
@@ -180,6 +185,24 @@ export class Supervisor {
       exitSignal: null,
       restartAt: null,
     };
+
+    /*
+     * ComfyUI loads comfyllama from its own custom_nodes, so Latent's copy is
+     * put there first — the one moment it can change with nothing running it.
+     * Never a reason not to start: a ComfyUI with an older comfyllama is still
+     * a ComfyUI. `LATENT_SYNC_COMFYLLAMA=0` leaves the folder alone.
+     */
+    if (config.kind === 'comfyui' && process.env.LATENT_SYNC_COMFYLLAMA !== '0') {
+      try {
+        const nodes = customNodesDir(this.store.getSettings().comfyRoot, config.root);
+        const result = syncComfyllama(this.comfyllamaSource, nodes);
+        this.note(tracked, 'latent', result.message);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.note(tracked, 'latent', `comfyllama could not be updated: ${message}`);
+      }
+    }
+
     this.note(tracked, 'latent', `Starting: ${commandLine(command)}`);
 
     let child: ChildProcess;
