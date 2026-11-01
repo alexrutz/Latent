@@ -7705,6 +7705,12 @@ test.describe('on a tablet', () => {
     // still filled in, still the thing you would edit next.
     await expect(workbench.getByTestId('workbench-still')).toBeVisible({ timeout: 40_000 });
     await expect(page.getByPlaceholder('Describe the image…')).toHaveValue('a pier at dawn');
+    // In the same 5:6 frame as the phone's preview, inside the pane.
+    const frame = (await workbench.getByTestId('workbench-frame').boundingBox())!;
+    const pane = (await workbench.boundingBox())!;
+    expect(Math.abs(frame.height / frame.width - 6 / 5)).toBeLessThan(0.02);
+    expect(frame.y + frame.height).toBeLessThanOrEqual(pane.y + pane.height + 1);
+    expect(frame.x + frame.width).toBeLessThanOrEqual(pane.x + pane.width + 1);
     await page.screenshot({ path: 'test-results/99-tablet-generate.png' });
 
     /*

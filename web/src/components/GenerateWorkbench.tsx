@@ -66,9 +66,8 @@ export function GenerateWorkbench({ workflowId }: { workflowId: string | null })
    */
   const done = finished?.images[0];
   const latest = entries[0];
-  const stageEntry: ViewerEntry | null = finished && done
-    ? { record: finished, image: done }
-    : (latest ?? null);
+  const stageEntry: ViewerEntry | null =
+    finished && done ? { record: finished, image: done } : (latest ?? null);
 
   const cancel = async () => {
     setCancelling(true);
@@ -163,27 +162,49 @@ function Stage({
   onOpen?: () => void;
 }) {
   return (
-    <div className="relative grid min-h-0 flex-1 place-items-center overflow-hidden rounded-2xl border border-line bg-surface-2/40">
-      {previewUrl ? (
-        <img
-          src={previewUrl}
-          alt="Live preview"
-          className="max-h-full max-w-full object-contain"
-        />
-      ) : entry ? (
-        <button
-          type="button"
-          onClick={onOpen}
-          data-testid="workbench-still"
-          aria-label={`Open ${entry.record.title}`}
-          className="grid size-full place-items-center active:opacity-80"
+    <div
+      className="relative grid min-h-0 flex-1 place-items-center overflow-hidden rounded-2xl border border-line bg-surface-2/40"
+      // Measured by the frame inside, which has to fit both ways at once.
+      style={{ containerType: 'size' }}
+    >
+      {previewUrl || entry ? (
+        /*
+          The same 5:6 frame as the phone's Generating sheet, as large as the
+          pane allows in both directions. The sampler's preview and the result
+          before it share it, each fitted whole inside, so a tall render and
+          its preview take the same box rather than the pane's whole height.
+        */
+        <div
+          data-testid="workbench-frame"
+          className="relative aspect-[5/6] overflow-hidden rounded-xl bg-surface-2"
+          style={{ width: 'min(100cqw, calc(100cqh * 5 / 6))' }}
         >
-          <Still image={entry.image} alt={entry.record.title} fit="inside" className="size-full" />
-        </button>
+          {previewUrl ? (
+            <img
+              src={previewUrl}
+              alt="Live preview"
+              className="absolute inset-0 size-full object-contain"
+            />
+          ) : entry ? (
+            <button
+              type="button"
+              onClick={onOpen}
+              data-testid="workbench-still"
+              aria-label={`Open ${entry.record.title}`}
+              className="absolute inset-0 grid size-full place-items-center active:opacity-80"
+            >
+              <Still
+                image={entry.image}
+                alt={entry.record.title}
+                fit="inside"
+                className="size-full"
+              />
+            </button>
+          ) : null}
+        </div>
       ) : (
         <p className="px-6 text-center text-sm text-muted">
-          Nothing rendered yet. What you generate lands here, beside the settings
-          that made it.
+          Nothing rendered yet. What you generate lands here, beside the settings that made it.
         </p>
       )}
 
