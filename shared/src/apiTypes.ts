@@ -1100,7 +1100,24 @@ export interface AppSettings {
    * apart for them. See `previewOf`.
    */
   dayPreview: DayPreviewSettings;
+  /**
+   * How ComfyUI draws the sampler's work in progress, asked for on every run.
+   *
+   * ComfyUI sends no previews unless it was started with `--preview-method`
+   * or the run asks — its own web page asks, from its settings, which is why
+   * previews show there and did not here. See `LIVE_PREVIEW_METHODS`.
+   */
+  livePreview: LivePreviewMethod;
 }
+
+/**
+ * ComfyUI's preview methods, plus `default` for "whatever it was started with".
+ *
+ * `auto` is TAESD where its small decoder is installed (`models/vae_approx`)
+ * and a quick colour approximation (`latent2rgb`) where it is not.
+ */
+export const LIVE_PREVIEW_METHODS = ['auto', 'taesd', 'latent2rgb', 'none', 'default'] as const;
+export type LivePreviewMethod = (typeof LIVE_PREVIEW_METHODS)[number];
 
 /** The cover that goes up when the app is no longer in front of you. */
 export interface PrivacySettings {

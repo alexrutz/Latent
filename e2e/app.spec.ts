@@ -6652,6 +6652,63 @@ test.describe('the twenty-sixth wave', () => {
   });
 });
 
+/**
+ * The sampler's work in progress, in the Generating sheet.
+ *
+ * ComfyUI sends no previews unless a run asks — its own page asks, which is
+ * why they showed there and the sheet here sat on the previous run. The mock
+ * behaves the same way, so this passes only if Latent asks.
+ */
+test.describe('watching the picture form', () => {
+  test.beforeEach(async () => {
+    await resetState();
+  });
+
+  test('shows the live preview while the sampler runs, and offers the choice in Settings', async ({
+    page,
+  }) => {
+    const slow = JSON.parse(JSON.stringify(sd15Txt2Img)) as Record<
+      string,
+      { inputs: Record<string, unknown> }
+    >;
+    slow['3']!.inputs.steps = 60;
+    await withApi(async (ctx) => {
+      await ctx.patch('/api/settings', { data: { livePreview: 'auto' } });
+      await ctx.post('/api/workflows', { data: { name: WORKFLOW_NAME, graph: slow } });
+    });
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a lighthouse at dusk');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await page.getByRole('button', { name: 'Generation progress' }).click();
+
+    const sheet = page.getByRole('dialog', { name: 'Generating' });
+    await expect(sheet.getByRole('img', { name: 'Live preview' })).toBeVisible({ timeout: 30_000 });
+    await expect(sheet.getByText('Waiting for the first preview…')).toHaveCount(0);
+    await page.screenshot({ path: 'test-results/111-live-preview.png' });
+    // Stop it early — what watching is for.
+    await sheet.getByRole('button', { name: 'Cancel this run' }).click();
+
+    // The choice, with Auto on.
+    await open(page, '/settings?in=servers');
+    const choices = page.getByRole('group', { name: 'Live preview' });
+    await expect(choices.getByRole('button', { name: 'Auto' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await choices.getByRole('button', { name: 'Off' }).click();
+    await expect(choices.getByRole('button', { name: 'Off' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await page.reload();
+    await expect(
+      page.getByRole('group', { name: 'Live preview' }).getByRole('button', { name: 'Off' }),
+    ).toHaveAttribute('aria-pressed', 'true');
+    await withApi((ctx) => ctx.patch('/api/settings', { data: { livePreview: 'auto' } }));
+  });
+});
+
 test.describe('the twenty-seventh wave', () => {
   /**
    * Sampling is opt-in, one parameter at a time.

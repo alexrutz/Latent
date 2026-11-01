@@ -16,6 +16,7 @@ import WebSocket from 'ws';
 
 import type {
   AppInfo,
+  AppSettings,
   ChatMessage,
   ChatSettings,
   ChatEvent,
@@ -4750,6 +4751,50 @@ describe('llama-server nodes', () => {
    * A node bypassed from the form reaches ComfyUI as the editor's Bypass does:
    * left out, with what it fed handed what it was fed.
    */
+  /*
+   * ComfyUI sends no sampler previews unless a run asks for them — its own web
+   * page asks, which is why they showed there and not here.
+   */
+  it('asks ComfyUI for live previews on every run, as the setting says', async () => {
+    const workflow = await json<WorkflowDetail>(
+      api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Watch it form', graph: sd15Txt2Img }),
+      }),
+    );
+    const extraDataOf = async () => {
+      const { promptIds } = await json<GenerateResponse>(
+        api('/api/generate', {
+          method: 'POST',
+          body: JSON.stringify({ workflowId: workflow.id, values: { '6.text': 'a lighthouse' } }),
+        }),
+      );
+      return waitFor(async () => {
+        const history = (await (
+          await fetch(`${mockUrl}/history/${promptIds[0]}`)
+        ).json()) as Record<
+          string,
+          { prompt?: [number, string, unknown, Record<string, unknown>] }
+        >;
+        return history[promptIds[0]!]?.prompt?.[3];
+      }, 20_000);
+    };
+
+    // On by default.
+    expect((await json<AppSettings>(api('/api/settings'))).livePreview).toBe('auto');
+    expect((await extraDataOf()).preview_method).toBe('auto');
+
+    // As chosen, including off.
+    await api('/api/settings', { method: 'PATCH', body: JSON.stringify({ livePreview: 'none' }) });
+    expect((await extraDataOf()).preview_method).toBe('none');
+
+    // Something ComfyUI would not understand is never stored as the answer.
+    const patched = await json<AppSettings>(
+      api('/api/settings', { method: 'PATCH', body: JSON.stringify({ livePreview: 'sparkles' }) }),
+    );
+    expect(patched.livePreview).toBe('auto');
+  });
+
   it('cuts a bypassed node out of the graph it submits, and rewires around it', async () => {
     const workflow = await json<WorkflowDetail>(
       api('/api/workflows', {

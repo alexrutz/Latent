@@ -60,6 +60,7 @@ import {
   DEFAULT_FAVORITE_PREVIEW_EVERY,
   DEFAULT_GALLERY_PREVIEW_EVERY,
   IDLE_RUN,
+  LIVE_PREVIEW_METHODS,
   mediaKindOf,
   normaliseRandomPromptConfig,
   withBypassSwitches,
@@ -1254,6 +1255,12 @@ const DEFAULT_SETTINGS: AppSettings = {
    * something you chose rather than something that was left.
    */
   dayPreview: { gallery: DEFAULT_GALLERY_PREVIEW_EVERY, favorites: DEFAULT_FAVORITE_PREVIEW_EVERY },
+  /*
+   * On, because watching the sampler is the reason to have the live sheet
+   * open — and ComfyUI's own default is off, so leaving it to ComfyUI showed
+   * the previous run where the preview should be.
+   */
+  livePreview: 'auto',
 };
 
 /*
@@ -3415,6 +3422,11 @@ export class Store {
     // as a number or every comparison against it is a string comparison.
     const hours = Number(settings.autoDeleteHours);
     settings.autoDeleteHours = Number.isFinite(hours) && hours > 0 ? hours : null;
+    // One of ComfyUI's names, or the default: anything else would be sent on
+    // every run and quietly ignored there.
+    if (!(LIVE_PREVIEW_METHODS as readonly unknown[]).includes(settings.livePreview)) {
+      settings.livePreview = DEFAULT_SETTINGS.livePreview;
+    }
     return settings as unknown as AppSettings;
   }
 

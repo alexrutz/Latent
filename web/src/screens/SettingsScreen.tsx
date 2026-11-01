@@ -19,6 +19,7 @@ import {
 } from '@latent/shared';
 import type {
   ChatSampling,
+  LivePreviewMethod,
   ChatSettings,
   SamplingKey,
   SamplingSetting,
@@ -317,6 +318,35 @@ function PreviewEvery({
 }
 
 /** `st`, `nd`, `rd`, `th` — so the label reads as English rather than as a sum. */
+/** ComfyUI's preview methods, said as what they look like. */
+const LIVE_PREVIEW_CHOICES: { value: LivePreviewMethod; label: string; hint: string }[] = [
+  {
+    value: 'auto',
+    label: 'Auto',
+    hint: 'The sharp preview where ComfyUI has its small decoder (models/vae_approx), a rough colour one where it does not.',
+  },
+  {
+    value: 'taesd',
+    label: 'Sharp',
+    hint: 'TAESD: close to the finished picture. Needs the decoder for the model in ComfyUI’s models/vae_approx.',
+  },
+  {
+    value: 'latent2rgb',
+    label: 'Rough',
+    hint: 'Latent2RGB: blurry colours, but costs nothing and needs nothing installed.',
+  },
+  {
+    value: 'none',
+    label: 'Off',
+    hint: 'No preview: the sheet shows the previous run until this one is done.',
+  },
+  {
+    value: 'default',
+    label: 'ComfyUI’s',
+    hint: 'Whatever ComfyUI was started with (--preview-method). Without it, that is none.',
+  },
+];
+
 function nth(value: number): string {
   if (value % 100 >= 11 && value % 100 <= 13) return 'th';
   if (value % 10 === 1) return 'st';
@@ -754,6 +784,48 @@ export function SettingsScreen() {
                     hint={`${formatBytes(device.vramFree)} free of ${formatBytes(device.vramTotal)} VRAM`}
                   />
                 )}
+              </Card>
+            </section>
+
+            {/*
+              Live preview. ComfyUI sends none unless a run asks — its own page
+              asks, which is why the sampler can be watched there — so this is
+              sent with every run from here.
+            */}
+            <section className="space-y-2">
+              <h2 className="text-xs font-medium tracking-wide text-muted uppercase">
+                Live preview
+              </h2>
+              <Card className="space-y-2">
+                <p className="text-xs text-muted">
+                  The picture forming while the sampler runs, in the Generating sheet — so a run
+                  heading the wrong way can be cancelled early.
+                </p>
+                <div role="group" aria-label="Live preview" className="flex flex-wrap gap-1">
+                  {LIVE_PREVIEW_CHOICES.map((choice) => (
+                    <button
+                      key={choice.value}
+                      type="button"
+                      aria-pressed={(settings.data?.livePreview ?? 'auto') === choice.value}
+                      onClick={() => updateSettings.mutate({ livePreview: choice.value })}
+                      className={cn(
+                        'rounded-lg px-2.5 py-1.5 text-xs',
+                        (settings.data?.livePreview ?? 'auto') === choice.value
+                          ? 'bg-accent text-white'
+                          : 'bg-surface-2 text-muted',
+                      )}
+                    >
+                      {choice.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[11px] text-muted">
+                  {
+                    LIVE_PREVIEW_CHOICES.find(
+                      (choice) => choice.value === (settings.data?.livePreview ?? 'auto'),
+                    )?.hint
+                  }
+                </p>
               </Card>
             </section>
 

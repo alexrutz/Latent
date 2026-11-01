@@ -509,6 +509,12 @@ export class Orchestrator {
       response = await this.client.submit(input.graph, this.clientId, {
         // Surfaces in ComfyUI's own UI so a job queued from a phone is identifiable.
         extra_pnginfo: { latent: { workflow: input.workflowName } },
+        /*
+         * The sampler's work in progress, streamed to the live sheet. ComfyUI
+         * sends none unless asked — its own page asks, which is why previews
+         * show there — and a build too old to know this key ignores it.
+         */
+        preview_method: this.store.getSettings().livePreview,
       });
     } finally {
       const index = this.inFlightSubmits.indexOf(inFlight);
@@ -560,7 +566,8 @@ export class Orchestrator {
       this.state.job.generationId = generationId;
       this.state.job.title = input.title;
       this.state.job.nodeTitle =
-        (this.state.job.nodeId && nodeTitles.get(this.state.job.nodeId)) ?? this.state.job.nodeTitle;
+        (this.state.job.nodeId && nodeTitles.get(this.state.job.nodeId)) ??
+        this.state.job.nodeTitle;
       this.store.setGenerationStatus(response.prompt_id, 'running');
       this.pushState(true);
     }
@@ -992,7 +999,11 @@ export class Orchestrator {
         );
         this.log.info(`Recovered ${record.promptId} from the ComfyUI history`);
       } else {
-        this.markFinished(record.promptId, 'cancelled', 'Lost when the connection to ComfyUI dropped.');
+        this.markFinished(
+          record.promptId,
+          'cancelled',
+          'Lost when the connection to ComfyUI dropped.',
+        );
       }
     }
 

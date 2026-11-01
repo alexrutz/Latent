@@ -1186,6 +1186,28 @@ is exactly the tedium the block library exists to remove. It is applied on the
 server at submit time, so it lands on a drawn prompt as surely as a typed one,
 and text that is already there is never doubled.
 
+## Watching the picture form
+
+Tap the progress bar while a run is going and the **Generating** sheet shows the
+sampler's work in progress, step by step, as ComfyUI's KSampler node does — so a
+run heading the wrong way can be stopped with **Cancel this run** instead of
+waited out.
+
+ComfyUI sends no previews unless it was started with `--preview-method` or the
+run asks for them; its own web page asks, from its settings. Latent asks on
+every run, as **Settings → Servers → Live preview** says:
+
+| Choice | ComfyUI's name | What you see |
+| --- | --- | --- |
+| **Auto** (default) | `auto` | Sharp where ComfyUI has the small preview decoder for the model in `models/vae_approx`, rough colours where it does not |
+| **Sharp** | `taesd` | Close to the finished picture; needs that decoder |
+| **Rough** | `latent2rgb` | Blurry colours, at no cost, with nothing installed |
+| **Off** | `none` | No preview: the sheet shows the previous run until this one is done |
+| **ComfyUI's** | `default` | Whatever ComfyUI was started with |
+
+A ComfyUI too old to take the choice per run ignores it, and behaves as it was
+started.
+
 ## What Generate does about the queue
 
 **Settings → Pictures → Generating.** Three choices, because which one is right depends

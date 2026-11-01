@@ -40,12 +40,19 @@ interface QueuedPrompt {
   number: number;
   clientId: string;
   workflow: ApiWorkflow;
+  /** As submitted; `preview_method` in it decides whether previews stream. */
+  extraData: Record<string, unknown>;
 }
 
 export interface MockComfyOptions {
   /** Milliseconds per simulated sampler step. Lower is faster. */
   stepDelayMs?: number;
-  /** Emit binary preview frames while sampling. */
+  /**
+   * The server's own preview method, as `--preview-method` sets it.
+   *
+   * Off by default, as ComfyUI's is: previews stream only for a prompt whose
+   * `extra_data.preview_method` asks for them, or when this is on.
+   */
   previews?: boolean;
   logLevel?: string;
   /**
@@ -87,7 +94,14 @@ const PREVIEW_SIZE = 96;
 export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
   const outputSize = options.outputSize ?? OUTPUT_SIZE;
   const stepDelayMs = options.stepDelayMs ?? 35;
-  const previewsEnabled = options.previews ?? true;
+  const serverPreviews = options.previews ?? false;
+  /** ComfyUI's `set_preview_method`: the prompt's choice, else the server's. */
+  const previewsFor = (extraData: Record<string, unknown>) => {
+    const asked = extraData.preview_method;
+    if (asked === 'none') return false;
+    if (asked === 'auto' || asked === 'latent2rgb' || asked === 'taesd') return true;
+    return serverPreviews;
+  };
 
   const app = Fastify({ logger: { level: options.logLevel ?? 'warn' } });
   const requiredToken = options.requireToken ?? null;
@@ -212,7 +226,8 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
   }
 
   async function execute(job: QueuedPrompt): Promise<void> {
-    const { promptId, clientId, workflow } = job;
+    const { promptId, clientId, workflow, extraData } = job;
+    const previewsEnabled = previewsFor(extraData);
     const seed = seedOf(workflow);
     const order = executionOrder(workflow);
     const outputs: HistoryEntry['outputs'] = {};
@@ -346,7 +361,7 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
     if (interrupted) {
       send(clientId, 'execution_interrupted', { prompt_id: promptId, node_id: null });
       history.set(promptId, {
-        prompt: [0, promptId, workflow, {}, []],
+        prompt: [0, promptId, workflow, extraData, []],
         outputs,
         status: { status_str: 'error', completed: false, messages: [] },
       });
@@ -362,7 +377,7 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
      * asking what was actually submitted has nowhere else to look.
      */
     history.set(promptId, {
-      prompt: [0, promptId, workflow, {}, []],
+      prompt: [0, promptId, workflow, extraData, []],
       outputs,
       status: { status_str: 'success', completed: true, messages: [] },
     });
@@ -764,6 +779,10 @@ export function createMockComfy(options: MockComfyOptions = {}): MockComfy {
         number: promptCounter,
         clientId: body.client_id ?? 'anonymous',
         workflow: body.prompt,
+        extraData:
+          body.extra_data && typeof body.extra_data === 'object'
+            ? (body.extra_data as Record<string, unknown>)
+            : {},
       });
 
       broadcastStatus();
