@@ -114,7 +114,7 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
     <Sheet open={expanded} onClose={() => setExpanded(false)} title="Generating">
       <div className="space-y-4">
         {/*
-          A 2:3 frame whatever arrives in it. The sampler's previews, the
+          A 3:5 frame whatever arrives in it. The sampler's previews, the
           previous result and the waiting note all take the same box, so the
           progress below does not jump as one replaces the next; a picture of
           another shape is fitted inside it whole, never cropped. On a wide or
@@ -122,7 +122,7 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
         */}
         <div
           data-testid="live-preview-frame"
-          className="mx-auto grid aspect-[2/3] w-[min(100%,calc(65dvh*2/3))] place-items-center overflow-hidden rounded-2xl border border-line bg-surface-2"
+          className="mx-auto grid aspect-[3/5] w-[min(100%,calc(65dvh*3/5))] place-items-center overflow-hidden rounded-2xl border border-line bg-surface-2"
         >
           {previewUrl ? (
             <img src={previewUrl} alt="Live preview" className="size-full object-contain" />

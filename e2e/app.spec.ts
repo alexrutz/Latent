@@ -6842,10 +6842,10 @@ test.describe('watching the picture form', () => {
     const sheet = page.getByRole('dialog', { name: 'Generating' });
     await expect(sheet.getByRole('img', { name: 'Live preview' })).toBeVisible({ timeout: 30_000 });
     await expect(sheet.getByText('Waiting for the first preview…')).toHaveCount(0);
-    // A 2:3 frame, whatever shape the preview itself is.
+    // A 3:5 frame, whatever shape the preview itself is.
     const frame = await sheet.getByTestId('live-preview-frame').boundingBox();
     expect(frame).not.toBeNull();
-    expect(Math.abs(frame!.height / frame!.width - 1.5)).toBeLessThan(0.02);
+    expect(Math.abs(frame!.height / frame!.width - 5 / 3)).toBeLessThan(0.02);
     await page.screenshot({ path: 'test-results/111-live-preview.png' });
     // Stop it early — what watching is for.
     await sheet.getByRole('button', { name: 'Cancel this run' }).click();
@@ -7112,6 +7112,44 @@ test.describe('comparing an edit with what it was made from', () => {
    * thing this screen exists to show. Flush against it they read as furniture
    * on the frame, and on a phone the edge is where a thumb already rests.
    */
+  /*
+   * comfyllama's folder picture holds `input/<name>` for an upload, and for a
+   * while that slot was not looked at at all — so an img2img built on it had
+   * no before to wipe to, however its node was titled.
+   */
+  test('compares against a picture picked through the folder node too', async ({ page }) => {
+    const graph = JSON.parse(JSON.stringify(loadImageFromFolder)) as Record<
+      string,
+      { inputs: Record<string, unknown>; _meta?: { title: string } }
+    >;
+    graph['1']!.inputs.image = 'input/example.png';
+    graph['1']!._meta = { title: 'Input Image [Reference]' };
+    await withApi((ctx) => ctx.post('/api/workflows', { data: { name: 'folder edit', graph } }));
+
+    await open(page, '/');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await expect
+      .poll(
+        async () => {
+          const gallery = await withApi(
+            async (ctx) =>
+              (await (await ctx.get('/api/gallery')).json()) as {
+                items: { images: unknown[]; origins: { filename: string }[] }[];
+              },
+          );
+          return gallery.items[0]?.origins?.[0]?.filename ?? null;
+        },
+        { timeout: 40_000 },
+      )
+      .toBe('example.png');
+
+    await open(page, '/gallery');
+    await page.getByRole('main').locator('img').first().click();
+    await expect(page.getByTestId('viewer-image')).toBeVisible();
+    await expect(page.getByTestId('compare-handle-vertical')).toBeVisible();
+    await expect(page.getByTestId('compare-blend')).toBeVisible();
+  });
+
   test('puts the wipe tabs flush against the edge of the screen', async ({ page }) => {
     await withApi((ctx) =>
       ctx.post('/api/workflows', { data: { name: 'edit', graph: editWithReference } }),

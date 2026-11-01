@@ -4,10 +4,16 @@ import {
   findEditOrigins,
   originTagOf,
   referenceOrigin,
+  splitFolderImage,
   splitInputImage,
 } from './editOrigin.js';
 import { objectInfoFixture } from './fixtures/objectInfo.js';
-import { editWithReference, img2img, sd15Txt2Img } from './fixtures/workflows.js';
+import {
+  editWithReference,
+  img2img,
+  loadImageFromFolder,
+  sd15Txt2Img,
+} from './fixtures/workflows.js';
 import { buildParamSchema } from './paramSchema.js';
 
 const edit = buildParamSchema(editWithReference, objectInfoFixture);
@@ -110,5 +116,63 @@ describe('finding what an edit was made from', () => {
     const origins = findEditOrigins(contextOnly, {});
     expect(origins.map((origin) => origin.role)).toEqual(['context']);
     expect(referenceOrigin(origins)).toBeNull();
+  });
+});
+
+describe('an origin held by a comfyllama folder picture', () => {
+  const tagged = buildParamSchema(
+    {
+      ...loadImageFromFolder,
+      '1': { ...loadImageFromFolder['1']!, _meta: { title: 'Input Image [Reference]' } },
+    },
+    objectInfoFixture,
+  );
+
+  it('reads an upload into the input folder as an input', () => {
+    const [origin] = findEditOrigins(tagged, { '1.image': 'input/latent_abc_photo.png' });
+    expect(origin).toEqual({
+      role: 'reference',
+      fieldId: '1.image',
+      nodeTitle: 'Input Image [Reference]',
+      filename: 'latent_abc_photo.png',
+      subfolder: '',
+    });
+  });
+
+  it('reads an earlier result as one in the output folder', () => {
+    const [origin] = findEditOrigins(tagged, {});
+    expect(origin).toMatchObject({
+      filename: 'render_0007.png',
+      subfolder: 'monday',
+      type: 'output',
+    });
+  });
+
+  it('is no origin in a folder ComfyUI does not serve, or when bypassed', () => {
+    expect(findEditOrigins(tagged, { '1.image': 'scans/page.png' })).toEqual([]);
+    expect(findEditOrigins(tagged, { '1.__bypass': true })).toEqual([]);
+  });
+
+  it('is still nothing untagged', () => {
+    expect(findEditOrigins(buildParamSchema(loadImageFromFolder, objectInfoFixture), {})).toEqual(
+      [],
+    );
+  });
+
+  it('splits only the three folders, and refuses a climb out of them', () => {
+    expect(splitFolderImage('temp/x.png')).toEqual({
+      filename: 'x.png',
+      subfolder: '',
+      type: 'temp',
+    });
+    expect(splitFolderImage('input/../secret.png')).toBeNull();
+    expect(splitFolderImage('loose.png')).toBeNull();
+  });
+});
+
+describe('a bypassed picture input', () => {
+  it('is not what the result was made from', () => {
+    const origins = findEditOrigins(edit, { '1.__bypass': true });
+    expect(origins.map((origin) => origin.role)).toEqual(['context']);
   });
 });

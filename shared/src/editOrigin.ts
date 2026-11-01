@@ -1,3 +1,4 @@
+import { bypassFieldId } from './bypass.js';
 import type { ParamSchema, ParamValues } from './paramTypes.js';
 
 /**
@@ -33,6 +34,35 @@ export interface EditOrigin {
   filename: string;
   /** The directory under it, or `''`. */
   subfolder: string;
+  /**
+   * Which of ComfyUI's folders it is in. Left out for its input folder, which
+   * is where every origin was before comfyllama's folder picture could point
+   * at the output folder — so a record written then still reads correctly.
+   */
+  type?: 'output' | 'temp';
+}
+
+/** The folders of ComfyUI's own that its `/view` serves, and so a comparison can show. */
+const COMFY_FOLDERS = new Set(['input', 'output', 'temp']);
+
+/**
+ * A comfyllama folder picture's value, as ComfyUI's `/view` addresses it.
+ *
+ * It holds `<root>/<path>` — `input/latent_x.png` for an upload,
+ * `output/monday/render.png` for an earlier result. Only ComfyUI's own three
+ * folders can be fetched whole; an extra folder the environment names is
+ * browsable but has nothing to serve it full size, so it is no origin.
+ */
+export function splitFolderImage(
+  value: string,
+): { filename: string; subfolder: string; type?: 'output' | 'temp' } | null {
+  const cut = value.indexOf('/');
+  if (cut < 0) return null;
+  const root = value.slice(0, cut);
+  if (!COMFY_FOLDERS.has(root)) return null;
+  const parts = splitInputImage(value.slice(cut + 1));
+  if (!parts) return null;
+  return root === 'input' ? parts : { ...parts, type: root as 'output' | 'temp' };
 }
 
 /**
@@ -67,7 +97,10 @@ function roleOf(nodeTitle: string): EditOriginRole | null {
  * exist.
  */
 export function splitInputImage(value: string): { filename: string; subfolder: string } | null {
-  const trimmed = value.trim().replace(/\s*\[(input|output|temp)\]$/i, '').trim();
+  const trimmed = value
+    .trim()
+    .replace(/\s*\[(input|output|temp)\]$/i, '')
+    .trim();
   if (!trimmed) return null;
   // A path that climbs out of the input directory is not one we will ask for.
   if (trimmed.includes('..') || trimmed.startsWith('/') || trimmed.includes('\\')) return null;
@@ -94,14 +127,19 @@ export function findEditOrigins(schema: ParamSchema, values: ParamValues): EditO
   const origins: EditOrigin[] = [];
 
   for (const field of schema.fields) {
-    if (field.role !== 'image_input') continue;
+    // Both kinds of picture slot: ComfyUI's upload, and comfyllama's folder
+    // picture — which holds an upload too, as `input/<name>`, and was missed.
+    if (field.role !== 'image_input' && field.role !== 'folder_image') continue;
 
     const role = roleOf(field.nodeTitle);
     if (!role) continue;
+    // Left out of the run, so not what the result was made from.
+    if (values[bypassFieldId(field.nodeId)] === true) continue;
 
     const raw = field.id in values ? values[field.id] : field.defaultValue;
     if (typeof raw !== 'string') continue;
-    const parts = splitInputImage(raw);
+    const parts: { filename: string; subfolder: string; type?: 'output' | 'temp' } | null =
+      field.role === 'folder_image' ? splitFolderImage(raw) : splitInputImage(raw);
     if (!parts) continue;
 
     origins.push({
@@ -110,6 +148,7 @@ export function findEditOrigins(schema: ParamSchema, values: ParamValues): EditO
       nodeTitle: field.nodeTitle,
       filename: parts.filename,
       subfolder: parts.subfolder,
+      ...(parts.type ? { type: parts.type } : {}),
     });
   }
 

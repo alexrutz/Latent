@@ -275,9 +275,14 @@ export function ImageViewer({
   const origin = referenceOrigin(record?.origins ?? []);
   const originSrc = useMemo(() => {
     if (!origin) return null;
-    const ref = { filename: origin.filename, subfolder: origin.subfolder, type: 'input' };
+    const ref = {
+      filename: origin.filename,
+      subfolder: origin.subfolder,
+      // A folder picture can be an earlier result; older records are all input.
+      type: origin.type ?? 'input',
+    };
     return native ? imageUrl(ref) : viewUrl(ref, box);
-  }, [origin?.filename, origin?.subfolder, native, box]);
+  }, [origin?.filename, origin?.subfolder, origin?.type, native, box]);
   /*
    * The blur is reachable from here as well as from the grid. Full screen is
    * exactly where somebody sitting down next to you sees the most, and going
