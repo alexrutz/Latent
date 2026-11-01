@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import type { GenerationRecord, JobStats, LiveJob } from '@latent/shared';
@@ -113,20 +113,7 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
   const sheet = (
     <Sheet open={expanded} onClose={() => setExpanded(false)} title="Generating">
       <div className="space-y-4">
-        {/*
-          A 5:6 frame whatever arrives in it. The sampler's previews, the
-          previous result and the waiting note all take the same box, so the
-          progress below does not jump as one replaces the next; a picture of
-          another shape is fitted inside it whole, never cropped. On a wide or
-          short window it is held to most of the window's height.
-        */}
-        <div
-          data-testid="live-preview-frame"
-          className="relative mx-auto grid aspect-[5/6] w-[min(100%,calc(65dvh*5/6))] place-items-center overflow-hidden rounded-2xl border border-line bg-surface-2"
-        >
-          {/* Laid over the frame rather than in its grid: a picture in the grid
-              sizes the row to itself, and a large one is then cropped by the
-              frame instead of shrunk to fit it. */}
+        <PreviewFrame testId="live-preview-frame">
           {previewUrl ? (
             <img
               src={previewUrl}
@@ -142,7 +129,7 @@ export function LiveBar({ inline = false }: { inline?: boolean } = {}) {
           ) : (
             <p className="px-6 text-center text-sm text-muted">Waiting for the first preview…</p>
           )}
-        </div>
+        </PreviewFrame>
         {!previewUrl && holdover && (
           <p className="-mt-2 text-center text-[11px] text-muted">
             The run before this one — the new preview replaces it.
@@ -484,6 +471,30 @@ function JobStatsPanel({
   );
 }
 
+/**
+ * The 5:6 frame the Generating and Result sheets show their picture in.
+ *
+ * One frame for both, so a render lands exactly where its preview was being
+ * watched. The sampler's previews, the previous result, the waiting note and
+ * the finished picture all take the same box, so nothing below it jumps as one
+ * replaces the next; a picture of another shape is fitted inside whole, never
+ * cropped. On a wide or short window it is held to most of the window's height.
+ *
+ * What goes in is laid over the frame (`absolute inset-0`) rather than placed
+ * in its grid: a picture in the grid sizes the row to itself, and a large one
+ * is then cropped by the frame instead of shrunk to fit it.
+ */
+function PreviewFrame({ testId, children }: { testId: string; children: ReactNode }) {
+  return (
+    <div
+      data-testid={testId}
+      className="relative mx-auto grid aspect-[5/6] w-[min(100%,calc(65dvh*5/6))] place-items-center overflow-hidden rounded-2xl border border-line bg-surface-2"
+    >
+      {children}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* The finished result                                                 */
 /* ------------------------------------------------------------------ */
@@ -589,19 +600,24 @@ function ResultBar({
       <Sheet open={expanded} onClose={onDismiss} title={failed ? 'Generation failed' : 'Result'}>
         <div className="space-y-4">
           {image ? (
-            <button
-              type="button"
-              onClick={() => {
-                onDismiss();
-                navigate('/gallery');
-              }}
-              className="block w-full overflow-hidden rounded-2xl border border-line bg-surface-2"
-            >
-              {/* A preview, not the original: this sheet appears on its own
-                  after every render, and a 4000×4000 picture behind it is
-                  64 MB of bitmap for something the size of a phone screen. */}
-              <Still image={image} alt={record.title} fit="contain" className="w-full" />
-            </button>
+            // The frame the preview was in: the picture lands where it was
+            // being watched, the same size, rather than taking a tall render's
+            // whole height the moment it finishes.
+            <PreviewFrame testId="result-frame">
+              <button
+                type="button"
+                onClick={() => {
+                  onDismiss();
+                  navigate('/gallery');
+                }}
+                className="absolute inset-0 block size-full"
+              >
+                {/* A preview, not the original: this sheet appears on its own
+                    after every render, and a 4000×4000 picture behind it is
+                    64 MB of bitmap for something the size of a phone screen. */}
+                <Still image={image} alt={record.title} fit="inside" className="size-full" />
+              </button>
+            </PreviewFrame>
           ) : (
             <div className="rounded-2xl border border-line bg-surface-2 p-6 text-center text-sm text-muted">
               {record.error ?? 'No image was produced.'}

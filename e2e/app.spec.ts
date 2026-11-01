@@ -541,6 +541,58 @@ test.describe('the phone-specific fixes', () => {
     await expect(page.getByText('Saved to this device')).toBeVisible();
   });
 
+  /*
+   * The finished picture lands in the frame its preview was watched in. A tall
+   * render used to take the Result sheet's whole width at its own shape, so the
+   * moment sampling ended the picture grew past the box it had been in.
+   */
+  test('shows a tall result inside the same 5:6 frame as its preview', async ({ page }) => {
+    const tall = JSON.parse(JSON.stringify(sd15Txt2Img)) as Record<
+      string,
+      { inputs: Record<string, unknown> }
+    >;
+    tall['5']!.inputs.width = 512;
+    tall['5']!.inputs.height = 1024;
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: WORKFLOW_NAME, graph: tall } }),
+    );
+
+    await open(page, '/');
+    await page.getByPlaceholder('Describe the image…').fill('a tall lighthouse');
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await page.getByRole('button', { name: 'Show the finished picture' }).click({
+      timeout: 60_000,
+    });
+
+    const sheet = page.getByRole('dialog', { name: 'Result' });
+    const frame = (await sheet.getByTestId('result-frame').boundingBox())!;
+    expect(Math.abs(frame.height / frame.width - 6 / 5)).toBeLessThan(0.02);
+    const picture = sheet.getByRole('img', { name: 'a tall lighthouse' });
+    await expect(picture).toBeVisible();
+    // Fitted whole: the full height of the frame, narrower than it.
+    await expect
+      .poll(async () => {
+        const box = (await picture.evaluate((element) => {
+          const image = element as HTMLImageElement;
+          const rect = image.getBoundingClientRect();
+          // object-contain: what is drawn, not the element's box.
+          const scale = Math.min(
+            rect.width / image.naturalWidth,
+            rect.height / image.naturalHeight,
+          );
+          return {
+            drawnHeight: image.naturalHeight * scale,
+            drawnWidth: image.naturalWidth * scale,
+          };
+        })) as { drawnHeight: number; drawnWidth: number };
+        return box.drawnHeight <= frame.height + 1 && box.drawnWidth < frame.width;
+      })
+      .toBe(true);
+    const element = (await picture.boundingBox())!;
+    expect(element.y + element.height).toBeLessThanOrEqual(frame.y + frame.height + 1);
+    await page.screenshot({ path: 'test-results/07-result-tall.png' });
+  });
+
   test('saves and re-applies a preset in one tap', async ({ page }) => {
     await open(page, '/');
 
