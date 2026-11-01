@@ -6842,10 +6842,15 @@ test.describe('watching the picture form', () => {
     const sheet = page.getByRole('dialog', { name: 'Generating' });
     await expect(sheet.getByRole('img', { name: 'Live preview' })).toBeVisible({ timeout: 30_000 });
     await expect(sheet.getByText('Waiting for the first preview…')).toHaveCount(0);
-    // A 3:5 frame, whatever shape the preview itself is.
+    // A 5:6 frame, whatever shape the preview itself is.
     const frame = await sheet.getByTestId('live-preview-frame').boundingBox();
     expect(frame).not.toBeNull();
-    expect(Math.abs(frame!.height / frame!.width - 5 / 3)).toBeLessThan(0.02);
+    expect(Math.abs(frame!.height / frame!.width - 6 / 5)).toBeLessThan(0.02);
+    // And the picture inside it, not spilling past it.
+    const shown = (await sheet.getByRole('img', { name: 'Live preview' }).boundingBox())!;
+    expect(shown.y).toBeGreaterThanOrEqual(frame!.y - 1);
+    expect(shown.y + shown.height).toBeLessThanOrEqual(frame!.y + frame!.height + 1);
+    expect(shown.x + shown.width).toBeLessThanOrEqual(frame!.x + frame!.width + 1);
     await page.screenshot({ path: 'test-results/111-live-preview.png' });
     // Stop it early — what watching is for.
     await sheet.getByRole('button', { name: 'Cancel this run' }).click();
