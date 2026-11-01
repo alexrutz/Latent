@@ -84,6 +84,14 @@ export interface GenerateRequest {
   lockedSeedFields?: string[];
   /** Queue the same prompt N times (each with a fresh seed if randomising). */
   batchCount?: number;
+  /**
+   * The picture lists the form's image slots are working through.
+   *
+   * Only endless generation reads it. The form walks its own lists between the
+   * runs it queues; endless runs on the server, where the lists were not, so
+   * every round used the same picture.
+   */
+  batchInputs?: Record<string, string[]>;
 }
 
 /**

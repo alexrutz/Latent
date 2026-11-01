@@ -1891,6 +1891,61 @@ test.describe('picking inputs and straightening them', () => {
     await expect(strip).toHaveCount(0);
   });
 
+  /*
+   * Endless runs on the server, where the list was not, so every round used
+   * the same picture. Now each run takes the next, and the slot follows.
+   */
+  test('walks through a ticked list while generating endlessly', async ({ page }) => {
+    const root = seedInputFolder();
+    writeFileSync(join(root, 'lighthouse.png'), renderPlaceholder(700, 700, 'lighthouse'));
+    await withApi(async (ctx) => {
+      await ctx.patch('/api/settings', { data: { inputRoot: root } });
+      await ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } });
+    });
+    await open(page, '/');
+
+    await page.getByRole('button', { name: 'From folder' }).click();
+    const sheet = page.getByRole('dialog', { name: 'From the input folder' });
+    for (const name of ['harbour.png', 'lighthouse.png']) {
+      await sheet.getByRole('checkbox', { name: `Add ${name} to the batch` }).click();
+    }
+    await sheet.getByRole('button', { name: 'Use 2' }).click();
+    await expect(sheet).toBeHidden();
+
+    const fold = page.getByTestId('image-fold');
+    await expect(fold).toContainText('1/2');
+
+    await page.getByRole('button', { name: 'Endless generation' }).click();
+    await expect(page.getByText(/Generating until stopped/)).toBeVisible();
+
+    // The slot moves on as the server works through the list, and wraps.
+    await expect(fold).toContainText('2/2', { timeout: 60_000 });
+    await expect(fold).toContainText('1/2', { timeout: 60_000 });
+
+    // And the runs it queued used both pictures, not the first one twice.
+    const used = await withApi(async (ctx) => {
+      const history = (await (
+        await apiRequest.newContext({ baseURL: 'http://127.0.0.1:8188' })
+      )
+        .get('/history')
+        .then((response) => response.json())) as Record<
+        string,
+        { prompt?: [number, string, Record<string, { inputs: Record<string, unknown> }>] }
+      >;
+      void ctx;
+      return new Set(
+        Object.values(history).map((entry) => String(entry.prompt?.[2]['1']?.inputs.image ?? '')),
+      );
+    });
+    expect([...used].some((image) => image.endsWith('harbour.png'))).toBe(true);
+    expect([...used].some((image) => image.endsWith('lighthouse.png'))).toBe(true);
+
+    await dismissResult(page);
+    await page.getByRole('button', { name: 'Endless generation' }).click();
+    await expect(page.getByText(/Generating until stopped/)).toHaveCount(0);
+    await withApi((ctx) => ctx.post('/api/queue/interrupt'));
+  });
+
   /** Editing is the opt-in path: only then are the full bytes worth fetching. */
   test('edits a folder picture before using it', async ({ page }) => {
     const root = seedInputFolder();

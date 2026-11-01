@@ -51,6 +51,7 @@ import type {
 } from '@latent/shared';
 import { DEFAULT_WANDER_DRAW, defaultSampling, LATENT_API_VERSION } from '@latent/shared';
 import {
+  img2img,
   ltxVideoGguf,
   minimaxMusic,
   qwenSpeech,
@@ -3923,6 +3924,64 @@ describe('endless generation', () => {
     const stopped = await json<{ enabled: boolean }>(api('/api/generate/endless'));
     expect(stopped.enabled).toBe(false);
     expect(before.items.length).toBeGreaterThanOrEqual(0);
+  }, 120_000);
+});
+
+describe('endless generation through a picture list', () => {
+  /*
+   * The list lived only in the browser, which moves the slot on after each run
+   * it queues itself; endless runs on the server and used one picture forever.
+   */
+  it('takes the next picture of the list for every run', async () => {
+    const workflow = await json<WorkflowDetail>(
+      api('/api/workflows', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Endless img2img', graph: img2img }),
+      }),
+    );
+    const pictures = ['endless-a.png', 'endless-b.png', 'endless-c.png'];
+    const seen: string[] = [];
+
+    await api('/api/generate/endless', {
+      method: 'PUT',
+      body: JSON.stringify({
+        workflowId: workflow.id,
+        values: { '1.image': pictures[0], '4.text': 'endless list' },
+        randomizeSeeds: true,
+        batchCount: 1,
+        batchInputs: { '1.image': pictures },
+        enabled: true,
+      }),
+    });
+
+    try {
+      // What reached ComfyUI, in order: the picture each run actually used.
+      await waitFor(async () => {
+        const history = (await (await fetch(`${mockUrl}/history`)).json()) as Record<
+          string,
+          { prompt?: [number, string, Record<string, { inputs: Record<string, unknown> }>] }
+        >;
+        seen.splice(0, seen.length);
+        for (const entry of Object.values(history)) {
+          const image = entry.prompt?.[2]['1']?.inputs.image;
+          if (typeof image === 'string' && pictures.includes(image)) seen.push(image);
+        }
+        return seen.length >= 4 || null;
+      }, 90_000);
+      expect(seen.slice(0, 4)).toEqual([...pictures, pictures[0]]);
+
+      // And the settings say which picture comes next.
+      const state = await json<{ request: { values: Record<string, unknown> } }>(
+        api('/api/generate/endless'),
+      );
+      expect(pictures).toContain(state.request.values['1.image']);
+    } finally {
+      await api('/api/generate/endless', {
+        method: 'PUT',
+        body: JSON.stringify({ workflowId: workflow.id, values: {}, enabled: false }),
+      });
+      await api('/api/queue/interrupt', { method: 'POST' });
+    }
   }, 120_000);
 });
 

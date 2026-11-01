@@ -599,15 +599,46 @@ function GenerateForm({
 
   const anySeedUnlocked = seedFields.some((field) => !lockedSeeds.includes(field.id));
 
+  /**
+   * Where the endless runner has got to in each picture list, when it is
+   * running this workflow: the picture its next run will use, per slot.
+   */
+  const endlessAt = useMemo(() => {
+    const running = endless.data?.enabled ? endless.data.request : null;
+    if (!running || !detail || running.workflowId !== detail.id) return null;
+    const at: ParamValues = {};
+    for (const fieldId of Object.keys(batchInputs)) {
+      if ((batchInputs[fieldId]?.length ?? 0) > 1 && running.values[fieldId] !== undefined) {
+        at[fieldId] = running.values[fieldId];
+      }
+    }
+    return Object.keys(at).length > 0 ? at : null;
+  }, [endless.data, detail, batchInputs]);
+
+  /*
+   * The slots follow the runner while it works through a list, so the form
+   * says which picture comes next — as it does after Generate queues a list
+   * itself — and a change sent mid-way carries on from there rather than
+   * starting the list again.
+   */
+  useEffect(() => {
+    if (!endlessAt || !detail) return;
+    const moved = Object.entries(endlessAt).some(([fieldId, value]) => values[fieldId] !== value);
+    if (moved) patchDraft(detail.id, { values: { ...values, ...endlessAt } });
+  }, [endlessAt, detail, values, patchDraft]);
+
   /** What is on screen, in the shape both the queue and the endless runner take. */
   const currentRequest = () => ({
     workflowId: detail!.id,
-    values,
+    values: endlessAt ? { ...values, ...endlessAt } : values,
     // A locked seed means "give me this exact image again"; otherwise every
     // run should differ, which is what people expect from a Generate button.
     randomizeSeeds: anySeedUnlocked,
     lockedSeedFields: lockedSeeds,
     batchCount,
+    // The picture lists, for the endless runner to walk through between runs
+    // as Generate does here — it runs on the server, where they are not.
+    batchInputs,
   });
 
   const submit = async () => {

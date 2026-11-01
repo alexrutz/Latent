@@ -1,5 +1,6 @@
 import type { FastifyBaseLogger } from 'fastify';
 
+import { advanceBatches, batchLength } from '@latent/shared';
 import type { GenerateRequest } from '@latent/shared';
 
 import type { Store } from './db.js';
@@ -91,6 +92,19 @@ export class Endless {
     return this.state;
   }
 
+  /** A round, and the settings stored again with the picture lists moved on. */
+  private async queueRound(request: GenerateRequest): Promise<Outcome> {
+    const before = this.store.getSecretSetting(SETTING_KEY);
+    const { outcome, next } = await queueThroughLists(request, (one) =>
+      queueBatch(this.ctx(), one),
+    );
+    // Changed while this was queueing — Generate pressed mid-round — wins.
+    if (next !== request && this.store.getSecretSetting(SETTING_KEY) === before) {
+      this.store.setSecretSetting(SETTING_KEY, JSON.stringify(next));
+    }
+    return outcome;
+  }
+
   stop(reason?: string): void {
     if (this.timer) {
       clearInterval(this.timer);
@@ -124,7 +138,7 @@ export class Endless {
 
     this.busy = true;
     try {
-      const outcome = await queueBatch(this.ctx(), request);
+      const outcome = await this.queueRound(request);
 
       if ('notFound' in outcome) {
         this.stop('that workflow has been deleted');
@@ -154,6 +168,50 @@ export class Endless {
       this.busy = false;
     }
   }
+}
+
+/*
+ * One round: the batch, and the picture lists moved on.
+ *
+ * With a list of pictures in a slot, each run takes the next one — as the form
+ * does when it queues — so "make four" is four runs of a picture each rather
+ * than four of the same. The settings are stored again with the lists moved on,
+ * so the next round starts where this one stopped; unless they were changed
+ * while this round was queueing, in which case the change wins.
+ */
+type Outcome = Awaited<ReturnType<typeof queueBatch>>;
+
+export async function queueThroughLists(
+  request: GenerateRequest,
+  queue: (request: GenerateRequest) => Promise<Outcome>,
+): Promise<{ outcome: Outcome; next: GenerateRequest }> {
+  const lists = request.batchInputs ?? {};
+  const count = Math.max(1, request.batchCount ?? 1);
+  if (batchLength(lists) === 0) return { outcome: await queue(request), next: request };
+
+  // A list of one is the ordinary case: one request, the server's own batch.
+  const stepping = batchLength(lists) > 1 && count > 1;
+  const runs = stepping ? count : 1;
+  let values = request.values;
+  let outcome: Outcome | null = null;
+  const generationIds: string[] = [];
+  const promptIds: string[] = [];
+
+  for (let run = 0; run < runs; run += 1) {
+    const one = await queue({ ...request, values, batchCount: stepping ? 1 : count });
+    if ('notFound' in one) return { outcome: one, next: request };
+    generationIds.push(...one.generationIds);
+    promptIds.push(...one.promptIds);
+    outcome = one;
+    if (one.generationIds.length === 0) break;
+    values = advanceBatches(values, lists);
+    if (one.error) break;
+  }
+
+  return {
+    outcome: { ...(outcome as Exclude<Outcome, { notFound: true }>), generationIds, promptIds },
+    next: { ...request, values },
+  };
 }
 
 /** The stored setup, or null when it has never been started or is unreadable. */
