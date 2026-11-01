@@ -10,6 +10,7 @@ import {
   loadImageFromFolder,
   ltxVideoGguf,
   minimaxMusic,
+  minimaxReferencePicker,
   sd15Txt2Img,
   sdxlBaseRefiner,
   videoCombine,
@@ -1425,7 +1426,7 @@ test.describe('the phone ergonomics pass', () => {
 
     await open(page, '/');
     // The fixture already names an input image, so the button says "Replace".
-    await page.getByRole('button', { name: /Choose photo|Replace/ }).click();
+    await page.getByRole('button', { name: /Upload|Replace/ }).click();
 
     await page.locator('input[type="file"]').setInputFiles({
       name: 'holiday.png',
@@ -1922,7 +1923,7 @@ test.describe('picking inputs and straightening them', () => {
     );
 
     await open(page, '/');
-    await page.getByRole('button', { name: /Choose photo|Replace/ }).click();
+    await page.getByRole('button', { name: /Upload|Replace/ }).click();
     await page.locator('input[type="file"]').setInputFiles({
       name: 'horizon.png',
       mimeType: 'image/png',
@@ -6649,6 +6650,65 @@ test.describe('the twenty-sixth wave', () => {
     // The same sheet becomes the result rather than closing and re-opening.
     await expect(page.getByRole('button', { name: 'Dismiss' })).toBeVisible({ timeout: 60_000 });
     await page.screenshot({ path: 'test-results/79-watched-result.png' });
+  });
+});
+
+/**
+ * A clip for the reference picker's video slot, from the phone.
+ *
+ * Every slot asked the phone for images, so a video could not be chosen at
+ * all — and the server refused anything that was not one.
+ */
+test.describe('uploading a reference clip', () => {
+  test.beforeEach(async () => {
+    await resetState();
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', {
+        data: { name: 'H3 references', graph: minimaxReferencePicker },
+      }),
+    );
+  });
+
+  test('asks the phone for a video in a video slot, and uploads it as it is', async ({ page }) => {
+    await open(page, '/');
+    const slot = page.getByTestId('image-drop').filter({ hasText: 'Video 1' });
+    // The fixture's slot already holds a clip, shown by name with its icon.
+    await expect(slot.getByText('clip.mp4', { exact: true })).toBeVisible();
+    await expect(slot.getByRole('button', { name: 'Replace' })).toBeVisible();
+    // The phone's chooser is told to offer videos.
+    await expect(slot.locator('input[type="file"]')).toHaveAttribute('accept', 'video/*');
+
+    // A picture in a video slot is turned away, saying why.
+    await slot.locator('input[type="file"]').setInputFiles({
+      name: 'holiday.png',
+      mimeType: 'image/png',
+      buffer: Buffer.from('png'),
+    });
+    await expect(slot.getByText('That is a picture; this slot takes a video.')).toBeVisible();
+
+    // A clip goes straight up — no photo editor — and fills the slot.
+    await slot.locator('input[type="file"]').setInputFiles({
+      name: 'walk.mp4',
+      mimeType: 'video/mp4',
+      buffer: Buffer.from('not really a video'),
+    });
+    await expect(page.getByRole('heading', { name: 'Adjust photo' })).toHaveCount(0);
+    await expect(slot.getByText(/_walk\.mp4$/).first()).toBeVisible();
+    await expect(slot.getByRole('button', { name: 'Replace' })).toBeVisible();
+    await page.screenshot({ path: 'test-results/112-video-slot.png' });
+
+    // And a picture slot still asks for pictures.
+    const picture = page.getByTestId('image-drop').filter({ hasText: 'Picture 1' });
+    await expect(picture.locator('input[type="file"]')).toHaveAttribute('accept', 'image/*');
+
+    // An empty slot's buttons keep to one row too: Upload is no wider than Replace.
+    const empty = page.getByTestId('image-drop').filter({ hasText: 'Picture 2' });
+    const tops = await Promise.all(
+      ['Upload', 'Browse folders', 'Bypass'].map(async (name) =>
+        Math.round((await empty.getByRole('button', { name, exact: true }).boundingBox())!.y),
+      ),
+    );
+    expect(new Set(tops).size).toBe(1);
   });
 });
 

@@ -4755,6 +4755,43 @@ describe('llama-server nodes', () => {
    * ComfyUI sends no sampler previews unless a run asks for them — its own web
    * page asks, which is why they showed there and not here.
    */
+  /*
+   * The reference picker's clip and sound slots upload through the same door
+   * as a picture. It used to refuse anything that was not an image.
+   */
+  it('uploads a clip or a sound as well as a picture, and refuses anything else', async () => {
+    const upload = (name: string, type: string) => {
+      const form = new FormData();
+      form.append('image', new Blob([Buffer.from('not really media')], { type }), name);
+      return fetch(`${baseUrl}/api/upload`, {
+        method: 'POST',
+        body: form,
+        headers: cookie ? { cookie } : {},
+      });
+    };
+
+    for (const [name, type] of [
+      ['clip.mp4', 'video/mp4'],
+      ['phone.mov', 'video/quicktime'],
+      ['song.flac', 'audio/flac'],
+      ['still.png', 'image/png'],
+      // No useful type from the browser: the name says what it is.
+      ['clip.webm', 'application/octet-stream'],
+    ] as const) {
+      const response = await upload(name, type);
+      expect(response.status, name).toBe(200);
+      const body = (await response.json()) as { name: string };
+      expect(body.name.endsWith(name.replace(/[^\w.-]+/g, '_')), name).toBe(true);
+    }
+
+    for (const [name, type] of [
+      ['notes.txt', 'text/plain'],
+      ['mystery', 'application/octet-stream'],
+    ] as const) {
+      expect((await upload(name, type)).status, name).toBe(400);
+    }
+  });
+
   it('asks ComfyUI for live previews on every run, as the setting says', async () => {
     const workflow = await json<WorkflowDetail>(
       api('/api/workflows', {

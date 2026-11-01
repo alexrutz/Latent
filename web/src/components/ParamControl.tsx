@@ -237,13 +237,41 @@ export function ImageField({
    * one dialog is how the two of them drift apart.
    */
   const browsesFolders = field.control === 'folderImage';
+  /**
+   * What the slot takes. A picture, except on the reference picker's clip and
+   * sound slots — which asked the phone for photos only, so a video could not
+   * be chosen at all.
+   */
+  const kind = browseKindOf(field);
+  const noun = kind === 'video' ? 'video' : kind === 'audio' ? 'sound' : 'image';
+
+  /**
+   * A picture goes through the editor first; a clip or a sound goes straight
+   * up, since there is nothing to crop. A file of the wrong kind for the slot
+   * says so rather than becoming a run that fails inside ComfyUI.
+   */
+  const accept = (file: File) => {
+    setError(null);
+    const family = file.type.split('/')[0];
+    const fileKind = family === 'image' || family === 'video' || family === 'audio' ? family : null;
+    if (fileKind && fileKind !== kind) {
+      setError(
+        `That is ${fileKind === 'image' ? 'a picture' : fileKind === 'video' ? 'a video' : 'a sound'}; this slot takes ${noun === 'image' ? 'a picture' : `a ${noun}`}.`,
+      );
+      return;
+    }
+    if (kind === 'image') setPendingFile(file);
+    else void upload(file);
+  };
   /** Only the last segment is a name when the value is a path. */
   const filename = browsesFolders ? (stored.split('/').pop() ?? '') : stored;
-  const preview = !stored
-    ? ''
-    : browsesFolders
-      ? browseThumbUrl(stored)
-      : imageUrl({ filename: stored, subfolder: '', type: 'input' });
+  // A clip or a sound shows its icon: there is no still of it to show.
+  const preview =
+    !stored || kind !== 'image'
+      ? ''
+      : browsesFolders
+        ? browseThumbUrl(stored)
+        : imageUrl({ filename: stored, subfolder: '', type: 'input' });
   const [open, setOpen] = useState(() => localStorage.getItem(foldKey(field.id)) !== 'closed');
 
   useEffect(() => {
@@ -277,9 +305,8 @@ export function ImageField({
     right, and the one that gets used less is the one that rots.
   */
   const drop = useFileDrop((files) => {
-    setError(null);
     const [file] = files;
-    if (file) setPendingFile(file);
+    if (file) accept(file);
   });
 
   const upload = async (file: File) => {
@@ -379,12 +406,14 @@ export function ImageField({
               }}
             />
           ) : (
-            <div className="grid size-full place-items-center text-2xl opacity-30">🖼</div>
+            <div className="grid size-full place-items-center text-2xl opacity-30">
+              {kind === 'video' ? '🎬' : kind === 'audio' ? '🎵' : '🖼'}
+            </div>
           )}
         </div>
 
         <div className="min-w-0 flex-1 space-y-2">
-          <p className="truncate text-sm text-muted">{filename || 'No image selected'}</p>
+          <p className="truncate text-sm text-muted">{filename || `No ${noun} selected`}</p>
           {/* Which folder it came from: the same name exists under several. */}
           {browsesFolders && stored && <p className="truncate text-[11px] text-muted">{stored}</p>}
           <div className="flex flex-wrap gap-1.5">
@@ -394,7 +423,9 @@ export function ImageField({
               busy={uploading}
               onClick={() => inputRef.current?.click()}
             >
-              {uploading ? 'Uploading…' : filename ? 'Replace' : 'Choose photo'}
+              {/* One short word either way, so Bypass keeps to the row beside it: the
+                  icon and "No video selected" already say what the slot takes. */}
+              {uploading ? 'Uploading…' : filename ? 'Replace' : 'Upload'}
             </Button>
             {/* The folder on the Latent machine, for reference shots and masks
                 that were never on the phone to begin with. */}
@@ -486,14 +517,16 @@ export function ImageField({
       <input
         ref={inputRef}
         type="file"
-        accept="image/*"
+        // The slot's own kind: asking for images on a clip slot is what hid
+        // every video in the phone's library.
+        accept={kind === 'video' ? 'video/*' : kind === 'audio' ? 'audio/*' : 'image/*'}
         className="hidden"
         onChange={(event) => {
           const file = event.target.files?.[0];
-          // Straight into the editor rather than uploading immediately: a camera
+          // A picture goes into the editor rather than up at once: a camera
           // roll photo almost never has the shape or orientation the workflow
           // wants, and fixing it here saves an upload and a wasted render.
-          if (file) setPendingFile(file);
+          if (file) accept(file);
           event.target.value = '';
         }}
       />

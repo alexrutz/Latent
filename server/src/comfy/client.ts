@@ -341,7 +341,9 @@ export class ComfyClient {
     return this.json<UploadImageResponse>('/upload/image', {
       method: 'POST',
       body: form,
-      signal: AbortSignal.timeout(120_000),
+      // Two minutes, or longer for a big clip to a rented machine: a flat
+      // limit would cut off a video that was arriving perfectly well.
+      signal: AbortSignal.timeout(Math.max(120_000, (bytes.byteLength / (1024 * 1024)) * 2_000)),
     });
   }
 

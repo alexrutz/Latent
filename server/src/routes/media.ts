@@ -3,7 +3,7 @@ import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 
 import { contentTypeOf, mediaKindOf } from '@latent/shared';
-import type { ComfyImageRef, UploadImageResponse } from '@latent/shared';
+import type { ComfyImageRef, MediaKind, UploadImageResponse } from '@latent/shared';
 
 import { ComfyError } from '../comfy/client.js';
 import { readImageSize } from '../images/png.js';
@@ -29,6 +29,11 @@ const ALLOWED_TYPES = new Set(['output', 'input', 'temp', 'import']);
 /** Types ComfyUI knows about, and which may therefore be fetched upstream. */
 const UPSTREAM_TYPES = new Set(['output', 'input', 'temp']);
 const MAX_UPLOAD_BYTES = 64 * 1024 * 1024;
+/**
+ * A clip or a sound for a reference slot. Larger, because a phone video of a
+ * few seconds is already tens of megabytes, and a picture's limit refused it.
+ */
+const MAX_MEDIA_UPLOAD_BYTES = 512 * 1024 * 1024;
 
 export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void {
   /**
@@ -203,7 +208,9 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
       if (!UPSTREAM_TYPES.has(type)) {
         return reply
           .code(404)
-          .send({ error: `That ${kind === 'audio' ? 'track' : 'video'} is not in the local archive` });
+          .send({
+            error: `That ${kind === 'audio' ? 'track' : 'video'} is not in the local archive`,
+          });
       }
 
       let upstream: Response;
@@ -251,13 +258,15 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
       try {
         const view = await ctx.views.render(key, loadOriginal, box, region);
         if (view) {
-          return reply
-            .header('content-type', view.contentType)
-            // The rectangle is part of the URL, so a view never goes stale —
-            // and panning back to one already seen costs nothing.
-            .header('cache-control', 'private, max-age=86400')
-            .header('x-latent-source', 'view')
-            .send(view.data);
+          return (
+            reply
+              .header('content-type', view.contentType)
+              // The rectangle is part of the URL, so a view never goes stale —
+              // and panning back to one already seen costs nothing.
+              .header('cache-control', 'private, max-age=86400')
+              .header('x-latent-source', 'view')
+              .send(view.data)
+          );
         }
       } catch (error) {
         if (error instanceof VaultLockedError) {
@@ -306,7 +315,10 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
         const bytes = await ctx.archive.read(path);
         if (bytes) {
           return reply
-            .header('content-type', wantsThumbnail ? thumbnailContentType(path) : contentTypeOf(filename))
+            .header(
+              'content-type',
+              wantsThumbnail ? thumbnailContentType(path) : contentTypeOf(filename),
+            )
             .header('cache-control', 'private, max-age=86400')
             .header('x-latent-source', wantsThumbnail ? 'archive-thumb' : 'archive')
             .send(bytes);
@@ -352,9 +364,7 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
      */
     if (preview) {
       const key =
-        Number.isFinite(rowId) && rowId > 0
-          ? `id:${rowId}`
-          : `${type}/${subfolder}/${filename}`;
+        Number.isFinite(rowId) && rowId > 0 ? `id:${rowId}` : `${type}/${subfolder}/${filename}`;
 
       let thumbnail: DerivedThumbnail | null;
       try {
@@ -408,20 +418,31 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
     return reply.send(Readable.fromWeb(response.body as WebReadableStream<Uint8Array>));
   });
 
-  /** Upload a photo from the phone into ComfyUI's input directory. */
+  /**
+   * Upload a picture, a clip or a sound from the phone into ComfyUI's input directory.
+   *
+   * Pictures only, until the reference picker's video and sound slots needed
+   * the same door: ComfyUI's own upload takes any file, and the slot decides
+   * which kind it asks for. Recognised by the type the browser gives, or by
+   * the name where it gives none (`application/octet-stream`).
+   */
   app.post('/api/upload', async (request, reply) => {
-    const file = await request.file({ limits: { fileSize: MAX_UPLOAD_BYTES } });
+    const file = await request.file({ limits: { fileSize: MAX_MEDIA_UPLOAD_BYTES } });
     if (!file) return reply.code(400).send({ error: 'No file was uploaded' });
 
     let buffer: Buffer;
     try {
       buffer = await file.toBuffer();
     } catch {
-      return reply.code(413).send({ error: 'That image is too large (limit 64 MB)' });
+      return reply.code(413).send({ error: 'That file is too large (limit 512 MB)' });
     }
 
-    if (!file.mimetype.startsWith('image/')) {
-      return reply.code(400).send({ error: 'Only image files can be uploaded' });
+    const kind = uploadKindOf(file.mimetype, file.filename);
+    if (!kind) {
+      return reply.code(400).send({ error: 'Only pictures, videos and sounds can be uploaded' });
+    }
+    if (kind === 'image' && buffer.length > MAX_UPLOAD_BYTES) {
+      return reply.code(413).send({ error: 'That image is too large (limit 64 MB)' });
     }
 
     try {
@@ -444,69 +465,72 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
    * gallery: a LoadImage node can only read from the input directory, so the
    * output file has to be round-tripped through the server first.
    */
-  app.post<{ Body: ComfyImageRef & { id?: number } }>('/api/images/to-input', async (request, reply) => {
-    const { filename, subfolder = '', type = 'output', id } = request.body ?? {};
+  app.post<{ Body: ComfyImageRef & { id?: number } }>(
+    '/api/images/to-input',
+    async (request, reply) => {
+      const { filename, subfolder = '', type = 'output', id } = request.body ?? {};
 
-    if (!filename || !isSafePathPart(filename) || !isSafePathPart(subfolder)) {
-      return reply.code(400).send({ error: 'Invalid image path' });
-    }
-    if (!ALLOWED_TYPES.has(type)) {
-      return reply.code(400).send({ error: 'Invalid image type' });
-    }
-    /*
-     * A clip or a track is not an input image.
-     *
-     * `LoadImage` reads one frame from a file, so uploading an mp4 to it fails
-     * inside ComfyUI with something unhelpful about PIL, and a flac fails
-     * sooner and less clearly. Refusing here says the true thing instead, and
-     * says which of the two it is.
-     */
-    const inputKind = mediaKindOf(filename);
-    if (inputKind !== 'image') {
-      return reply.code(400).send({
-        error: `That is a ${inputKind === 'audio' ? 'sound' : 'video'}. Send a picture to img2img or upscaling.`,
-      });
-    }
-
-    try {
-      let buffer: Buffer;
-      let contentType = 'image/png';
-
+      if (!filename || !isSafePathPart(filename) || !isSafePathPart(subfolder)) {
+        return reply.code(400).send({ error: 'Invalid image path' });
+      }
+      if (!ALLOWED_TYPES.has(type)) {
+        return reply.code(400).send({ error: 'Invalid image type' });
+      }
       /*
-       * Prefer the local archive. For an imported file it is the only source —
-       * ComfyUI has never seen it — and for a rated one it saves a round trip
-       * and still works when the instance that produced it is long gone.
+       * A clip or a track is not an input image.
+       *
+       * `LoadImage` reads one frame from a file, so uploading an mp4 to it fails
+       * inside ComfyUI with something unhelpful about PIL, and a flac fails
+       * sooner and less clearly. Refusing here says the true thing instead, and
+       * says which of the two it is.
        */
-      const known = ctx.store.findImage({ filename, subfolder, type, ...(id ? { id } : {}) });
-      const local = known?.archived_path ? await ctx.archive.read(known.archived_path) : null;
-
-      if (local) {
-        buffer = local;
-        contentType = contentTypeOf(filename);
-      } else if (UPSTREAM_TYPES.has(type)) {
-        const response = await ctx.orchestrator.client.view({ filename, subfolder, type });
-        buffer = Buffer.from(await response.arrayBuffer());
-        contentType = response.headers.get('content-type') ?? 'image/png';
-      } else {
-        return reply.code(404).send({
-          error: 'That image has no local copy, and ComfyUI does not have it either.',
+      const inputKind = mediaKindOf(filename);
+      if (inputKind !== 'image') {
+        return reply.code(400).send({
+          error: `That is a ${inputKind === 'audio' ? 'sound' : 'video'}. Send a picture to img2img or upscaling.`,
         });
       }
 
-      const result = await ctx.orchestrator.client.uploadImage(buffer, uniqueName(filename), {
-        contentType,
-        type: 'input',
-      });
-      return result satisfies UploadImageResponse;
-    } catch (error) {
-      if (error instanceof VaultLockedError) {
-        return reply.code(423).send({ error: error.message, locked: true });
+      try {
+        let buffer: Buffer;
+        let contentType = 'image/png';
+
+        /*
+         * Prefer the local archive. For an imported file it is the only source —
+         * ComfyUI has never seen it — and for a rated one it saves a round trip
+         * and still works when the instance that produced it is long gone.
+         */
+        const known = ctx.store.findImage({ filename, subfolder, type, ...(id ? { id } : {}) });
+        const local = known?.archived_path ? await ctx.archive.read(known.archived_path) : null;
+
+        if (local) {
+          buffer = local;
+          contentType = contentTypeOf(filename);
+        } else if (UPSTREAM_TYPES.has(type)) {
+          const response = await ctx.orchestrator.client.view({ filename, subfolder, type });
+          buffer = Buffer.from(await response.arrayBuffer());
+          contentType = response.headers.get('content-type') ?? 'image/png';
+        } else {
+          return reply.code(404).send({
+            error: 'That image has no local copy, and ComfyUI does not have it either.',
+          });
+        }
+
+        const result = await ctx.orchestrator.client.uploadImage(buffer, uniqueName(filename), {
+          contentType,
+          type: 'input',
+        });
+        return result satisfies UploadImageResponse;
+      } catch (error) {
+        if (error instanceof VaultLockedError) {
+          return reply.code(423).send({ error: error.message, locked: true });
+        }
+        return reply.code(502).send({
+          error: error instanceof Error ? error.message : 'Could not copy the image into ComfyUI',
+        });
       }
-      return reply.code(502).send({
-        error: error instanceof Error ? error.message : 'Could not copy the image into ComfyUI',
-      });
-    }
-  });
+    },
+  );
 }
 
 function sendImageError(reply: FastifyReply, error: unknown) {
@@ -553,7 +577,10 @@ export function parseRegion(raw: string | undefined): Region | null {
 }
 
 /** What identifies the picture a view is of — the row when there is one. */
-function viewKey(rowId: number, params: { type: string; subfolder: string; filename: string }): string {
+function viewKey(
+  rowId: number,
+  params: { type: string; subfolder: string; filename: string },
+): string {
   return Number.isFinite(rowId) && rowId > 0
     ? `id:${rowId}`
     : `${params.type}/${params.subfolder}/${params.filename}`;
@@ -591,4 +618,20 @@ export function parseRange(header: string | undefined): { start: number; end: nu
 function uniqueName(original: string): string {
   const safe = (original || 'upload.png').replace(/[^\w.-]+/g, '_').slice(-80);
   return `latent_${Date.now().toString(36)}_${safe}`;
+}
+
+/**
+ * What an upload is, from the type the browser gave it or else from its name.
+ *
+ * `null` for anything that is none of the three. Exported for the tests.
+ */
+export function uploadKindOf(mimetype: string, filename: string): MediaKind | null {
+  const family = mimetype.split('/')[0];
+  if (family === 'image' || family === 'video' || family === 'audio') return family;
+  // No useful type: trust a name that says what it is, and nothing else.
+  if (!/\.[a-z0-9]+$/i.test(filename)) return null;
+  const kind = mediaKindOf(filename);
+  return kind === 'image' && !/\.(png|jpe?g|webp|gif|bmp|tiff?|heic|heif|avif)$/i.test(filename)
+    ? null
+    : kind;
 }
