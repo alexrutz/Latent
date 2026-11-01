@@ -501,3 +501,102 @@ class TestThePicker(BrowseTestCase):
         self.assertEqual(tuple(outputs[0].shape), (1, 4, 8, 3))
         # Everything else is None, which is what the stock node drops.
         self.assertTrue(all(entry is None for entry in outputs[1:]))
+
+
+def write_clip(path: str, seconds: float, fps: int, size: int = 16) -> None:
+    """A real little video file, written with PyAV."""
+    import av
+    import numpy as np
+
+    with av.open(path, mode="w") as container:
+        stream = container.add_stream("mpeg4", rate=fps)
+        stream.width = size
+        stream.height = size
+        stream.pix_fmt = "yuv420p"
+        for index in range(int(round(seconds * fps))):
+            frame = av.VideoFrame.from_ndarray(
+                np.full((size, size, 3), index % 255, dtype=np.uint8), format="rgb24"
+            )
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode():
+            container.mux(packet)
+
+
+class TestTheDurationNode(BrowseTestCase):
+    """How long a reference clip from the picker is."""
+
+    def test_length_lands_on_the_native_nodes_grid(self):
+        from comfyllama.nodes.refpicker import h3_length
+
+        # The grid upstream snaps to: 5, 22, 39 … 124 (~5 s) … 362 (~15 s).
+        self.assertEqual(h3_length(5.0), 124)
+        self.assertEqual(h3_length(15.0), 362)
+        self.assertEqual(h3_length(0.0), 5)
+        for seconds in (0.3, 1.0, 2.5, 7.25, 11.0, 14.9):
+            length = h3_length(seconds)
+            self.assertEqual(length % 17, 5, seconds)
+            self.assertGreaterEqual(length, round(seconds * 24))
+            self.assertLess(length - round(seconds * 24), 17, seconds)
+
+    def picker(self):
+        from comfyllama.nodes.refpicker import MiniMaxH3ReferencePicker
+
+        return MiniMaxH3ReferencePicker()
+
+    def duration(self):
+        from comfyllama.nodes.refpicker import MiniMaxH3VideoDuration
+
+        return MiniMaxH3VideoDuration()
+
+    def test_it_is_registered_beside_the_picker(self):
+        from comfyllama.nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+
+        self.assertIn("MiniMaxH3VideoDuration", NODE_CLASS_MAPPINGS)
+        self.assertIn("Duration", NODE_DISPLAY_NAME_MAPPINGS["MiniMaxH3VideoDuration"])
+        node = NODE_CLASS_MAPPINGS["MiniMaxH3VideoDuration"]
+        self.assertEqual(
+            node.RETURN_NAMES, ("duration", "length", "seconds", "frames", "original_seconds")
+        )
+        self.assertEqual(node.RETURN_TYPES, ("INT", "INT", "FLOAT", "INT", "FLOAT"))
+        self.assertEqual(node.INPUT_TYPES()["required"]["video"][0], "IMAGE")
+
+    @unittest.skipUnless(CAN_DECODE, "Pillow, numpy and torch are required")
+    def test_a_clip_from_the_picker_is_measured_at_the_rate_the_picker_used(self):
+        # Two and a half seconds of 30 fps, resampled by the picker to 24.
+        write_clip(os.path.join(self.root, "walk.mp4"), seconds=2.5, fps=30)
+        clip = self.picker().pick(video_1=f"{self.key}/walk.mp4", video_fps=24)[9]
+        self.assertEqual(clip.shape[0], 60)
+
+        # The node's own fps is ignored: the clip says 24.
+        duration, length, seconds, frames, original = self.duration().measure(
+            clip, fps=60.0, min_duration=2, max_duration=15
+        )
+        self.assertEqual((duration, seconds, frames), (3, 2.5, 60))
+        # 2.5 s is 60 frames at 24 fps, snapped up to the 17k+5 grid.
+        self.assertEqual(length, 73)
+        self.assertAlmostEqual(original, 2.5, places=1)
+
+    @unittest.skipUnless(CAN_DECODE, "Pillow, numpy and torch are required")
+    def test_a_trimmed_clip_says_both_lengths_and_keeps_to_the_range(self):
+        write_clip(os.path.join(self.root, "long.mp4"), seconds=3.0, fps=24)
+        clip = self.picker().pick(video_1=f"{self.key}/long.mp4", video_seconds=2)[9]
+        duration, length, seconds, frames, original = self.duration().measure(clip)
+        # Two seconds made it through; H3's shortest is four, and so is the length.
+        self.assertEqual((seconds, frames), (2.0, 48))
+        self.assertEqual((duration, length), (4, 107))
+        self.assertAlmostEqual(original, 3.0, places=1)
+
+    @unittest.skipUnless(CAN_DECODE, "Pillow, numpy and torch are required")
+    def test_frames_from_elsewhere_are_counted_at_the_given_rate(self):
+        import torch
+
+        frames = torch.zeros((250, 4, 4, 3))
+        self.assertEqual(self.duration().measure(frames, fps=25.0), (10, 243, 10.0, 250, 10.0))
+        # Longer than the range allows: the most it takes — 15 s is 362 frames,
+        # the top of the model's trained range.
+        self.assertEqual(self.duration().measure(torch.zeros((500, 4, 4, 3)), fps=25.0)[:2], (15, 362))
+
+    def test_an_empty_slot_gives_the_shortest_duration(self):
+        self.assertEqual(self.duration().measure(None), (4, 107, 0.0, 0, 0.0))
+        self.assertEqual(self.duration().measure(None, min_duration=5)[0], 5)

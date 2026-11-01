@@ -110,6 +110,9 @@ def load_video(path: str, fps: int = TARGET_FPS, max_seconds: int = MAX_VIDEO_SE
         source_fps = float(stream.average_rate or fps)
         if source_fps <= 0:
             source_fps = float(fps)
+        # The whole file's length, before the cap — from the container, since
+        # decoding stops at the cap and so never sees the end.
+        file_seconds = _file_seconds(container, stream)
 
         # Only as far as the cap, and only the frames that will be kept turned
         # into arrays. Decoding the whole file first — every frame of a ten
@@ -147,7 +150,23 @@ def load_video(path: str, fps: int = TARGET_FPS, max_seconds: int = MAX_VIDEO_SE
         picked.append(kept[index] if index < count - 1 and index in kept else last)
 
     stacked = np.stack(picked).astype(np.float32) / 255.0
-    return torch.from_numpy(stacked)
+    frames = torch.from_numpy(stacked)
+    # What the frames cannot say about themselves: the rate they were resampled
+    # to, and how long the file was before the cap. Read by the duration node,
+    # so its seconds agree with this node's `video_fps` without being told it.
+    frames.comfyllama_fps = float(fps)
+    frames.comfyllama_file_seconds = file_seconds if file_seconds is not None else duration
+    return frames
+
+
+def _file_seconds(container, stream) -> Optional[float]:
+    """A video file's length in seconds, from its own header, or `None`."""
+    if stream.duration is not None and stream.time_base is not None:
+        return float(stream.duration * stream.time_base)
+    if container.duration is not None:
+        # In microseconds, PyAV's AV_TIME_BASE.
+        return container.duration / 1_000_000
+    return None
 
 
 def load_audio(path: str):
@@ -336,4 +355,97 @@ class MiniMaxH3ReferencePicker:
         return (*pictures, *videos, *soundtracks, *audios)
 
 
-__all__ = ["MiniMaxH3ReferencePicker", "load_video", "load_audio"]
+#: The native MiniMax H3 nodes' frame rate, and the grid their length snaps to.
+H3_FPS = 24
+
+
+def h3_length(seconds: float) -> int:
+    """Seconds as the native H3 nodes' `length`: frames at 24 fps on the 17k+5 grid.
+
+    Snapped up, as upstream's `align_frame_count` does, so the value wired in is
+    the value that runs rather than one quietly rounded on the way.
+    """
+    frames = max(5, int(round(seconds * H3_FPS)))
+    return frames + (5 - frames) % 17
+
+
+class MiniMaxH3VideoDuration:
+    """How long a reference clip from the picker is.
+
+    For the stock node's `duration`, so the video it makes is as long as the
+    reference it follows — and for anything else that wants to know. The picker
+    hands a clip on as frames resampled to its `video_fps`, and records that rate
+    on them, so the length here agrees with the picker without the rate being
+    set twice. Frames from anywhere else are counted at `fps`.
+
+    `duration` is whole seconds, rounded and kept within `min_duration` and
+    `max_duration` — 4 to 15 by default, which is what the MiniMax H3 API node
+    accepts (H3 Max takes 5 to 15). `length` is the same span as a frame count
+    for the native node and comfyllama's Slots node: 24 fps, snapped up to the
+    17k+5 grid the model runs on, as upstream snaps it — so 15 seconds is 362,
+    the top of its trained range. `seconds` is exact. `original_seconds` is the
+    file before the picker trimmed it to `video_seconds`. An empty slot gives no
+    clip at all, and then `duration` is `min_duration`, `length` matches it, and
+    the rest are 0.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls) -> Dict[str, Any]:
+        return {
+            "required": {
+                "video": ("IMAGE", {
+                    "tooltip": "A video output of the MiniMax H3 Reference Picker "
+                               "(video_1 to video_3), or any batch of frames.",
+                }),
+                "fps": ("FLOAT", {
+                    "default": float(TARGET_FPS), "min": 1.0, "max": 240.0, "step": 0.001,
+                    "tooltip": "Frames per second, for frames that did not come from "
+                               "the picker. The picker's own clips carry their rate "
+                               "and ignore this.",
+                }),
+                "min_duration": ("INT", {
+                    "default": 4, "min": 0, "max": 600,
+                    "tooltip": "The shortest whole-seconds duration to give out. "
+                               "MiniMax H3 takes 4, H3 Max 5.",
+                }),
+                "max_duration": ("INT", {
+                    "default": 15, "min": 1, "max": 600,
+                    "tooltip": "The longest whole-seconds duration to give out. "
+                               "MiniMax H3 takes up to 15.",
+                }),
+            },
+        }
+
+    RETURN_TYPES = ("INT", "INT", "FLOAT", "INT", "FLOAT")
+    RETURN_NAMES = ("duration", "length", "seconds", "frames", "original_seconds")
+    FUNCTION = "measure"
+    CATEGORY = CATEGORY_MINIMAX
+    DESCRIPTION = (
+        "How long a reference clip from the MiniMax H3 Reference Picker is: whole "
+        "seconds for the API node's duration, a frame count for the native and "
+        "Slots nodes' length, exact seconds, frames, and the file's length "
+        "before it was trimmed."
+    )
+
+    def measure(self, video=None, fps: float = TARGET_FPS, min_duration: int = 4,
+                max_duration: int = 15):
+        low, high = sorted((int(min_duration), int(max_duration)))
+        if video is None:
+            return (low, h3_length(low), 0.0, 0, 0.0)
+        rate = float(getattr(video, "comfyllama_fps", None) or fps)
+        frames = int(video.shape[0])
+        seconds = frames / rate if rate > 0 else 0.0
+        original = float(getattr(video, "comfyllama_file_seconds", None) or seconds)
+        # Half a second up, as a person reading the clock would.
+        whole = int(seconds + 0.5)
+        span = min(float(high), max(float(low), seconds))
+        return (
+            min(high, max(low, whole)),
+            h3_length(span),
+            round(seconds, 3),
+            frames,
+            round(original, 3),
+        )
+
+
+__all__ = ["MiniMaxH3ReferencePicker", "MiniMaxH3VideoDuration", "load_video", "load_audio"]

@@ -50,6 +50,7 @@ These have nothing to do with llama.cpp and work on their own.
 | **Empty Latent (Aspect Ratio + Megapixels)** | An empty latent sized by picking a ratio and a megapixel budget instead of typing width and height, or by borrowing either from a connected picture. Handles SD1.5/SDXL, SD3/Flux and Krea 2 latents. |
 | **Load Image (Folder Browser)** | An image input with a file browser behind it: subfolders, thumbnails, a search box and sorting, over the folders the server allows. See [Browsing folders](#browsing-folders). |
 | **MiniMax H3 Reference Picker** | Fifteen reference slots — nine pictures, three videos, three audio — each picked with the folder browser, each with a switch, each on its own output, for wiring into the stock MiniMax H3 node. See [Picking reference material](#picking-reference-material). |
+| **Reference Video Duration (MiniMax H3)** | How long a clip from the picker is — whole seconds for the API node's `duration`, a frame count for the native node's `length`, and the exact figures. See [How long a reference clip is](#how-long-a-reference-clip-is). |
 | **MiniMax H3 Reference to Video (Slots)** | The stock reference-to-video node with a fixed, switchable slot per reference instead of autogrow inputs — so it can be driven over the API — and tag names so the prompt need not hard-code reference numbers. See [MiniMax H3 references](#minimax-h3-references). |
 
 ## Browsing folders
@@ -228,6 +229,25 @@ Videos are resampled to `video_fps` (24, what H3 expects) and trimmed to
 `video_seconds`. Decoding is PyAV for both video and audio — the same library
 ComfyUI's own loaders use, rather than a second decoder with its own opinions
 about frame rates and sample formats.
+
+### How long a reference clip is
+
+**Reference Video Duration (MiniMax H3)** takes a picker's `video_N` output and
+says how long that clip is, so the video you generate can be as long as the one
+it follows:
+
+| Output | What it is | Wire it into |
+| --- | --- | --- |
+| `duration` | Whole seconds, rounded, kept within `min_duration`–`max_duration` (4–15 by default, the API node's range; H3 Max takes 5–15) | The **MiniMax H3 Reference to Video** API node's `duration` |
+| `length` | The same span as a frame count at 24 fps, snapped up to the 17k+5 grid the model runs on, as ComfyUI does (15 s is 362) | `length` on the native H3 node or **MiniMax H3 Reference to Video (Slots)** |
+| `seconds` | Exact length of the clip as handed on, after trimming | Anything that wants a number |
+| `frames` | Frames in the clip | |
+| `original_seconds` | The file's length before the picker trimmed it to `video_seconds` | |
+
+The picker records the frame rate it resampled to on the frames it hands out,
+so the seconds here agree with its `video_fps` without it being set twice; the
+node's own `fps` is only used for frames that came from somewhere else. An empty
+slot gives `duration` = `min_duration` and zeros for the rest.
 
 ## Reading what a model file says about itself
 
