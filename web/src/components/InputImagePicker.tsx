@@ -161,7 +161,6 @@ export function InputImagePicker({
     }
   };
 
-
   // Only scanned when the sheet is actually open — the folder can be large.
   const scan = useQuery({ queryKey: ['input-images'], queryFn: api.inputImages, enabled: open });
 
@@ -256,9 +255,7 @@ export function InputImagePicker({
         {scan.data && !scan.data.ok && (
           <div className="space-y-1">
             <p className="text-sm text-warn">{scan.data.message}</p>
-            <p className="text-xs text-muted">
-              Set the path under Settings → Input images.
-            </p>
+            <p className="text-xs text-muted">Set the path under Settings → Input images.</p>
           </div>
         )}
 
@@ -371,7 +368,7 @@ export function InputImagePicker({
                       disabled={busy !== null}
                       onClick={() => void tick(file)}
                       className={cn(
-                        'absolute top-1 right-1 grid size-6 place-items-center rounded-md border text-xs leading-none',
+                        'absolute top-1.5 right-1.5 grid size-8 place-items-center rounded-lg border-2 text-base leading-none font-semibold shadow-sm',
                         ticked.has(copyOf(file) ?? '')
                           ? 'border-accent bg-accent text-white'
                           : 'border-line bg-ink/70 text-transparent',
