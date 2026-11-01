@@ -1895,6 +1895,48 @@ test.describe('picking inputs and straightening them', () => {
    * Endless runs on the server, where the list was not, so every round used
    * the same picture. Now each run takes the next, and the slot follows.
    */
+  test('uploads several pictures at once as a list, one per run', async ({ page }) => {
+    await withApi((ctx) =>
+      ctx.post('/api/workflows', { data: { name: 'img2img', graph: img2img } }),
+    );
+    await open(page, '/');
+
+    await page.getByRole('button', { name: /^(Upload|Replace)$/ }).click();
+    // Two with one name, as a phone hands them over, and one that is no picture.
+    await page.locator('input[type="file"]').setInputFiles([
+      { name: 'image.png', mimeType: 'image/png', buffer: renderPlaceholder(300, 300, 'one') },
+      { name: 'image.png', mimeType: 'image/png', buffer: renderPlaceholder(300, 300, 'two') },
+      { name: 'dune.png', mimeType: 'image/png', buffer: renderPlaceholder(300, 300, 'dune') },
+      { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('not a picture') },
+    ]);
+
+    // Straight up, no editor for each, and onto the slot's list.
+    const strip = page.getByTestId('batch-strip');
+    await expect(strip).toContainText('3 pictures, one per run', { timeout: 20_000 });
+    await expect(page.getByRole('heading', { name: 'Adjust photo' })).toHaveCount(0);
+    await expect(page.getByTestId('image-fold')).toContainText('1/3');
+    await expect(page.getByText('1 file was not a picture and was left out.')).toBeVisible();
+    // Two files called image.png are still two pictures.
+    const names = await strip
+      .getByRole('button', { name: /^Remove / })
+      .evaluateAll((buttons) => buttons.map((button) => button.getAttribute('aria-label')));
+    expect(new Set(names).size).toBe(3);
+
+    // A run moves the slot along, as ticking pictures does.
+    await page.getByRole('button', { name: /^Generate/ }).click();
+    await expect(page.getByTestId('image-fold')).toContainText('2/3', { timeout: 30_000 });
+
+    // A second pick adds to the list rather than starting over.
+    await page.getByRole('button', { name: /^Replace$/ }).click();
+    await page.locator('input[type="file"]').setInputFiles([
+      { name: 'cliff.png', mimeType: 'image/png', buffer: renderPlaceholder(300, 300, 'cliff') },
+      { name: 'reef.png', mimeType: 'image/png', buffer: renderPlaceholder(300, 300, 'reef') },
+    ]);
+    await expect(strip).toContainText('5 pictures, one per run', { timeout: 20_000 });
+    await expect(page.getByTestId('image-fold')).toContainText('2/5');
+    await page.screenshot({ path: 'test-results/upload-several.png' });
+  });
+
   test('walks through a ticked list while generating endlessly', async ({ page }) => {
     const root = seedInputFolder();
     writeFileSync(join(root, 'lighthouse.png'), renderPlaceholder(700, 700, 'lighthouse'));

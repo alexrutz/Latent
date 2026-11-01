@@ -174,6 +174,12 @@ export interface PictureBypass {
   problem?: string;
 }
 
+/** A file's own kind, from the type the browser gave it; null when it gave none. */
+function mediaKindOf(file: File): 'image' | 'video' | 'audio' | null {
+  const family = file.type.split('/')[0];
+  return family === 'image' || family === 'video' || family === 'audio' ? family : null;
+}
+
 export function ImageField({
   field,
   value,
@@ -182,6 +188,8 @@ export function ImageField({
 }: ControlProps & { bypass?: PictureBypass }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  /** How far through a pick of several files the upload is. */
+  const [uploadingMany, setUploadingMany] = useState<{ at: number; of: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** Held back for editing rather than uploaded straight away. */
   const [pendingFile, setPendingFile] = useState<File | null>(null);
@@ -252,8 +260,7 @@ export function ImageField({
    */
   const accept = (file: File) => {
     setError(null);
-    const family = file.type.split('/')[0];
-    const fileKind = family === 'image' || family === 'video' || family === 'audio' ? family : null;
+    const fileKind = mediaKindOf(file);
     if (fileKind && fileKind !== kind) {
       setError(
         `That is ${fileKind === 'image' ? 'a picture' : fileKind === 'video' ? 'a video' : 'a sound'}; this slot takes ${noun === 'image' ? 'a picture' : `a ${noun}`}.`,
@@ -304,27 +311,96 @@ export function ImageField({
     different path — a second route to the same place is a second thing to keep
     right, and the one that gets used less is the one that rots.
   */
-  const drop = useFileDrop((files) => {
-    const [file] = files;
-    if (file) accept(file);
-  });
+  const drop = useFileDrop(
+    (files) => {
+      if (files.length > 1) void acceptMany(files);
+      else if (files[0]) accept(files[0]);
+    },
+    { accept: `${kind}/` },
+  );
+
+  /** Up to ComfyUI's input folder, as the value the slot holds for it. */
+  const send = async (file: File): Promise<string> => {
+    const result = await api.upload(file);
+    // ComfyUI addresses uploads in subfolders as "sub/name".
+    const uploaded = result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
+    // An upload lands in ComfyUI's input directory, which the folder browser
+    // also serves — so naming it that way keeps one kind of value in the
+    // field, rather than two that look alike and resolve differently.
+    return browsesFolders ? `input/${uploaded}` : uploaded;
+  };
 
   const upload = async (file: File) => {
     setUploading(true);
     setError(null);
     try {
-      const result = await api.upload(file);
-      // ComfyUI addresses uploads in subfolders as "sub/name".
-      const uploaded = result.subfolder ? `${result.subfolder}/${result.name}` : result.name;
-      // An upload lands in ComfyUI's input directory, which the folder browser
-      // also serves — so naming it that way keeps one kind of value in the
-      // field, rather than two that look alike and resolve differently.
-      onChange(browsesFolders ? `input/${uploaded}` : uploaded);
+      onChange(await send(file));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Upload failed');
     } finally {
       setUploading(false);
     }
+  };
+
+  /*
+   * Several files at once: up one after another, then onto the slot's list —
+   * the same list ticking pictures in the folder picker makes, so they run one
+   * per generation and endless generation walks through them.
+   *
+   * No editor here. Cropping a dozen photos one by one is not what picking a
+   * dozen means; a single file still goes through it, as before.
+   *
+   * Added to a list already running rather than replacing it, which is what
+   * "add to the queue" means; with none running, the slot moves to the first
+   * new one, as a fresh tick does. Clear under the strip starts over.
+   */
+  const acceptMany = async (files: File[]) => {
+    setError(null);
+    // A file the browser gave no type is sent and left to the server to judge.
+    const fitting = files.filter((file) => file.type === '' || mediaKindOf(file) === kind);
+    const notes: string[] = [];
+    if (fitting.length < files.length) {
+      const left = files.length - fitting.length;
+      notes.push(
+        `${left} ${left === 1 ? 'file was' : 'files were'} not ${noun === 'image' ? 'a picture' : `a ${noun}`} and ${left === 1 ? 'was' : 'were'} left out.`,
+      );
+    }
+
+    const added: string[] = [];
+    let failed = 0;
+    let lastFailure = '';
+    setUploading(true);
+    try {
+      for (const [at, file] of fitting.entries()) {
+        setUploadingMany({ at: at + 1, of: fitting.length });
+        try {
+          added.push(await send(file));
+        } catch (cause) {
+          failed += 1;
+          lastFailure = cause instanceof Error ? cause.message : 'Upload failed';
+        }
+      }
+    } finally {
+      setUploading(false);
+      setUploadingMany(null);
+    }
+    if (failed > 0) {
+      notes.push(`${failed} of ${fitting.length} could not be uploaded: ${lastFailure}`);
+    }
+
+    if (added.length > 0) {
+      if (!workflowId) {
+        // Nowhere to keep a list (a form shown outside a workflow): the first.
+        onChange(added[0]!);
+      } else {
+        // Read now, not from the render that started this: uploads take a while.
+        const running = useFormDrafts.getState().drafts[workflowId]?.batchInputs?.[field.id] ?? [];
+        const list = [...running, ...added.filter((entry) => !running.includes(entry))];
+        if (running.length === 0) useBatch(list);
+        else setBatch(list);
+      }
+    }
+    if (notes.length > 0) setError(notes.join(' '));
   };
 
   return (
@@ -425,7 +501,13 @@ export function ImageField({
             >
               {/* One short word either way, so Bypass keeps to the row beside it: the
                   icon and "No video selected" already say what the slot takes. */}
-              {uploading ? 'Uploading…' : filename ? 'Replace' : 'Upload'}
+              {uploadingMany
+                ? `${uploadingMany.at}/${uploadingMany.of}…`
+                : uploading
+                  ? 'Uploading…'
+                  : filename
+                    ? 'Replace'
+                    : 'Upload'}
             </Button>
             {/* The folder on the Latent machine, for reference shots and masks
                 that were never on the phone to begin with. */}
@@ -520,14 +602,20 @@ export function ImageField({
         // The slot's own kind: asking for images on a clip slot is what hid
         // every video in the phone's library.
         accept={kind === 'video' ? 'video/*' : kind === 'audio' ? 'audio/*' : 'image/*'}
+        // Several at once become the slot's list, one per run.
+        multiple
         className="hidden"
         onChange={(event) => {
-          const file = event.target.files?.[0];
+          const files = [...(event.target.files ?? [])];
+          event.target.value = '';
+          if (files.length > 1) {
+            void acceptMany(files);
+            return;
+          }
           // A picture goes into the editor rather than up at once: a camera
           // roll photo almost never has the shape or orientation the workflow
           // wants, and fixing it here saves an upload and a wasted render.
-          if (file) accept(file);
-          event.target.value = '';
+          if (files[0]) accept(files[0]);
         }}
       />
 

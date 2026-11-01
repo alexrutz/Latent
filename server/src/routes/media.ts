@@ -206,11 +206,9 @@ export function registerMediaRoutes(app: FastifyInstance, ctx: AppContext): void
       }
 
       if (!UPSTREAM_TYPES.has(type)) {
-        return reply
-          .code(404)
-          .send({
-            error: `That ${kind === 'audio' ? 'track' : 'video'} is not in the local archive`,
-          });
+        return reply.code(404).send({
+          error: `That ${kind === 'audio' ? 'track' : 'video'} is not in the local archive`,
+        });
       }
 
       let upstream: Response;
@@ -613,11 +611,14 @@ export function parseRange(header: string | undefined): { start: number; end: nu
 
 /**
  * Prefix with a timestamp so uploading `IMG_0001.jpg` twice doesn't silently
- * replace the first one (phones reuse camera filenames constantly).
+ * replace the first one (phones reuse camera filenames constantly, and a pick of
+ * several can carry the same name twice).
  */
 function uniqueName(original: string): string {
   const safe = (original || 'upload.png').replace(/[^\w.-]+/g, '_').slice(-80);
-  return `latent_${Date.now().toString(36)}_${safe}`;
+  // A random tail too: several picked at once can land in the same millisecond.
+  const salt = Math.random().toString(36).slice(2, 6);
+  return `latent_${Date.now().toString(36)}${salt}_${safe}`;
 }
 
 /**
