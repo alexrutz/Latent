@@ -16,7 +16,8 @@
   "scripts": {
     "build": "npm run build:shared && npm run build -w @latent/web && npm run build -w @latent/server && node scripts/build-info.mjs",
     "build:shared": "npm run build -w @latent/shared",
-    "start": "npm run start -w @latent/server",
+    "start": "node scripts/launcher.mjs",
+    "start:direct": "npm run start -w @latent/server",
     "dev": "npm run build:shared && concurrently -n shared,server,web -c gray,cyan,magenta \"npm:watch:shared\" \"npm:dev:server\" \"npm:dev:web\"",
     "dev:mock": "npm run build:shared && concurrently -n shared,mock,server,web -c gray,yellow,cyan,magenta \"npm:watch:shared\" \"npm:mock\" \"npm:dev:server\" \"npm:dev:web\"",
     "watch:shared": "npm run watch -w @latent/shared",

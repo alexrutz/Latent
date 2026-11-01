@@ -214,6 +214,10 @@ npm run build
 COMFY_URL=http://127.0.0.1:8188 npm start
 ```
 
+`npm start` runs Latent under a small launcher that starts it again after an
+update or a crash (see [Updating from inside Latent](#updating-from-inside-latent)); on
+Windows, `start-latent.cmd` does the same with a double-click.
+
 Then open `http://<your-computer's-LAN-ip>:6173` on your phone, **choose a
 password when it asks**, and add it to your home screen.
 
@@ -3176,10 +3180,28 @@ It refuses, with a reason, when it cannot do the job safely:
 | Detached HEAD, or a branch tracking no remote | Refuses — there is nowhere to update *towards* |
 | Local commits the remote does not have | Installs, but warns that the reset makes them unreachable |
 
-**The restart is checked, not assumed.** Latent cannot start itself, so before
-offering a restart it looks for something that would bring it back — pm2,
-systemd, or a container. On a machine where `npm start` was simply typed into a
-shell it says so plainly, and the button reads *Stop Latent anyway*.
+**The restart is checked, not assumed.** A process that exits cannot start
+itself again, so before offering a restart Latent looks for something that will
+bring it back — its own launcher, pm2, systemd, or a container — and where there
+is nothing, it says so plainly and the button reads *Stop Latent anyway*.
+
+**`npm start` runs Latent under its launcher** (`scripts/launcher.mjs`), so the
+Restart button after an update works on any machine, Windows included, with
+nothing else installed. On Windows, double-click **`start-latent.cmd`** (or point
+a shortcut at it) for the same. The launcher runs Latent as a child process and:
+
+- starts it again at once when it asks to be — the Restart button, which exits
+  with code 75;
+- starts it again after a crash, waiting 1 s, then 2, 4 … up to 30 s while it
+  keeps crashing on start, so a port in use or a broken build does not spin;
+- stops with it when it is stopped — Ctrl+C, closing the window, or `kill`,
+  passed on so Latent closes its database cleanly first.
+
+`npm run start:direct` runs Latent without it. Under pm2, systemd or Docker the
+launcher is not needed (the Docker image runs the server directly); exit code
+75 is non-zero, so `Restart=on-failure` and Docker's restart policies bring it
+back too. A launcher that was itself updated keeps running its old copy until
+it is next started — it changes rarely, and only the server it starts matters.
 
 Unlike the terminal this is on by default. The terminal runs whatever you type;
 this runs `git` and `npm` against the remote the checkout already points at and

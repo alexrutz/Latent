@@ -265,11 +265,27 @@ export const spawnCommand: RunCommand = (request) =>
  * typed `npm start` into a shell, a restart button is a stop button, and the
  * phone that pressed it is the worst possible place to find that out.
  */
+/**
+ * The exit code that asks to be started again — the launcher's
+ * `RESTART_EXIT_CODE`. Non-zero, so pm2, systemd's `Restart=on-failure` and
+ * Docker's restart policies bring it back as well.
+ */
+export const RESTART_EXIT_CODE = 75;
+
 export function detectSupervisor(
   env: NodeJS.ProcessEnv = process.env,
   fileExists: (path: string) => boolean = existsSync,
 ): UpdateSupervisor {
-  // pm2 first: inside a container it is still the thing that restarts the
+  // Latent's own launcher (`npm start`) first: it is the parent that starts
+  // this process again, whatever else is running the launcher.
+  if (env.LATENT_LAUNCHER === '1') {
+    return {
+      kind: 'launcher',
+      restarts: true,
+      note: 'Latent was started by its launcher, which will start it again.',
+    };
+  }
+  // pm2 next: inside a container it is still the thing that restarts the
   // process, and the container would only notice if pm2 itself died.
   if (env.pm_id !== undefined) {
     return {
@@ -298,8 +314,9 @@ export function detectSupervisor(
     kind: 'unknown',
     restarts: false,
     note:
-      'Nothing here looks like it would start Latent again. Restart it yourself once the ' +
-      'update has installed, or run it under systemd, pm2 or Docker so it can restart itself.',
+      'Nothing here looks like it would start Latent again. Start it with "npm start", ' +
+      'which runs it under its launcher, or under systemd, pm2 or Docker, and it can restart ' +
+      'itself; otherwise restart it yourself once the update has installed.',
   };
 }
 

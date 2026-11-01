@@ -481,12 +481,20 @@ describe('what would start it again', () => {
     expect(detectSupervisor({}, () => true).kind).toBe('docker');
   });
 
+  it('counts on its own launcher first, which is what `npm start` runs', () => {
+    const launched = detectSupervisor({ LATENT_LAUNCHER: '1', pm_id: '0' }, () => true);
+    expect(launched.kind).toBe('launcher');
+    expect(launched.restarts).toBe(true);
+  });
+
   it('refuses to promise a restart it cannot see a reason to expect', () => {
     const bare = detectSupervisor({}, () => false);
     expect(bare.kind).toBe('unknown');
     expect(bare.restarts).toBe(false);
     // Said plainly, because this is the case where the button stops Latent.
-    expect(bare.note).toContain('Restart it yourself');
+    expect(bare.note).toContain('restart it yourself');
+    // And says how to get a restart that works.
+    expect(bare.note).toContain('npm start');
   });
 });
 

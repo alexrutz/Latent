@@ -13,7 +13,12 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['shared/src/**/*.test.ts', 'server/src/**/*.test.ts', 'web/src/**/*.test.ts'],
+    include: [
+      'shared/src/**/*.test.ts',
+      'server/src/**/*.test.ts',
+      'web/src/**/*.test.ts',
+      'scripts/**/*.test.mjs',
+    ],
     environment: 'node',
     testTimeout: 20_000,
   },

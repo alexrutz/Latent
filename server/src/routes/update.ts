@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
+import { RESTART_EXIT_CODE } from '../update.js';
 import type { AppContext } from './context.js';
 
 /**
@@ -45,7 +46,8 @@ export function registerUpdateRoutes(
     (async () => {
       app.log.warn('Restarting to run the update that was just installed.');
       await app.close();
-      process.exit(0);
+      // Not 0: 0 tells the launcher Latent was stopped on purpose.
+      process.exit(RESTART_EXIT_CODE);
     });
 
   /**

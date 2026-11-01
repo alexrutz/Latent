@@ -906,7 +906,7 @@ export interface UpdateRun {
  * the only way to find out.
  */
 export interface UpdateSupervisor {
-  kind: 'docker' | 'systemd' | 'pm2' | 'unknown';
+  kind: 'launcher' | 'docker' | 'systemd' | 'pm2' | 'unknown';
   /** Whether exiting is expected to bring it back. */
   restarts: boolean;
   note: string;
